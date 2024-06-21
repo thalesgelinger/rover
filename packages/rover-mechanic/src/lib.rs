@@ -1,5 +1,5 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
+pub fn gretting(name: &str) -> String {
+    format!("Hello {}", name)
 }
 
 #[cfg(test)]
@@ -8,7 +8,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+        let result = gretting("Rover");
+        assert_eq!(result, "Hello Rover");
     }
 }
