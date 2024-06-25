@@ -1,9 +1,28 @@
-use std::fs;
+use std::{
+    ffi::{c_char, CStr, CString},
+    fs,
+};
 
 use mlua::Lua;
 
 #[no_mangle]
-pub extern "C" fn gretting(name: String) -> String {
+pub extern "C" fn gretting(name_ptr: *const c_char) -> *mut c_char {
+    let name = unsafe {
+        assert!(!name_ptr.is_null());
+        CStr::from_ptr(name_ptr)
+            .to_str()
+            .expect("Invalid UTF-8 in input")
+            .to_owned()
+    };
+
+    let result = gretting_rs(name);
+
+    CString::new(result)
+        .expect("Failed to create CString")
+        .into_raw()
+}
+
+fn gretting_rs(name: String) -> String {
     return lua_exec(name);
 }
 
@@ -36,7 +55,7 @@ mod tests {
 
     #[test]
     fn should_run_lua_script() {
-        let result = gretting("Rover".into());
+        let result = gretting_rs("Rover".into());
         assert_eq!(result, "Hello Rover your answer came from lua, BTW");
     }
 }

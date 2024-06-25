@@ -5,7 +5,8 @@ edition = "2021"
 
 [dependencies]
 jni = "0.21.1"
-mlua = { version = "0.9.9", features = ["lua54"] }
+mlua = { version = "0.9.9", features = ["lua54", "vendored"] }
 
 [lib]
 crate-type = ["staticlib", "cdylib"]
+
