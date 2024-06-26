@@ -8,6 +8,8 @@
 import UIKit
 
 class ViewController: UIViewController {
+    
+    private let mechanic = Mechanic()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -16,7 +18,9 @@ class ViewController: UIViewController {
         containerView.backgroundColor = .white
 
         let label = UILabel(frame: .zero)
-        label.text = "Hello World"
+        
+        label.text = mechanic.greetings(to: "world")
+        
         label.textAlignment = .center
 
         label.sizeToFit()

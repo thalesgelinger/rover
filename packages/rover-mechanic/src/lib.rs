@@ -1,6 +1,6 @@
 use std::{
-    ffi::{c_char, CStr, CString},
-    fs,
+    ffi::{CStr, CString},
+    os::raw::c_char,
 };
 
 use mlua::Lua;
@@ -22,18 +22,27 @@ pub extern "C" fn gretting(name_ptr: *const c_char) -> *mut c_char {
         .into_raw()
 }
 
+#[no_mangle]
+pub extern "C" fn greeting_free(s: *mut c_char) {
+    unsafe {
+        if s.is_null() {
+            return;
+        }
+        let _ = CString::from_raw(s);
+    };
+}
+
 fn gretting_rs(name: String) -> String {
     return lua_exec(name);
 }
 
 fn lua_exec(name: String) -> String {
-    let file_path = "../rover/init.lua";
-    let lua_script = fs::read_to_string(file_path).expect("Unable to read Lua script file");
+    let lua_script = include_str!("../../rover/init.lua");
 
     let lua = Lua::new();
 
     let _ = lua
-        .load(&lua_script)
+        .load(lua_script)
         .exec()
         .expect("Error loading lua script");
 

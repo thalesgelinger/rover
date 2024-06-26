@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EC6168D42C2B855100975417 /* librover_mechanic.a in Frameworks */ = {isa = PBXBuildFile; fileRef = EC6168D32C2B855100975417 /* librover_mechanic.a */; };
+		EC6168D72C2B95C100975417 /* Mechanic.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6168D62C2B95C100975417 /* Mechanic.swift */; };
 		ECCD90FE2C24F8BF0070D43D /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD90FD2C24F8BF0070D43D /* AppDelegate.swift */; };
 		ECCD91002C24F8BF0070D43D /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD90FF2C24F8BF0070D43D /* SceneDelegate.swift */; };
 		ECCD91022C24F8BF0070D43D /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD91012C24F8BF0070D43D /* ViewController.swift */; };
@@ -36,6 +38,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		EC6168CA2C2B7DFE00975417 /* Rover-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Rover-Bridging-Header.h"; sourceTree = "<group>"; };
+		EC6168CE2C2B811700975417 /* rover-mechanic.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "rover-mechanic.h"; sourceTree = "<group>"; };
+		EC6168D32C2B855100975417 /* librover_mechanic.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = librover_mechanic.a; sourceTree = "<group>"; };
+		EC6168D52C2B944800975417 /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
+		EC6168D62C2B95C100975417 /* Mechanic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Mechanic.swift; sourceTree = "<group>"; };
 		ECCD90FA2C24F8BF0070D43D /* ios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ios.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		ECCD90FD2C24F8BF0070D43D /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		ECCD90FF2C24F8BF0070D43D /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
@@ -56,6 +63,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EC6168D42C2B855100975417 /* librover_mechanic.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -76,6 +84,25 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		EC6168C82C2B7DDB00975417 /* Mechanic */ = {
+			isa = PBXGroup;
+			children = (
+				EC6168D32C2B855100975417 /* librover_mechanic.a */,
+				EC6168CE2C2B811700975417 /* rover-mechanic.h */,
+				EC6168CA2C2B7DFE00975417 /* Rover-Bridging-Header.h */,
+				EC6168D62C2B95C100975417 /* Mechanic.swift */,
+			);
+			path = Mechanic;
+			sourceTree = "<group>";
+		};
+		EC6168D12C2B83CC00975417 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				EC6168D52C2B944800975417 /* libresolv.tbd */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		ECCD90F12C24F8BF0070D43D = {
 			isa = PBXGroup;
 			children = (
@@ -83,6 +110,7 @@
 				ECCD91132C24F8C00070D43D /* iosTests */,
 				ECCD911D2C24F8C00070D43D /* iosUITests */,
 				ECCD90FB2C24F8BF0070D43D /* Products */,
+				EC6168D12C2B83CC00975417 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -99,6 +127,7 @@
 		ECCD90FC2C24F8BF0070D43D /* ios */ = {
 			isa = PBXGroup;
 			children = (
+				EC6168C82C2B7DDB00975417 /* Mechanic */,
 				ECCD90FD2C24F8BF0070D43D /* AppDelegate.swift */,
 				ECCD90FF2C24F8BF0070D43D /* SceneDelegate.swift */,
 				ECCD91012C24F8BF0070D43D /* ViewController.swift */,
@@ -259,6 +288,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				ECCD91022C24F8BF0070D43D /* ViewController.swift in Sources */,
+				EC6168D72C2B95C100975417 /* Mechanic.swift in Sources */,
 				ECCD90FE2C24F8BF0070D43D /* AppDelegate.swift in Sources */,
 				ECCD91002C24F8BF0070D43D /* SceneDelegate.swift in Sources */,
 			);
@@ -443,6 +473,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "${SRCROOT}/ios/Mechanic/rover-mechanic.h";
 				INFOPLIST_FILE = ios/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -453,10 +484,15 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/ios/Mechanic",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/ios/Mechanic/Rover-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -470,6 +506,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "${SRCROOT}/ios/Mechanic/rover-mechanic.h";
 				INFOPLIST_FILE = ios/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
@@ -480,10 +517,15 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/ios/Mechanic",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/ios/Mechanic/Rover-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

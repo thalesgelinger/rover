@@ -17,5 +17,5 @@
 
 
 function luaGreetings(name)
-    return "Hello " .. name .. " your answer came from luar BTW"
+    return "Hello " .. name .. " your answer came from lua, BTW"
 end
