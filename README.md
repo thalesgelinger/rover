@@ -2,22 +2,25 @@
 Build mobile apps with the best interpreted language ever Lua #BrazilMentioned
 
 ```lua
-local ui = require "./rover.ui"
+local ui = require "rover.ui"
 
-return ui.view {
-    backgroundColor = "#000fff",
-    alignItems = "center",
-    justifyContent = "center",
-
-    ui.text { "Hello World" },
-
-    ui.button {
-        "Click Me",
-        onClick = function()
-            print "I came from the moon BTW"
-        end
+function App()
+    ui.view {
+        mainAxisAlignment = "center",
+        crossAxisAlignment = "center",
+        ui.text {
+            "Hello World"
+        },
+        ui.button {
+            "Click Me",
+            onClick = function()
+                print "I came from the moon BTW"
+            end
+        }
     }
-}
+end
+
+return App
 ```
 
 # The goal
