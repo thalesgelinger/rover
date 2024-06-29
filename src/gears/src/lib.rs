@@ -28,7 +28,7 @@ pub extern "C" fn gretting(name_ptr: *const c_char) -> *mut c_char {
 
 // This one for android
 #[no_mangle]
-pub extern "system" fn Java_com_example_android_Mechanic_greeting(
+pub extern "system" fn Java_com_example_android_Gears_greeting(
     mut env: JNIEnv,
     _class: JClass,
     input: JString,

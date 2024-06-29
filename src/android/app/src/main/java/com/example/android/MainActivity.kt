@@ -32,11 +32,6 @@ class MainActivity : AppCompatActivity() {
         setContentView(containerView)
     }
 
-    companion object {
-        init {
-            System.loadLibrary("rover_mechanic")
-        }
-    }
 }
 
 
@@ -44,7 +39,7 @@ fun createTextView(context: Context): TextView {
 
     val textView = TextView(context)
 
-    textView.text = Mechanic.greeting("Rover")
+    textView.text = Gears.greeting("Rover")
 
     textView.textSize = 20f
     textView.gravity = Gravity.CENTER

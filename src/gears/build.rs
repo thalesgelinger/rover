@@ -91,4 +91,21 @@ fn build_android() {
             .status()
             .expect(&format!("Failed to build for {}", target));
     }
+
+    let android_targets = [
+        ("aarch64-linux-android", "arm64-v8a"),
+        ("armv7-linux-androideabi", "armeabi-v7a"),
+        ("i686-linux-android", "x86"),
+        ("x86_64-linux-android", "x86_64"),
+    ];
+
+    for (from, to) in &android_targets {
+        Command::new("cp")
+            .args(&[
+                format!("target/{}/release/libgears.so", from),
+                format!("../android/app/src/main/jniLibs/{}/", to),
+            ])
+            .status()
+            .expect(&format!("Failed to copy {} to {}", from, to));
+    }
 }
