@@ -8,17 +8,18 @@ fn main() {
     println!("cargo:warning=NDK Path: {}", ndk_path);
     println!("cargo:warning=Target: {}", target);
 
-    let lib_path = match target.as_str() {
-        "aarch64-linux-android" => "aarch64-linux-android/lib",
-        "armv7-linux-androideabi" => "arm-linux-androideabi/lib",
-        "i686-linux-android" => "i686-linux-android/lib",
-        "x86_64-linux-android" => "x86_64-linux-android/lib",
-        _ => panic!("Unknown target: {}", target),
-    };
+    if target.contains("android") {
+        let lib_path = match target.as_str() {
+            "aarch64-linux-android" => "aarch64-linux-android/lib",
+            "armv7-linux-androideabi" => "arm-linux-androideabi/lib",
+            "i686-linux-android" => "i686-linux-android/lib",
+            "x86_64-linux-android" => "x86_64-linux-android/lib",
+            _ => panic!("Unknown android target: {}", target),
+        };
 
-    println!(
-        "cargo:rustc-link-search=native={}/sources/cxx-stl/llvm-libc++/libs/{}",
-        ndk_path, lib_path
-    );
+        println!(
+            "cargo:rustc-link-search=native={}/sources/cxx-stl/llvm-libc++/libs/{}",
+            ndk_path, lib_path
+        );
+    }
 }
-
