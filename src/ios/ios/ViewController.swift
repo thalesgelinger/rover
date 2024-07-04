@@ -6,20 +6,21 @@
 //
 
 import UIKit
+import RoverIos
 
 class ViewController: UIViewController {
-    
-    private let gears = Gears()
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        
+        
         let containerView = UIView(frame: view.bounds)
         containerView.backgroundColor = .white
 
         let label = UILabel(frame: .zero)
         
-        label.text = gears.greetings(to: "world")
+        label.text = swiftHello("Rover")
         
         label.textAlignment = .center
 

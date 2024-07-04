@@ -7,8 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		EC6168D72C2B95C100975417 /* Gears.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6168D62C2B95C100975417 /* Gears.swift */; };
-		EC9DCA372C30589200381397 /* libgears.a in Frameworks */ = {isa = PBXBuildFile; fileRef = EC9DCA362C30589200381397 /* libgears.a */; };
+		EC9DCA742C343A9000381397 /* RoverIos.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC9DCA712C343A7200381397 /* RoverIos.framework */; };
+		EC9DCA752C343A9000381397 /* RoverIos.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EC9DCA712C343A7200381397 /* RoverIos.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		ECCD90FE2C24F8BF0070D43D /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD90FD2C24F8BF0070D43D /* AppDelegate.swift */; };
 		ECCD91002C24F8BF0070D43D /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD90FF2C24F8BF0070D43D /* SceneDelegate.swift */; };
 		ECCD91022C24F8BF0070D43D /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECCD91012C24F8BF0070D43D /* ViewController.swift */; };
@@ -21,6 +21,20 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		EC9DCA702C343A7200381397 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC9DCA6B2C343A7200381397 /* RoverIos.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = EC9DCA422C333C4700381397;
+			remoteInfo = RoverIos;
+		};
+		EC9DCA722C343A7200381397 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC9DCA6B2C343A7200381397 /* RoverIos.xcodeproj */;
+			proxyType = 2;
+			remoteGlobalIDString = EC9DCA4C2C333C4700381397;
+			remoteInfo = RoverIosTests;
+		};
 		ECCD91112C24F8C00070D43D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = ECCD90F22C24F8BF0070D43D /* Project object */;
@@ -37,12 +51,23 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		EC9DCA762C343A9000381397 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				EC9DCA752C343A9000381397 /* RoverIos.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		EC6168CA2C2B7DFE00975417 /* Rover-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Rover-Bridging-Header.h"; sourceTree = "<group>"; };
-		EC6168CE2C2B811700975417 /* gears.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = gears.h; sourceTree = "<group>"; };
 		EC6168D52C2B944800975417 /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
-		EC6168D62C2B95C100975417 /* Gears.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Gears.swift; sourceTree = "<group>"; };
-		EC9DCA362C30589200381397 /* libgears.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libgears.a; sourceTree = "<group>"; };
+		EC9DCA6B2C343A7200381397 /* RoverIos.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = RoverIos.xcodeproj; path = ../RoverIos/RoverIos.xcodeproj; sourceTree = "<group>"; };
 		ECCD90FA2C24F8BF0070D43D /* ios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ios.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		ECCD90FD2C24F8BF0070D43D /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		ECCD90FF2C24F8BF0070D43D /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
@@ -63,7 +88,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				EC9DCA372C30589200381397 /* libgears.a in Frameworks */,
+				EC9DCA742C343A9000381397 /* RoverIos.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -84,17 +109,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		EC6168C82C2B7DDB00975417 /* Gears */ = {
-			isa = PBXGroup;
-			children = (
-				EC9DCA362C30589200381397 /* libgears.a */,
-				EC6168CE2C2B811700975417 /* gears.h */,
-				EC6168CA2C2B7DFE00975417 /* Rover-Bridging-Header.h */,
-				EC6168D62C2B95C100975417 /* Gears.swift */,
-			);
-			path = Gears;
-			sourceTree = "<group>";
-		};
 		EC6168D12C2B83CC00975417 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -103,9 +117,19 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		EC9DCA6C2C343A7200381397 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				EC9DCA712C343A7200381397 /* RoverIos.framework */,
+				EC9DCA732C343A7200381397 /* RoverIosTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 		ECCD90F12C24F8BF0070D43D = {
 			isa = PBXGroup;
 			children = (
+				EC9DCA6B2C343A7200381397 /* RoverIos.xcodeproj */,
 				ECCD90FC2C24F8BF0070D43D /* ios */,
 				ECCD91132C24F8C00070D43D /* iosTests */,
 				ECCD911D2C24F8C00070D43D /* iosUITests */,
@@ -127,7 +151,6 @@
 		ECCD90FC2C24F8BF0070D43D /* ios */ = {
 			isa = PBXGroup;
 			children = (
-				EC6168C82C2B7DDB00975417 /* Gears */,
 				ECCD90FD2C24F8BF0070D43D /* AppDelegate.swift */,
 				ECCD90FF2C24F8BF0070D43D /* SceneDelegate.swift */,
 				ECCD91012C24F8BF0070D43D /* ViewController.swift */,
@@ -166,6 +189,7 @@
 				ECCD90F62C24F8BF0070D43D /* Sources */,
 				ECCD90F72C24F8BF0070D43D /* Frameworks */,
 				ECCD90F82C24F8BF0070D43D /* Resources */,
+				EC9DCA762C343A9000381397 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -246,6 +270,12 @@
 			mainGroup = ECCD90F12C24F8BF0070D43D;
 			productRefGroup = ECCD90FB2C24F8BF0070D43D /* Products */;
 			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = EC9DCA6C2C343A7200381397 /* Products */;
+					ProjectRef = EC9DCA6B2C343A7200381397 /* RoverIos.xcodeproj */;
+				},
+			);
 			projectRoot = "";
 			targets = (
 				ECCD90F92C24F8BF0070D43D /* ios */,
@@ -254,6 +284,23 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXReferenceProxy section */
+		EC9DCA712C343A7200381397 /* RoverIos.framework */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.framework;
+			path = RoverIos.framework;
+			remoteRef = EC9DCA702C343A7200381397 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		EC9DCA732C343A7200381397 /* RoverIosTests.xctest */ = {
+			isa = PBXReferenceProxy;
+			fileType = wrapper.cfbundle;
+			path = RoverIosTests.xctest;
+			remoteRef = EC9DCA722C343A7200381397 /* PBXContainerItemProxy */;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+/* End PBXReferenceProxy section */
 
 /* Begin PBXResourcesBuildPhase section */
 		ECCD90F82C24F8BF0070D43D /* Resources */ = {
@@ -288,7 +335,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				ECCD91022C24F8BF0070D43D /* ViewController.swift in Sources */,
-				EC6168D72C2B95C100975417 /* Gears.swift in Sources */,
 				ECCD90FE2C24F8BF0070D43D /* AppDelegate.swift in Sources */,
 				ECCD91002C24F8BF0070D43D /* SceneDelegate.swift in Sources */,
 			);
@@ -472,6 +518,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CXJ5G5H637;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "${SRCROOT}/ios/Mechanic/rover-mechanic.h";
 				INFOPLIST_FILE = ios/Info.plist;
@@ -493,7 +544,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/ios/Gears/Rover-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -506,6 +557,11 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CXJ5G5H637;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "${SRCROOT}/ios/Mechanic/rover-mechanic.h";
 				INFOPLIST_FILE = ios/Info.plist;
@@ -527,7 +583,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/ios/Gears/Rover-Bridging-Header.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

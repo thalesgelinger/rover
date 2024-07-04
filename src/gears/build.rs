@@ -11,7 +11,11 @@ fn main() {
 }
 
 fn build_ios() {
-    let targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim"];
+    let targets = [
+        "aarch64-apple-ios",
+        "aarch64-apple-ios-sim",
+        "x86_64-apple-ios",
+    ];
 
     for target in &targets {
         Command::new("cargo")
@@ -32,11 +36,19 @@ fn build_ios() {
         .status()
         .expect("Failed to generate C bindings");
 
-    Command::new("cp")
+    Command::new("lipo")
         .args(&[
+            "-create",
+            "-output",
+            "target/release/libgears.a",
             "target/aarch64-apple-ios-sim/release/libgears.a",
-            "../ios/ios/Gears/",
+            "target/x86_64-apple-ios/release/libgears.a",
         ])
+        .status()
+        .expect("cargo:warning=Failed to create universal library");
+
+    Command::new("cp")
+        .args(&["target/ios/libgears.a", "../ios/ios/Gears/"])
         .status()
         .expect("Failed to copy .a to ios Gears");
 
