@@ -16,5 +16,6 @@ mlua = { version = "0.9.9", features = ["lua54", "vendored"] }
 [lib]
 crate-type = ["staticlib", "cdylib"]
 
+
 [build-dependencies]
 cbindgen = "0.20"

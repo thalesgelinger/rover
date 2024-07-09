@@ -14,3 +14,8 @@ public func swiftHello(_ str: String) -> String {
     print("Swift Received: \(swift_result)")
     return swift_result
 }
+
+@_cdecl("iosPrint")
+public func iosPrint() {
+    print("Hello i was calle by Rust")
+}

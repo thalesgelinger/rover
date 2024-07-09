@@ -46,16 +46,6 @@ fn build_ios() {
         ])
         .status()
         .expect("cargo:warning=Failed to create universal library");
-
-    Command::new("cp")
-        .args(&["target/ios/libgears.a", "../ios/ios/Gears/"])
-        .status()
-        .expect("Failed to copy .a to ios Gears");
-
-    Command::new("cp")
-        .args(&["target/gears.h", "../ios/ios/Gears/"])
-        .status()
-        .expect("Failed to copy .h to ios Gears");
 }
 
 fn build_android() {

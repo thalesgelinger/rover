@@ -26,6 +26,16 @@ pub extern "C" fn gretting(name_ptr: *const c_char) -> *mut c_char {
         .into_raw()
 }
 
+extern "C" {
+    fn iosPrint();
+}
+
+fn call_ios() {
+    unsafe {
+        iosPrint();
+    }
+}
+
 // This one for android
 #[no_mangle]
 pub extern "system" fn Java_com_example_android_Gears_greeting(
@@ -58,6 +68,7 @@ pub extern "C" fn greeting_free(s: *mut c_char) {
 }
 
 fn gretting_rs(name: String) -> String {
+    call_ios();
     return lua_exec(name);
 }
 
