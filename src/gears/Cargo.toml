@@ -5,15 +5,15 @@ edition = "2021"
 build = "build.rs"
 
 [features]
-android=[]
-ios=[]
+default=[]
+android=["jni"]
+ios=["objc2"]
 
 [dependencies]
 include_dir = "0.7.4"
-jni = "0.21.1"
 mlua = { version = "0.9.9", features = ["lua54", "vendored"] }
-objc2 = "0.5.2"
-
+jni = { version = "0.21.1", optional = true }
+objc2 = { version = "0.5.2", optional = true }
 
 [lib]
 crate-type = ["staticlib", "cdylib"]
@@ -21,4 +21,3 @@ crate-type = ["staticlib", "cdylib"]
 
 [build-dependencies]
 cbindgen = "0.20"
-cc = "1.0"

@@ -121,6 +121,7 @@ fn build_android() {
         "x86_64-linux-android",
     ];
 
+
     for target in &targets {
         Command::new("cargo")
             .args(&[
