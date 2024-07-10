@@ -17,6 +17,15 @@ fn build_ios() {
         "x86_64-apple-ios",
     ];
 
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+
+    let rover_ios_path = current_dir
+        .parent()
+        .expect("No parent directory")
+        .join("RoverIos")
+        .join("RoverIos")
+        .join("Gears");
+
     for target in &targets {
         Command::new("cargo")
             .args(&["build", "--release", "--target", target])
@@ -40,12 +49,22 @@ fn build_ios() {
         .args(&[
             "-create",
             "-output",
-            "target/release/libgears.a",
+            "target/libgears.a",
             "target/aarch64-apple-ios-sim/release/libgears.a",
             "target/x86_64-apple-ios/release/libgears.a",
         ])
         .status()
         .expect("cargo:warning=Failed to create universal library");
+
+    Command::new("cp")
+        .args(&["target/libgears.a", &rover_ios_path.to_string_lossy()])
+        .status()
+        .expect("cargo:warning=Failed to copy .a to RoverIos");
+
+    Command::new("cp")
+        .args(&["target/gears.h", &rover_ios_path.to_string_lossy()])
+        .status()
+        .expect("cargo:warning=Failed to copy .a to RoverIos");
 }
 
 fn build_android() {

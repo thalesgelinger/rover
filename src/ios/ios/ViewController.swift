@@ -8,30 +8,5 @@
 import UIKit
 import RoverIos
 
-class ViewController: UIViewController {
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-
-        
-        
-        let containerView = UIView(frame: view.bounds)
-        containerView.backgroundColor = .white
-
-        let label = UILabel(frame: .zero)
-        
-        label.text = swiftHello("Rover")
-        
-        label.textAlignment = .center
-
-        label.sizeToFit()
-
-        label.center = containerView.center
-
-        containerView.addSubview(label)
-
-        view.addSubview(containerView)
-    }
-
-}
+class ViewController: RoverIos { }
 

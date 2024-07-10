@@ -145,6 +145,7 @@ name = "gears"
 version = "0.1.0"
 dependencies = [
  "cbindgen",
+ "cc",
  "include_dir",
  "jni",
  "mlua",
