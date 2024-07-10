@@ -21,25 +21,6 @@ open class RoverIos: UIViewController {
     public override func viewDidLoad() {
         super.viewDidLoad()
 
-        start()
-    }
-    
-    func start() {
-        let containerView = UIView(frame: view.bounds)
-        containerView.backgroundColor = .white
-
-        let label = UILabel(frame: .zero)
-        
-        label.text = swiftHello("Rover")
-        
-        label.textAlignment = .center
-
-        label.sizeToFit()
-
-        label.center = containerView.center
-
-        containerView.addSubview(label)
-
-        view.addSubview(containerView)
+        start(self.view)
     }
 }
