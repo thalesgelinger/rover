@@ -1,0 +1,6 @@
+framework module RoverIos {
+  umbrella header "RoverIos.h"
+  export *
+
+  module * { export * }
+}

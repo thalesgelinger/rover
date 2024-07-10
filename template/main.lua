@@ -1,17 +1,17 @@
 local ui = require "rover.ui"
-local Header = require "header"
+local header = require "header"
 
-function App()
+local function app()
     ui.view {
         mainAxisAlignment = "center",
         crossAxisAlignment = "center",
         ui.text {
             "Hello World"
         },
-        Header {
+        header {
             text = "Hello"
         }
     }
 end
 
-return App
+rover.run(app)

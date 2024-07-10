@@ -1,7 +1,6 @@
 local ui = require "rover.ui"
-local component = require "rover.core"
 
-local function Header(props)
+local function header(props, children)
     local value = signal(0)
 
     ui.view {
@@ -11,4 +10,4 @@ local function Header(props)
     }
 end
 
-return component(Header)
+return rover.component(header)

@@ -65,6 +65,30 @@ fn build_ios() {
         .args(&["target/gears.h", &rover_ios_path.to_string_lossy()])
         .status()
         .expect("cargo:warning=Failed to copy .a to RoverIos");
+
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+
+    let rover_ios_path = current_dir
+        .parent()
+        .expect("No parent directory")
+        .join("RoverIos")
+        .join("RoverIos.xcodeproj");
+
+    Command::new("xcodebuild")
+        .args(&[
+            "-project",
+            &rover_ios_path.to_string_lossy(),
+            "-scheme",
+            "RoverIos",
+            "-configuration",
+            "Release",
+            "-sdk",
+            "iphonesimulator",
+            "CONFIGURATION_BUILD_DIR=build",
+            "build",
+        ])
+        .status()
+        .expect("cargo:warning=Failed to build the Swift framework");
 }
 
 fn build_android() {
