@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 rootProject.name = "android"
 include(":app")
 include(":roverandroid")
+project(":roverandroid").projectDir = file("../../src/roverandroid")
