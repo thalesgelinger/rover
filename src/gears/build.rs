@@ -148,10 +148,7 @@ fn build_android() {
         Command::new("cp")
             .args(&[
                 format!("target/{}/release/libgears.so", from),
-                format!(
-                    "../../template/android/roverandroid/src/main/jniLibs/{}/",
-                    to
-                ),
+                format!("../roverandroid/src/main/jniLibs/{}/", to),
             ])
             .status()
             .expect(&format!("Failed to copy {} to {}", from, to));
