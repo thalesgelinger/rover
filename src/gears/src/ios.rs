@@ -18,7 +18,6 @@ pub extern "C" fn start(view: *mut NSObject) {
         let container_view: *mut AnyObject = msg_send![AnyClass::get("UIView").unwrap(), alloc];
         let container_view: *mut AnyObject = msg_send![container_view, initWithFrame: bounds];
 
-        // Set background color to white
         let white_color: *mut AnyObject =
             msg_send![AnyClass::get("UIColor").unwrap(), performSelector: sel!(blueColor)];
         let _: () = msg_send![container_view, setBackgroundColor: white_color];

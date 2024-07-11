@@ -99,21 +99,6 @@ fn build_android() {
     println!("cargo:warning=NDK Path: {}", ndk_path);
     println!("cargo:warning=Target: {}", target);
 
-    if target.contains("android") {
-        let lib_path = match target.as_str() {
-            "aarch64-linux-android" => "aarch64-linux-android/lib",
-            "armv7-linux-androideabi" => "arm-linux-androideabi/lib",
-            "i686-linux-android" => "i686-linux-android/lib",
-            "x86_64-linux-android" => "x86_64-linux-android/lib",
-            _ => panic!("Unknown android target: {}", target),
-        };
-
-        println!(
-            "cargo:rustc-link-search=native={}/sources/cxx-stl/llvm-libc++/libs/{}",
-            ndk_path, lib_path
-        );
-    }
-
     let targets = [
         "aarch64-linux-android",
         "armv7-linux-androideabi",
@@ -121,6 +106,20 @@ fn build_android() {
         "x86_64-linux-android",
     ];
 
+    for target in &targets {
+        let lib_path = match *target {
+            "aarch64-linux-android" => "aarch64-linux-android/lib",
+            "armv7-linux-androideabi" => "arm-linux-androideabi/lib",
+            "i686-linux-android" => "i686-linux-android/lib",
+            "x86_64-linux-android" => "x86_64-linux-android/lib",
+            _ => panic!("Not recognized target"),
+        };
+
+        println!(
+            "cargo:rustc-link-search=native={}/sources/cxx-stl/llvm-libc++/libs/{}",
+            ndk_path, lib_path
+        );
+    }
 
     for target in &targets {
         Command::new("cargo")
@@ -149,7 +148,10 @@ fn build_android() {
         Command::new("cp")
             .args(&[
                 format!("target/{}/release/libgears.so", from),
-                format!("../android/app/src/main/jniLibs/{}/", to),
+                format!(
+                    "../../template/android/roverandroid/src/main/jniLibs/{}/",
+                    to
+                ),
             ])
             .status()
             .expect(&format!("Failed to copy {} to {}", from, to));

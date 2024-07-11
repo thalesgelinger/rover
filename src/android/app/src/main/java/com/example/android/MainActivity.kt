@@ -8,47 +8,8 @@ import android.widget.RelativeLayout
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import com.rovernative.roverandroid.RoverMainActivity
 
-class MainActivity : AppCompatActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+class MainActivity : RoverMainActivity() {
 
-        val containerView = RelativeLayout(this)
-
-        val textView = createTextView(this)
-
-        containerView.addView(textView)
-
-        val layoutParams = RelativeLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        layoutParams.addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
-        textView.layoutParams = layoutParams
-
-        setContentView(containerView)
-    }
-
-}
-
-
-fun createTextView(context: Context): TextView {
-
-    val textView = TextView(context)
-
-    textView.text = Gears.greeting("Rover")
-
-    textView.textSize = 20f
-    textView.gravity = Gravity.CENTER
-
-    val layoutParams = ViewGroup.LayoutParams(
-        ViewGroup.LayoutParams.WRAP_CONTENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    )
-    textView.layoutParams = layoutParams
-
-    return textView
 }
