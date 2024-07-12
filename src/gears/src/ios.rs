@@ -15,7 +15,7 @@ use crate::lua::gretting_rs;
 pub extern "C" fn start(view: *mut NSObject) {
     let container_view: *mut AnyObject = unsafe {
         let bounds: *mut AnyObject = msg_send![view, bounds];
-        let container_view: *mut AnyObject = msg_send![AnyClass::get("UIView").unwrap(), alloc];
+        let container_view: *mut AnyObject = msg_send![AnyClass::get("UIView").unwrap(), alloc]; 
         let container_view: *mut AnyObject = msg_send![container_view, initWithFrame: bounds];
 
         let white_color: *mut AnyObject =

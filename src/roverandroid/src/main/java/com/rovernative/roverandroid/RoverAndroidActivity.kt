@@ -14,37 +14,8 @@ open class RoverAndroidActivity: AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val containerView = RelativeLayout(this)
-
-        val textView = createTextView(this)
-
-        containerView.addView(textView)
-
-        val layoutParams = RelativeLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        layoutParams.addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
-        textView.layoutParams = layoutParams
-
-        setContentView(containerView)
+        val mainView = Gears.start(this)
+        setContentView(mainView)
     }
 }
 
-fun createTextView(context: Context): TextView {
-
-    val textView = TextView(context)
-
-    textView.text = Gears.greeting("Rover")
-
-    textView.textSize = 20f
-    textView.gravity = Gravity.CENTER
-
-    val layoutParams = ViewGroup.LayoutParams(
-        ViewGroup.LayoutParams.WRAP_CONTENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    )
-    textView.layoutParams = layoutParams
-
-    return textView
-}

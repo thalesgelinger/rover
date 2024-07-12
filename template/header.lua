@@ -1,13 +1,12 @@
-local ui = require "rover.ui"
+local function header(props)
+    local value = rover.signal(0)
 
-local function header(props, children)
-    local value = signal(0)
-
-    ui.view {
-        ui.text {
+    rover.view {
+        rover.text {
             props.text
-        }
+        },
+        rover.children(props)
     }
 end
 
-return rover.component(header)
+return header
