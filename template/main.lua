@@ -1,16 +1,14 @@
 local header = require "header"
 
-local function app()
+function rover.run()
     rover.view {
-        mainAxisAlignment = "center",
-        crossAxisAlignment = "center",
+        horizontal = "center",
+        vertical = "center",
         rover.text {
             "Hello World"
         },
         header {
-            text = "Hello"
+            text = "Hello",
         }
     }
 end
-
-rover.run(app)
