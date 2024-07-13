@@ -17,6 +17,15 @@ fn build_ios() {
         "x86_64-apple-ios",
     ];
 
+    let current_dir = env::current_dir().expect("Failed to get current directory");
+
+    let rover_ios_path = current_dir
+        .parent()
+        .expect("No parent directory")
+        .join("RoverIos")
+        .join("RoverIos")
+        .join("Gears");
+
     for target in &targets {
         Command::new("cargo")
             .args(&["build", "--release", "--target", target])
@@ -40,7 +49,7 @@ fn build_ios() {
         .args(&[
             "-create",
             "-output",
-            "target/release/libgears.a",
+            "target/libgears.a",
             "target/aarch64-apple-ios-sim/release/libgears.a",
             "target/x86_64-apple-ios/release/libgears.a",
         ])
@@ -48,14 +57,38 @@ fn build_ios() {
         .expect("cargo:warning=Failed to create universal library");
 
     Command::new("cp")
-        .args(&["target/ios/libgears.a", "../ios/ios/Gears/"])
+        .args(&["target/libgears.a", &rover_ios_path.to_string_lossy()])
         .status()
-        .expect("Failed to copy .a to ios Gears");
+        .expect("cargo:warning=Failed to copy .a to RoverIos");
 
     Command::new("cp")
-        .args(&["target/gears.h", "../ios/ios/Gears/"])
+        .args(&["target/gears.h", &rover_ios_path.to_string_lossy()])
         .status()
-        .expect("Failed to copy .h to ios Gears");
+        .expect("cargo:warning=Failed to copy .a to RoverIos");
+
+    // let current_dir = env::current_dir().expect("Failed to get current directory");
+
+    // let rover_ios_path = current_dir
+    //     .parent()
+    //     .expect("No parent directory")
+    //     .join("RoverIos")
+    //     .join("RoverIos.xcodeproj");
+
+    // Command::new("xcodebuild")
+    //     .args(&[
+    //         "-project",
+    //         &rover_ios_path.to_string_lossy(),
+    //         "-scheme",
+    //         "RoverIos",
+    //         "-configuration",
+    //         "Release",
+    //         "-sdk",
+    //         "iphonesimulator",
+    //         "CONFIGURATION_BUILD_DIR=build",
+    //         "build",
+    //     ])
+    //     .status()
+    //     .expect("cargo:warning=Failed to build the Swift framework");
 }
 
 fn build_android() {
@@ -66,13 +99,20 @@ fn build_android() {
     println!("cargo:warning=NDK Path: {}", ndk_path);
     println!("cargo:warning=Target: {}", target);
 
-    if target.contains("android") {
-        let lib_path = match target.as_str() {
+    let targets = [
+        "aarch64-linux-android",
+        "armv7-linux-androideabi",
+        "i686-linux-android",
+        "x86_64-linux-android",
+    ];
+
+    for target in &targets {
+        let lib_path = match *target {
             "aarch64-linux-android" => "aarch64-linux-android/lib",
             "armv7-linux-androideabi" => "arm-linux-androideabi/lib",
             "i686-linux-android" => "i686-linux-android/lib",
             "x86_64-linux-android" => "x86_64-linux-android/lib",
-            _ => panic!("Unknown android target: {}", target),
+            _ => panic!("Not recognized target"),
         };
 
         println!(
@@ -80,13 +120,6 @@ fn build_android() {
             ndk_path, lib_path
         );
     }
-
-    let targets = [
-        "aarch64-linux-android",
-        "armv7-linux-androideabi",
-        "i686-linux-android",
-        "x86_64-linux-android",
-    ];
 
     for target in &targets {
         Command::new("cargo")
@@ -115,7 +148,7 @@ fn build_android() {
         Command::new("cp")
             .args(&[
                 format!("target/{}/release/libgears.so", from),
-                format!("../android/app/src/main/jniLibs/{}/", to),
+                format!("../roverandroid/src/main/jniLibs/{}/", to),
             ])
             .status()
             .expect(&format!("Failed to copy {} to {}", from, to));

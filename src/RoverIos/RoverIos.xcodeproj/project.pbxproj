@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		82AAC67A2C41B98C003CD22C /* Gears.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82AAC6792C41B98C003CD22C /* Gears.swift */; };
 		ECF7D1352C36D7680051B12F /* RoverIos.docc in Sources */ = {isa = PBXBuildFile; fileRef = ECF7D1342C36D7680051B12F /* RoverIos.docc */; };
 		ECF7D13B2C36D7680051B12F /* RoverIos.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ECF7D1302C36D7680051B12F /* RoverIos.framework */; };
 		ECF7D1402C36D7680051B12F /* RoverIosTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF7D13F2C36D7680051B12F /* RoverIosTests.swift */; };
@@ -28,6 +29,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		82AAC6792C41B98C003CD22C /* Gears.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Gears.swift; sourceTree = "<group>"; };
 		ECF7D1302C36D7680051B12F /* RoverIos.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RoverIos.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		ECF7D1332C36D7680051B12F /* RoverIos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RoverIos.h; sourceTree = "<group>"; };
 		ECF7D1342C36D7680051B12F /* RoverIos.docc */ = {isa = PBXFileReference; lastKnownFileType = folder.documentationcatalog; path = RoverIos.docc; sourceTree = "<group>"; };
@@ -87,6 +89,7 @@
 				ECF7D1332C36D7680051B12F /* RoverIos.h */,
 				ECF7D14C2C36D7A00051B12F /* RoverIos.modulemap */,
 				ECF7D1582C36D9660051B12F /* RoverIos.swift */,
+				82AAC6792C41B98C003CD22C /* Gears.swift */,
 				ECF7D1342C36D7680051B12F /* RoverIos.docc */,
 			);
 			path = RoverIos;
@@ -221,6 +224,7 @@
 			files = (
 				ECF7D1592C36D9660051B12F /* RoverIos.swift in Sources */,
 				ECF7D1352C36D7680051B12F /* RoverIos.docc in Sources */,
+				82AAC67A2C41B98C003CD22C /* Gears.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -360,6 +364,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;

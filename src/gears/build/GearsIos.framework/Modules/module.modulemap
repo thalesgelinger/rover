@@ -1,0 +1,6 @@
+framework module GearsIos {
+  umbrella header "GearsIos.h"
+  export *
+
+  module * { export * }
+}

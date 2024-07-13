@@ -1,14 +1,13 @@
-local ui = require "rover.ui"
-local component = require "rover.core"
+local function header(props)
+    local value = rover.signal(0)
 
-local function Header(props)
-    local value = signal(0)
-
-    ui.view {
-        ui.text {
+    rover.view {
+        rover.text {
             props.text
-        }
+        },
+        rover.children(props)
     }
 end
 
-return component(Header)
+return header
+
