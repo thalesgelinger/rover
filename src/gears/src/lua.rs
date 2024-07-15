@@ -1,14 +1,16 @@
+use std::sync::Arc;
+
 use mlua::{Function, Lua, Result, Table, Value};
 
 use crate::ui::Ui;
 
 pub struct Rover {
-    ui: &'static dyn Ui,
+    ui: Arc<dyn Ui>,
     lua: Lua,
 }
 
 impl Rover {
-    pub fn new(ui: &'static dyn Ui) -> Rover {
+    pub fn new(ui: Arc<dyn Ui>) -> Rover {
         let lua = Lua::new();
         Rover { ui, lua }
     }
@@ -43,11 +45,12 @@ impl Rover {
     }
 
     fn setup_view(&self, lua_rover: &Table) -> () {
+        let ui = Arc::clone(&self.ui);
         let view_lua_fn = self
             .lua
-            .create_function(|lua, tbl: Table| {
+            .create_function(move |lua, tbl: Table| {
                 println!("rover.view() called from Rust with table:");
-                let view_id = self.ui.create_view();
+                let view_id = ui.create_view();
                 for pair in tbl.pairs::<Value, Value>() {
                     match pair.expect("Expected to have a pair") {
                         (Value::String(prop), Value::String(value)) => {
@@ -62,7 +65,7 @@ impl Rover {
                         (a, b) => println!("Not tracked yet, {:?} : {:?}", a, b),
                     }
                 }
-                Ok(Value::String(lua.create_string(&view_id.to_string())?))
+                Ok(Value::String(lua.create_string(&view_id.get_id())?))
             })
             .expect("Failed to setup internal view function");
 
@@ -72,17 +75,19 @@ impl Rover {
     }
 
     fn setup_text(&self, lua_rover: &Table) -> () {
+        let ui = Arc::clone(&self.ui);
+
         let text_lua_fn = self
             .lua
-            .create_function(|lua, tbl: Table| {
+            .create_function(move |lua, tbl: Table| {
                 println!("rover.text() called from Rust with table:");
-                let text_id = self.ui.create_text();
+                let text = ui.create_text();
                 for pair in tbl.pairs::<Value, Value>() {
                     let (key, value) = pair?;
                     println!("{:?} = {:?}", key, value);
                 }
 
-                Ok(Value::String(lua.create_string(&text_id.to_string())?))
+                Ok(Value::String(lua.create_string(&text.get_id())?))
             })
             .expect("Failed to setup internal view function");
 
@@ -94,29 +99,70 @@ impl Rover {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, rc::Rc};
+
     use super::*;
 
-    use crate::ui::{Id, Ui};
+    use crate::ui::{Component, Ui};
 
-    struct Mock {}
+    struct Mock {
+        components: HashMap<String, Rc<dyn Component>>,
+    }
 
-    impl Ui for Mock {
-        fn create_view(&self) -> Id {
-            println!("Called create view");
-            "CREATE_VIEW".into()
-        }
+    #[derive(Debug, Clone)]
+    pub enum MockComponent {
+        View(View),
+        Text(Text),
+    }
 
-        fn create_text(&self) -> Id {
-            println!("Called create text");
-            "CREATE_TEXT".into()
+    impl Component for MockComponent {
+        fn get_id(&self) -> String {
+            match &self {
+                MockComponent::View(_) => "VIEW_ID".into(),
+                MockComponent::Text(_) => "TEXT_ID".into(),
+            }
         }
     }
 
-    static UI: Mock = Mock {};
+    #[derive(Debug, Clone)]
+    pub struct View {}
+
+    #[derive(Debug, Clone)]
+    pub struct Text {}
+    impl Text {}
+
+    impl Mock {
+        pub fn new() -> Mock {
+            Mock {
+                components: HashMap::new(),
+            }
+        }
+    }
+
+    impl Ui for Mock {
+        fn create_view(&self) -> Box<dyn Component> {
+            println!("Called create view");
+            Box::new(MockComponent::View(View {}))
+        }
+
+        fn create_text(&self) -> Box<dyn Component> {
+            println!("Called create text");
+            Box::new(MockComponent::Text(Text {}))
+        }
+
+        fn get_component(&self, id: String) -> &Rc<dyn Component> {
+            self.components.get(&id).expect("Component not found")
+        }
+
+        fn set_component(&mut self, id: String, component: Rc<dyn Component>) -> () {
+            self.components.insert(id, component);
+        }
+    }
 
     #[test]
     fn should_run_rover() -> Result<()> {
-        let rover = Rover::new(&UI);
+        let ui: Mock = Mock::new();
+        let rover = Rover::new(Arc::new(ui));
         rover.start()?;
         Ok(())
     }
