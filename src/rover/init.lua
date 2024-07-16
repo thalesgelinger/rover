@@ -6,6 +6,5 @@ function rover.run()
             "Hello World",
             color = "red",
         },
-        rover.view {}
     }
 end

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use mlua::{Function, Lua, Result, Table, Value};
 
-use crate::ui::Ui;
+use crate::{ui::Ui, utils};
 
 pub struct Rover {
     ui: Arc<dyn Ui>,
@@ -49,23 +49,10 @@ impl Rover {
         let view_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
-                println!("rover.view() called from Rust with table:");
-                let view_id = ui.create_view();
-                for pair in tbl.pairs::<Value, Value>() {
-                    match pair.expect("Expected to have a pair") {
-                        (Value::String(prop), Value::String(value)) => {
-                            println!("Prop, {:?} = {:?}", prop, value);
-                            // view.setProperty(prop, value)
-                        }
+                let params = utils::parse_view_props_children(tbl);
+                let view_id = ui.create_view(params);
 
-                        (Value::Integer(prop), Value::Table(table)) => {
-                            println!("Child, {:?} : {:?}", prop, table);
-                            // view.setChild(prop, value)
-                        }
-                        (a, b) => println!("Not tracked yet, {:?} : {:?}", a, b),
-                    }
-                }
-                Ok(Value::String(lua.create_string(&view_id.get_id())?))
+                Ok(Value::String(lua.create_string(&view_id)?))
             })
             .expect("Failed to setup internal view function");
 
@@ -80,14 +67,10 @@ impl Rover {
         let text_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
-                println!("rover.text() called from Rust with table:");
-                let text = ui.create_text();
-                for pair in tbl.pairs::<Value, Value>() {
-                    let (key, value) = pair?;
-                    println!("{:?} = {:?}", key, value);
-                }
+                let params = utils::parse_text_props_children(tbl);
+                let text_id = ui.create_text(params);
 
-                Ok(Value::String(lua.create_string(&text.get_id())?))
+                Ok(Value::String(lua.create_string(&text_id)?))
             })
             .expect("Failed to setup internal view function");
 
@@ -99,63 +82,66 @@ impl Rover {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, rc::Rc};
+    use std::{cell::RefCell, collections::HashMap};
 
     use super::*;
 
-    use crate::ui::{Component, Ui};
+    use crate::ui::{Id, Params, TextProps, Ui, ViewProps};
 
     struct Mock {
-        components: HashMap<String, Rc<dyn Component>>,
+        components: RefCell<HashMap<String, MockComponent>>,
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     pub enum MockComponent {
         View(View),
         Text(Text),
     }
 
-    impl Component for MockComponent {
-        fn get_id(&self) -> String {
-            match &self {
-                MockComponent::View(_) => "VIEW_ID".into(),
-                MockComponent::Text(_) => "TEXT_ID".into(),
-            }
-        }
+    #[derive(Debug)]
+    pub struct View {
+        props: ViewProps,
+        children: Vec<String>,
     }
 
-    #[derive(Debug, Clone)]
-    pub struct View {}
-
-    #[derive(Debug, Clone)]
-    pub struct Text {}
-    impl Text {}
+    #[derive(Debug)]
+    pub struct Text {
+        props: TextProps,
+        children: Vec<String>,
+    }
 
     impl Mock {
-        pub fn new() -> Mock {
+        pub fn new() -> Self {
             Mock {
-                components: HashMap::new(),
+                components: RefCell::new(HashMap::new()),
             }
         }
     }
 
     impl Ui for Mock {
-        fn create_view(&self) -> Box<dyn Component> {
-            println!("Called create view");
-            Box::new(MockComponent::View(View {}))
+        fn create_view(&self, params: Params<ViewProps>) -> Id {
+            let id = "VIEW_ID".to_string();
+            let view = MockComponent::View(View {
+                props: params.props,
+                children: params.children,
+            });
+
+            println!("{:?}", view);
+            self.components.borrow_mut().insert(id.clone(), view);
+            id
         }
 
-        fn create_text(&self) -> Box<dyn Component> {
-            println!("Called create text");
-            Box::new(MockComponent::Text(Text {}))
-        }
+        fn create_text(&self, params: Params<TextProps>) -> Id {
+            let id = "TEXT_ID".to_string();
+            let text = MockComponent::Text(Text {
+                props: params.props,
+                children: params.children,
+            });
 
-        fn get_component(&self, id: String) -> &Rc<dyn Component> {
-            self.components.get(&id).expect("Component not found")
-        }
+            println!("{:?}", text);
 
-        fn set_component(&mut self, id: String, component: Rc<dyn Component>) -> () {
-            self.components.insert(id, component);
+            self.components.borrow_mut().insert(id.clone(), text);
+            id
         }
     }
 
