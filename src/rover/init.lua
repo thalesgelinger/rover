@@ -1,5 +1,5 @@
 function rover.run()
-    rover.view {
+    return rover.view {
         horizontal = "center",
         vertical = "center",
         rover.text {

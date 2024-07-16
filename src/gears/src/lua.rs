@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use mlua::{Function, Lua, Result, Table, Value};
+use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
 
 use crate::{ui::Ui, utils};
 
@@ -26,12 +26,14 @@ impl Rover {
         self.setup_view(&lua_rover);
         self.setup_text(&lua_rover);
 
-        self.exec(&lua_rover);
+        let main_view_id = self.exec(&lua_rover);
+
+        self.ui.attach_main_view(main_view_id);
 
         Ok(())
     }
 
-    fn exec(&self, lua_rover: &Table) {
+    fn exec(&self, lua_rover: &Table) -> String {
         let script = include_str!("../../rover/init.lua");
         self.lua
             .load(script)
@@ -39,9 +41,10 @@ impl Rover {
             .expect("Fail running rover script");
 
         let run_func: Function = lua_rover.get("run").expect("Missing run function");
-        run_func
-            .call::<(), ()>(())
+        let main_view_id = run_func
+            .call::<(), LuaString>(())
             .expect("Failed running run function");
+        main_view_id.to_str().unwrap().to_string()
     }
 
     fn setup_view(&self, lua_rover: &Table) -> () {
@@ -142,6 +145,10 @@ mod tests {
 
             self.components.borrow_mut().insert(id.clone(), text);
             id
+        }
+
+        fn attach_main_view(&self, main_id: Id) -> () {
+            println!("Main View Id: {}", main_id);
         }
     }
 

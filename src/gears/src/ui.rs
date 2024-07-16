@@ -1,8 +1,9 @@
 pub type Id = String;
 
 pub trait Ui {
-    fn create_view(& self, params: Params<ViewProps>) -> Id;
-    fn create_text(& self, params: Params<TextProps>) -> Id;
+    fn attach_main_view(&self, main_id: Id) -> ();
+    fn create_view(&self, params: Params<ViewProps>) -> Id;
+    fn create_text(&self, params: Params<TextProps>) -> Id;
 }
 
 #[derive(Debug)]
