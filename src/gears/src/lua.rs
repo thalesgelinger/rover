@@ -16,15 +16,12 @@ impl Rover {
     }
 
     pub fn start(&self) -> Result<()> {
-        let lua_rover = self
-            .lua
-            .create_table()
-            .expect("Failed creating rover table");
+        let lua_rover = self.lua.create_table()?;
 
         self.lua.globals().set("rover", &lua_rover)?;
 
-        self.setup_view(&lua_rover);
-        self.setup_text(&lua_rover);
+        self.setup_view(&lua_rover)?;
+        self.setup_text(&lua_rover)?;
 
         let main_view_id = self.exec(&lua_rover);
 
@@ -47,7 +44,7 @@ impl Rover {
         main_view_id.to_str().unwrap().to_string()
     }
 
-    fn setup_view(&self, lua_rover: &Table) -> () {
+    fn setup_view(&self, lua_rover: &Table) -> Result<()> {
         let ui = Arc::clone(&self.ui);
         let view_lua_fn = self
             .lua
@@ -59,12 +56,10 @@ impl Rover {
             })
             .expect("Failed to setup internal view function");
 
-        lua_rover
-            .set("view", view_lua_fn)
-            .expect("Failed setting view function on rover table")
+        lua_rover.set("view", view_lua_fn)
     }
 
-    fn setup_text(&self, lua_rover: &Table) -> () {
+    fn setup_text(&self, lua_rover: &Table) -> Result<()> {
         let ui = Arc::clone(&self.ui);
 
         let text_lua_fn = self
@@ -77,15 +72,15 @@ impl Rover {
             })
             .expect("Failed to setup internal view function");
 
-        lua_rover
-            .set("text", text_lua_fn)
-            .expect("Failed setting view function on rover table")
+        lua_rover.set("text", text_lua_fn)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, collections::HashMap};
+
+    use uuid::Uuid;
 
     use super::*;
 
@@ -123,7 +118,7 @@ mod tests {
 
     impl Ui for Mock {
         fn create_view(&self, params: Params<ViewProps>) -> Id {
-            let id = "VIEW_ID".to_string();
+            let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
             let view = MockComponent::View(View {
                 props: params.props,
                 children: params.children,
@@ -135,7 +130,7 @@ mod tests {
         }
 
         fn create_text(&self, params: Params<TextProps>) -> Id {
-            let id = "TEXT_ID".to_string();
+            let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
             let text = MockComponent::Text(Text {
                 props: params.props,
                 children: params.children,

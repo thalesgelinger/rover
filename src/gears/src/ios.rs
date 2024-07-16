@@ -1,9 +1,10 @@
-use std::{borrow::Borrow, cell::RefCell, collections::HashMap, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, ffi::c_char, sync::Arc};
 
 use objc2::{
-    msg_send,
+    class, msg_send,
     runtime::{AnyClass, NSObject},
 };
+use uuid::Uuid;
 
 use crate::{
     lua::Rover,
@@ -32,15 +33,16 @@ impl Ios {
     fn add_subview(&self, view: *mut NSObject, child: &IosComponent) -> () {
         match child {
             IosComponent::View(subview) => unsafe {
-                let _: () = msg_send![view, addSubview: subview];
+                let _: () = msg_send![view, addSubview: *subview];
             },
             IosComponent::Text(text) => unsafe {
-                let _: () = msg_send![view, addSubview: text];
+                let _: () = msg_send![view, addSubview: *text];
             },
-        }
+        };
     }
 }
 
+#[derive(Debug)]
 enum IosComponent {
     View(*mut NSObject),
     Text(*mut NSObject),
@@ -55,12 +57,12 @@ impl Ui for Ios {
     }
 
     fn create_view(&self, params: Params<ViewProps>) -> Id {
-        let id = "VIEW_ID".to_string();
+        let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
 
         unsafe {
             let gears_ios = AnyClass::get("RoverIos.Gears").expect("Class Gears not found");
 
-            let view = msg_send![gears_ios, createView: self.view];
+            let view = msg_send![gears_ios, createView];
             for child_id in params.children {
                 let components = self.components.borrow();
                 let child = components
@@ -78,23 +80,19 @@ impl Ui for Ios {
     }
 
     fn create_text(&self, params: Params<TextProps>) -> Id {
-        let id = "TEXT_ID".to_string();
+        let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
 
         unsafe {
             let gears_ios = AnyClass::get("RoverIos.Gears").expect("Class Gears not found");
 
-            let text = msg_send![gears_ios, createText: self.view];
-            for child_id in params.children {
-                let components = self.components.borrow();
-                let child = components
-                    .get(&child_id)
-                    .expect("Expected component to exist");
-                self.add_subview(text, child);
-            }
+            let text = params.children.join("\n");
+            let ns_string: *mut NSObject =
+                msg_send![class!(NSString), stringWithUTF8String: text.as_ptr() as *const i8];
+            let text_view = msg_send![gears_ios, createTextView: ns_string];
 
             self.components
                 .borrow_mut()
-                .insert(id.clone(), IosComponent::Text(text));
+                .insert(id.clone(), IosComponent::Text(text_view));
         }
 
         id
