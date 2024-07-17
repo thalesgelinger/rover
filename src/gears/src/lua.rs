@@ -119,6 +119,7 @@ mod tests {
     impl Ui for Mock {
         fn create_view(&self, params: Params<ViewProps>) -> Id {
             let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
+            println!("Props: {:?}", &params.props.to_json());
             let view = MockComponent::View(View {
                 props: params.props,
                 children: params.children,

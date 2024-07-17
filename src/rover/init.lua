@@ -1,10 +1,15 @@
 function rover.run()
     return rover.view {
-        horizontal = "center",
-        vertical = "center",
+        height = "100",
+        width = "full",
+        color = "#0000ff",
         rover.text {
             "Hello World",
-            color = "red",
+        },
+        rover.view {
+            height = "50",
+            width = "50",
+            color = "#ff0000"
         },
     }
 end

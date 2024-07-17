@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, ffi::c_char, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, ffi::CString, sync::Arc};
 
 use objc2::{
     class, msg_send,
@@ -62,12 +62,18 @@ impl Ui for Ios {
         unsafe {
             let gears_ios = AnyClass::get("RoverIos.Gears").expect("Class Gears not found");
 
-            let view = msg_send![gears_ios, createView];
+            let props = params.props.to_json();
+
+            let ns_string: *mut NSObject =
+                msg_send![class!(NSString), stringWithUTF8String: props.as_ptr() as *const i8];
+
+            let view = msg_send![gears_ios, createView: ns_string];
             for child_id in params.children {
                 let components = self.components.borrow();
                 let child = components
                     .get(&child_id)
                     .expect("Expected component to exist");
+                print!("Child {:?}", child);
                 self.add_subview(view, child);
             }
 

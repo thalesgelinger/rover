@@ -1,6 +1,6 @@
 use mlua::{Table, Value};
 
-use crate::ui::{HorizontalAlignement, Params, TextProps, VerticalAlignement, ViewProps};
+use crate::ui::{HorizontalAlignement, Params, Size, TextProps, VerticalAlignement, ViewProps};
 
 pub fn parse_view_props_children(tbl: Table) -> Params<ViewProps> {
     let mut params = Params::new(ViewProps::new());
@@ -21,6 +21,24 @@ pub fn parse_view_props_children(tbl: Table) -> Params<ViewProps> {
                     _ => panic!("Unexpected property value"),
                 },
                 b"color" => params.props.color = Some(value.to_str().unwrap().to_string()),
+                b"height" => match value.as_bytes() {
+                    b"full" => params.props.height = Some(Size::Full),
+                    bytes => {
+                        let number_str = std::str::from_utf8(bytes).unwrap();
+                        if let Ok(number) = number_str.parse::<usize>() {
+                            params.props.height = Some(Size::Value(number));
+                        }
+                    }
+                },
+                b"width" => match value.as_bytes() {
+                    b"full" => params.props.width = Some(Size::Full),
+                    bytes => {
+                        let number_str = std::str::from_utf8(bytes).unwrap();
+                        if let Ok(number) = number_str.parse::<usize>() {
+                            params.props.width = Some(Size::Value(number));
+                        }
+                    }
+                },
                 _ => panic!("Unexpected property"),
             },
             (Value::Integer(_), Value::String(child_id)) => {
