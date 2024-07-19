@@ -14,8 +14,7 @@ open class RoverAndroidActivity: AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val mainView = Gears.start(this)
-        setContentView(mainView)
+        Gears.start(this)
     }
 }
 

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, ffi::CString, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 use objc2::{
     class, msg_send,
@@ -13,8 +13,8 @@ use crate::{
 
 #[no_mangle]
 pub extern "C" fn start(view: *mut NSObject) {
-    let ios = Ios::new(view);
-    let rover = Rover::new(Arc::new(ios));
+    let ios = Arc::new(Ios::new(view));
+    let rover = Rover::new(ios);
     rover.start().expect("Failed running Rover");
 }
 

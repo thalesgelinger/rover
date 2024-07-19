@@ -4,12 +4,12 @@ function rover.run()
         width = "full",
         color = "#0000ff",
         rover.text {
-            "Hello World",
+            "Hello Rover",
         },
-        rover.view {
-            height = "50",
-            width = "50",
-            color = "#ff0000"
-        },
+        -- rover.view {
+        --     height = "50",
+        --     width = "50",
+        --     color = "#00ff00"
+        -- },
     }
 end

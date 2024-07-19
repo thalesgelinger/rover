@@ -1,5 +1,6 @@
 package com.rovernative.roverandroid
 
+import android.app.Activity
 import android.content.Context
 import android.util.Log
 import android.view.Gravity
@@ -18,40 +19,23 @@ object Gears {
         }
     }
 
-    external fun start(context: Context): View
+    external fun start(context: Context)
 
-    external fun greeting(string: String): String
 
-    fun createView(context: Context): RelativeLayout {
+    fun createView(context: Activity): View {
         val containerView = RelativeLayout(context)
 
-        val textView = createTextView(context)
-
-        containerView.addView(textView)
-
-        val layoutParams = RelativeLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        layoutParams.addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
-        textView.layoutParams = layoutParams
         return containerView
     }
 
-    fun createTextView(context: Context): TextView {
+    fun createTextView(context: Activity): TextView {
 
         val textView = TextView(context)
 
-        textView.text = greeting("Rover")
+        textView.text = "Rover"
 
         textView.textSize = 20f
         textView.gravity = Gravity.CENTER
-
-        val layoutParams = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        textView.layoutParams = layoutParams
 
         return textView
     }
