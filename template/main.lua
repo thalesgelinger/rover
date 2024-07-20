@@ -1,14 +1,15 @@
-local header = require "header"
-
 function rover.run()
-    rover.view {
-        horizontal = "center",
-        vertical = "center",
+    return rover.view {
+        height = "100",
+        width = "full",
+        color = "#0000ff",
         rover.text {
-            "Hello World"
+            "Hello Rover",
         },
-        header {
-            text = "Hello",
-        }
+        rover.view {
+            height = "50",
+            width = "50",
+            color = "#00ff00"
+        },
     }
 end

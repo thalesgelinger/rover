@@ -1,6 +1,8 @@
 package com.rovernative.roverandroid
 
+import android.app.Activity
 import android.content.Context
+import android.graphics.Color
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -18,40 +20,50 @@ object Gears {
         }
     }
 
-    external fun start(context: Context): View
+    external fun start(context: Context)
 
-    external fun greeting(string: String): String
 
-    fun createView(context: Context): RelativeLayout {
+    fun createView(context: Activity, props: String): View {
+        val viewProps = parseProps(props)
+
         val containerView = RelativeLayout(context)
 
-        val textView = createTextView(context)
+        val width = when (viewProps.width) {
+            is Size.Value -> dpToPx(context, viewProps.width.size)
+            is Size.Full -> ViewGroup.LayoutParams.MATCH_PARENT
+            else -> ViewGroup.LayoutParams.WRAP_CONTENT
+        }
 
-        containerView.addView(textView)
+        val height = when (viewProps.height) {
+            is Size.Value -> dpToPx(context, viewProps.height.size)
+            is Size.Full -> ViewGroup.LayoutParams.MATCH_PARENT
+            else -> ViewGroup.LayoutParams.WRAP_CONTENT
+        }
 
-        val layoutParams = RelativeLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        layoutParams.addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE)
-        textView.layoutParams = layoutParams
+        val layoutParams = RelativeLayout.LayoutParams(width, height)
+        containerView.layoutParams = layoutParams
+
+        viewProps.color?.let { colorString ->
+            try {
+                val color = Color.parseColor(colorString)
+                containerView.setBackgroundColor(color)
+            } catch (e: IllegalArgumentException) {
+                // Handle the case where the color string is invalid
+                e.printStackTrace()
+            }
+        }
+
         return containerView
     }
 
-    fun createTextView(context: Context): TextView {
+    fun createTextView(context: Activity, text: String): TextView {
 
         val textView = TextView(context)
 
-        textView.text = greeting("Rover")
+        textView.text = text
 
         textView.textSize = 20f
         textView.gravity = Gravity.CENTER
-
-        val layoutParams = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
-        textView.layoutParams = layoutParams
 
         return textView
     }

@@ -10,25 +10,31 @@ import Foundation
 import UIKit
 
 @objc public class Gears: NSObject {
-    @objc public static func createView(_ view: UIView) {
+    @objc public static func createView(_ props: String) -> UIView {
+        print(props)
+        let containerView = UIView()
+        let viewProps = ViewProps.fromJSON(props)
+        if viewProps == nil {
+            return containerView
+        }
         
-        let containerView = UIView(frame: view.bounds)
-        containerView.backgroundColor = .white
-        view.addSubview(containerView)
+        let width = Utils.getWidthValue(viewProps!.width)
+        let height = Utils.getHeightValue(viewProps!.height)
 
-        createTextView(view)
+        containerView.frame = CGRect(origin: .zero, size: CGSize(
+            width: width,
+            height:height))
+        
+        let color = UIColor(hex: viewProps!.color ?? "#FFFFFF")
+        containerView.backgroundColor = color
+        return containerView
     }
-
-    @objc public static func createTextView(_ parent: UIView) {
-        let label = UILabel(frame: .zero)
-        
-        label.text = "Rover Test"
-        
+    
+    @objc public static func createTextView(_ text: String) -> UILabel {
+        let label = UILabel()
+        label.text = text
         label.textAlignment = .center
-
         label.sizeToFit()
-
-        label.center = parent.center
-        parent.addSubview(label)
+        return label
     }
 }
