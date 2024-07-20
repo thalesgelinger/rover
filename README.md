@@ -2,30 +2,21 @@
 Build mobile apps with the best interpreted language ever Lua #BrazilMentioned
 
 ```lua
-local ui = require "rover.ui"
-
-function App()
-    ui.view {
-        mainAxisAlignment = "center",
-        crossAxisAlignment = "center",
-        ui.text {
-            "Hello World"
-        },
-        ui.button {
-            "Click Me",
-            onClick = function()
-                print "I came from the moon BTW"
-            end
+function rover.run()
+    return rover.view {
+        height = "100",
+        width = "full",
+        color = "#0000ff",
+        rover.text {
+            "Hello Rover",
         }
     }
 end
-
-return App
 ```
 
 # The goal
 
-the goal is to be able to make at least a View with a text inside, using lua tagle to design views
+the goal is to be able to make at least a View with a text inside, using lua table to design views
 
 # How i plan to do that?
 
