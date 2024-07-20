@@ -121,7 +121,7 @@ impl Ui for Android {
         let mut env = self.env.borrow_mut();
         env.log_info("CREATING VIEW");
 
-        let props = match env.new_string("Hey") {
+        let props = match env.new_string(params.props.to_json()) {
             Ok(value) => value,
             Err(_) => {
                 env.log_error("Error creating text string:");

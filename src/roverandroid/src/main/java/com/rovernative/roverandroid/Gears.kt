@@ -2,6 +2,7 @@ package com.rovernative.roverandroid
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Color
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -23,10 +24,35 @@ object Gears {
 
 
     fun createView(context: Activity, props: String): View {
-
-        Log.i("CREATE VIEW", props)
+        val viewProps = parseProps(props)
 
         val containerView = RelativeLayout(context)
+
+        val width = when (viewProps.width) {
+            is Size.Value -> dpToPx(context, viewProps.width.size)
+            is Size.Full -> ViewGroup.LayoutParams.MATCH_PARENT
+            else -> ViewGroup.LayoutParams.WRAP_CONTENT
+        }
+
+        val height = when (viewProps.height) {
+            is Size.Value -> dpToPx(context, viewProps.height.size)
+            is Size.Full -> ViewGroup.LayoutParams.MATCH_PARENT
+            else -> ViewGroup.LayoutParams.WRAP_CONTENT
+        }
+
+        val layoutParams = RelativeLayout.LayoutParams(width, height)
+        containerView.layoutParams = layoutParams
+
+        viewProps.color?.let { colorString ->
+            try {
+                val color = Color.parseColor(colorString)
+                containerView.setBackgroundColor(color)
+            } catch (e: IllegalArgumentException) {
+                // Handle the case where the color string is invalid
+                e.printStackTrace()
+            }
+        }
+
         return containerView
     }
 

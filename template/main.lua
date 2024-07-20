@@ -6,10 +6,10 @@ function rover.run()
         rover.text {
             "Hello Rover",
         },
-        -- rover.view {
-        --     height = "50",
-        --     width = "50",
-        --     color = "#00ff00"
-        -- },
+        rover.view {
+            height = "50",
+            width = "50",
+            color = "#00ff00"
+        },
     }
 end
