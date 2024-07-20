@@ -164,18 +164,30 @@ impl Ui for Android {
         id
     }
 
-    fn create_text(&self, _params: Params<TextProps>) -> Id {
+    fn create_text(&self, params: Params<TextProps>) -> Id {
         let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
-        self.env.borrow_mut().log_info("CREATING TEXT");
+        let mut env = self.env.borrow_mut();
+        env.log_info("CREATING TEXT");
 
-        let result = self
-            .env
-            .borrow_mut()
+        let text = &params.children.join("\n");
+
+        let jstring = match env.new_string(text) {
+            Ok(value) => value,
+            Err(_) => {
+                env.log_error("Error creating text string:");
+                panic!("");
+            }
+        };
+
+        let result = env
             .call_method(
                 self.gears_android.clone(),
                 "createTextView",
-                "(Landroid/app/Activity;)Landroid/widget/TextView;",
-                &[JValue::Object(&self.context.borrow())],
+                "(Landroid/app/Activity;Ljava/lang/String;)Landroid/widget/TextView;",
+                &[
+                    JValue::Object(&self.context.borrow()),
+                    JValue::Object(&jstring),
+                ],
             )
             .expect("Failed creating view")
             .l()
@@ -185,7 +197,7 @@ impl Ui for Android {
             .borrow_mut()
             .insert(id.clone(), AndroidComponent::Text(result));
 
-        self.env.borrow_mut().log_info("TEXT CREATED");
+        env.log_info("TEXT CREATED");
         id
     }
 }

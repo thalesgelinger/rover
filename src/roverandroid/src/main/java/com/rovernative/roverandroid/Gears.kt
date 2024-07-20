@@ -28,11 +28,11 @@ object Gears {
         return containerView
     }
 
-    fun createTextView(context: Activity): TextView {
+    fun createTextView(context: Activity, text: String): TextView {
 
         val textView = TextView(context)
 
-        textView.text = "Rover"
+        textView.text = text
 
         textView.textSize = 20f
         textView.gravity = Gravity.CENTER
