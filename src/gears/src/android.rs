@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jni::objects::{JClass, JObject, JValue};
+use jni::objects::{JClass, JObject, JValue, JValueOwned};
 use jni::JNIEnv;
 use uuid::Uuid;
 
@@ -70,32 +70,21 @@ impl Android {
             gears_android,
         }
     }
-
-    fn add_subview(&self, parent: &JObject<'static>, child: &AndroidComponent) -> () {
-        self.env.borrow_mut().log_info("ADDING SUBVIEW");
-        match child {
-            AndroidComponent::View(view) => {
-                self.env.borrow_mut().log_info("ADDING SUBVIEW: VIEW");
-                self.env
-                    .borrow_mut()
-                    .call_method(parent, "addView", "(Landroid/view/View;)V", &[view.into()])
-                    .expect("Error in an attempt to call setContentView from rover");
-            }
-            AndroidComponent::Text(text) => {
-                self.env.borrow_mut().log_info("ADDING SUBVIEW: TEXT");
-                self.env
-                    .borrow_mut()
-                    .call_method(parent, "addView", "(Landroid/view/View;)V", &[text.into()])
-                    .expect("Error in an attempt to call setContentView from rover");
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
 enum AndroidComponent {
     View(JObject<'static>),
     Text(JObject<'static>),
+}
+
+impl AndroidComponent {
+    pub fn get_j_object(&self) -> Rc<&JObject<'static>> {
+        match self {
+            AndroidComponent::View(view) => Rc::new(view),
+            AndroidComponent::Text(text) => Rc::new(text),
+        }
+    }
 }
 
 impl Ui for Android {
@@ -129,16 +118,28 @@ impl Ui for Android {
 
     fn create_view(&self, params: Params<ViewProps>) -> Id {
         let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
-        self.env.borrow_mut().log_info("CREATING VIEW");
+        let mut env = self.env.borrow_mut();
+        env.log_info("CREATING VIEW");
 
-        let result = self
-            .env
-            .borrow_mut()
+        let props = match env.new_string("Hey") {
+            Ok(value) => value,
+            Err(_) => {
+                env.log_error("Error creating text string:");
+                panic!("Error creating text");
+            }
+        };
+
+        env.log_info("Props Created");
+
+        let result = env
             .call_method(
                 self.gears_android.clone(),
                 "createView",
-                "(Landroid/app/Activity;)Landroid/view/View;",
-                &[JValue::Object(&self.context.borrow())],
+                "(Landroid/app/Activity;Ljava/lang/String;)Landroid/view/View;",
+                &[
+                    JValue::Object(&self.context.borrow()),
+                    JValue::Object(&props),
+                ],
             )
             .expect("Failed creating view")
             .l()
@@ -150,16 +151,24 @@ impl Ui for Android {
                 .get(&child_id)
                 .expect("Expected component to exist");
 
-            self.env.borrow_mut().log_info("ADDING CHILD");
+            env.log_info("ADDING CHILD");
 
-            self.add_subview(&result, child);
+            if let Err(_) = env.call_method(
+                result.as_ref(),
+                "addView",
+                "(Landroid/view/View;)V",
+                &[JValue::Object(child.get_j_object().as_ref())],
+            ) {
+                env.log_error("Failed to add view child")
+            }
         }
+        env.log_info("CHILDREN ADDED");
 
         self.components
             .borrow_mut()
             .insert(id.clone(), AndroidComponent::View(result));
 
-        self.env.borrow_mut().log_info("VIEW CREATED");
+        env.log_info("VIEW CREATED");
 
         id
     }
@@ -244,7 +253,6 @@ impl Log for JNIEnv<'static> {
     }
 }
 
-#[warn(dead_code)]
 trait Log {
     fn log_info(&mut self, msg: &str) -> ();
 

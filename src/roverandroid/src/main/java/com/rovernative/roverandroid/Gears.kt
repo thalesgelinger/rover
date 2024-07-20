@@ -22,9 +22,11 @@ object Gears {
     external fun start(context: Context)
 
 
-    fun createView(context: Activity): View {
-        val containerView = RelativeLayout(context)
+    fun createView(context: Activity, props: String): View {
 
+        Log.i("CREATE VIEW", props)
+
+        val containerView = RelativeLayout(context)
         return containerView
     }
 
