@@ -13,9 +13,10 @@ use crate::{
 
 #[no_mangle]
 pub extern "C" fn start(view: *mut NSObject) {
+    let lua_path = "../../../template/main.lua";
     let ios = Arc::new(Ios::new(view));
     let rover = Rover::new(ios);
-    rover.start().expect("Failed running Rover");
+    rover.start(lua_path).expect("Failed running Rover");
 }
 
 struct Ios {

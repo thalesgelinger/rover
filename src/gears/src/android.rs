@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jni::objects::{JClass, JObject, JValue, JValueOwned};
+use jni::objects::{JClass, JObject, JValue};
+use jni::sys::jint;
 use jni::JNIEnv;
 use uuid::Uuid;
 
@@ -15,11 +17,22 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
     mut env: JNIEnv<'static>,
     _: JClass,
     context: JObject<'static>,
-) {
+) -> jint {
     env.log_info("ROVER STARTED");
+    let lua_path = "../../../template/main.lua";
+
+    if !fs::metadata(lua_path).is_ok() {
+        let _ = env.throw_new(
+            "java/lang/Exception",
+            format!("Lua script not found at path: {}", lua_path),
+        );
+        return -1;
+    }
+
     let android = Arc::new(Android::new(context, env));
     let rover = Rover::new(android);
-    rover.start().expect("Failed running Rover");
+    rover.start(lua_path).expect("Failed to start rover");
+    0
 }
 
 struct Android {
