@@ -1,6 +1,8 @@
 use clap::Command;
 use serde::Deserialize;
-use std::fs;
+use std::error::Error;
+use std::{env, fs};
+use warp::Filter;
 
 #[derive(Debug, Deserialize)]
 struct Package {
@@ -14,7 +16,8 @@ struct Config {
     package: Package,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let matches = Command::new("myapp")
         .version("1.0")
         .about("Does awesome things")
@@ -27,21 +30,35 @@ fn main() {
     match matches.subcommand() {
         Some(("init", _)) => {
             println!("Creating Project");
+            Ok(())
         }
-        Some(("run", _)) => {
-            let rover_toml = "Rover.toml";
-
-            if fs::metadata(rover_toml).is_err() {
-                panic!("Rover.toml not found");
-            }
-            let contents = fs::read_to_string(rover_toml).expect("Failed to read Rover.toml");
-
-            let config: Config = toml::from_str(&contents).expect("Failed to parse Rover.toml");
-
-            println!("Package Name: {}", config.package.name);
-            println!("Version: {}", config.package.version);
-            println!("Main: {}", config.package.main);
+        Some(("run", _)) => run_dev().await,
+        _ => {
+            eprintln!("No valid subcommand was used");
+            Ok(())
         }
-        _ => eprintln!("No valid subcommand was used"),
     }
+}
+
+async fn run_dev() -> Result<(), Box<dyn Error>> {
+    let rover_toml = "Rover.toml";
+
+    if fs::metadata(rover_toml).is_err() {
+        panic!("Rover.toml not found");
+    }
+    let contents = fs::read_to_string(rover_toml).expect("Failed to read Rover.toml");
+
+    let config: Config = toml::from_str(&contents).expect("Failed to parse Rover.toml");
+
+    println!("Package Name: {}", config.package.name);
+    println!("Version: {}", config.package.version);
+    println!("Main: {}", config.package.main);
+
+    let project_path = env::current_dir()?;
+
+    let route = warp::path("rover").and(warp::fs::dir(project_path));
+
+    warp::serve(route).run(([127, 0, 0, 1], 4242)).await;
+    println!("Dev server running at: 4242");
+    Ok(())
 }
