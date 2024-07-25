@@ -31,7 +31,7 @@ impl Rover {
     }
 
     fn exec(&self, lua_rover: &Table) -> String {
-        let script = include_str!("../../../template/lib/main.lua");
+        let script = include_str!("../../../template/lib/main.luau");
         self.lua
             .load(script)
             .exec()

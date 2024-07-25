@@ -1,22 +1,39 @@
-// THIS IS JUST A TEST FILE SHOULD BE DELETED LATER
-use reqwest::Error;
+use std::io::{self, Read, Write};
+use std::net::TcpStream;
+use std::thread;
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    // Define the URL of the file server
-    let url = "http://127.0.0.1:4242/rover/lib/main.lua"; // Replace with your actual file path
+fn main() -> std::io::Result<()> {
+    let mut stream = TcpStream::connect("127.0.0.1:7878")?;
+    println!("Connected to the server");
 
-    // Send the GET request
-    let response = reqwest::get(url).await?;
+    // Spawn a thread to handle reading from the server
+    let mut read_stream = stream.try_clone()?;
+    thread::spawn(move || {
+        let mut buffer = [0; 512];
+        loop {
+            match read_stream.read(&mut buffer) {
+                Ok(0) => {
+                    println!("Connection closed by server");
+                    break;
+                }
+                Ok(n) => {
+                    println!("Received: {}", String::from_utf8_lossy(&buffer[..n]));
+                }
+                Err(e) => {
+                    eprintln!("Failed to read from server: {}", e);
+                    break;
+                }
+            }
+        }
+    });
 
-    // Ensure the request was successful
-    if response.status().is_success() {
-        // Read the response body as text
-        let content = response.text().await?;
-        println!("File content: {}", content);
-    } else {
-        println!("Failed to fetch the file: {}", response.status());
+    // Main thread to handle writing to the server
+    let stdin = io::stdin();
+    for line in &stdin.lock().lines() {
+        let line = line?;
+        stream.write_all(line.as_bytes())?;
     }
 
     Ok(())
 }
+
