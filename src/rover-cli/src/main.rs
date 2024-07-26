@@ -2,9 +2,10 @@ use clap::Command;
 use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecursiveMode, Result, Watcher};
 use serde::Deserialize;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::str::Bytes;
 use std::{env, fs, thread};
 
 #[derive(Debug, Deserialize)]
@@ -55,17 +56,14 @@ fn run_dev() -> Result<()> {
     println!("Version: {}", config.package.version);
     println!("Main: {}", config.package.main);
 
-    let project_path = env::current_dir()?;
-
     let listener = TcpListener::bind("127.0.0.1:4242")?;
     println!("Server listening on port 4242");
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let project_path = project_path.clone();
                 thread::spawn(move || {
-                    let _ = handle_client(stream, project_path);
+                    let _ = handle_client(stream);
                 });
             }
             Err(e) => {
@@ -79,27 +77,58 @@ fn run_dev() -> Result<()> {
     }
 }
 
-fn handle_client(mut stream: TcpStream, project_path: PathBuf) -> Result<()> {
+fn handle_client(mut stream: TcpStream) -> Result<()> {
     println!("New connection: {}", stream.peer_addr()?);
 
     let _ = stream.write_all("CONNECTED\n".as_bytes());
 
+    let project_path = env::current_dir().expect("Failed to get current dir");
+
     let mut watcher = notify::recommended_watcher(move |res: Result<Event>| match res {
-        Ok(event) => match event.kind {
-            EventKind::Modify(modify) => match modify {
-                ModifyKind::Data(_) => {
-                    println!("DATA CHANGED: {:?}", modify);
+        Ok(event) => {
+            if let Some(path) = event.paths.first() {
+                if path.extension().map_or(false, |ext| ext == "lua") {
+                    match event.kind {
+                        EventKind::Create(_) => {
+                            let project_path =
+                                env::current_dir().expect("Failed to get current dir");
+                            let full_file_path =
+                                event.paths.first().expect("Failed to get file path");
 
-                    let value = "FILE CHANGED\n";
+                            let file_path = full_file_path
+                                .strip_prefix(project_path)
+                                .expect("Failed to strip file prefix")
+                                .to_str();
 
-                    if let Err(e) = stream.write_all(value.as_bytes()) {
-                        eprintln!("Failed to write to socket: {}", e);
+                            let value = format!("FILE NAME: {}\n", file_path.unwrap());
+
+                            if let Err(e) = stream.write_all(value.as_bytes()) {
+                                eprintln!("Failed to write to socket: {}", e);
+                            }
+
+                            let file = fs::read(full_file_path).unwrap();
+
+                            if let Err(e) = stream.write_all(&file) {
+                                eprintln!("Failed to write to socket: {}", e);
+                            }
+                        }
+                        // EventKind::Modify(modify) => match modify {
+                        //     ModifyKind::Data(_) => {
+                        //         println!("DATA CHANGED: {:?}", file_path);
+                        //         let file = fs::read(file_path.unwrap()).unwrap();
+
+                        //         if let Err(e) = stream.write_all(&file) {
+                        //             eprintln!("Failed to write to socket: {}", e);
+                        //         }
+                        //         file_path = None;
+                        //     }
+                        //     _ => (),
+                        // },
+                        _ => println!("MODIFY EVENT: {:?}", event),
                     }
                 }
-                _ => (),
-            },
-            _ => (),
-        },
+            }
+        }
         Err(e) => println!("watch error: {:?}", e),
     })?;
 
