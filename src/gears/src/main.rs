@@ -1,37 +1,34 @@
-use std::io::{self, Read, Write};
-use std::net::TcpStream;
-use std::thread;
+use std::{
+    io::{self, Read},
+    net::TcpStream,
+};
 
-fn main() -> std::io::Result<()> {
-    let mut stream = TcpStream::connect("127.0.0.1:7878")?;
-    println!("Connected to the server");
+fn main() -> io::Result<()> {
+    let mut stream = TcpStream::connect("127.0.0.1:4242")?;
 
-    // Spawn a thread to handle reading from the server
-    let mut read_stream = stream.try_clone()?;
-    thread::spawn(move || {
-        let mut buffer = [0; 512];
-        loop {
-            match read_stream.read(&mut buffer) {
-                Ok(0) => {
-                    println!("Connection closed by server");
-                    break;
-                }
-                Ok(n) => {
-                    println!("Received: {}", String::from_utf8_lossy(&buffer[..n]));
-                }
-                Err(e) => {
-                    eprintln!("Failed to read from server: {}", e);
-                    break;
+    println!("Connected to the server. Listening for incoming messages...");
+
+    let mut buffer = [0; 512];
+
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                println!("Connection closed by the server.");
+                break;
+            }
+            Ok(n) => {
+                let received_data = &buffer[..n];
+                if let Ok(text) = std::str::from_utf8(received_data) {
+                    println!("Received: {}", text);
+                } else {
+                    println!("Received (binary data): {:?}", received_data);
                 }
             }
+            Err(e) => {
+                eprintln!("Failed to read from the connection: {}", e);
+                break;
+            }
         }
-    });
-
-    // Main thread to handle writing to the server
-    let stdin = io::stdin();
-    for line in &stdin.lock().lines() {
-        let line = line?;
-        stream.write_all(line.as_bytes())?;
     }
 
     Ok(())

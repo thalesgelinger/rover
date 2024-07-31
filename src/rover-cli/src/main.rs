@@ -1,11 +1,8 @@
 use clap::Command;
-use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecursiveMode, Result, Watcher};
 use serde::Deserialize;
-use std::fs::File;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
-use std::str::Bytes;
 use std::{env, fs, thread};
 
 #[derive(Debug, Deserialize)]
@@ -21,7 +18,7 @@ struct RoverConfig {
 }
 
 fn main() -> Result<()> {
-    let matches = Command::new("myapp")
+    let matches = Command::new("rover")
         .version("1.0")
         .about("Does awesome things")
         .subcommand(Command::new("init").about("Create new rover project"))
@@ -98,17 +95,14 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
                             let file_path = full_file_path
                                 .strip_prefix(project_path)
                                 .expect("Failed to strip file prefix")
-                                .to_str();
-
-                            let value = format!("FILE NAME: {}\n", file_path.unwrap());
-
-                            if let Err(e) = stream.write_all(value.as_bytes()) {
-                                eprintln!("Failed to write to socket: {}", e);
-                            }
+                                .to_str()
+                                .unwrap()
+                                .as_bytes();
 
                             let file = fs::read(full_file_path).unwrap();
+                            let data = [file_path, "$$".as_bytes(), &file].concat();
 
-                            if let Err(e) = stream.write_all(&file) {
+                            if let Err(e) = stream.write_all(&data) {
                                 eprintln!("Failed to write to socket: {}", e);
                             }
                         }
