@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::{env, fs, thread};
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +49,8 @@ fn run_dev() -> Result<()> {
 
     let contents = fs::read_to_string(rover_toml).expect("Failed to read Rover.toml");
 
-    let config: RoverConfig = toml::from_str(&contents).expect("Failed to parse Rover.toml");
+    let config: Arc<RoverConfig> =
+        Arc::new(toml::from_str(&contents).expect("Failed to parse Rover.toml"));
 
     println!("Package Name: {}", config.package.name);
     println!("Version: {}", config.package.version);
@@ -60,8 +62,9 @@ fn run_dev() -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                let config = Arc::clone(&config);
                 thread::spawn(move || {
-                    let _ = handle_client(stream);
+                    let _ = handle_client(&config.package.name, stream);
                 });
             }
             Err(e) => {
@@ -75,13 +78,12 @@ fn run_dev() -> Result<()> {
     }
 }
 
-fn handle_client(mut stream: TcpStream) -> Result<()> {
+fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
     println!("New connection: {}", stream.peer_addr()?);
 
-    let _ = stream.write_all("CONNECTED\n".as_bytes());
     let project_path = env::current_dir().expect("Failed to get current dir");
+    let _ = stream.write_all(format!("##{}##\n", package_name).as_bytes());
 
-    // Send all existing .lua files to the client
     send_lua_files(&project_path, &project_path, &mut stream)?;
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event>| match res {
