@@ -3,6 +3,7 @@ use notify::{Event, EventKind, RecursiveMode, Result, Watcher};
 use serde::Deserialize;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::{env, fs, thread};
 
 #[derive(Debug, Deserialize)]
@@ -78,8 +79,10 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
     println!("New connection: {}", stream.peer_addr()?);
 
     let _ = stream.write_all("CONNECTED\n".as_bytes());
-
     let project_path = env::current_dir().expect("Failed to get current dir");
+
+    // Send all existing .lua files to the client
+    send_lua_files(&project_path, &project_path, &mut stream)?;
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event>| match res {
         Ok(event) => {
@@ -100,25 +103,13 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
                                 .as_bytes();
 
                             let file = fs::read(full_file_path).unwrap();
-                            let data = [file_path, "$$".as_bytes(), &file].concat();
+                            let data = [file_path, b"$$", &file].concat();
 
                             if let Err(e) = stream.write_all(&data) {
                                 eprintln!("Failed to write to socket: {}", e);
                             }
                         }
-                        // EventKind::Modify(modify) => match modify {
-                        //     ModifyKind::Data(_) => {
-                        //         println!("DATA CHANGED: {:?}", file_path);
-                        //         let file = fs::read(file_path.unwrap()).unwrap();
-
-                        //         if let Err(e) = stream.write_all(&file) {
-                        //             eprintln!("Failed to write to socket: {}", e);
-                        //         }
-                        //         file_path = None;
-                        //     }
-                        //     _ => (),
-                        // },
-                        _ => println!("MODIFY EVENT: {:?}", event),
+                        _ => (),
                     }
                 }
             }
@@ -133,4 +124,32 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
     loop {
         thread::park();
     }
+}
+
+fn send_lua_files<P: AsRef<Path>>(
+    project_path: &PathBuf,
+    dir: P,
+    stream: &mut TcpStream,
+) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Recursively handle directories
+            send_lua_files(project_path, &path, stream)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("lua") {
+            // Read the .lua file and send it
+            let file = fs::read(&path)?;
+            let relative_path = path
+                .strip_prefix(&project_path)
+                .expect("Failed to strip prefix");
+            if let Some(relative_path_str) = relative_path.to_str() {
+                let data = [relative_path_str.as_bytes(), b"$$", &file].concat();
+
+                stream.write_all(&data)?;
+            }
+        }
+    }
+    Ok(())
 }
