@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jni::objects::{JClass, JObject, JValue, JValueOwned};
+use jni::objects::{JClass, JObject, JValue};
 use jni::JNIEnv;
 use uuid::Uuid;
 
+// use crate::dev_server::DevServer;
 use crate::lua::Rover;
 use crate::ui::{Id, Params, TextProps, Ui, ViewProps};
 
@@ -17,9 +18,15 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
     context: JObject<'static>,
 ) {
     env.log_info("ROVER STARTED");
+
+    // let dev_server = DevServer::new();
     let android = Arc::new(Android::new(context, env));
     let rover = Rover::new(android);
     rover.start().expect("Failed running Rover");
+    // dev_server
+    //     .listen(|| {
+    //     })
+    //     .expect("Failed to listen dev server")
 }
 
 struct Android {
