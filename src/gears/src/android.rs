@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -21,15 +22,19 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
     let env = Rc::new(RefCell::new(env));
     env.borrow_mut().log_info("ROVER STARTED");
 
-    let dev_server = DevServer::new();
+    let dev_server = DevServer::new("10.0.2.2:4242");
+
     let android = Arc::new(Android::new(context, Rc::clone(&env)));
     let rover = Rover::new(android);
-    rover.start().expect("Failed running Rover");
-    match dev_server.listen(|| {
-        // rover.start().expect("Failed running Rover");
+    match dev_server.listen(|content| {
+        env.borrow_mut()
+            .log_info(&format!("Content Received: {}", content));
+        rover.start().expect("Failed running Rover");
     }) {
         Ok(_) => env.borrow_mut().log_info("Listening to dev server"),
-        Err(_e) => env.borrow_mut().log_error("Failed to listen dev server"),
+        Err(e) => env
+            .borrow_mut()
+            .log_error(&format!("Failed to listen dev server: {}", e.to_string())),
     }
 }
 

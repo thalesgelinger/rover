@@ -8,21 +8,25 @@ use std::{
 
 use regex::Regex;
 
-pub struct DevServer {}
+pub struct DevServer {
+    host: String,
+}
 
 impl DevServer {
-    pub fn new() -> DevServer {
-        DevServer {}
+    pub fn new(host: &str) -> DevServer {
+        DevServer {
+            host: host.to_string(),
+        }
     }
 
-    pub fn listen<F: Fn()>(&self, cb: F) -> io::Result<()> {
-        let mut stream = TcpStream::connect("127.0.0.1:4242")?;
+    pub fn listen<F: Fn(&str)>(&self, cb: F) -> io::Result<()> {
+        let mut stream = TcpStream::connect(&self.host)?;
 
         println!("Connected to the server. Listening for incoming messages...");
 
         let mut buffer = [0; 512];
 
-        let mut project_path = env::current_dir().expect("Error getting current dir");
+        let mut project_path = env::current_dir()?;
 
         loop {
             match stream.read(&mut buffer) {
@@ -34,29 +38,29 @@ impl DevServer {
                     let received_data = &buffer[..n];
 
                     if let Ok(text) = std::str::from_utf8(received_data) {
-                        let re = Regex::new(r"##(.*?)##").unwrap();
+                        // let re = Regex::new(r"##(.*?)##").unwrap();
 
-                        for cap in re.captures_iter(text) {
-                            let project_name = &cap[1];
-                            fs::create_dir_all(project_name)?;
-                            project_path = project_path.join(project_name);
-                        }
+                        // for cap in re.captures_iter(text) {
+                        //     let project_name = &cap[1];
+                        //     fs::create_dir_all(project_name)?;
+                        //     project_path = project_path.join(project_name);
+                        // }
 
-                        let parts: Vec<&str> = text.split("$$").collect();
+                        // let parts: Vec<&str> = text.split("$$").collect();
 
-                        if parts.len() == 2 {
-                            let file_path = parts[0];
-                            let file_content = parts[1];
-                            let full_path = Path::new(&project_path).join(file_path);
+                        // if parts.len() == 2 {
+                        //     let file_path = parts[0];
+                        //     let file_content = parts[1];
+                        //     let full_path = Path::new(&project_path).join(file_path);
 
-                            if let Some(parent) = full_path.parent() {
-                                fs::create_dir_all(parent)?;
-                            }
+                        //     if let Some(parent) = full_path.parent() {
+                        //         fs::create_dir_all(parent)?;
+                        //     }
 
-                            fs::write(full_path, file_content)?;
-                        }
+                        //     fs::write(full_path, file_content)?;
+                        // }
 
-                        cb()
+                        cb(text)
                     }
                 }
                 Err(e) => {
