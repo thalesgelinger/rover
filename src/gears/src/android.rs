@@ -22,10 +22,11 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
     let env = Rc::new(RefCell::new(env));
     env.borrow_mut().log_info("ROVER STARTED");
 
-    let dev_server = DevServer::new("10.0.2.2:4242");
-
     let android = Arc::new(Android::new(context, Rc::clone(&env)));
     let rover = Rover::new(android);
+
+    let dev_server = DevServer::new("10.0.2.2:4242");
+
     match dev_server.listen(|content| {
         env.borrow_mut()
             .log_info(&format!("Content Received: {}", content));

@@ -28,6 +28,8 @@ impl DevServer {
 
         let mut project_path = env::current_dir()?;
 
+        let mut is_ready = false;
+
         loop {
             match stream.read(&mut buffer) {
                 Ok(0) => {
@@ -59,8 +61,15 @@ impl DevServer {
 
                         //     fs::write(full_path, file_content)?;
                         // }
+                        //
 
-                        cb(text)
+                        if text.contains("READY") {
+                            is_ready = true
+                        }
+
+                        if is_ready {
+                            cb(text);
+                        }
                     }
                 }
                 Err(e) => {

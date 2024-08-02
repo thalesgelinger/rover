@@ -86,6 +86,8 @@ fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
 
     send_lua_files(&project_path, &project_path, &mut stream)?;
 
+    stream.write_all(b"READY")?;
+
     let mut watcher = notify::recommended_watcher(move |res: Result<Event>| match res {
         Ok(event) => {
             if let Some(path) = event.paths.first() {
