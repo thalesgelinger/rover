@@ -7,7 +7,7 @@ use jni::objects::{JClass, JObject, JValue};
 use jni::JNIEnv;
 use uuid::Uuid;
 
-// use crate::dev_server::DevServer;
+use crate::dev_server::DevServer;
 use crate::lua::Rover;
 use crate::ui::{Id, Params, TextProps, Ui, ViewProps};
 
@@ -18,28 +18,31 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
     context: JObject<'static>,
 ) {
     env.log_info("ROVER STARTED");
+    let env = Rc::new(RefCell::new(env));
+    env.borrow_mut().log_info("ROVER STARTED");
 
-    // let dev_server = DevServer::new();
-    let android = Arc::new(Android::new(context, env));
+    let dev_server = DevServer::new();
+    let android = Arc::new(Android::new(context, Rc::clone(&env)));
     let rover = Rover::new(android);
     rover.start().expect("Failed running Rover");
-    // dev_server
-    //     .listen(|| {
-    //     })
-    //     .expect("Failed to listen dev server")
+    match dev_server.listen(|| {
+        // rover.start().expect("Failed running Rover");
+    }) {
+        Ok(_) => env.borrow_mut().log_info("Listening to dev server"),
+        Err(_e) => env.borrow_mut().log_error("Failed to listen dev server"),
+    }
 }
 
 struct Android {
     context: RefCell<JObject<'static>>,
-    env: RefCell<JNIEnv<'static>>,
+    env: Rc<RefCell<JNIEnv<'static>>>,
     components: RefCell<HashMap<String, AndroidComponent>>,
     gears_android: Rc<JObject<'static>>,
 }
 
 impl Android {
-    pub fn new(context: JObject<'static>, env: JNIEnv<'static>) -> Android {
+    pub fn new(context: JObject<'static>, env: Rc<RefCell<JNIEnv<'static>>>) -> Android {
         let components = RefCell::new(HashMap::new());
-        let env = RefCell::new(env);
         let gears_class = match env
             .borrow_mut()
             .find_class("com/rovernative/roverandroid/Gears")
