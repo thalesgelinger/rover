@@ -1,9 +1,9 @@
 use std::{
-    env,
-    fs::{self},
+    env, fs,
     io::{self, Read},
     net::TcpStream,
     path::Path,
+    sync::mpsc::Sender,
 };
 
 use regex::Regex;
@@ -19,7 +19,7 @@ impl DevServer {
         }
     }
 
-    pub fn listen<F: Fn(&str)>(&self, cb: F) -> io::Result<()> {
+    pub fn listen(&self, tx: &Sender<String>) -> io::Result<()> {
         let mut stream = TcpStream::connect(&self.host)?;
 
         println!("Connected to the server. Listening for incoming messages...");
@@ -68,7 +68,8 @@ impl DevServer {
                         }
 
                         if is_ready {
-                            cb(text);
+                            tx.send(text.into())
+                                .expect("Failed to send message to channel");
                         }
                     }
                 }

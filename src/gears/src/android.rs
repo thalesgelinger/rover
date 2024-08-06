@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 
 use jni::objects::{JClass, JObject, JValue};
 use jni::JNIEnv;
@@ -14,48 +14,55 @@ use crate::ui::{Id, Params, TextProps, Ui, ViewProps};
 
 #[no_mangle]
 pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
-    mut env: JNIEnv<'static>,
+    env: JNIEnv<'static>,
     _: JClass,
     context: JObject<'static>,
 ) {
-    env.log_info("ROVER STARTED");
-    let env = Rc::new(RefCell::new(env));
-    env.borrow_mut().log_info("ROVER STARTED");
+    let env = Arc::new(Mutex::new(env));
 
-    let android = Arc::new(Android::new(context, Rc::clone(&env)));
-    let rover = Rover::new(android);
+    env.lock().unwrap().log_info("ROVER STARTED");
 
-    let dev_server = DevServer::new("10.0.2.2:4242");
+    let (tx, rx) = mpsc::channel();
 
-    match dev_server.listen(|content| {
-        env.borrow_mut()
-            .log_info(&format!("Content Received: {}", content));
-        rover.start().expect("Failed running Rover");
-    }) {
-        Ok(_) => env.borrow_mut().log_info("Listening to dev server"),
-        Err(e) => env
-            .borrow_mut()
-            .log_error(&format!("Failed to listen dev server: {}", e.to_string())),
-    }
+    thread::spawn(|| {
+        let dev_server = DevServer::new("10.0.2.2:4242");
+        dev_server.listen(&tx)
+    });
+
+    thread::spawn(move || {
+        let android = Arc::new(Android::new(context, Arc::clone(&env)));
+        let rover = Rover::new(android);
+        for received in rx {
+            env.lock()
+                .unwrap()
+                .log_info(&format!("Received: {}", received));
+            match rover.start() {
+                Ok(_) => env.lock().unwrap().log_info("Rover started"),
+                Err(_) => env.lock().unwrap().log_error("Rover failed to start"),
+            }
+        }
+    });
 }
 
 struct Android {
     context: RefCell<JObject<'static>>,
-    env: Rc<RefCell<JNIEnv<'static>>>,
+    env: Arc<Mutex<JNIEnv<'static>>>,
     components: RefCell<HashMap<String, AndroidComponent>>,
     gears_android: Rc<JObject<'static>>,
 }
 
 impl Android {
-    pub fn new(context: JObject<'static>, env: Rc<RefCell<JNIEnv<'static>>>) -> Android {
+    pub fn new(context: JObject<'static>, env: Arc<Mutex<JNIEnv<'static>>>) -> Android {
         let components = RefCell::new(HashMap::new());
         let gears_class = match env
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .find_class("com/rovernative/roverandroid/Gears")
         {
             Ok(class) => class,
             Err(e) => {
-                env.borrow_mut()
+                env.lock()
+                    .unwrap()
                     .throw_new(
                         "java/lang/RuntimeException",
                         format!("Failed to load the target class: {:?}", e),
@@ -65,10 +72,11 @@ impl Android {
             }
         };
 
-        let gears_android = match env.borrow_mut().alloc_object(gears_class) {
+        let gears_android = match env.lock().unwrap().alloc_object(gears_class) {
             Ok(value) => Rc::new(value),
             Err(e) => {
-                env.borrow_mut()
+                env.lock()
+                    .unwrap()
                     .throw_new(
                         "java/lang/RuntimeException",
                         "Failed to create an instance of the target class",
@@ -77,7 +85,7 @@ impl Android {
                 panic!("Failed to load Gears: {}", e)
             }
         };
-        env.borrow_mut().log_info("ANDROID CREATED");
+        env.lock().unwrap().log_info("ANDROID CREATED");
 
         Android {
             context: RefCell::new(context),
@@ -108,16 +116,18 @@ impl Ui for Android {
         let components = self.components.borrow();
         let context = self.context.borrow();
         let child = components.get(&main_id).expect("Missing maing view");
-        self.env.borrow_mut().log_info("ATTACHING MAIN VIEW");
+        self.env.lock().unwrap().log_info("ATTACHING MAIN VIEW");
 
         match child {
             AndroidComponent::View(view) => {
                 self.env
-                    .borrow_mut()
+                    .lock()
+                    .unwrap()
                     .log_info("ATTACHING VIEW ON MAIN VIEW");
 
                 self.env
-                    .borrow_mut()
+                    .lock()
+                    .unwrap()
                     .call_method(
                         context.as_ref(),
                         "setContentView",
@@ -126,7 +136,7 @@ impl Ui for Android {
                     )
                     .expect("Error in an attempt to call setContentView from rover");
             }
-            AndroidComponent::Text(_) => self.env.borrow_mut().log_error(
+            AndroidComponent::Text(_) => self.env.lock().unwrap().log_error(
                 "Attack text is not allowed in main view, please use a container object".into(),
             ),
         }
@@ -134,7 +144,7 @@ impl Ui for Android {
 
     fn create_view(&self, params: Params<ViewProps>) -> Id {
         let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
-        let mut env = self.env.borrow_mut();
+        let mut env = self.env.lock().unwrap();
         env.log_info("CREATING VIEW");
 
         let props = match env.new_string(params.props.to_json()) {
@@ -191,7 +201,7 @@ impl Ui for Android {
 
     fn create_text(&self, params: Params<TextProps>) -> Id {
         let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
-        let mut env = self.env.borrow_mut();
+        let mut env = self.env.lock().unwrap();
         env.log_info("CREATING TEXT");
 
         let text = &params.children.join("\n");
