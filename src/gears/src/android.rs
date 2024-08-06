@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use jni::objects::{JClass, JObject, JValue};
 use jni::JNIEnv;
@@ -22,26 +23,37 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
 
     env.lock().unwrap().log_info("ROVER STARTED");
 
+    let android = Arc::new(Android::new(context, Arc::clone(&env)));
+    let rover = Rover::new(android);
+    match rover.start() {
+        Ok(_) => env.lock().unwrap().log_info("Rover started"),
+        Err(_) => env.lock().unwrap().log_error("Rover failed to start"),
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_rovernative_roverandroid_Gears_devServer(
+    mut env: JNIEnv<'static>,
+    _: JClass,
+    _context: JObject<'static>,
+    callback: JObject<'static>,
+) {
     let (tx, rx) = mpsc::channel();
 
-    thread::spawn(|| {
-        let dev_server = DevServer::new("10.0.2.2:4242");
-        dev_server.listen(&tx)
-    });
+    let callback_global = env
+        .new_global_ref(callback)
+        .expect("Failed to create global ref");
+
+    let dev_server = DevServer::new("10.0.2.2:4242");
 
     thread::spawn(move || {
-        let android = Arc::new(Android::new(context, Arc::clone(&env)));
-        let rover = Rover::new(android);
-        for received in rx {
-            env.lock()
-                .unwrap()
-                .log_info(&format!("Received: {}", received));
-            match rover.start() {
-                Ok(_) => env.lock().unwrap().log_info("Rover started"),
-                Err(_) => env.lock().unwrap().log_error("Rover failed to start"),
-            }
-        }
+        let _ = dev_server.listen(&tx);
     });
+
+    for _received in rx {
+        env.call_method(callback_global.clone(), "run", "()V", &[])
+            .expect("Failed to call method");
+    }
 }
 
 struct Android {

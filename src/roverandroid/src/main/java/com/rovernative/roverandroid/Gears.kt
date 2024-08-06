@@ -21,7 +21,7 @@ object Gears {
     }
 
     external fun start(context: Context)
-
+    external fun devServer(context: Context, callback: Runnable)
 
     fun createView(context: Activity, props: String): View {
         val viewProps = parseProps(props)
