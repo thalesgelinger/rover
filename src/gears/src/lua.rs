@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
 use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
 
@@ -15,7 +15,7 @@ impl Rover {
         Rover { ui, lua }
     }
 
-    pub fn start(&self) -> Result<()> {
+    pub fn start(&self, entry_point: String) -> Result<()> {
         let lua_rover = self.lua.create_table()?;
 
         self.lua.globals().set("rover", &lua_rover)?;
@@ -23,15 +23,15 @@ impl Rover {
         self.setup_view(&lua_rover)?;
         self.setup_text(&lua_rover)?;
 
-        let main_view_id = self.exec(&lua_rover);
+        let main_view_id = self.exec(&lua_rover, entry_point);
 
         self.ui.attach_main_view(main_view_id);
 
         Ok(())
     }
 
-    fn exec(&self, lua_rover: &Table) -> String {
-        let script = include_str!("../../../template/lib/main.lua");
+    fn exec(&self, lua_rover: &Table, entry_point: String) -> String {
+        let script = fs::read_to_string(entry_point).expect("Failed to read entry point");
         self.lua
             .load(script)
             .exec()
@@ -152,7 +152,7 @@ mod tests {
     fn should_run_rover() -> Result<()> {
         let ui: Mock = Mock::new();
         let rover = Rover::new(Arc::new(ui));
-        rover.start()?;
+        rover.start("../../../template/lib/main.lua".into())?;
         Ok(())
     }
 }

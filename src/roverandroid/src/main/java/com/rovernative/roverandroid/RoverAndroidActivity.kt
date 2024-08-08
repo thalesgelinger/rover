@@ -20,12 +20,11 @@ open class RoverAndroidActivity: AppCompatActivity() {
 
         val context = this
 
-
         GlobalScope.launch {
             Gears.devServer(context) {
-                Log.i("OUT ROVER", "It's updating according to message")
+                Log.i("OUT ROVER", it)
                 context.runOnUiThread {
-                    Gears.start(context)
+                    Gears.start(context, getFullPath(context, it))
                 }
             }
         }

@@ -1,8 +1,6 @@
 use std::{
-    env, fs,
     io::{self, Read},
     net::TcpStream,
-    path::Path,
     sync::mpsc::Sender,
 };
 
@@ -12,6 +10,17 @@ pub struct DevServer {
     host: String,
 }
 
+pub enum ServerMessages {
+    Project(String),
+    File(DevFile),
+    Ready,
+}
+
+pub struct DevFile {
+    pub path: String,
+    pub content: String,
+}
+
 impl DevServer {
     pub fn new(host: &str) -> DevServer {
         DevServer {
@@ -19,14 +28,14 @@ impl DevServer {
         }
     }
 
-    pub fn listen(&self, tx: &Sender<String>) -> io::Result<()> {
+    pub fn listen(&self, tx: &Sender<ServerMessages>) -> io::Result<()> {
         let mut stream = TcpStream::connect(&self.host)?;
 
         println!("Connected to the server. Listening for incoming messages...");
 
         let mut buffer = [0; 512];
 
-        let mut project_path = env::current_dir()?;
+        // let mut project_path = env::current_dir()?;
 
         let mut is_ready = false;
 
@@ -40,36 +49,31 @@ impl DevServer {
                     let received_data = &buffer[..n];
 
                     if let Ok(text) = std::str::from_utf8(received_data) {
-                        // let re = Regex::new(r"##(.*?)##").unwrap();
+                        let re = Regex::new(r"##(.*?)##").unwrap();
 
-                        // for cap in re.captures_iter(text) {
-                        //     let project_name = &cap[1];
-                        //     fs::create_dir_all(project_name)?;
-                        //     project_path = project_path.join(project_name);
-                        // }
+                        for cap in re.captures_iter(text) {
+                            let project_name = &cap[1];
+                            tx.send(ServerMessages::Project(project_name.into()))
+                                .expect("Failed to send project name")
+                        }
 
-                        // let parts: Vec<&str> = text.split("$$").collect();
+                        let parts: Vec<&str> = text.split("$$").collect();
 
-                        // if parts.len() == 2 {
-                        //     let file_path = parts[0];
-                        //     let file_content = parts[1];
-                        //     let full_path = Path::new(&project_path).join(file_path);
+                        if parts.len() == 2 {
+                            let path = parts[0].to_string();
+                            let content = parts[1].to_string();
 
-                        //     if let Some(parent) = full_path.parent() {
-                        //         fs::create_dir_all(parent)?;
-                        //     }
-
-                        //     fs::write(full_path, file_content)?;
-                        // }
-                        //
+                            tx.send(ServerMessages::File(DevFile { path, content }))
+                                .expect("Failed to send project name")
+                        }
 
                         if text.contains("READY") {
                             is_ready = true
                         }
 
                         if is_ready {
-                            tx.send(text.into())
-                                .expect("Failed to send message to channel");
+                            tx.send(ServerMessages::Ready)
+                                .expect("Failed to send ready message to channel");
                         }
                     }
                 }

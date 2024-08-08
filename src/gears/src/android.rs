@@ -3,13 +3,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
-use jni::objects::{JClass, JObject, JValue};
+use jni::objects::{JClass, JObject, JString, JValue};
 use jni::JNIEnv;
 use uuid::Uuid;
 
-use crate::dev_server::DevServer;
+use crate::dev_server::{DevServer, ServerMessages};
 use crate::lua::Rover;
 use crate::ui::{Id, Params, TextProps, Ui, ViewProps};
 
@@ -18,6 +17,7 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
     env: JNIEnv<'static>,
     _: JClass,
     context: JObject<'static>,
+    path: JString,
 ) {
     let env = Arc::new(Mutex::new(env));
 
@@ -25,7 +25,10 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
 
     let android = Arc::new(Android::new(context, Arc::clone(&env)));
     let rover = Rover::new(android);
-    match rover.start() {
+
+    let path: String = env.lock().unwrap().get_string(&path).unwrap().into();
+
+    match rover.start(path) {
         Ok(_) => env.lock().unwrap().log_info("Rover started"),
         Err(_) => env.lock().unwrap().log_error("Rover failed to start"),
     }
@@ -35,7 +38,7 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
 pub extern "system" fn Java_com_rovernative_roverandroid_Gears_devServer(
     mut env: JNIEnv<'static>,
     _: JClass,
-    _context: JObject<'static>,
+    context: JObject<'static>,
     callback: JObject<'static>,
 ) {
     let (tx, rx) = mpsc::channel();
@@ -50,9 +53,77 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_devServer(
         let _ = dev_server.listen(&tx);
     });
 
-    for _received in rx {
-        env.call_method(callback_global.clone(), "run", "()V", &[])
-            .expect("Failed to call method");
+    let mut name = "".to_string();
+
+    for received in rx {
+        match received {
+            ServerMessages::Project(project_name) => {
+                name = project_name.clone();
+                let file_class = env
+                    .find_class("com/rovernative/roverandroid/FileUtils")
+                    .unwrap();
+
+                let file_utils = env.alloc_object(file_class).unwrap();
+
+                let jstring = env.new_string(project_name).unwrap();
+
+                env.call_method(
+                    file_utils,
+                    "createFolderIfNotExists",
+                    "(Landroid/content/Context;Ljava/lang/String;)Ljava/io/File;",
+                    &[JValue::Object(&context), JValue::Object(&jstring)],
+                )
+                .unwrap();
+            }
+            ServerMessages::File(file) => {
+                let file_class = env
+                    .find_class("com/rovernative/roverandroid/FileUtils")
+                    .unwrap();
+
+                let file_utils = env.alloc_object(file_class).unwrap();
+
+                let jpath = env
+                    .new_string(format!("{}/{}", name, file.path))
+                    .unwrap();
+
+                let jcontent = env.new_string(file.content).unwrap();
+
+                env.call_method(
+                    file_utils,
+                    "writeFile",
+                     "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                    &[
+                        JValue::Object(&context), 
+                        JValue::Object(&jpath), 
+                        JValue::Object(&jcontent), 
+                    ],
+                )
+                .unwrap();
+
+                let jstring = env.new_string(format!("{}/lib/main.lua", name)).unwrap();
+                match env.call_method(
+                    callback_global.clone(),
+                    "run",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object(&jstring)],
+                ) {
+                    Ok(_) => env.log_info("Updated from file changes"),
+                    Err(_) => env.log_error("Fail to update from file changes"),
+                }
+            }
+            ServerMessages::Ready => {
+                let jstring = env.new_string(format!("{}/lib/main.lua", name)).unwrap();
+                match env.call_method(
+                    callback_global.clone(),
+                    "run",
+                    "(Ljava/lang/String;)V",
+                    &[JValue::Object(&jstring)],
+                ) {
+                    Ok(_) => env.log_info("Updated from file changes"),
+                    Err(_) => env.log_error("Fail to update from file changes"),
+                }
+            }
+        }
     }
 }
 
