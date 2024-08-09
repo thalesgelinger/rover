@@ -1,3 +1,4 @@
+![banner](./branding/banner.svg)
 # Rover 
 Build mobile apps with the best interpreted language ever Lua #BrazilMentioned
 
