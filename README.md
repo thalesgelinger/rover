@@ -123,9 +123,9 @@ end
 ```
 
 # The goals
-- [] the goal is to be able to make at least a View with a text inside, using lua table to design views
-- [] at least a cold reload
-- [] setup a state using signals architecture
+- [x] the goal is to be able to make at least a View with a text inside, using lua table to design views
+- [x] at least a cold reload
+- [ ] setup a state using signals architecture
 
 # How i plan to do that?
 
