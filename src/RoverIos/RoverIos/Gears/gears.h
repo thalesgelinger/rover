@@ -4,3 +4,5 @@
 #include <stdlib.h>
 
 void start(NSObject *view);
+
+void devServer(NSObject *view);

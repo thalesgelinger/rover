@@ -120,6 +120,7 @@ fn build_android() {
             ndk_path, lib_path
         );
     }
+    println!("cargo:warning=Targets linked");
 
     for target in &targets {
         Command::new("cargo")
@@ -137,6 +138,8 @@ fn build_android() {
             .expect(&format!("Failed to build for {}", target));
     }
 
+    println!("cargo:warning=Ndk built");
+
     let android_targets = [
         ("aarch64-linux-android", "arm64-v8a"),
         ("armv7-linux-androideabi", "armeabi-v7a"),
@@ -153,4 +156,5 @@ fn build_android() {
             .status()
             .expect(&format!("Failed to copy {} to {}", from, to));
     }
+    println!("cargo:warning=Done");
 }
