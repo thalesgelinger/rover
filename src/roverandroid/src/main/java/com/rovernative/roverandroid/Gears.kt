@@ -10,6 +10,10 @@ import android.view.ViewGroup
 import android.widget.RelativeLayout
 import android.widget.TextView
 
+fun interface DevServerCallback {
+    fun run(param: String)
+}
+
 object Gears {
     init {
         try {
@@ -20,8 +24,8 @@ object Gears {
         }
     }
 
-    external fun start(context: Context)
-
+    external fun start(context: Context, path: String)
+    external fun devServer(context: Context, callback: DevServerCallback)
 
     fun createView(context: Activity, props: String): View {
         val viewProps = parseProps(props)

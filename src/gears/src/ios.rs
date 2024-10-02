@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::{c_char, CStr, CString},
+    sync::{mpsc, Arc},
+    thread,
+};
 
 use objc2::{
     class, msg_send,
@@ -7,15 +13,82 @@ use objc2::{
 use uuid::Uuid;
 
 use crate::{
+    dev_server::{DevServer, ServerMessages},
     lua::Rover,
     ui::{Id, Params, TextProps, Ui, ViewProps},
 };
 
 #[no_mangle]
-pub extern "C" fn start(view: *mut NSObject) {
+pub extern "C" fn start(view: *mut NSObject, path: *const c_char) {
     let ios = Arc::new(Ios::new(view));
     let rover = Rover::new(ios);
-    rover.start().expect("Failed running Rover");
+    let path: String = unsafe {
+        if !path.is_null() {
+            CStr::from_ptr(path).to_string_lossy().into_owned()
+        } else {
+            String::new()
+        }
+    };
+    println!("Path sent: {}", path);
+
+    match rover.start(path) {
+        Ok(_) => println!("Rover started"),
+        Err(_) => println!("Rover failed to start"),
+    }
+}
+
+type Callback = extern "C" fn(*const c_char);
+
+#[no_mangle]
+pub extern "C" fn devServer(callback: Callback) {
+    println!("devServer server called");
+    let (tx, rx) = mpsc::channel();
+    let dev_server = DevServer::new("localhost:4242");
+
+    thread::spawn(move || {
+        println!("devServer started");
+        let _ = dev_server.listen(&tx);
+    });
+
+    let mut name = "".to_string();
+
+    for received in rx {
+        match received {
+            ServerMessages::Project(project_name) => {
+                name = project_name.clone();
+
+                unsafe {
+                    let file_utils =
+                        AnyClass::get("RoverIos.FileUtils").expect("FileUtils not found");
+
+                    let ns_string: *mut NSObject = msg_send![class!(NSString), stringWithUTF8String: project_name.as_ptr() as *const i8];
+                    let _: () = msg_send![file_utils, createFolderIfNotExists: ns_string];
+                }
+            }
+            ServerMessages::File(file) => {
+                println!("Get updated file");
+                let path_project = format!("{}/{}", name, file.path);
+
+                unsafe {
+                    let file_utils =
+                        AnyClass::get("RoverIos.FileUtils").expect("FileUtils not found");
+
+                    let ns_path: *mut NSObject = msg_send![class!(NSString), stringWithUTF8String: path_project.as_ptr() as *const i8];
+                    let ns_content: *mut NSObject = msg_send![class!(NSString), stringWithUTF8String: file.content.as_ptr() as *const i8];
+                    let _: () = msg_send![file_utils, writeFile: ns_path content: ns_content];
+                }
+
+                let main_path = format!("{}/lib/main.lua", name);
+                let c_string = CString::new(main_path).expect("CString::new failed");
+                callback(c_string.as_ptr())
+            }
+            ServerMessages::Ready => {
+                let main_path = format!("{}/lib/main.lua", name);
+                let c_string = CString::new(main_path).expect("CString::new failed");
+                callback(c_string.as_ptr())
+            }
+        }
+    }
 }
 
 struct Ios {

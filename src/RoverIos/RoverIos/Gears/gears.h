@@ -3,4 +3,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-void start(NSObject *view);
+typedef void (*Callback)(const char*);
+
+void start(NSObject *view, const char *path);
+
+void devServer(Callback callback);
