@@ -1,7 +1,12 @@
+
 ![banner](./branding/banner.svg)
 # Rover 
 Build mobile apps with the best interpreted language ever Lua #BrazilMentioned
 
+# Demo
+![demo_rover](https://github.com/user-attachments/assets/d444d848-d155-4020-8863-fbea58d59338)
+
+# Example
 ```lua
 function rover.run()
     return rover.view {
@@ -15,9 +20,10 @@ function rover.run()
 end
 ```
 
-# The goal
-
-the goal is to be able to make at least a View with a text inside, using lua table to design views
+# The goals
+- [x] the goal is to be able to make at least a View with a text inside, using lua table to design views
+- [x] at least a cold reload
+- [ ] setup a state using signals architecture
 
 # How i plan to do that?
 
