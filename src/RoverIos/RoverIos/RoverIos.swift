@@ -21,13 +21,16 @@ open class RoverIos: UIViewController {
     public override func viewDidLoad() {
         super.viewDidLoad()
         print("started")
-        
+
         devServerCallback =  { message in
             let fileManager = FileManager.default
             let directoryURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
             let fullPath = directoryURL.appendingPathComponent(message)
             print(fullPath)
             DispatchQueue.main.async {
+                // This is a Gambiarra for sure
+                // But i know this way reset the views to change the UI
+                self.view = UIView()
                 start(self.view, fullPath.path)
             }
         }

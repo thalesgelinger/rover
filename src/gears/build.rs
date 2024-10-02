@@ -26,12 +26,17 @@ fn build_ios() {
         .join("RoverIos")
         .join("Gears");
 
+    println!("cargo:warning=building for targets");
+
     for target in &targets {
         Command::new("cargo")
             .args(&["build", "--release", "--target", target])
             .status()
             .expect("Failed to build for aarch64-apple-ios");
+        println!("cargo:warning=Build for {}", target);
     }
+
+    println!("cargo:warning=Generating header");
 
     Command::new("cbindgen")
         .args(&[
@@ -45,6 +50,8 @@ fn build_ios() {
         .status()
         .expect("Failed to generate C bindings");
 
+    println!("cargo:warning=Grouping .a");
+
     Command::new("lipo")
         .args(&[
             "-create",
@@ -56,6 +63,8 @@ fn build_ios() {
         .status()
         .expect("cargo:warning=Failed to create universal library");
 
+    println!("cargo:warning=Coping files");
+
     Command::new("cp")
         .args(&["target/libgears.a", &rover_ios_path.to_string_lossy()])
         .status()
@@ -65,6 +74,8 @@ fn build_ios() {
         .args(&["target/gears.h", &rover_ios_path.to_string_lossy()])
         .status()
         .expect("cargo:warning=Failed to copy .a to RoverIos");
+
+    println!("cargo:warning=Done");
 
     // let current_dir = env::current_dir().expect("Failed to get current directory");
 
