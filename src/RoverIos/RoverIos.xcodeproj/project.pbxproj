@@ -11,6 +11,7 @@
 		82ADEBC72C4719240058808D /* Props.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82ADEBC62C4719240058808D /* Props.swift */; };
 		82ADEBC92C471BB70058808D /* Utils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82ADEBC82C471BB70058808D /* Utils.swift */; };
 		82ADEBCB2C471C070058808D /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82ADEBCA2C471C070058808D /* Extensions.swift */; };
+		EC9FF18C2CA605D00071D9F9 /* FileUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC9FF18B2CA605CC0071D9F9 /* FileUtils.swift */; };
 		ECF7D1352C36D7680051B12F /* RoverIos.docc in Sources */ = {isa = PBXBuildFile; fileRef = ECF7D1342C36D7680051B12F /* RoverIos.docc */; };
 		ECF7D13B2C36D7680051B12F /* RoverIos.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ECF7D1302C36D7680051B12F /* RoverIos.framework */; };
 		ECF7D1402C36D7680051B12F /* RoverIosTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF7D13F2C36D7680051B12F /* RoverIosTests.swift */; };
@@ -36,6 +37,7 @@
 		82ADEBC62C4719240058808D /* Props.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Props.swift; sourceTree = "<group>"; };
 		82ADEBC82C471BB70058808D /* Utils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Utils.swift; sourceTree = "<group>"; };
 		82ADEBCA2C471C070058808D /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
+		EC9FF18B2CA605CC0071D9F9 /* FileUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileUtils.swift; sourceTree = "<group>"; };
 		ECF7D1302C36D7680051B12F /* RoverIos.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RoverIos.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		ECF7D1332C36D7680051B12F /* RoverIos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RoverIos.h; sourceTree = "<group>"; };
 		ECF7D1342C36D7680051B12F /* RoverIos.docc */ = {isa = PBXFileReference; lastKnownFileType = folder.documentationcatalog; path = RoverIos.docc; sourceTree = "<group>"; };
@@ -95,6 +97,7 @@
 				ECF7D1332C36D7680051B12F /* RoverIos.h */,
 				ECF7D14C2C36D7A00051B12F /* RoverIos.modulemap */,
 				ECF7D1582C36D9660051B12F /* RoverIos.swift */,
+				EC9FF18B2CA605CC0071D9F9 /* FileUtils.swift */,
 				82AAC6792C41B98C003CD22C /* Gears.swift */,
 				82ADEBC82C471BB70058808D /* Utils.swift */,
 				82ADEBCA2C471C070058808D /* Extensions.swift */,
@@ -236,6 +239,7 @@
 				ECF7D1592C36D9660051B12F /* RoverIos.swift in Sources */,
 				ECF7D1352C36D7680051B12F /* RoverIos.docc in Sources */,
 				82ADEBC72C4719240058808D /* Props.swift in Sources */,
+				EC9FF18C2CA605D00071D9F9 /* FileUtils.swift in Sources */,
 				82AAC67A2C41B98C003CD22C /* Gears.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

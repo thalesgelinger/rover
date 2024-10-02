@@ -1,7 +1,7 @@
 function rover.run()
     return rover.view {
         height = "500",
-        width = "full",
+        width = "100",
         color = "#0000ff",
         rover.text {
             "Hello Rover",
