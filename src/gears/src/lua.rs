@@ -1,8 +1,8 @@
-use std::{fs, sync::Arc};
+use std::{fs, io::Write, sync::Arc};
 
 use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
 
-use crate::{ui::Ui, utils};
+use crate::{dev_server::GLOBAL_STREAM, ui::Ui, utils};
 
 pub struct Rover {
     ui: Arc<dyn Ui>,
@@ -17,6 +17,20 @@ impl Rover {
 
     pub fn start(&self, entry_point: String) -> Result<()> {
         let lua_rover = self.lua.create_table()?;
+
+        let tcp_lua_print = self.lua.create_function(|_, msg: String| {
+            let mut global_stream = GLOBAL_STREAM.lock().unwrap();
+
+            if let Some(ref mut stream) = *global_stream {
+                let _ = stream.write_all(msg.as_bytes());
+            } else {
+                println!("{}", msg);
+            }
+
+            Ok(())
+        })?;
+
+        self.lua.globals().set("print", &tcp_lua_print)?;
 
         self.lua.globals().set("rover", &lua_rover)?;
 

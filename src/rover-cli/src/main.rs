@@ -1,10 +1,10 @@
 use clap::Command;
 use notify::{Event, EventKind, RecursiveMode, Result, Watcher};
 use serde::Deserialize;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{env, fs, thread};
 
 #[derive(Debug, Deserialize)]
@@ -82,11 +82,36 @@ fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
     println!("New connection: {}", stream.peer_addr()?);
 
     let project_path = env::current_dir().expect("Failed to get current dir");
+
+    let mut read_stream = stream.try_clone().expect("Failed to clone stream");
+
+    thread::spawn(move || loop {
+        let mut buffer = [0; 512];
+        match read_stream.read(&mut buffer) {
+            Ok(0) => {
+                println!("Client disconnected");
+                break;
+            }
+            Ok(n) => {
+                let received_data = String::from_utf8_lossy(&buffer[..n]);
+                println!("{}", received_data);
+            }
+            Err(e) => {
+                eprintln!("Failed to read from stream: {}", e);
+                break;
+            }
+        }
+    });
+
     let _ = stream.write_all(format!("##{}##\n", package_name).as_bytes());
 
     send_lua_files(&project_path, &project_path, &mut stream)?;
 
-    stream.write_all(b"READY")?;
+    let stream = Arc::new(Mutex::new(stream));
+
+    stream.lock().unwrap().write_all(b"READY")?;
+
+    let stream_clone = Arc::clone(&stream);
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event>| match res {
         Ok(event) => {
@@ -109,7 +134,7 @@ fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
                             let file = fs::read(full_file_path).unwrap();
                             let data = [file_path, b"$$", &file].concat();
 
-                            if let Err(e) = stream.write_all(&data) {
+                            if let Err(e) = stream_clone.lock().unwrap().write_all(&data) {
                                 eprintln!("Failed to write to socket: {}", e);
                             }
                         }
@@ -119,7 +144,8 @@ fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
             }
         }
         Err(e) => println!("watch error: {:?}", e),
-    })?;
+    })
+    .expect("Failed to create watcher");
 
     if let Err(e) = watcher.watch(&project_path, RecursiveMode::Recursive) {
         eprintln!("Failed to start watching directory: {}", e);

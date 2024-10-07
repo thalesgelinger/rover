@@ -1,9 +1,10 @@
 use std::{
-    io::{self, Read},
+    io::{self, Read, Write},
     net::TcpStream,
-    sync::mpsc::Sender,
+    sync::{mpsc::Sender, Arc, Mutex},
 };
 
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub struct DevServer {
@@ -21,6 +22,9 @@ pub struct DevFile {
     pub content: String,
 }
 
+pub static GLOBAL_STREAM: Lazy<Arc<Mutex<Option<TcpStream>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(None)));
+
 impl DevServer {
     pub fn new(host: &str) -> DevServer {
         DevServer {
@@ -31,11 +35,14 @@ impl DevServer {
     pub fn listen(&self, tx: &Sender<ServerMessages>) -> io::Result<()> {
         let mut stream = TcpStream::connect(&self.host)?;
 
+        {
+            let mut global_stream = GLOBAL_STREAM.lock().unwrap();
+            *global_stream = Some(stream.try_clone().expect("Failed to clone TcpStream"));
+        }
+
         println!("Connected to the server. Listening for incoming messages...");
 
         let mut buffer = [0; 512];
-
-        // let mut project_path = env::current_dir()?;
 
         let mut is_ready = false;
 

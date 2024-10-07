@@ -1,4 +1,8 @@
 function rover.run()
+    -- local signal = rover.signal(0)
+
+    print("this is a log")
+
     return rover.view {
         height = "full",
         width = "100",
