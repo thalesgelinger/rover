@@ -1,11 +1,14 @@
+use core::fmt;
+
 use serde::{Serialize, Serializer};
 
 pub type Id = String;
 
-pub trait Ui {
+pub trait Ui<'lua> {
     fn attach_main_view(&self, main_id: Id) -> ();
     fn create_view(&self, params: Params<ViewProps>) -> Id;
     fn create_text(&self, params: Params<TextProps>) -> Id;
+    fn create_button(&self, params: Params<ButtonProps<'lua>>) -> Id;
 }
 
 #[derive(Debug)]
@@ -92,5 +95,28 @@ pub struct TextProps {
 impl TextProps {
     pub fn new() -> Self {
         TextProps { color: None }
+    }
+}
+
+pub struct ButtonProps<'lua> {
+    pub label: Option<String>,
+    pub on_press: Option<Box<dyn Fn() + 'lua>>,
+}
+
+impl<'lua> fmt::Debug for ButtonProps<'lua> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ButtonProps")
+            .field("label", &self.label)
+            .field("on_press", &self.on_press.as_ref().map(|_| "Function"))
+            .finish()
+    }
+}
+
+impl<'lua> ButtonProps<'lua> {
+    pub fn new() -> Self {
+        ButtonProps {
+            label: None,
+            on_press: None,
+        }
     }
 }

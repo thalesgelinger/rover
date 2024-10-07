@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use mlua::{Table, Value};
 
-use crate::ui::{HorizontalAlignement, Params, Size, TextProps, VerticalAlignement, ViewProps};
+use crate::ui::{
+    ButtonProps, HorizontalAlignement, Params, Size, TextProps, VerticalAlignement, ViewProps,
+};
 
 pub fn parse_view_props_children(tbl: Table) -> Params<ViewProps> {
     let mut params = Params::new(ViewProps::new());
@@ -57,6 +61,30 @@ pub fn parse_text_props_children(tbl: Table) -> Params<TextProps> {
         match pair.expect("Expected to have a pair") {
             (Value::String(prop), Value::String(value)) => match prop.as_bytes() {
                 b"color" => params.props.color = Some(value.to_str().unwrap().to_string()),
+                _ => panic!("Unexpected property"),
+            },
+            (Value::Integer(_), Value::String(text)) => {
+                params.children.push(text.to_str().unwrap().to_string())
+            }
+            _ => (),
+        }
+    }
+    params
+}
+
+pub fn parse_button_props_children(tbl: Table) -> Params<ButtonProps> {
+    let mut params = Params::new(ButtonProps::new());
+
+    for pair in tbl.pairs::<Value, Value>() {
+        match pair.expect("Expected to have a pair") {
+            (Value::String(prop), Value::Function(value)) => match prop.as_bytes() {
+                b"onPress" => {
+                    let fun = value.clone();
+                    let on_press = Box::new(move || {
+                        let _ = fun.call::<_, ()>(()).expect("Failed to call Lua function");
+                    });
+                    params.props.on_press = Some(on_press);
+                }
                 _ => panic!("Unexpected property"),
             },
             (Value::Integer(_), Value::String(text)) => {

@@ -4,13 +4,13 @@ use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
 
 use crate::{dev_server::GLOBAL_STREAM, ui::Ui, utils};
 
-pub struct Rover {
-    ui: Arc<dyn Ui>,
+pub struct Rover<'lua> {
+    ui: Arc<dyn Ui<'lua> + 'lua>,
     lua: Lua,
 }
 
-impl Rover {
-    pub fn new(ui: Arc<dyn Ui>) -> Rover {
+impl<'lua> Rover<'lua> {
+    pub fn new(ui: Arc<dyn Ui<'lua> + 'lua>) -> Rover<'lua> {
         let lua = Lua::new();
         Rover { ui, lua }
     }
@@ -22,7 +22,7 @@ impl Rover {
             let mut global_stream = GLOBAL_STREAM.lock().unwrap();
 
             if let Some(ref mut stream) = *global_stream {
-                let _ = stream.write_all(msg.as_bytes());
+                let _ = stream.write_all(format!("{}\n", msg).as_bytes());
             } else {
                 println!("{}", msg);
             }
@@ -36,6 +36,7 @@ impl Rover {
 
         self.setup_view(&lua_rover)?;
         self.setup_text(&lua_rover)?;
+        self.setup_button(&lua_rover)?;
 
         let main_view_id = self.exec(&lua_rover, entry_point);
 
@@ -59,12 +60,12 @@ impl Rover {
     }
 
     fn setup_view(&self, lua_rover: &Table) -> Result<()> {
-        let ui = Arc::clone(&self.ui);
+        let ui_clone = Arc::clone(&self.ui);
         let view_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
                 let params = utils::parse_view_props_children(tbl);
-                let view_id = ui.create_view(params);
+                let view_id = ui_clone.create_view(params);
 
                 Ok(Value::String(lua.create_string(&view_id)?))
             })
@@ -88,6 +89,22 @@ impl Rover {
 
         lua_rover.set("text", text_lua_fn)
     }
+
+    fn setup_button(&self, lua_rover: &Table) -> Result<()> {
+        let ui = Arc::clone(&self.ui);
+
+        let text_lua_fn = self
+            .lua
+            .create_function(move |lua, tbl: Table| {
+                let params = utils::parse_button_props_children(tbl);
+                let text_id = ui.create_button(params);
+
+                Ok(Value::String(lua.create_string(&text_id)?))
+            })
+            .expect("Failed to setup internal view function");
+
+        lua_rover.set("button", text_lua_fn)
+    }
 }
 
 #[cfg(test)]
@@ -98,16 +115,17 @@ mod tests {
 
     use super::*;
 
-    use crate::ui::{Id, Params, TextProps, Ui, ViewProps};
+    use crate::ui::{ButtonProps, Id, Params, TextProps, Ui, ViewProps};
 
-    struct Mock {
-        components: RefCell<HashMap<String, MockComponent>>,
+    struct Mock<'lua> {
+        components: RefCell<HashMap<String, MockComponent<'lua>>>,
     }
 
     #[derive(Debug)]
-    pub enum MockComponent {
+    pub enum MockComponent<'lua> {
         View(View),
         Text(Text),
+        Button(Button<'lua>),
     }
 
     #[derive(Debug)]
@@ -122,7 +140,13 @@ mod tests {
         children: Vec<String>,
     }
 
-    impl Mock {
+    #[derive(Debug)]
+    pub struct Button<'lua> {
+        props: ButtonProps<'lua>,
+        children: Vec<String>,
+    }
+
+    impl<'lua> Mock<'lua> {
         pub fn new() -> Self {
             Mock {
                 components: RefCell::new(HashMap::new()),
@@ -130,7 +154,7 @@ mod tests {
         }
     }
 
-    impl Ui for Mock {
+    impl<'lua> Ui<'lua> for Mock<'lua> {
         fn create_view(&self, params: Params<ViewProps>) -> Id {
             let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
             println!("Props: {:?}", &params.props.to_json());
@@ -159,6 +183,19 @@ mod tests {
 
         fn attach_main_view(&self, main_id: Id) -> () {
             println!("Main View Id: {}", main_id);
+        }
+
+        fn create_button(&self, params: Params<ButtonProps<'lua>>) -> Id {
+            let id = format!("ROVER_BUTTON_{}", Uuid::new_v4().to_string());
+            let button = MockComponent::Button(Button {
+                props: params.props,
+                children: params.children,
+            });
+
+            println!("{:?}", button);
+
+            self.components.borrow_mut().insert(id.clone(), button);
+            id
         }
     }
 

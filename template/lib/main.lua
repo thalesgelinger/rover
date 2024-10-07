@@ -15,5 +15,10 @@ function rover.run()
         rover.text {
             "Hello Rover",
         },
+        rover.button {
+            onPress = function()
+                print("hello")
+            end
+        }
     }
 end
