@@ -1,18 +1,36 @@
-use std::{fs, io::Write, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Write,
+    sync::{Arc, Mutex},
+};
 
 use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
+use uuid::Uuid;
 
-use crate::{dev_server::GLOBAL_STREAM, ui::Ui, utils};
+use crate::{
+    dev_server::GLOBAL_STREAM,
+    ui::{
+        ButtonProps, CallbackId, HorizontalAlignement, Params, Size, TextProps, Ui,
+        VerticalAlignement, ViewProps,
+    },
+};
 
-pub struct Rover<'lua> {
-    ui: Arc<dyn Ui<'lua> + 'lua>,
+pub struct Rover {
+    ui: Arc<dyn Ui>,
     lua: Lua,
+    lua_callbacks: Arc<Mutex<HashMap<CallbackId, Function<'static>>>>,
 }
 
-impl<'lua> Rover<'lua> {
-    pub fn new(ui: Arc<dyn Ui<'lua> + 'lua>) -> Rover<'lua> {
+impl Rover {
+    pub fn new(ui: Arc<dyn Ui>) -> Self {
         let lua = Lua::new();
-        Rover { ui, lua }
+        let lua_callbacks = Arc::new(Mutex::new(HashMap::new()));
+        Rover {
+            ui,
+            lua,
+            lua_callbacks,
+        }
     }
 
     pub fn start(&self, entry_point: String) -> Result<()> {
@@ -60,12 +78,68 @@ impl<'lua> Rover<'lua> {
     }
 
     fn setup_view(&self, lua_rover: &Table) -> Result<()> {
-        let ui_clone = Arc::clone(&self.ui);
+        let ui = Arc::clone(&self.ui);
         let view_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
-                let params = utils::parse_view_props_children(tbl);
-                let view_id = ui_clone.create_view(params);
+                let mut params = Params::new(ViewProps::new());
+
+                for pair in tbl.pairs::<Value, Value>() {
+                    match pair.expect("Expected to have a pair") {
+                        (Value::String(prop), Value::String(value)) => match prop.as_bytes() {
+                            b"horizontal" => match value.as_bytes() {
+                                b"center" => {
+                                    params.props.horizontal = Some(HorizontalAlignement::Center)
+                                }
+                                b"left" => {
+                                    params.props.horizontal = Some(HorizontalAlignement::Left)
+                                }
+                                b"right" => {
+                                    params.props.horizontal = Some(HorizontalAlignement::Right)
+                                }
+                                _ => panic!("Unexpected property value"),
+                            },
+                            b"vertical" => match value.as_bytes() {
+                                b"center" => {
+                                    params.props.vertical = Some(VerticalAlignement::Center)
+                                }
+                                b"top" => params.props.vertical = Some(VerticalAlignement::Top),
+                                b"bottom" => {
+                                    params.props.vertical = Some(VerticalAlignement::Bottom)
+                                }
+                                _ => panic!("Unexpected property value"),
+                            },
+                            b"color" => {
+                                params.props.color = Some(value.to_str().unwrap().to_string())
+                            }
+                            b"height" => match value.as_bytes() {
+                                b"full" => params.props.height = Some(Size::Full),
+                                bytes => {
+                                    let number_str = std::str::from_utf8(bytes).unwrap();
+                                    if let Ok(number) = number_str.parse::<usize>() {
+                                        params.props.height = Some(Size::Value(number));
+                                    }
+                                }
+                            },
+                            b"width" => match value.as_bytes() {
+                                b"full" => params.props.width = Some(Size::Full),
+                                bytes => {
+                                    let number_str = std::str::from_utf8(bytes).unwrap();
+                                    if let Ok(number) = number_str.parse::<usize>() {
+                                        params.props.width = Some(Size::Value(number));
+                                    }
+                                }
+                            },
+                            _ => panic!("Unexpected property"),
+                        },
+                        (Value::Integer(_), Value::String(child_id)) => {
+                            params.children.push(child_id.to_str().unwrap().to_string())
+                        }
+                        _ => (),
+                    }
+                }
+
+                let view_id = ui.create_view(params);
 
                 Ok(Value::String(lua.create_string(&view_id)?))
             })
@@ -76,11 +150,28 @@ impl<'lua> Rover<'lua> {
 
     fn setup_text(&self, lua_rover: &Table) -> Result<()> {
         let ui = Arc::clone(&self.ui);
-
         let text_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
-                let params = utils::parse_text_props_children(tbl);
+                let mut params = Params::new(TextProps::new());
+
+                for pair in tbl.pairs::<Value, Value>() {
+                    match pair.expect("Expected to have a pair") {
+                        (Value::String(ref prop), Value::String(ref value)) => {
+                            match prop.as_bytes() {
+                                b"color" => {
+                                    params.props.color = Some(value.to_str().unwrap().to_string())
+                                }
+                                _ => panic!("Unexpected property"),
+                            }
+                        }
+                        (Value::Integer(_), Value::String(ref text)) => {
+                            params.children.push(text.to_str().unwrap().to_string())
+                        }
+                        _ => (),
+                    }
+                }
+
                 let text_id = ui.create_text(params);
 
                 Ok(Value::String(lua.create_string(&text_id)?))
@@ -92,11 +183,35 @@ impl<'lua> Rover<'lua> {
 
     fn setup_button(&self, lua_rover: &Table) -> Result<()> {
         let ui = Arc::clone(&self.ui);
+        let lua_callbacks = Arc::clone(&self.lua_callbacks);
 
         let text_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
-                let params = utils::parse_button_props_children(tbl);
+                let mut params = Params::new(ButtonProps::new());
+
+                for pair in tbl.pairs::<Value, Value>() {
+                    match pair.expect("Expected to have a pair") {
+                        (Value::String(prop), Value::Function(value)) => match prop.as_bytes() {
+                            b"onPress" => {
+                                let callback_id: CallbackId =
+                                    format!("ROVER_LUA_CALLBACK_{}", Uuid::new_v4().to_string());
+                                let fun = value.clone();
+                                lua_callbacks
+                                    .lock()
+                                    .unwrap()
+                                    .insert(callback_id.clone(), fun);
+                                params.props.on_press = Some(callback_id);
+                            }
+                            _ => panic!("Unexpected property"),
+                        },
+                        (Value::Integer(_), Value::String(text)) => {
+                            params.children.push(text.to_str().unwrap().to_string())
+                        }
+                        _ => (),
+                    }
+                }
+
                 let text_id = ui.create_button(params);
 
                 Ok(Value::String(lua.create_string(&text_id)?))
@@ -117,15 +232,15 @@ mod tests {
 
     use crate::ui::{ButtonProps, Id, Params, TextProps, Ui, ViewProps};
 
-    struct Mock<'lua> {
-        components: RefCell<HashMap<String, MockComponent<'lua>>>,
+    struct Mock {
+        components: RefCell<HashMap<String, MockComponent>>,
     }
 
     #[derive(Debug)]
-    pub enum MockComponent<'lua> {
+    pub enum MockComponent {
         View(View),
         Text(Text),
-        Button(Button<'lua>),
+        Button(Button),
     }
 
     #[derive(Debug)]
@@ -141,12 +256,12 @@ mod tests {
     }
 
     #[derive(Debug)]
-    pub struct Button<'lua> {
-        props: ButtonProps<'lua>,
+    pub struct Button {
+        props: ButtonProps,
         children: Vec<String>,
     }
 
-    impl<'lua> Mock<'lua> {
+    impl Mock {
         pub fn new() -> Self {
             Mock {
                 components: RefCell::new(HashMap::new()),
@@ -154,7 +269,7 @@ mod tests {
         }
     }
 
-    impl<'lua> Ui<'lua> for Mock<'lua> {
+    impl Ui for Mock {
         fn create_view(&self, params: Params<ViewProps>) -> Id {
             let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
             println!("Props: {:?}", &params.props.to_json());
@@ -185,7 +300,7 @@ mod tests {
             println!("Main View Id: {}", main_id);
         }
 
-        fn create_button(&self, params: Params<ButtonProps<'lua>>) -> Id {
+        fn create_button(&self, params: Params<ButtonProps>) -> Id {
             let id = format!("ROVER_BUTTON_{}", Uuid::new_v4().to_string());
             let button = MockComponent::Button(Button {
                 props: params.props,
