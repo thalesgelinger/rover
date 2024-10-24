@@ -4,18 +4,34 @@ local rover = require "signals"
 local count = rover.signal(0)
 local double = count * 2
 
-print("Aqui só roda uma vez")
+local incremet = function()
+    count.set(count.get() + 1)
+end
+
+print("Runs only once")
 
 rover.effect(function()
-    print("Inside effect: " .. double.get())
+    print("Double: " .. double.get())
 end)
 
-local another = rover.signal(" Que")
 
-rover.component("value " .. double .. another)
+local text = rover.signal("A")
 
-count.set(count.get() + 1)
-count.set(count.get() + 1)
-count.set(count.get() + 1)
-count.set(count.get() + 1)
-another.set(" Que foi")
+rover.component("Val: " .. double .. text)
+
+
+
+
+-- USER INTERACTION
+
+function UI(fn, n)
+    for _ = 1, n, 1 do
+        fn()
+        os.execute("sleep 1")
+    end
+end
+
+UI(function()
+    incremet()
+    text.set(text.get() .. "A")
+end, 5)

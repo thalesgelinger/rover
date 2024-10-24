@@ -1,14 +1,15 @@
 use core::fmt;
+use std::{cell::RefCell, rc::Rc};
 
 use serde::{Serialize, Serializer};
 
 pub type Id = String;
 
-pub trait Ui<'lua> {
+pub trait Ui {
     fn attach_main_view(&self, main_id: Id) -> ();
     fn create_view(&self, params: Params<ViewProps>) -> Id;
     fn create_text(&self, params: Params<TextProps>) -> Id;
-    fn create_button(&self, params: Params<ButtonProps<'lua>>) -> Id;
+    fn create_button(&self, params: Params<ButtonProps>) -> Id;
 }
 
 #[derive(Debug)]
@@ -98,12 +99,12 @@ impl TextProps {
     }
 }
 
-pub struct ButtonProps<'lua> {
+pub struct ButtonProps {
     pub label: Option<String>,
-    pub on_press: Option<Box<dyn Fn() + 'lua>>,
+    pub on_press: Option<Rc<RefCell<Box<dyn Fn()>>>>,
 }
 
-impl<'lua> fmt::Debug for ButtonProps<'lua> {
+impl fmt::Debug for ButtonProps {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ButtonProps")
             .field("label", &self.label)
@@ -112,7 +113,7 @@ impl<'lua> fmt::Debug for ButtonProps<'lua> {
     }
 }
 
-impl<'lua> ButtonProps<'lua> {
+impl ButtonProps {
     pub fn new() -> Self {
         ButtonProps {
             label: None,

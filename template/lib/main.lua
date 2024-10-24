@@ -1,24 +1,17 @@
 function rover.run()
+    print("Batata")
     -- local signal = rover.signal(0)
-
-    print("this is a log")
-
     return rover.view {
         height = "full",
-        width = "100",
-        color = "#0000ff",
+        width = "full",
+        color = "#ffffff",
         rover.view {
             height = "100",
-            width = "full",
-            color = "#00ff00"
+            width = "200",
+            color = "#ff00ff",
         },
         rover.text {
-            "Hello Rover",
-        },
-        rover.button {
-            onPress = function()
-                print("hello")
-            end
+            "Hello world"
         }
     }
 end

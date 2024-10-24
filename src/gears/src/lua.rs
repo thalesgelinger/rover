@@ -4,13 +4,13 @@ use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
 
 use crate::{dev_server::GLOBAL_STREAM, ui::Ui, utils};
 
-pub struct Rover<'lua> {
-    ui: Arc<dyn Ui<'lua> + 'lua>,
+pub struct Rover {
+    ui: Arc<dyn Ui>,
     lua: Lua,
 }
 
-impl<'lua> Rover<'lua> {
-    pub fn new(ui: Arc<dyn Ui<'lua> + 'lua>) -> Rover<'lua> {
+impl Rover {
+    pub fn new(ui: Arc<dyn Ui>) -> Rover {
         let lua = Lua::new();
         Rover { ui, lua }
     }
@@ -117,15 +117,15 @@ mod tests {
 
     use crate::ui::{ButtonProps, Id, Params, TextProps, Ui, ViewProps};
 
-    struct Mock<'lua> {
-        components: RefCell<HashMap<String, MockComponent<'lua>>>,
+    struct Mock {
+        components: RefCell<HashMap<String, MockComponent>>,
     }
 
     #[derive(Debug)]
-    pub enum MockComponent<'lua> {
+    pub enum MockComponent {
         View(View),
         Text(Text),
-        Button(Button<'lua>),
+        Button(Button),
     }
 
     #[derive(Debug)]
@@ -141,12 +141,12 @@ mod tests {
     }
 
     #[derive(Debug)]
-    pub struct Button<'lua> {
-        props: ButtonProps<'lua>,
+    pub struct Button {
+        props: ButtonProps,
         children: Vec<String>,
     }
 
-    impl<'lua> Mock<'lua> {
+    impl Mock {
         pub fn new() -> Self {
             Mock {
                 components: RefCell::new(HashMap::new()),
@@ -154,7 +154,7 @@ mod tests {
         }
     }
 
-    impl<'lua> Ui<'lua> for Mock<'lua> {
+    impl Ui for Mock {
         fn create_view(&self, params: Params<ViewProps>) -> Id {
             let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
             println!("Props: {:?}", &params.props.to_json());
@@ -185,7 +185,7 @@ mod tests {
             println!("Main View Id: {}", main_id);
         }
 
-        fn create_button(&self, params: Params<ButtonProps<'lua>>) -> Id {
+        fn create_button(&self, params: Params<ButtonProps>) -> Id {
             let id = format!("ROVER_BUTTON_{}", Uuid::new_v4().to_string());
             let button = MockComponent::Button(Button {
                 props: params.props,

@@ -194,7 +194,7 @@ impl AndroidComponent {
     }
 }
 
-impl<'lua> Ui<'lua> for Android {
+impl Ui for Android {
     fn attach_main_view(&self, main_id: Id) -> () {
         let components = self.components.borrow();
         let context = self.context.borrow();
@@ -319,7 +319,7 @@ impl<'lua> Ui<'lua> for Android {
         id
     }
 
-    fn create_button(&self, _params: Params<crate::ui::ButtonProps<'lua>>) -> Id {
+    fn create_button(&self, _params: Params<crate::ui::ButtonProps>) -> Id {
         todo!()
     }
 }

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use mlua::{Table, Value};
 
@@ -80,9 +80,9 @@ pub fn parse_button_props_children(tbl: Table) -> Params<ButtonProps> {
             (Value::String(prop), Value::Function(value)) => match prop.as_bytes() {
                 b"onPress" => {
                     let fun = value.clone();
-                    let on_press = Box::new(move || {
+                    let on_press = Rc::new(RefCell::new(Box::new(move || {
                         let _ = fun.call::<_, ()>(()).expect("Failed to call Lua function");
-                    });
+                    })));
                     params.props.on_press = Some(on_press);
                 }
                 _ => panic!("Unexpected property"),

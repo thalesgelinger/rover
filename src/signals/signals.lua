@@ -1,42 +1,85 @@
 local subscriber = nil
 
+local function createOperatorFunction(fn)
+    return function(a, b)
+        local getA, getB
+
+        if type(a) == "table" then
+            getA = a.get
+        else
+            getA = function() return a end
+        end
+
+        if type(b) == "table" then
+            getB = b.get
+        else
+            getB = function() return b end
+        end
+
+        return derive(function()
+            return fn(getA(), getB())
+        end)
+    end
+end
+
 local signalMetaTable = {
-    __mul = function(a, b)
-        if type(a) == "table" and type(b) == "table" then
-            return derive(function()
-                return a.get() * b.get()
-            end)
-        end
-
-        if type(a) == "table" then
-            return derive(function()
-                return a.get() * b
-            end)
-        end
-        if type(b) == "table" then
-            return derive(function()
-                return a * b.get()
-            end)
-        end
-    end,
-    __concat = function(a, b)
-        if type(a) == "table" and type(b) == "table" then
-            return derive(function()
-                return a.get() .. b.get()
-            end)
-        end
-
-        if type(a) == "table" then
-            return derive(function()
-                return a.get() .. b
-            end)
-        end
-        if type(b) == "table" then
-            return derive(function()
-                return a .. b.get()
-            end)
-        end
-    end,
+    __add = createOperatorFunction(function(a, b)
+        return a + b
+    end),
+    __sub = createOperatorFunction(function(a, b)
+        return a - b
+    end),
+    __mul = createOperatorFunction(function(a, b)
+        return a * b
+    end),
+    __div = createOperatorFunction(function(a, b)
+        return a / b
+    end),
+    __unm = createOperatorFunction(function(a)
+        return -a
+    end),
+    __mod = createOperatorFunction(function(a, b)
+        return a % b
+    end),
+    __pow = createOperatorFunction(function(a, b)
+        return a ^ b
+    end),
+    __idiv = createOperatorFunction(function(a, b)
+        return a // b
+    end),
+    __band = createOperatorFunction(function(a, b)
+        return a & b
+    end),
+    __bor = createOperatorFunction(function(a, b)
+        return a | b
+    end),
+    __bxor = createOperatorFunction(function(a, b)
+        return a ~ b
+    end),
+    __bnot = createOperatorFunction(function(a)
+        return ~a
+    end),
+    __shl = createOperatorFunction(function(a, b)
+        return a << b
+    end),
+    __shr = createOperatorFunction(function(a, b)
+        return a >> b
+    end),
+    __eq = createOperatorFunction(function(a, b)
+        return a == b
+    end),
+    __lt = createOperatorFunction(function(a, b)
+        return a < b
+    end),
+    __le = createOperatorFunction(function(a, b)
+        return a <= b
+    end),
+    __concat = createOperatorFunction(function(a, b)
+        return a .. b
+    end),
+    __len = createOperatorFunction(function(a)
+        return #a
+    end),
 }
 
 -- Signal creation
@@ -64,7 +107,6 @@ function signal(initialValue)
             end
         end
     }
-
 
     return setmetatable(signalTable, signalMetaTable)
 end
