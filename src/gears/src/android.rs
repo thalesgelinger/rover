@@ -194,7 +194,7 @@ impl AndroidComponent {
     }
 }
 
-impl Ui for Android {
+impl Ui<'_> for Android {
     fn attach_main_view(&self, main_id: Id) -> () {
         let components = self.components.borrow();
         let context = self.context.borrow();

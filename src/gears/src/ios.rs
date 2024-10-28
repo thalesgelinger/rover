@@ -97,7 +97,7 @@ struct Ios {
 }
 
 impl Ios {
-    pub fn new(view: *mut NSObject) -> Ios {
+    pub fn new(view: *mut NSObject) -> Self {
         let components = RefCell::new(HashMap::new());
 
         Ios { view, components }
@@ -121,7 +121,7 @@ enum IosComponent {
     Text(*mut NSObject),
 }
 
-impl Ui for Ios {
+impl Ui<'_> for Ios {
     fn attach_main_view(&self, main_id: Id) -> () {
         let components = self.components.borrow();
         let main_view = components.get(&main_id).expect("Missing main view id");

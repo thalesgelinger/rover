@@ -1,15 +1,15 @@
 use core::fmt;
-use std::{cell::RefCell, rc::Rc};
 
+use mlua::Function;
 use serde::{Serialize, Serializer};
 
 pub type Id = String;
 
-pub trait Ui {
+pub trait Ui<'a> {
     fn attach_main_view(&self, main_id: Id) -> ();
     fn create_view(&self, params: Params<ViewProps>) -> Id;
     fn create_text(&self, params: Params<TextProps>) -> Id;
-    fn create_button(&self, params: Params<ButtonProps>) -> Id;
+    fn create_button(&self, params: Params<ButtonProps<'a>>) -> Id;
 }
 
 #[derive(Debug)]
@@ -27,7 +27,7 @@ impl<T> Params<T> {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewProps {
     pub height: Option<Size>,
@@ -53,7 +53,7 @@ impl ViewProps {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum HorizontalAlignement {
     Left,
@@ -61,7 +61,7 @@ pub enum HorizontalAlignement {
     Right,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Size {
     Full,
     Value(usize),
@@ -79,7 +79,7 @@ impl Serialize for Size {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum VerticalAlignement {
     Top,
@@ -87,7 +87,7 @@ pub enum VerticalAlignement {
     Bottom,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TextProps {
     pub color: Option<String>,
@@ -99,12 +99,13 @@ impl TextProps {
     }
 }
 
-pub struct ButtonProps {
+#[derive(Clone)]
+pub struct ButtonProps<'lua> {
     pub label: Option<String>,
-    pub on_press: Option<Rc<RefCell<Box<dyn Fn()>>>>,
+    pub on_press: Option<Function<'lua>>,
 }
 
-impl fmt::Debug for ButtonProps {
+impl<'lua> fmt::Debug for ButtonProps<'lua> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ButtonProps")
             .field("label", &self.label)
@@ -113,7 +114,7 @@ impl fmt::Debug for ButtonProps {
     }
 }
 
-impl ButtonProps {
+impl<'lua> ButtonProps<'lua> {
     pub fn new() -> Self {
         ButtonProps {
             label: None,
