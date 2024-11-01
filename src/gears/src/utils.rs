@@ -83,7 +83,13 @@ impl PropsParser for Table<'_> {
             match pair.expect("Expected to have a pair") {
                 (Value::String(prop), Value::Function(value)) => match prop.as_bytes() {
                     b"onPress" => {
-                        params.props.on_press = Some(value.clone());
+                        params.props.on_press = Some(value);
+                    }
+                    _ => panic!("Unexpected property"),
+                },
+                (Value::String(prop), Value::String(value)) => match prop.as_bytes() {
+                    b"label" => {
+                        params.props.label = Some(value.to_str().unwrap().to_string());
                     }
                     _ => panic!("Unexpected property"),
                 },

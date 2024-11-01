@@ -12,6 +12,12 @@ function rover.run()
         },
         rover.text {
             "Hello world"
+        },
+        rover.button {
+            label = "Click me",
+            onPress = function()
+                print("On press this will be called")
+            end
         }
     }
 end

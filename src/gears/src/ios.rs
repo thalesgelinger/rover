@@ -121,7 +121,7 @@ enum IosComponent {
     Text(*mut NSObject),
 }
 
-impl Ui<'_> for Ios {
+impl Ui for Ios {
     fn attach_main_view(&self, main_id: Id) -> () {
         let components = self.components.borrow();
         let main_view = components.get(&main_id).expect("Missing main view id");

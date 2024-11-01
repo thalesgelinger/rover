@@ -4,12 +4,12 @@ use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
 
 use crate::{dev_server::GLOBAL_STREAM, ui::Ui, utils::PropsParser};
 
-pub struct Rover<'rover> {
-    ui: Arc<dyn Ui<'rover>>,
+pub struct Rover {
+    ui: Arc<dyn Ui>,
     lua: Lua,
 }
 
-impl Rover<'_> {
+impl Rover {
     pub fn new(ui: Arc<dyn Ui>) -> Rover {
         let lua = Lua::new();
         Rover { ui, lua }
@@ -60,12 +60,12 @@ impl Rover<'_> {
     }
 
     fn setup_view(&self, lua_rover: &Table) -> Result<()> {
-        let ui_clone = Arc::clone(&self.ui);
+        let ui = Arc::clone(&self.ui);
         let view_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
                 let params = tbl.parse_view_props();
-                let view_id = ui_clone.create_view(params);
+                let view_id = ui.create_view(params);
 
                 Ok(Value::String(lua.create_string(&view_id)?))
             })
@@ -117,86 +117,67 @@ mod tests {
 
     use crate::ui::{ButtonProps, Id, Params, TextProps, Ui, ViewProps};
 
-    struct Mock<'rover> {
-        components: RefCell<HashMap<String, MockComponent<'rover>>>,
+    struct Mock {
+        components: RefCell<HashMap<String, MockComponent>>,
     }
 
     #[derive(Debug, Clone)]
-    pub enum MockComponent<'rover> {
-        View(View),
-        Text(Text),
-        Button(Button<'rover>),
+    pub enum MockComponent {
+        View(String),
+        Text(String),
+        Button(String),
     }
 
-    #[derive(Debug, Clone)]
-    pub struct View {
-        props: ViewProps,
-        children: Vec<String>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct Text {
-        props: TextProps,
-        children: Vec<String>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct Button<'rover> {
-        props: ButtonProps<'rover>,
-        children: Vec<String>,
-    }
-
-    impl Mock<'_> {
+    impl Mock {
         pub fn new() -> Self {
             Mock {
                 components: RefCell::new(HashMap::new()),
             }
         }
+
+        pub fn show(&self) {
+            self.components
+                .borrow()
+                .clone()
+                .into_iter()
+                .for_each(|v| print!("{:?}", v))
+        }
     }
 
-    impl<'lua> Ui<'lua> for Mock<'lua> {
+    impl Ui for Mock {
+        fn attach_main_view(&self, main_id: Id) -> () {
+            println!("Main View Id: {}", main_id);
+            self.show();
+        }
+
         fn create_view(&self, params: Params<ViewProps>) -> Id {
             let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
-            println!("Props: {:?}", &params.props.to_json());
-            let view = MockComponent::View(View {
-                props: params.props,
-                children: params.children,
-            });
+            let view = MockComponent::View(format!("{:?}", params));
 
-            println!("{:?}", view);
+            println!("View: {:?}", view);
             self.components.borrow_mut().insert(id.clone(), view);
             id
         }
 
         fn create_text(&self, params: Params<TextProps>) -> Id {
             let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
-            let text = MockComponent::Text(Text {
-                props: params.props,
-                children: params.children,
-            });
+            let text = MockComponent::Text(format!("{:?}", params));
 
-            println!("{:?}", text);
+            println!("Text: {:?}", text);
 
             self.components.borrow_mut().insert(id.clone(), text);
             id
         }
 
-        fn attach_main_view(&self, main_id: Id) -> () {
-            println!("Main View Id: {}", main_id);
-        }
-
-        fn create_button(&self, params: Params<ButtonProps<'lua>>) -> Id {
+        fn create_button(&self, params: Params<ButtonProps>) -> Id {
             let id = format!("ROVER_BUTTON_{}", Uuid::new_v4().to_string());
-            let button = MockComponent::Button(Button {
-                props: params.props,
-                children: params.children,
-            });
+            let button = MockComponent::Button(format!("{:?}", params));
 
-            println!("{:?}", button);
+            println!("Button: {:?}", params);
 
-            self.components
-                .borrow_mut()
-                .insert(id.clone(), button.clone());
+            let _ = params.props.on_press.unwrap().call::<(), String>(());
+
+            self.components.borrow_mut().insert(id.clone(), button);
             id
         }
     }
@@ -205,7 +186,7 @@ mod tests {
     fn should_run_rover() -> Result<()> {
         let ui: Mock = Mock::new();
         let rover = Rover::new(Arc::new(ui));
-        rover.start("../../../template/lib/main.lua".into())?;
+        rover.start("../../template/lib/main.lua".into())?;
         Ok(())
     }
 }
