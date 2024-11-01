@@ -1,6 +1,7 @@
 use std::{fs, io::Write, sync::Arc};
 
-use mlua::{Function, Lua, Result, String as LuaString, Table, Value};
+use anyhow::Result;
+use mlua::{Error as LuaError, Function, Lua, String as LuaString, Table, Value};
 
 use crate::{dev_server::GLOBAL_STREAM, ui::Ui, utils::PropsParser};
 
@@ -40,9 +41,7 @@ impl Rover {
 
         let main_view_id = self.exec(&lua_rover, entry_point);
 
-        self.ui.attach_main_view(main_view_id);
-
-        Ok(())
+        self.ui.attach_main_view(main_view_id)
     }
 
     fn exec(&self, lua_rover: &Table, entry_point: String) -> String {
@@ -65,13 +64,14 @@ impl Rover {
             .lua
             .create_function(move |lua, tbl: Table| {
                 let params = tbl.parse_view_props();
-                let view_id = ui.create_view(params);
+                let view_id = ui.create_view(params).map_err(|e| LuaError::external(e))?;
 
                 Ok(Value::String(lua.create_string(&view_id)?))
             })
             .expect("Failed to setup internal view function");
 
-        lua_rover.set("view", view_lua_fn)
+        lua_rover.set("view", view_lua_fn)?;
+        Ok(())
     }
 
     fn setup_text(&self, lua_rover: &Table) -> Result<()> {
@@ -81,29 +81,33 @@ impl Rover {
             .lua
             .create_function(move |lua, tbl: Table| {
                 let params = tbl.parse_text_props();
-                let text_id = ui.create_text(params);
+                let text_id = ui.create_text(params).map_err(|e| LuaError::external(e))?;
 
                 Ok(Value::String(lua.create_string(&text_id)?))
             })
             .expect("Failed to setup internal view function");
 
-        lua_rover.set("text", text_lua_fn)
+        lua_rover.set("text", text_lua_fn)?;
+        Ok(())
     }
 
     fn setup_button(&self, lua_rover: &Table) -> Result<()> {
         let ui = Arc::clone(&self.ui);
 
-        let text_lua_fn = self
+        let button_lua_fn = self
             .lua
             .create_function(move |lua, tbl: Table| {
                 let params = tbl.parse_button_props();
-                let text_id = ui.create_button(params);
+                let text_id = ui
+                    .create_button(params)
+                    .map_err(|e| LuaError::external(e))?;
 
                 Ok(Value::String(lua.create_string(&text_id)?))
             })
             .expect("Failed to setup internal view function");
 
-        lua_rover.set("button", text_lua_fn)
+        lua_rover.set("button", button_lua_fn)?;
+        Ok(())
     }
 }
 
@@ -111,6 +115,7 @@ impl Rover {
 mod tests {
     use std::{cell::RefCell, collections::HashMap};
 
+    use anyhow::Result;
     use uuid::Uuid;
 
     use super::*;
@@ -145,31 +150,32 @@ mod tests {
     }
 
     impl Ui for Mock {
-        fn attach_main_view(&self, main_id: Id) -> () {
+        fn attach_main_view(&self, main_id: Id) -> Result<()> {
             println!("Main View Id: {}", main_id);
             self.show();
+            Ok(())
         }
 
-        fn create_view(&self, params: Params<ViewProps>) -> Id {
+        fn create_view(&self, params: Params<ViewProps>) -> Result<Id> {
             let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
             let view = MockComponent::View(format!("{:?}", params));
 
             println!("View: {:?}", view);
             self.components.borrow_mut().insert(id.clone(), view);
-            id
+            Ok(id)
         }
 
-        fn create_text(&self, params: Params<TextProps>) -> Id {
+        fn create_text(&self, params: Params<TextProps>) -> Result<Id> {
             let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
             let text = MockComponent::Text(format!("{:?}", params));
 
             println!("Text: {:?}", text);
 
             self.components.borrow_mut().insert(id.clone(), text);
-            id
+            Ok(id)
         }
 
-        fn create_button(&self, params: Params<ButtonProps>) -> Id {
+        fn create_button(&self, params: Params<ButtonProps>) -> Result<Id> {
             let id = format!("ROVER_BUTTON_{}", Uuid::new_v4().to_string());
             let button = MockComponent::Button(format!("{:?}", params));
 
@@ -178,7 +184,7 @@ mod tests {
             let _ = params.props.on_press.unwrap().call::<(), String>(());
 
             self.components.borrow_mut().insert(id.clone(), button);
-            id
+            Ok(id)
         }
     }
 

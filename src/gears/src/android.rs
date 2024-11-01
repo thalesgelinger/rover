@@ -4,13 +4,14 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
+use anyhow::{Error, Result};
 use jni::objects::{JClass, JObject, JString, JValue};
 use jni::JNIEnv;
 use uuid::Uuid;
 
 use crate::dev_server::{DevServer, ServerMessages};
 use crate::lua::Rover;
-use crate::ui::{Id, Params, TextProps, Ui, ViewProps};
+use crate::ui::{ButtonProps, Id, Params, TextProps, Ui,  ViewProps};
 
 #[no_mangle]
 pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
@@ -21,7 +22,7 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
 ) {
     let env = Arc::new(Mutex::new(env));
 
-    env.lock().unwrap().log_info("ROVER STARTED");
+    let _ = env.lock().unwrap().log_info("ROVER STARTED");
 
     let android = Arc::new(Android::new(context, Arc::clone(&env)));
     let rover = Rover::new(android);
@@ -29,8 +30,8 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_start(
     let path: String = env.lock().unwrap().get_string(&path).unwrap().into();
 
     match rover.start(path) {
-        Ok(_) => env.lock().unwrap().log_info("Rover started"),
-        Err(_) => env.lock().unwrap().log_error("Rover failed to start"),
+        Ok(()) => env.lock().unwrap().log_info("Rover started").unwrap(),
+        Err(err) => env.lock().unwrap().log_error(&err.to_string()).unwrap(),
     }
 }
 
@@ -67,13 +68,15 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_devServer(
 
                 let jstring = env.new_string(project_name).unwrap();
 
-                env.call_method(
+                let _ = match env.call_method(
                     file_utils,
                     "createFolderIfNotExists",
                     "(Landroid/content/Context;Ljava/lang/String;)Ljava/io/File;",
                     &[JValue::Object(&context), JValue::Object(&jstring)],
-                )
-                .unwrap();
+                ) {
+                    Ok(_) => env.log_info("Project created").unwrap(),
+                    Err(_) => env.log_info("Error creating project").unwrap(),
+                };
             }
             ServerMessages::File(file) => {
                 let file_class = env
@@ -101,30 +104,30 @@ pub extern "system" fn Java_com_rovernative_roverandroid_Gears_devServer(
                 .unwrap();
 
                 let jstring = env.new_string(format!("{}/lib/main.lua", name)).unwrap();
-                match env.call_method(
+                let _ = match env.call_method(
                     callback_global.clone(),
                     "run",
                     "(Ljava/lang/String;)V",
                     &[JValue::Object(&jstring)],
-                ) {
-                    Ok(_) => env.log_info("Updated from file changes"),
-                    Err(_) => env.log_error("Fail to update from file changes"),
-                }
+                ){
+                    Ok(_) => env.log_info("Filed sent").unwrap(),
+                    Err(_) => env.log_info("Error sending filed").unwrap(),
+                };
             }
             ServerMessages::Ready => {
                 let jstring = env.new_string(format!("{}/lib/main.lua", name)).unwrap();
-                match env.call_method(
+                let _ = match                env.call_method(
                     callback_global.clone(),
                     "run",
                     "(Ljava/lang/String;)V",
                     &[JValue::Object(&jstring)],
-                ) {
-                    Ok(_) => env.log_info("Updated from file changes"),
-                    Err(_) => env.log_error("Fail to update from file changes"),
-                }
+                ){
+                    Ok(_) => env.log_info("Filed sent").unwrap(),
+                    Err(_) => env.log_info("Error sending filed").unwrap(),
+                };
             }
-        }
-    }
+        };
+    };
 }
 
 struct Android {
@@ -168,7 +171,7 @@ impl Android {
                 panic!("Failed to load Gears: {}", e)
             }
         };
-        env.lock().unwrap().log_info("ANDROID CREATED");
+        let _ = env.lock().unwrap().log_info("ANDROID CREATED");
 
         Android {
             context: RefCell::new(context),
@@ -195,18 +198,18 @@ impl AndroidComponent {
 }
 
 impl Ui for Android {
-    fn attach_main_view(&self, main_id: Id) -> () {
+    fn attach_main_view(&self, main_id: Id) -> Result<()> {
         let components = self.components.borrow();
         let context = self.context.borrow();
-        let child = components.get(&main_id).expect("Missing maing view");
-        self.env.lock().unwrap().log_info("ATTACHING MAIN VIEW");
+        let child = components.get(&main_id).ok_or_else(|| Error::msg("There's no chiled to be attached to main view"))?;
+        self.env.lock().unwrap().log_info("ATTACHING MAIN VIEW")?;
 
         match child {
             AndroidComponent::View(view) => {
                 self.env
                     .lock()
                     .unwrap()
-                    .log_info("ATTACHING VIEW ON MAIN VIEW");
+                    .log_info("ATTACHING VIEW ON MAIN VIEW")?;
 
                 self.env
                     .lock()
@@ -216,29 +219,23 @@ impl Ui for Android {
                         "setContentView",
                         "(Landroid/view/View;)V",
                         &[view.into()],
-                    )
-                    .expect("Error in an attempt to call setContentView from rover");
+                    )?;
             }
             AndroidComponent::Text(_) => self.env.lock().unwrap().log_error(
                 "Attack text is not allowed in main view, please use a container object".into(),
-            ),
-        }
+            )?
+        };
+        Ok(())
     }
 
-    fn create_view(&self, params: Params<ViewProps>) -> Id {
+    fn create_view(&self, params: Params<ViewProps>) -> Result<Id> {
         let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
         let mut env = self.env.lock().unwrap();
-        env.log_info("CREATING VIEW");
+        env.log_info("CREATING VIEW")?;
 
-        let props = match env.new_string(params.props.to_json()) {
-            Ok(value) => value,
-            Err(_) => {
-                env.log_error("Error creating text string:");
-                panic!("Error creating text");
-            }
-        };
+        let props = env.new_string(params.props.to_json())?;
 
-        env.log_info("Props Created");
+        env.log_info("Props Created")?;
 
         let result = env
             .call_method(
@@ -249,53 +246,42 @@ impl Ui for Android {
                     JValue::Object(&self.context.borrow()),
                     JValue::Object(&props),
                 ],
-            )
-            .expect("Failed creating view")
-            .l()
-            .expect("Failed to extract view object");
+            )?.l()?;
 
         for child_id in params.children {
             let components = self.components.borrow();
             let child = components
                 .get(&child_id)
-                .expect("Expected component to exist");
+                .ok_or_else(|| Error::msg("Expected component to exist"))?;
 
-            env.log_info("ADDING CHILD");
+            env.log_info("ADDING CHILD")?;
 
-            if let Err(_) = env.call_method(
+            env.call_method(
                 result.as_ref(),
                 "addView",
                 "(Landroid/view/View;)V",
                 &[JValue::Object(child.get_j_object().as_ref())],
-            ) {
-                env.log_error("Failed to add view child")
-            }
+            )?;
         }
-        env.log_info("CHILDREN ADDED");
+        env.log_info("CHILDREN ADDED")?;
 
         self.components
             .borrow_mut()
             .insert(id.clone(), AndroidComponent::View(result));
 
-        env.log_info("VIEW CREATED");
+        env.log_info("VIEW CREATED")?;
 
-        id
+        Ok(id)
     }
 
-    fn create_text(&self, params: Params<TextProps>) -> Id {
+    fn create_text(&self, params: Params<TextProps>) -> Result<Id> {
         let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
         let mut env = self.env.lock().unwrap();
-        env.log_info("CREATING TEXT");
+        env.log_info("CREATING TEXT")?;
 
         let text = &params.children.join("\n");
 
-        let jstring = match env.new_string(text) {
-            Ok(value) => value,
-            Err(_) => {
-                env.log_error("Error creating text string:");
-                panic!("");
-            }
-        };
+        let jstring = env.new_string(text)?;
 
         let result = env
             .call_method(
@@ -306,68 +292,54 @@ impl Ui for Android {
                     JValue::Object(&self.context.borrow()),
                     JValue::Object(&jstring),
                 ],
-            )
-            .expect("Failed creating view")
-            .l()
-            .expect("Failed to extract view object");
+            )? .l()?;
 
         self.components
             .borrow_mut()
             .insert(id.clone(), AndroidComponent::Text(result));
 
-        env.log_info("TEXT CREATED");
-        id
+        env.log_info("TEXT CREATED")?;
+        Ok(id)
     }
 
-    fn create_button(&self, _params: Params<crate::ui::ButtonProps>) -> Id {
-        todo!()
+    fn create_button(&self, _params: Params<ButtonProps>) -> Result<Id>{
+        let id = format!("ROVER_BUTTON_{}", Uuid::new_v4().to_string());
+        Ok(id)
     }
 }
 
 impl Log for JNIEnv<'static> {
-    fn log_info(&mut self, msg: &str) {
-        let log_class = self
-            .find_class("android/util/Log")
-            .expect("Failed to find Log class");
-        let tag = self
-            .new_string("ROVER")
-            .expect("Failed to create Java string for tag");
-        let msg = self
-            .new_string(msg)
-            .expect("Failed to create Java string for message");
+    fn log_info(&mut self, msg: &str) -> Result<()> {
+        let log_class = self .find_class("android/util/Log")?;
+        let tag = self .new_string("ROVER")?;
+        let msg = self .new_string(msg)?;
 
         self.call_static_method(
             log_class,
             "i",
             "(Ljava/lang/String;Ljava/lang/String;)I",
             &[JValue::Object(&tag.into()), JValue::Object(&msg.into())],
-        )
-        .expect("Failed to call Log.i method");
+        )?;
+        Ok(())
     }
 
-    fn log_error(&mut self, msg: &str) {
-        let log_class = self
-            .find_class("android/util/Log")
-            .expect("Failed to find Log class");
-        let tag = self
-            .new_string("ROVER")
-            .expect("Failed to create Java string for tag");
-        let msg = self
-            .new_string(msg)
-            .expect("Failed to create Java string for message");
+    fn log_error(&mut self, msg: &str) -> Result<()> {
+        let log_class = self .find_class("android/util/Log")?;
+        let tag = self .new_string("ROVER")?;
+        let msg = self .new_string(msg)?;
 
         self.call_static_method(
             log_class,
             "e",
             "(Ljava/lang/String;Ljava/lang/String;)I",
             &[JValue::Object(&tag.into()), JValue::Object(&msg.into())],
-        )
-        .expect("Failed to call Log.i method");
+        )?;
+        Ok(())
     }
 }
 
 trait Log {
-    fn log_info(&mut self, msg: &str) -> ();
+    fn log_info(&mut self, msg: &str) -> Result<()>;
 
-    fn log_error(&mut self, msg: &str) -> ();
+    fn log_error(&mut self, msg: &str) -> Result<()>;
 }

@@ -6,6 +6,7 @@ use std::{
     thread,
 };
 
+use anyhow::Result;
 use objc2::{
     class, msg_send,
     runtime::{AnyClass, NSObject},
@@ -126,14 +127,15 @@ enum IosComponent {
 }
 
 impl Ui for Ios {
-    fn attach_main_view(&self, main_id: Id) -> () {
+    fn attach_main_view(&self, main_id: Id) -> Result<()> {
         let components = self.components.borrow();
         let main_view = components.get(&main_id).expect("Missing main view id");
 
         self.add_subview(self.view, main_view);
+        Ok(())
     }
 
-    fn create_view(&self, params: Params<ViewProps>) -> Id {
+    fn create_view(&self, params: Params<ViewProps>) -> Result<Id> {
         let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
 
         unsafe {
@@ -159,10 +161,10 @@ impl Ui for Ios {
                 .insert(id.clone(), IosComponent::View(view));
         }
 
-        id
+        Ok(id)
     }
 
-    fn create_text(&self, params: Params<TextProps>) -> Id {
+    fn create_text(&self, params: Params<TextProps>) -> Result<Id> {
         let id = format!("ROVER_TEXT_{}", Uuid::new_v4().to_string());
 
         unsafe {
@@ -178,10 +180,10 @@ impl Ui for Ios {
                 .insert(id.clone(), IosComponent::Text(text_view));
         }
 
-        id
+        Ok(id)
     }
 
-    fn create_button(&self, params: Params<ButtonProps>) -> Id {
+    fn create_button(&self, params: Params<ButtonProps>) -> Result<Id> {
         let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
 
         unsafe {
@@ -201,6 +203,6 @@ impl Ui for Ios {
                 .insert(id.clone(), IosComponent::Button(button));
         }
 
-        id
+        Ok(id)
     }
 }

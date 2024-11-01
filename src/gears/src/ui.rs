@@ -1,15 +1,16 @@
 use core::fmt;
 
+use anyhow::Result;
 use mlua::Function;
 use serde::{Serialize, Serializer};
 
 pub type Id = String;
 
 pub trait Ui {
-    fn attach_main_view(&self, main_id: Id) -> ();
-    fn create_view(&self, params: Params<ViewProps>) -> Id;
-    fn create_text(&self, params: Params<TextProps>) -> Id;
-    fn create_button(&self, params: Params<ButtonProps<'_>>) -> Id;
+    fn attach_main_view(&self, main_id: Id) -> Result<()>;
+    fn create_view(&self, params: Params<ViewProps>) -> Result<Id>;
+    fn create_text(&self, params: Params<TextProps>) -> Result<Id>;
+    fn create_button(&self, params: Params<ButtonProps<'_>>) -> Result<Id>;
 }
 
 #[derive(Debug)]
