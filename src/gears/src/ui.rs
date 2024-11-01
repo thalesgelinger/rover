@@ -1,5 +1,4 @@
 use core::fmt;
-use std::sync::Arc;
 
 use mlua::Function;
 use serde::{Serialize, Serializer};

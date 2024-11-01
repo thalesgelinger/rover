@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Write},
+    io::{self, Read},
     net::TcpStream,
     sync::{mpsc::Sender, Arc, Mutex},
 };

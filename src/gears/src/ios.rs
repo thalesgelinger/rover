@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     dev_server::{DevServer, ServerMessages},
     lua::Rover,
-    ui::{Id, Params, TextProps, Ui, ViewProps},
+    ui::{ButtonProps, Id, Params, TextProps, Ui, ViewProps},
 };
 
 #[no_mangle]
@@ -111,6 +111,9 @@ impl Ios {
             IosComponent::Text(text) => unsafe {
                 let _: () = msg_send![view, addSubview: *text];
             },
+            IosComponent::Button(button) => unsafe {
+                let _: () = msg_send![view, addSubview: *button];
+            },
         };
     }
 }
@@ -119,6 +122,7 @@ impl Ios {
 enum IosComponent {
     View(*mut NSObject),
     Text(*mut NSObject),
+    Button(*mut NSObject),
 }
 
 impl Ui for Ios {
@@ -177,7 +181,26 @@ impl Ui for Ios {
         id
     }
 
-    fn create_button(&self, _params: Params<crate::ui::ButtonProps>) -> Id {
-        todo!()
+    fn create_button(&self, params: Params<ButtonProps>) -> Id {
+        let id = format!("ROVER_VIEW_{}", Uuid::new_v4().to_string());
+
+        unsafe {
+            let gears_ios = AnyClass::get("RoverIos.Gears").expect("Class Gears not found");
+
+            let button = msg_send![gears_ios, createButton];
+            for child_id in params.children {
+                let components = self.components.borrow();
+                let child = components
+                    .get(&child_id)
+                    .expect("Expected component to exist");
+                self.add_subview(button, child);
+            }
+
+            self.components
+                .borrow_mut()
+                .insert(id.clone(), IosComponent::Button(button));
+        }
+
+        id
     }
 }

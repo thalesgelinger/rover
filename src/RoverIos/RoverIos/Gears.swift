@@ -37,4 +37,24 @@ import UIKit
         label.sizeToFit()
         return label
     }
+    
+    @objc func createButton() -> UIButton {
+        let button = UIButton(type: .system)
+        button.setTitle("Tap me", for: .normal)
+        
+        // Configure button appearance
+        button.backgroundColor = .systemBlue
+        button.setTitleColor(.white, for: .normal)
+        button.layer.cornerRadius = 8
+        
+        // Set up button action to call `buttonTapped` method when pressed
+        button.addTarget(self, action: #selector(buttonTapped), for: .touchUpInside)
+        
+        return button
+    }
+    
+    @objc private func buttonTapped() {
+        // Print a message to the console when the button is pressed
+        print("Button was tapped!")
+    }
 }
