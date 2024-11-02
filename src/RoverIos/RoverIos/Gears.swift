@@ -38,23 +38,18 @@ import UIKit
         return label
     }
     
-    @objc func createButton() -> UIButton {
+    @objc public static func createButton() -> UIButton {
+        print("CREATE BUTTON ON IOS NATIVE")
         let button = UIButton(type: .system)
+        button.frame = CGRect(x: 100, y: 100, width: 150, height: 50)
         button.setTitle("Tap me", for: .normal)
-        
-        // Configure button appearance
         button.backgroundColor = .systemBlue
         button.setTitleColor(.white, for: .normal)
         button.layer.cornerRadius = 8
-        
-        // Set up button action to call `buttonTapped` method when pressed
-        button.addTarget(self, action: #selector(buttonTapped), for: .touchUpInside)
-        
+        button.addAction(UIAction { _ in
+            print("Button Pressed") // Call the callback directly
+        }, for: .touchUpInside)
         return button
     }
     
-    @objc private func buttonTapped() {
-        // Print a message to the console when the button is pressed
-        print("Button was tapped!")
-    }
 }

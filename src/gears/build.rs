@@ -146,7 +146,7 @@ fn build_android() {
                 "--release",
             ])
             .status()
-            .expect(&format!("Failed to build for {}", target));
+            .expect(&format!("cargo:warning=Failed to build for {}", target));
     }
 
     println!("cargo:warning=Ndk built");
@@ -165,7 +165,8 @@ fn build_android() {
                 format!("../roverandroid/src/main/jniLibs/{}/", to),
             ])
             .status()
-            .expect(&format!("Failed to copy {} to {}", from, to));
+            .expect(&format!("cargo:warning=Failed to copy {} to {}", from, to));
     }
     println!("cargo:warning=Done");
 }
+
