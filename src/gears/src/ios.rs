@@ -34,7 +34,7 @@ pub extern "C" fn start(view: *mut NSObject, path: *const c_char) {
 
     match rover.start(path) {
         Ok(_) => println!("Rover started"),
-        Err(_) => println!("Rover failed to start"),
+        Err(e) => println!("{:?}", e),
     }
 }
 

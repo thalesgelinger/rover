@@ -1,7 +1,9 @@
+use anyhow::Result;
 use clap::Command;
-use notify::{Event, EventKind, RecursiveMode, Result, Watcher};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::Deserialize;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -47,7 +49,7 @@ fn run_dev() -> Result<()> {
         panic!("Rover.toml not found");
     }
 
-    let contents = fs::read_to_string(rover_toml).expect("Failed to read Rover.toml");
+    let contents = fs::read_to_string(rover_toml)?;
 
     let config: Arc<RoverConfig> =
         Arc::new(toml::from_str(&contents).expect("Failed to parse Rover.toml"));
@@ -113,7 +115,7 @@ fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
 
     let stream_clone = Arc::clone(&stream);
 
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event>| match res {
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| match res {
         Ok(event) => {
             if let Some(path) = event.paths.first() {
                 if path.extension().map_or(false, |ext| ext == "lua") {
@@ -131,8 +133,8 @@ fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
                                 .unwrap()
                                 .as_bytes();
 
-                            let file = fs::read(full_file_path).unwrap();
-                            let data = [file_path, b"$$", &file].concat();
+                            let file = read_script(full_file_path.to_str().unwrap()).unwrap();
+                            let data = [file_path, b"$$", &file.as_bytes()].concat();
 
                             if let Err(e) = stream_clone.lock().unwrap().write_all(&data) {
                                 eprintln!("Failed to write to socket: {}", e);
@@ -156,6 +158,17 @@ fn handle_client(package_name: &str, mut stream: TcpStream) -> Result<()> {
     }
 }
 
+fn read_script(path: &str) -> Result<String> {
+    let file = File::open(path)?;
+    let buf = BufReader::new(file);
+
+    let concatenated: String = buf
+        .lines()
+        .map(|line| line.map(|l| l + "\n"))
+        .collect::<Result<_, _>>()?;
+    Ok(concatenated)
+}
+
 fn send_lua_files<P: AsRef<Path>>(
     project_path: &PathBuf,
     dir: P,
@@ -170,12 +183,12 @@ fn send_lua_files<P: AsRef<Path>>(
             send_lua_files(project_path, &path, stream)?;
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("lua") {
             // Read the .lua file and send it
-            let file = fs::read(&path)?;
+            let file = read_script(&path.to_str().unwrap())?;
             let relative_path = path
                 .strip_prefix(&project_path)
                 .expect("Failed to strip prefix");
             if let Some(relative_path_str) = relative_path.to_str() {
-                let data = [relative_path_str.as_bytes(), b"$$", &file].concat();
+                let data = [relative_path_str.as_bytes(), b"$$", &file.as_bytes()].concat();
 
                 stream.write_all(&data)?;
             }

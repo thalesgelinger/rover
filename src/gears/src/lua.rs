@@ -1,4 +1,8 @@
-use std::{fs, io::Write, sync::Arc};
+use std::{
+    fs::{self, File},
+    io::{BufRead, BufReader, Write},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use mlua::{Error as LuaError, Function, Lua, String as LuaString, Table, Value};
@@ -39,23 +43,31 @@ impl Rover {
         self.setup_text(&lua_rover)?;
         self.setup_button(&lua_rover)?;
 
-        let main_view_id = self.exec(&lua_rover, entry_point);
+        let main_view_id = self.exec(&lua_rover, entry_point)?;
 
         self.ui.attach_main_view(main_view_id)
     }
 
-    fn exec(&self, lua_rover: &Table, entry_point: String) -> String {
-        let script = fs::read_to_string(entry_point).expect("Failed to read entry point");
-        self.lua
-            .load(script)
-            .exec()
-            .expect("Fail running rover script");
+    fn exec(&self, lua_rover: &Table, entry_point: String) -> Result<String> {
+        let script = self.read_script(entry_point)?;
+        println!("SCRIPT: {:?}", script);
+        self.lua.load(script).exec()?;
 
         let run_func: Function = lua_rover.get("run").expect("Missing run function");
-        let main_view_id = run_func
-            .call::<(), LuaString>(())
-            .expect("Failed running run function");
-        main_view_id.to_str().unwrap().to_string()
+        let main_view_id = run_func.call::<(), LuaString>(())?;
+
+        Ok(main_view_id.to_str().unwrap().into())
+    }
+
+    fn read_script(&self, path: String) -> Result<String> {
+        let file = File::open(path)?;
+        let buf = BufReader::new(file);
+
+        let concatenated: String = buf
+            .lines()
+            .map(|line| line.map(|l| l + "\n"))
+            .collect::<Result<_, _>>()?;
+        Ok(concatenated)
     }
 
     fn setup_view(&self, lua_rover: &Table) -> Result<()> {
