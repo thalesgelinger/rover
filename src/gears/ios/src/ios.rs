@@ -13,7 +13,7 @@ use objc2::{
 };
 use uuid::Uuid;
 
-use crate::{
+use gears::{
     dev_server::{DevServer, ServerMessages},
     lua::Rover,
     ui::{ButtonProps, Id, Params, TextProps, Ui, ViewProps},

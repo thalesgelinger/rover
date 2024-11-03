@@ -1,0 +1,17 @@
+[package]
+name = "ios"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+gears = { path = "../gears" }
+objc2 = { version = "0.5.2" }
+anyhow = "1.0.86"
+uuid = { version = "1.10.0", features= [ "v4","fast-rng","macro-diagnostics"] }
+
+[build-dependencies]
+cbindgen = "0.20"
+
+[lib]
+crate-type = ["staticlib"]
