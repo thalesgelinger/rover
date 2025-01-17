@@ -8,10 +8,12 @@ fn main() {
     ];
 
     let current_dir = env::current_dir().expect("Failed to get current directory");
+    println!(
+        "cargo:warning=Working dir {}",
+        current_dir.to_string_lossy()
+    );
 
-    let rover_ios_path = current_dir
-        .parent()
-        .expect("No parent directory")
+    let _rover_ios_path = current_dir
         .parent()
         .expect("No parent directory")
         .join("RoverIos")
@@ -24,41 +26,41 @@ fn main() {
         Command::new("cargo")
             .args(&["build", "--release", "--target", target])
             .status()
-            .expect("Failed to build for aarch64-apple-ios");
+            .expect("cargo:warning=Failed to build for aarch64-apple-ios");
         println!("cargo:warning=Build for {}", target);
     }
 
     println!("cargo:warning=Generating header");
 
-    // Command::new("cbindgen")
-    //     .args(&[
-    //         "--lang",
-    //         "c",
-    //         "--crate",
-    //         "gears",
-    //         "--output",
-    //         "../target/gears.h",
-    //     ])
-    //     .status()
-    //     .expect("Failed to generate C bindings");
+    Command::new("cbindgen")
+        .args(&[
+            "--lang",
+            "c",
+            "--crate",
+            "ios",
+            "--output",
+            "../target/gears.h",
+        ])
+        .status()
+        .expect("Failed to generate C bindings");
 
-    // println!("cargo:warning=Grouping .a");
+    println!("cargo:warning=Grouping .a");
 
-    // Command::new("lipo")
-    //     .args(&[
-    //         "-create",
-    //         "-output",
-    //         "../target/libgears.a",
-    //         "../target/aarch64-apple-ios-sim/release/libgears.a",
-    //         "../target/x86_64-apple-ios/release/libgears.a",
-    //     ])
-    //     .status()
-    //     .expect("cargo:warning=Failed to create universal library");
+    Command::new("lipo")
+        .args(&[
+            "-create",
+            "-output",
+            "./target/libgears.a",
+            "./target/aarch64-apple-ios-sim/release/libgears.a",
+            "./target/x86_64-apple-ios/release/libgears.a",
+        ])
+        .status()
+        .expect("cargo:warning=Failed to create universal library");
 
     // println!("cargo:warning=Coping files");
 
     // Command::new("cp")
-    //     .args(&["../target/libgears.a", &rover_ios_path.to_string_lossy()])
+    //     .args(&["./target/libgears.a", &rover_ios_path.to_string_lossy()])
     //     .status()
     //     .expect("cargo:warning=Failed to copy .a to RoverIos");
 

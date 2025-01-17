@@ -1,17 +1,16 @@
 function rover.run()
-    print("Batata")
     return rover.view {
         height = "full",
         width = "full",
         color = "#ffffff",
-        rover.text {
-            "Hello world"
+        rover.view {
+            height = "100",
+            width = "100",
+            color = "#ff00ff",
         },
-        rover.button {
-            label = "Click me",
-            onPress = function()
-                print("On press this will be called")
-            end
+        rover.text {
+            "Hello from Rover",
+            color = "#000000"
         }
     }
 end
