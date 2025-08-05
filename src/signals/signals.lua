@@ -31,20 +31,48 @@ local signalMetaTable = {
     __concat = wrapper(function(a, b)
         return tostring(a) .. tostring(b)
     end),
+    __mod = wrapper(function(a, b)
+        return a % b
+    end),
+    __sub = wrapper(function(a, b)
+        return a - b
+    end),
+    __div = wrapper(function(a, b)
+        return a / b
+    end),
+    __pow = wrapper(function(a, b)
+        return a ^ b
+    end),
+    __unm = wrapper(function(a)
+        return -a
+    end),
+    __eq = wrapper(function(a, b)
+        return a == b
+    end),
+    __lt = wrapper(function(a, b)
+        return a < b
+    end),
+    __le = wrapper(function(a, b)
+        return a <= b
+    end),
+    __tostring = function(self)
+        return tostring(self.get())
+    end,
 }
 
--- Signal creation
---- @class Signal
---- @field get function The position of the object
---- @field set function The health of the object
---- @param initialValue any
---- @return Signal
+--- Signal creation
+--- @class Signal<T>
+--- @field get fun(): T Returns the same type as initialValue
+--- @field set fun(value: T)  Receives a parameter of the same type as initialValue
+
+--- @generic T
+--- @param initialValue T
+--- @return Signal<T>
 function signal(initialValue)
     local value = initialValue
     local subscriptions = {}
 
     local signalTable = {
-        --- @return any initialValue
         get = function()
             if subscriber and not subscriptions[subscriber] then
                 subscriptions[subscriber] = true
