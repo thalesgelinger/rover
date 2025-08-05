@@ -5,9 +5,9 @@ local read_key = require("events").read_key
 --- @class Opts
 --- @field debug boolean
 
---- @param fun function
+--- @param app Signal
 --- @param opts Opts
-function UI(fun, opts)
+function UI(app, opts)
     os.execute("clear")
 
     local width = 30
@@ -16,10 +16,9 @@ function UI(fun, opts)
     local gridchar = " "
 
     os.execute("stty raw -echo")
-    local component = fun()
     rover.effect(function()
         io.write("\27[2J\27[H")
-        local comp = component.get()
+        local comp = app.get()
         for i = 1, height do
             for j = 1, width do
                 if j == comp.x and i == comp.y then
