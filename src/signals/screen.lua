@@ -1,8 +1,13 @@
 local rover = require("rover")
 local read_key = require("events").read_key
 
+
+--- @class Opts
+--- @field debug boolean
+
 --- @param fun function
-function UI(fun)
+--- @param opts Opts
+function UI(fun, opts)
     os.execute("clear")
 
     local width = 30
@@ -26,8 +31,10 @@ function UI(fun)
             end
             io.write("\r\n")
         end
-        io.write("Coordinatess: ( x: ", comp.x, ", y: ", comp.y, ")\n")
-        io.write("Use arrow keys to move, 'q' to quit\n")
+        if opts.debug then
+            io.write("Coordinatess: ( x: ", comp.x, ", y: ", comp.y, ")\r\n")
+            io.write("Use arrow keys to move, 'q' to quit\r\n")
+        end
         read_key()
         io.flush()
     end)
