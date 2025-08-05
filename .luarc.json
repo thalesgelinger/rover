@@ -1,5 +1,6 @@
 {
     "diagnostics.globals": [
         "rover"
-    ]
+    ],
+    "runtime.version": "Lua 5.4"
 }

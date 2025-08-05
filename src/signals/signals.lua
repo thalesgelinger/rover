@@ -1,42 +1,36 @@
 local subscriber = nil
 
+local wrapper = function(exec)
+    return function(a, b)
+        if type(a) == "table" and type(b) == "table" then
+            return derive(function()
+                return exec(a.get(), b.get())
+            end)
+        end
+
+        if type(a) == "table" then
+            return derive(function()
+                return exec(a.get(), b)
+            end)
+        end
+        if type(b) == "table" then
+            return derive(function()
+                return exec(a, b.get())
+            end)
+        end
+    end
+end
+
 local signalMetaTable = {
-    __mul = function(a, b)
-        if type(a) == "table" and type(b) == "table" then
-            return derive(function()
-                return a.get() * b.get()
-            end)
-        end
-
-        if type(a) == "table" then
-            return derive(function()
-                return a.get() * b
-            end)
-        end
-        if type(b) == "table" then
-            return derive(function()
-                return a * b.get()
-            end)
-        end
-    end,
-    __concat = function(a, b)
-        if type(a) == "table" and type(b) == "table" then
-            return derive(function()
-                return a.get() .. b.get()
-            end)
-        end
-
-        if type(a) == "table" then
-            return derive(function()
-                return a.get() .. b
-            end)
-        end
-        if type(b) == "table" then
-            return derive(function()
-                return a .. b.get()
-            end)
-        end
-    end,
+    __sum = wrapper(function(a, b)
+        return a + b
+    end),
+    __mul = wrapper(function(a, b)
+        return a * b
+    end),
+    __concat = wrapper(function(a, b)
+        return tostring(a) .. tostring(b)
+    end),
 }
 
 -- Signal creation
@@ -52,19 +46,20 @@ function signal(initialValue)
     local signalTable = {
         --- @return any initialValue
         get = function()
-            if subscriber then
-                table.insert(subscriptions, subscriber)
+            if subscriber and not subscriptions[subscriber] then
+                subscriptions[subscriber] = true
             end
             return value
         end,
         set = function(updated)
-            value = updated
-            for _, fn in ipairs(subscriptions) do
-                fn()
+            if value ~= updated then -- Only update if value changed
+                value = updated
+                for fn, _ in pairs(subscriptions) do
+                    fn()
+                end
             end
         end
     }
-
 
     return setmetatable(signalTable, signalMetaTable)
 end
@@ -72,9 +67,10 @@ end
 -- Effect function
 ---@param fn function
 function effect(fn)
+    local prev = subscriber
     subscriber = fn
     fn()
-    subscriber = nil
+    subscriber = prev
 end
 
 -- Derive a new value from signals
@@ -90,24 +86,8 @@ function derive(fn)
     return derived
 end
 
--- Component that parses the string and listens for signal changes
----@param param string | Signal
-function component(param)
-    if type(param) == "string" then
-        print("Component: " .. param)
-    else
-        effect(function()
-            print("Component: " .. param.get())
-        end)
-    end
-end
-
--- Return the module
-local rover = {
+return {
     signal = signal,
     effect = effect,
-    derive = derive,
-    component = component
+    derive = derive
 }
-
-return rover
