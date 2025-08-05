@@ -1,6 +1,7 @@
 local rover = require "rover"
 local keypressed = require "events".keypressed
 
+
 function App()
     local x = rover.signal(1)
     local y = rover.signal(1)
@@ -17,13 +18,15 @@ function App()
             x.set(currentX - 1)
         elseif key == "right" then
             x.set(currentX + 1)
+        elseif key == "q" then
+            os.exit()
         end
     end)
 
     return rover.view {
         "🐍",
         x = x,
-        y = y
+        y = y,
     }
 end
 
