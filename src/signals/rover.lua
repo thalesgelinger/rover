@@ -8,9 +8,10 @@ local Rover = {
 
 
 --- @class ViewProps
---- @property x signals.Signal
---- @property y signals.Signal
---- @return signals.Signal
+--- @field x Signal
+--- @field y Signal
+--- @property[1] string The symbol to display, can be a string or a table of strings
+--- @return Signal
 function Rover.view(props)
     return Rover.derive(function()
         local x = props.x and props.x.get() or 0
