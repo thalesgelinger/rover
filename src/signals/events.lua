@@ -2,7 +2,6 @@ local rover = require "rover"
 
 local keypressed = rover.signal("")
 
-
 local function read_key()
     local key = io.read(1)
     if key == "\27" then
@@ -20,7 +19,7 @@ local function read_key()
             end
         end
     elseif key == "q" then
-        keypressed.set "quit"
+        keypressed.set "q"
     end
 end
 
