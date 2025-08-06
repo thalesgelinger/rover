@@ -2,6 +2,30 @@ local subscriber = nil
 
 local Signals = {}
 
+local isBatching = false
+local pendingSignals = {} -- FIXME: this should not be global
+
+
+function batch(fn)
+    local prev = isBatching
+    isBatching = true
+    fn()
+    isBatching = prev
+    if not isBatching then
+        flushPending()
+    end
+end
+
+function flushPending()
+    for subscriptions, _ in pairs(pendingSignals) do
+        for fn, _ in pairs(subscriptions) do
+            fn()
+        end
+    end
+
+    pendingSignals = {}
+end
+
 local wrapper = function(exec)
     return function(a, b)
         if type(a) == "table" and type(b) == "table" then
@@ -24,42 +48,18 @@ local wrapper = function(exec)
 end
 
 local signalMetaTable = {
-    __sum = wrapper(function(a, b)
-        return a + b
-    end),
-    __mul = wrapper(function(a, b)
-        return a * b
-    end),
-    __concat = wrapper(function(a, b)
-        return tostring(a) .. tostring(b)
-    end),
-    __mod = wrapper(function(a, b)
-        return a % b
-    end),
-    __sub = wrapper(function(a, b)
-        return a - b
-    end),
-    __div = wrapper(function(a, b)
-        return a / b
-    end),
-    __pow = wrapper(function(a, b)
-        return a ^ b
-    end),
-    __unm = wrapper(function(a)
-        return -a
-    end),
-    __eq = wrapper(function(a, b)
-        return a == b
-    end),
-    __lt = wrapper(function(a, b)
-        return a < b
-    end),
-    __le = wrapper(function(a, b)
-        return a <= b
-    end),
-    __tostring = function(self)
-        return tostring(self.get())
-    end,
+    __sum = wrapper(function(a, b) return a + b end),
+    __mul = wrapper(function(a, b) return a * b end),
+    __concat = wrapper(function(a, b) return tostring(a) .. tostring(b) end),
+    __mod = wrapper(function(a, b) return a % b end),
+    __sub = wrapper(function(a, b) return a - b end),
+    __div = wrapper(function(a, b) return a / b end),
+    __pow = wrapper(function(a, b) return a ^ b end),
+    __unm = wrapper(function(a) return -a end),
+    __eq = wrapper(function(a, b) return a == b end),
+    __lt = wrapper(function(a, b) return a < b end),
+    __le = wrapper(function(a, b) return a <= b end),
+    __tostring = function(self) return tostring(self.get()) end,
     __index = function(self, key)
         if key == "get" then
             return self.get
@@ -83,22 +83,28 @@ function Signals.signal(initialValue)
     local value = initialValue
     local subscriptions = {}
 
-    local signalTable = {
-        get = function()
-            if subscriber and not subscriptions[subscriber] then
-                subscriptions[subscriber] = true
-            end
-            return value
-        end,
-        set = function(updated)
-            if value ~= updated then -- Only update if value changed
-                value = updated
+    local signalTable = {}
+
+    signalTable.get = function()
+        if subscriber and not subscriptions[subscriber] then
+            subscriptions[subscriber] = true
+        end
+        return value
+    end
+
+    signalTable.set = function(updated)
+        if value ~= updated then -- Only update if value changed
+            value = updated
+
+            if isBatching then
+                pendingSignals[subscriptions] = true
+            else
                 for fn, _ in pairs(subscriptions) do
                     fn()
                 end
             end
         end
-    }
+    end
 
     return setmetatable(signalTable, signalMetaTable)
 end
@@ -106,10 +112,14 @@ end
 -- Effect function
 ---@param fn function
 function Signals.effect(fn)
-    local prev = subscriber
-    subscriber = fn
-    fn()
-    subscriber = prev
+    local function wrapped()
+        local prev = subscriber
+        subscriber = fn
+        batch(fn)
+        subscriber = prev
+    end
+
+    return wrapped()
 end
 
 -- Derive a new value from signals
