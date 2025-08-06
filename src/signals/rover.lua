@@ -5,6 +5,7 @@ local Rover = {
     signal = signals.signal,
     effect = signals.effect,
     derive = signals.derive,
+    batch = signals.batch,
 }
 
 --- @class ViewProps

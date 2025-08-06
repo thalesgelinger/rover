@@ -1,30 +1,7 @@
 local subscriber = nil
-
+local batchDepth = 0
+local pendingNotifications = {}
 local Signals = {}
-
-local isBatching = false
-local pendingSignals = {} -- FIXME: this should not be global
-
-
-function batch(fn)
-    local prev = isBatching
-    isBatching = true
-    fn()
-    isBatching = prev
-    if not isBatching then
-        flushPending()
-    end
-end
-
-function flushPending()
-    for subscriptions, _ in pairs(pendingSignals) do
-        for fn, _ in pairs(subscriptions) do
-            fn()
-        end
-    end
-
-    pendingSignals = {}
-end
 
 local wrapper = function(exec)
     return function(a, b)
@@ -33,7 +10,6 @@ local wrapper = function(exec)
                 return exec(a.get(), b.get())
             end)
         end
-
         if type(a) == "table" then
             return Signals.derive(function()
                 return exec(a.get(), b)
@@ -48,7 +24,7 @@ local wrapper = function(exec)
 end
 
 local signalMetaTable = {
-    __sum = wrapper(function(a, b) return a + b end),
+    __add = wrapper(function(a, b) return a + b end),
     __mul = wrapper(function(a, b) return a * b end),
     __concat = wrapper(function(a, b) return tostring(a) .. tostring(b) end),
     __mod = wrapper(function(a, b) return a % b end),
@@ -60,29 +36,11 @@ local signalMetaTable = {
     __lt = wrapper(function(a, b) return a < b end),
     __le = wrapper(function(a, b) return a <= b end),
     __tostring = function(self) return tostring(self.get()) end,
-    __index = function(self, key)
-        if key == "get" then
-            return self.get
-        elseif key == "set" then
-            return self.set
-        else
-            return rawget(self, key)
-        end
-    end,
 }
 
---- Signal creation
---- @class Signal<T>
---- @field get fun(): T Returns the same type as initialValue
---- @field set fun(value: T)  Receives a parameter of the same type as initialValue
-
---- @generic T
---- @param initialValue T
---- @return Signal<T>
 function Signals.signal(initialValue)
     local value = initialValue
     local subscriptions = {}
-
     local signalTable = {}
 
     signalTable.get = function()
@@ -93,12 +51,15 @@ function Signals.signal(initialValue)
     end
 
     signalTable.set = function(updated)
-        if value ~= updated then -- Only update if value changed
+        if value ~= updated then
             value = updated
-
-            if isBatching then
-                pendingSignals[subscriptions] = true
+            if batchDepth > 0 then
+                -- We're in a batch, collect subscribers for later notification
+                for fn, _ in pairs(subscriptions) do
+                    pendingNotifications[fn] = true
+                end
             else
+                -- Not in a batch, notify immediately
                 for fn, _ in pairs(subscriptions) do
                     fn()
                 end
@@ -109,30 +70,63 @@ function Signals.signal(initialValue)
     return setmetatable(signalTable, signalMetaTable)
 end
 
--- Effect function
----@param fn function
 function Signals.effect(fn)
-    local function wrapped()
-        local prev = subscriber
-        subscriber = fn
-        batch(fn)
-        subscriber = prev
+    local prev = subscriber
+    subscriber = fn
+
+    -- Automatically batch all set operations during effect execution
+    batchDepth = batchDepth + 1
+    local success, result = pcall(fn)
+    batchDepth = batchDepth - 1
+
+    -- Flush notifications after effect completes
+    if batchDepth == 0 then
+        local notifications = pendingNotifications
+        pendingNotifications = {}
+        for notifyFn, _ in pairs(notifications) do
+            notifyFn()
+        end
     end
 
-    return wrapped()
+    subscriber = prev
+
+    if not success then
+        error(result)
+    end
+
+    return result
 end
 
--- Derive a new value from signals
----@param fn function
 function Signals.derive(fn)
     local derived = Signals.signal(nil)
-
     Signals.effect(function()
         local value = fn()
         derived.set(value)
     end)
-
     return derived
 end
 
+-- New batch function
+function Signals.batch(fn)
+    batchDepth = batchDepth + 1
+    local success, result = pcall(fn)
+    batchDepth = batchDepth - 1
+
+    -- If we're back to depth 0, flush all pending notifications
+    if batchDepth == 0 then
+        local notifications = pendingNotifications
+        pendingNotifications = {}
+        for notifyFn, _ in pairs(notifications) do
+            notifyFn()
+        end
+    end
+
+    if not success then
+        error(result)
+    end
+
+    return result
+end
+
 return Signals
+
