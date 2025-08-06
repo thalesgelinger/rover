@@ -33,6 +33,7 @@ rover.effect(function()
     end
 end)
 
+
 rover.effect(function()
     local key = keypressed.get()
 
@@ -40,13 +41,13 @@ rover.effect(function()
     local current_x, current_y = x.get(), y.get()
 
     if key == "up" then
-        y.set(current_y - 1)
+        y.set(math.max(current_y - 1, 1))
     elseif key == "down" then
-        y.set(current_y + 1)
+        y.set(math.min(current_y + 1, screen.height))
     elseif key == "left" then
-        x.set(current_x - 1)
+        x.set(math.max(current_x - 1, 1))
     elseif key == "right" then
-        x.set(current_x + 1)
+        x.set(math.min(current_x + 1, screen.width))
     elseif key == "q" then
         os.exit()
     end
@@ -56,12 +57,12 @@ return rover.view {
     width = screen.width,
     height = screen.height,
     rover.view {
-        "🐍",
+        "🐶",
         x = player.position.x,
         y = player.position.y,
     },
     rover.view {
-        "🍎",
+        "🦴",
         x = food.position.x,
         y = food.position.y,
     },
