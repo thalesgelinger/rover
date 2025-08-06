@@ -1,20 +1,22 @@
 local subscriber = nil
 
+local Signals = {}
+
 local wrapper = function(exec)
     return function(a, b)
         if type(a) == "table" and type(b) == "table" then
-            return derive(function()
+            return Signals.derive(function()
                 return exec(a.get(), b.get())
             end)
         end
 
         if type(a) == "table" then
-            return derive(function()
+            return Signals.derive(function()
                 return exec(a.get(), b)
             end)
         end
         if type(b) == "table" then
-            return derive(function()
+            return Signals.derive(function()
                 return exec(a, b.get())
             end)
         end
@@ -58,6 +60,15 @@ local signalMetaTable = {
     __tostring = function(self)
         return tostring(self.get())
     end,
+    __index = function(self, key)
+        if key == "get" then
+            return self.get
+        elseif key == "set" then
+            return self.set
+        else
+            return rawget(self, key)
+        end
+    end,
 }
 
 --- Signal creation
@@ -68,7 +79,7 @@ local signalMetaTable = {
 --- @generic T
 --- @param initialValue T
 --- @return Signal<T>
-function signal(initialValue)
+function Signals.signal(initialValue)
     local value = initialValue
     local subscriptions = {}
 
@@ -94,7 +105,7 @@ end
 
 -- Effect function
 ---@param fn function
-function effect(fn)
+function Signals.effect(fn)
     local prev = subscriber
     subscriber = fn
     fn()
@@ -103,10 +114,10 @@ end
 
 -- Derive a new value from signals
 ---@param fn function
-function derive(fn)
-    local derived = signal()
+function Signals.derive(fn)
+    local derived = Signals.signal(nil)
 
-    effect(function()
+    Signals.effect(function()
         local value = fn()
         derived.set(value)
     end)
@@ -114,8 +125,4 @@ function derive(fn)
     return derived
 end
 
-return {
-    signal = signal,
-    effect = effect,
-    derive = derive
-}
+return Signals
