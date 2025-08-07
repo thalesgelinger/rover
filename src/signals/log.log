@@ -1,1 +1,115 @@
-[3J[H[2J[2J[H
+Run all sets
+Batch depth: 0
+Batch depth: 0
+Batch depth: 0
+Batch depth: 0
+[SIGNAL CREATE] Signal 6000015c5600 created with initial value: 
+[APP INIT] Creating player signals
+[SIGNAL CREATE] Signal 6000015c58c0 created with initial value: 1
+[SIGNAL CREATE] Signal 6000015c5940 created with initial value: 1
+[APP INIT] Player position signals created
+[APP INIT] Creating food signals
+[SIGNAL CREATE] Signal 6000015c5a40 created with initial value: 30
+[SIGNAL CREATE] Signal 6000015c5ac0 created with initial value: 4
+[APP INIT] Food position signals created
+[APP INIT] Creating points signal
+[SIGNAL CREATE] Signal 6000015c5b40 created with initial value: 0
+[APP INIT] Points signal created
+[APP EFFECT] Setting up collision detection effect
+[EFFECT START] Running effect 6000023c4910
+[EFFECT CONTEXT] Set current subscriber to 6000023c4910
+[BATCH START] Batch depth increased to 1
+[COLLISION CHECK] Checking for player-food collision
+[SIGNAL GET] Signal 6000015c58c0 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000015c58c0 subscribing function 6000023c4910
+[SIGNAL GET] Signal 6000015c5940 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000015c5940 subscribing function 6000023c4910
+[SIGNAL GET] Signal 6000015c5a40 accessed, current value: 30
+[SIGNAL SUBSCRIBE] Signal 6000015c5a40 subscribing function 6000023c4910
+[SIGNAL GET] Signal 6000015c5ac0 accessed, current value: 4
+[SIGNAL SUBSCRIBE] Signal 6000015c5ac0 subscribing function 6000023c4910
+[COLLISION DATA] Player at (1, 1), Food at (30, 4)
+[BATCH END] Batch depth decreased to 0
+[FLUSH START] Flushing 0 pending notifications
+[FLUSH END] All pending notifications flushed
+[EFFECT CONTEXT] Restored previous subscriber
+[EFFECT END] Effect 6000023c4910 completed successfully
+[APP EFFECT] Collision detection effect registered
+[APP EFFECT] Setting up input handling effect
+[EFFECT START] Running effect 6000023c80f0
+[EFFECT CONTEXT] Set current subscriber to 6000023c80f0
+[BATCH START] Batch depth increased to 1
+[INPUT CHECK] Checking for key press
+[SIGNAL GET] Signal 6000015c5600 accessed, current value: 
+[SIGNAL SUBSCRIBE] Signal 6000015c5600 subscribing function 6000023c80f0
+[INPUT DATA] Key pressed: 
+[SIGNAL GET] Signal 6000015c58c0 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000015c58c0 subscribing function 6000023c80f0
+[SIGNAL GET] Signal 6000015c5940 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000015c5940 subscribing function 6000023c80f0
+[PLAYER STATE] Current player position: (1, 1)
+[BATCH END] Batch depth decreased to 0
+[FLUSH START] Flushing 0 pending notifications
+[FLUSH END] All pending notifications flushed
+[EFFECT CONTEXT] Restored previous subscriber
+[EFFECT END] Effect 6000023c80f0 completed successfully
+[APP EFFECT] Input handling effect registered
+[APP VIEW] Creating application view
+[DERIVE START] Creating derived signal with function 600000ecc1b0
+[SIGNAL CREATE] Signal 6000015cc140 created with initial value: nil
+[SIGNAL GET] Signal 6000015cc140 accessed, current value: nil
+[SIGNAL CREATE] Signal 6000008b5e80 created with initial value: 
+[APP INIT] Creating player signals
+[SIGNAL CREATE] Signal 6000008b6140 created with initial value: 1
+[SIGNAL CREATE] Signal 6000008b61c0 created with initial value: 1
+[APP INIT] Player position signals created
+[APP INIT] Creating food signals
+[SIGNAL CREATE] Signal 6000008b62c0 created with initial value: 28
+[SIGNAL CREATE] Signal 6000008b6340 created with initial value: 7
+[APP INIT] Food position signals created
+[APP INIT] Creating points signal
+[SIGNAL CREATE] Signal 6000008b63c0 created with initial value: 0
+[APP INIT] Points signal created
+[APP EFFECT] Setting up collision detection effect
+[EFFECT START] Running effect 600003eb49b0
+[EFFECT CONTEXT] Set current subscriber to 600003eb49b0
+[BATCH START] Batch depth increased to 1
+[COLLISION CHECK] Checking for player-food collision
+[SIGNAL GET] Signal 6000008b6140 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000008b6140 subscribing function 600003eb49b0
+[SIGNAL GET] Signal 6000008b61c0 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000008b61c0 subscribing function 600003eb49b0
+[SIGNAL GET] Signal 6000008b62c0 accessed, current value: 28
+[SIGNAL SUBSCRIBE] Signal 6000008b62c0 subscribing function 600003eb49b0
+[SIGNAL GET] Signal 6000008b6340 accessed, current value: 7
+[SIGNAL SUBSCRIBE] Signal 6000008b6340 subscribing function 600003eb49b0
+[COLLISION DATA] Player at (1, 1), Food at (28, 7)
+[BATCH END] Batch depth decreased to 0
+[FLUSH START] Flushing 0 pending notifications
+[FLUSH END] All pending notifications flushed
+[EFFECT CONTEXT] Restored previous subscriber
+[EFFECT END] Effect 600003eb49b0 completed successfully
+[APP EFFECT] Collision detection effect registered
+[APP EFFECT] Setting up input handling effect
+[EFFECT START] Running effect 600003eb4b40
+[EFFECT CONTEXT] Set current subscriber to 600003eb4b40
+[BATCH START] Batch depth increased to 1
+[INPUT CHECK] Checking for key press
+[SIGNAL GET] Signal 6000008b5e80 accessed, current value: 
+[SIGNAL SUBSCRIBE] Signal 6000008b5e80 subscribing function 600003eb4b40
+[INPUT DATA] Key pressed: 
+[SIGNAL GET] Signal 6000008b6140 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000008b6140 subscribing function 600003eb4b40
+[SIGNAL GET] Signal 6000008b61c0 accessed, current value: 1
+[SIGNAL SUBSCRIBE] Signal 6000008b61c0 subscribing function 600003eb4b40
+[PLAYER STATE] Current player position: (1, 1)
+[BATCH END] Batch depth decreased to 0
+[FLUSH START] Flushing 0 pending notifications
+[FLUSH END] All pending notifications flushed
+[EFFECT CONTEXT] Restored previous subscriber
+[EFFECT END] Effect 600003eb4b40 completed successfully
+[APP EFFECT] Input handling effect registered
+[APP VIEW] Creating application view
+[DERIVE START] Creating derived signal with function 6000013b01b0
+[SIGNAL CREATE] Signal 6000008b0140 created with initial value: nil
+[SIGNAL GET] Signal 6000008b0140 accessed, current value: nil
