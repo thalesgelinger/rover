@@ -1,0 +1,3 @@
+#!/bin/bash
+find . -name "*.lua" | entr -s 'lua main.lua'
+
