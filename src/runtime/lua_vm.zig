@@ -3,10 +3,10 @@ const zlua = @import("zlua");
 
 pub const LuaVm = struct {
     allocator: std.mem.Allocator,
-    lua: zlua.Lua,
+    lua: *zlua.Lua,
 
     pub fn init(allocator: std.mem.Allocator) !LuaVm {
-        var lua = try zlua.Lua.init(&allocator);
+        var lua = try zlua.Lua.init(allocator);
         lua.openLibs();
         return .{
             .allocator = allocator,
@@ -15,7 +15,7 @@ pub const LuaVm = struct {
     }
 
     pub fn deinit(self: *LuaVm) void {
-        self.lua.deinit();
+        self.lua.*.deinit();
     }
 
     pub fn loadFile(self: *LuaVm, file_path: []const u8) !void {
@@ -25,31 +25,35 @@ pub const LuaVm = struct {
         const content = try file.readToEndAlloc(self.allocator, 1024 * 1024);
         defer self.allocator.free(content);
 
-        try self.lua.loadString(content);
-        try self.lua.protectedCall(0, 1, 0);
+        // Create null-terminated copy for Lua
+        const content_z = try self.allocator.dupeZ(u8, content);
+        defer self.allocator.free(content_z);
+
+        try self.lua.*.loadString(content_z);
+        try self.lua.*.protectedCall(.{ .args = 0, .results = 1 });
     }
 
     pub fn getGlobal(self: *LuaVm, name: []const u8) !void {
-        self.lua.getGlobal(name);
+        self.lua.*.getGlobal(name);
     }
 
     pub fn setGlobal(self: *LuaVm, name: []const u8) void {
-        self.lua.setGlobal(name);
+        self.lua.*.setGlobal(name);
     }
 
     pub fn pushFunction(self: *LuaVm, func: zlua.LuaCFunction) void {
-        self.lua.pushFunction(func);
+        self.lua.*.pushFunction(func);
     }
 
     pub fn newTable(self: *LuaVm) void {
-        self.lua.newTable();
+        self.lua.*.newTable();
     }
 
-    pub fn setField(self: *LuaVm, name: []const u8) void {
-        self.lua.setField(-2, name);
+    pub fn setField(self: *LuaVm, name: [:0]const u8) void {
+        self.lua.*.setField(-2, name);
     }
 
     pub fn getTop(self: *LuaVm) i32 {
-        return self.lua.getTop();
+        return self.lua.*.getTop();
     }
 };

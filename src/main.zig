@@ -25,7 +25,7 @@ pub fn main() !void {
     defer vm.deinit();
 
     // Register rover API
-    rover_api.register(&vm.lua);
+    rover_api.register(vm.lua);
 
     // Load and execute Lua file
     vm.loadFile(parsed_args.lua_file) catch |err| {

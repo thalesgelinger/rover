@@ -11,12 +11,16 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "rover",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zlua", .module = zlua.module("zlua") },
+            },
+        }),
     });
 
-    exe.root_module.addImport("zlua", zlua.module("zlua"));
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
