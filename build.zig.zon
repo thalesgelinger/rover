@@ -2,12 +2,17 @@
     .name = "rover",
     .version = "0.1.0",
     .minimum_zig_version = "0.15.2",
-    .paths = .{ "build.zig", "build.zig.zon", "src" },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
 
     .dependencies = .{
         .zlua = .{
-            .url = "git+https://github.com/natecraddock/ziglua#57f28de6b69cd3d4ba5dd1de8b2fb4cfe44f956c",
-            .hash = "1220d85b2bb15a7f6a09e3d4dbb2c5c72a0eb09ef2d3d0e5a3b5f6f2e8d8c8a",
+            .url = "git+https://github.com/natecraddock/ziglua#315b7f25efd29d9e2143d6c0ab685bb7f640450f",
+            .hash = "zlua-0.1.0-hGRpCww-BQCx3cX6zbKWfTgOx6B7Peo4P17RK2hm7-xV",
+            .lazy = true,
         },
     },
 }
