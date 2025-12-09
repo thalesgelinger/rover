@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 
 const BUILD_ROOT: &str = ".rover/build/ios-sim";
 const VENDOR_XCCLI: &str = "platform/ios-runner/vendor/XcodeProjectCLI";
+const BUILD_BIN: &str = "platform/ios-runner/vendor/XcodeProjectCLI/.build/debug/xcodeprojectcli";
 
 pub struct IosRunner {
     build_dir: PathBuf,
@@ -25,12 +26,13 @@ impl IosRunner {
 
     pub fn generate_project(&self) -> Result<()> {
         std::fs::create_dir_all(&self.build_dir).context("create build dir")?;
+        self.build_swift_tool()?;
         // TODO: copy template into build dir and patch plist/targets via xcodeprojectcli
         Ok(())
     }
 
     pub fn build_and_run_sim(&self) -> Result<()> {
-        self.build_swift_tool()?;
+        self.generate_project()?;
         // TODO: build Rust staticlib, bundle Lua/assets, launch simctl
         Ok(())
     }

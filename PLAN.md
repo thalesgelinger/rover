@@ -37,7 +37,8 @@ rover build main.lua -p ios   # build only (future)
 
 ## iOS flow (sim first)
 - Prereqs: Rust toolchain + Xcode/CLT installed by user
-- Use XcodeProjectCLI to generate/patch Xcode project
+- Embed XcodeProjectCLI Swift package (vendored) inside runner; no user install
+- Generate/patch Xcode project; template lives in `platform/ios-runner`
 - Build Rust staticlib, link into Xcode target; embed Lua (source in dev, bytecode in release) + assets/
 - Copy `main.lua` + `assets/` into app bundle
 - Launch via `xcrun simctl install/launch`; target sim default
