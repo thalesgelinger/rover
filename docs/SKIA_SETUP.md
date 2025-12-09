@@ -9,10 +9,10 @@ Rover uses Skia for 2D graphics rendering. You have two options:
 1. Download prebuilds for your platform:
    ```bash
    # macOS arm64 (M1/M2/M3)
-   curl -L https://github.com/YOUR_USERNAME/rover/releases/download/v0.1.0/skia-macos-arm64.tar.gz -o /tmp/skia-macos-arm64.tar.gz
+   curl -L https://github.com/thalesgelinger/rover/releases/download/v0.1.0/skia-macos-arm64.tar.gz -o /tmp/skia-macos-arm64.tar.gz
    
    # macOS x64 (Intel)
-   curl -L https://github.com/YOUR_USERNAME/rover/releases/download/v0.1.0/skia-macos-x64.tar.gz -o /tmp/skia-macos-x64.tar.gz
+   curl -L https://github.com/thalesgelinger/rover/releases/download/v0.1.0/skia-macos-x64.tar.gz -o /tmp/skia-macos-x64.tar.gz
    ```
 
 2. Extract to vendor directory:
