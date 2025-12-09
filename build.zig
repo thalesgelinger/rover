@@ -91,7 +91,7 @@ fn applySkia(b: *std.Build, target: std.Build.ResolvedTarget, step: *std.Build.S
     step.root_module.addIncludePath(b.path(include_root));
 
     const shim_flags = &.{ "-std=c++17", b.fmt("-I{s}", .{include_root}) };
-    step.addCSourceFiles(.{ .files = &.{"src/render/skia_shim.cpp"}, .flags = shim_flags });
+    step.addCSourceFiles(.{ .files = &.{"src/render/skia_shim.mm"}, .flags = shim_flags });
 
     step.linkSystemLibrary2("skia", .{});
     step.linkSystemLibrary2("z", .{});
@@ -99,12 +99,15 @@ fn applySkia(b: *std.Build, target: std.Build.ResolvedTarget, step: *std.Build.S
     step.linkLibCpp();
 
     if (target.result.os.tag == .macos) {
+        step.linkFramework("Metal");
+        step.linkFramework("MetalKit");
+        step.linkFramework("Cocoa");
+        step.linkFramework("QuartzCore");
         step.linkFramework("ApplicationServices");
         step.linkFramework("CoreFoundation");
         step.linkFramework("CoreGraphics");
         step.linkFramework("CoreText");
         step.linkFramework("ImageIO");
-        step.linkFramework("QuartzCore");
         step.linkFramework("CoreServices");
         step.linkFramework("Accelerate");
     }
