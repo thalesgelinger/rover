@@ -1,0 +1,4 @@
+/target
+/.rover/
+**/.DS_Store
+platform/ios-runner/.build

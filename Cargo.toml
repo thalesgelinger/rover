@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/rover-cli",
+    "crates/rover-runtime",
+    "crates/rover-lua",
+    "crates/rover-render",
+    "platform/ios-runner",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["Rover Contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+mlua = { version = "0.9", features = ["luajit", "vendored"] }
