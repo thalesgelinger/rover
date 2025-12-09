@@ -52,19 +52,23 @@ impl IosRunner {
 
     pub fn generate_project(&self) -> Result<()> {
         fs::create_dir_all(&self.build_dir).context("create build dir")?;
-        self.build_swift_tool()?;
+        let xcc_bin = self.build_swift_tool()?;
         // TODO: copy template into build dir and patch plist/targets via xcodeprojectcli
+        // run a quick check to ensure binary exists
+        if !xcc_bin.exists() {
+            return Err(anyhow!("xcodeprojectcli binary missing at {}", xcc_bin.display()));
+        }
         Ok(())
     }
 
     pub fn build_and_run_sim(&self, entry: &Path) -> Result<()> {
         self.stage_payload(entry)?;
         self.generate_project()?;
-        // TODO: build Rust staticlib, bundle Lua/assets, launch simctl
+        self.run_sim_placeholder()?;
         Ok(())
     }
 
-    fn build_swift_tool(&self) -> Result<()> {
+    fn build_swift_tool(&self) -> Result<PathBuf> {
         let xcc_path = Path::new(VENDOR_XCCLI);
         if !xcc_path.exists() {
             return Err(anyhow!("XcodeProjectCLI vendor missing at {}", xcc_path.display()));
@@ -77,6 +81,11 @@ impl IosRunner {
         if !status.success() {
             return Err(anyhow!("swift build failed"));
         }
+        Ok(xcc_path.join(".build/debug/xcodeprojectcli"))
+    }
+
+    fn run_sim_placeholder(&self) -> Result<()> {
+        println!("[rover][ios] sim build/launch not yet wired");
         Ok(())
     }
 }
