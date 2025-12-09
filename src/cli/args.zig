@@ -9,6 +9,7 @@ pub const Platform = enum {
 pub const Args = struct {
     lua_file: []const u8,
     platform: Platform = .macos,
+    debug_fps: bool = false,
 };
 
 pub fn parse(argv: []const []const u8) !Args {
@@ -29,6 +30,8 @@ pub fn parse(argv: []const []const u8) !Args {
             args.platform = std.meta.stringToEnum(Platform, platform_str) orelse {
                 return error.InvalidPlatform;
             };
+        } else if (std.mem.eql(u8, arg, "--debug-fps")) {
+            args.debug_fps = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownFlag;
         } else if (args.lua_file.len == 0) {
