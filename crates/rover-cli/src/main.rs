@@ -90,14 +90,14 @@ fn run(opts: RunOpts) -> Result<()> {
     let view = runtime.render(state).context("render app")?;
     println!("[rover] render output: {:?}", view);
 
-    dispatch_platform_run(&opts)?;
+    dispatch_platform_run(&opts, &opts.entry)?;
     Ok(())
 }
 
 fn build(opts: RunOpts) -> Result<()> {
     let target = target_desc(&opts);
     println!("[rover] build {} for {}", opts.entry.display(), target);
-    dispatch_platform_build(&opts)
+    dispatch_platform_build(&opts, &opts.entry)
 }
 
 fn target_desc(opts: &RunOpts) -> String {
@@ -110,15 +110,12 @@ fn target_desc(opts: &RunOpts) -> String {
     }
 }
 
-fn dispatch_platform_run(opts: &RunOpts) -> Result<()> {
+fn dispatch_platform_run(opts: &RunOpts, entry: &PathBuf) -> Result<()> {
     match opts.platform {
         Platform::Ios => {
             let runner = IosRunner::new();
             runner.ensure_prereqs()?;
-            runner.generate_project()?;
-            if opts.sim {
-                runner.build_and_run_sim()?;
-            }
+            runner.build_and_run_sim(entry)?;
             Ok(())
         }
         Platform::Android => {
@@ -128,11 +125,12 @@ fn dispatch_platform_run(opts: &RunOpts) -> Result<()> {
     }
 }
 
-fn dispatch_platform_build(opts: &RunOpts) -> Result<()> {
+fn dispatch_platform_build(opts: &RunOpts, entry: &PathBuf) -> Result<()> {
     match opts.platform {
         Platform::Ios => {
             let runner = IosRunner::new();
             runner.ensure_prereqs()?;
+            runner.stage_payload(entry)?;
             runner.generate_project()?;
             Ok(())
         }

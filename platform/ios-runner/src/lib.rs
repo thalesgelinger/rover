@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -24,14 +25,40 @@ impl IosRunner {
         Ok(())
     }
 
+    pub fn stage_payload(&self, entry: &Path) -> Result<()> {
+        let entry = entry.canonicalize().with_context(|| format!("canonicalize {}", entry.display()))?;
+        let assets_dir = entry.parent().map(|p| p.join("assets"));
+
+        let app_dir = self.build_dir.join("app");
+        fs::create_dir_all(&app_dir).context("create app dir")?;
+
+        let target_entry = app_dir.join("main.lua");
+        fs::copy(&entry, &target_entry)
+            .with_context(|| format!("copy entry to {}", target_entry.display()))?;
+
+        if let Some(assets) = assets_dir {
+            if assets.exists() {
+                let dest = app_dir.join("assets");
+                if dest.exists() {
+                    fs::remove_dir_all(&dest).context("clean old assets")?;
+                }
+                fs::create_dir_all(&dest).context("create assets dest")?;
+                copy_dir(&assets, &dest)?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn generate_project(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.build_dir).context("create build dir")?;
+        fs::create_dir_all(&self.build_dir).context("create build dir")?;
         self.build_swift_tool()?;
         // TODO: copy template into build dir and patch plist/targets via xcodeprojectcli
         Ok(())
     }
 
-    pub fn build_and_run_sim(&self) -> Result<()> {
+    pub fn build_and_run_sim(&self, entry: &Path) -> Result<()> {
+        self.stage_payload(entry)?;
         self.generate_project()?;
         // TODO: build Rust staticlib, bundle Lua/assets, launch simctl
         Ok(())
@@ -64,4 +91,19 @@ fn check_cmd(cmd: &str) -> Result<()> {
     } else {
         Err(anyhow!("{cmd} not found"))
     }
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    for entry in fs::read_dir(src).with_context(|| format!("read_dir {}", src.display()))? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            fs::create_dir_all(&dst_path)?;
+            copy_dir(&entry.path(), &dst_path)?;
+        } else {
+            fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
 }
