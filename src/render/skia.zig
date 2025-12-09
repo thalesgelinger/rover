@@ -201,3 +201,94 @@ pub const Paint = struct {
         sk_paint_delete(self.handle);
     }
 };
+
+// Metal GPU support
+pub const gr_direct_context_t = opaque {};
+
+extern fn gr_direct_context_make_metal(device: *anyopaque, queue: *anyopaque) ?*gr_direct_context_t;
+extern fn gr_direct_context_unref(context: *gr_direct_context_t) void;
+extern fn gr_direct_context_flush_and_submit(context: *gr_direct_context_t, sync: bool) void;
+extern fn sk_surface_wrap_metal_layer(context: *gr_direct_context_t, layer: *anyopaque, width: i32, height: i32) ?*sk_surface_t;
+extern fn sk_surface_flush_and_submit(surface: *sk_surface_t) void;
+extern fn sk_surface_present_to_layer(context: *gr_direct_context_t, surface: *sk_surface_t, layer: *anyopaque) void;
+extern fn sk_canvas_draw_simple_text(canvas: *sk_canvas_t, text: [*]const u8, len: usize, x: f32, y: f32, paint: *const sk_paint_t) void;
+
+pub const MetalContext = struct {
+    context: *gr_direct_context_t,
+    device: *anyopaque,
+    queue: *anyopaque,
+
+    pub fn init(device: *anyopaque, queue: *anyopaque) !MetalContext {
+        const context = gr_direct_context_make_metal(device, queue) orelse return SkiaError.SurfaceCreateFailed;
+        return MetalContext{
+            .context = context,
+            .device = device,
+            .queue = queue,
+        };
+    }
+
+    pub fn deinit(self: *MetalContext) void {
+        gr_direct_context_unref(self.context);
+    }
+
+    pub fn flushAndSubmit(self: *MetalContext, sync: bool) void {
+        gr_direct_context_flush_and_submit(self.context, sync);
+    }
+};
+
+pub const MetalCanvas = struct {
+    surface: *sk_surface_t,
+    canvas: *sk_canvas_t,
+    width: i32,
+    height: i32,
+    layer: *anyopaque,
+    context: *gr_direct_context_t,
+
+    pub fn init(metal_ctx: *MetalContext, layer: *anyopaque, width: i32, height: i32) !MetalCanvas {
+        const surface = sk_surface_wrap_metal_layer(metal_ctx.context, layer, width, height) orelse return SkiaError.SurfaceCreateFailed;
+        const canvas_ptr = sk_surface_get_canvas(surface) orelse return SkiaError.CanvasUnavailable;
+
+        return MetalCanvas{
+            .surface = surface,
+            .canvas = canvas_ptr,
+            .width = width,
+            .height = height,
+            .layer = layer,
+            .context = metal_ctx.context,
+        };
+    }
+
+    pub fn deinit(self: *MetalCanvas) void {
+        sk_surface_unref(self.surface);
+    }
+
+    pub fn clear(self: *MetalCanvas, color: sk_color_t) !void {
+        var paint = try Paint.init();
+        defer paint.deinit();
+        sk_paint_set_color(paint.handle, color);
+        sk_canvas_draw_paint(self.canvas, paint.handle);
+    }
+
+    pub fn drawRect(self: *MetalCanvas, x: f32, y: f32, w: f32, h: f32, color: sk_color_t) !void {
+        var paint = try Paint.init();
+        defer paint.deinit();
+        sk_paint_set_color(paint.handle, color);
+        var rect = sk_rect_t{ .left = x, .top = y, .right = x + w, .bottom = y + h };
+        sk_canvas_draw_rect(self.canvas, &rect, paint.handle);
+    }
+
+    pub fn drawText(self: *MetalCanvas, text: []const u8, x: f32, y: f32, color: sk_color_t) !void {
+        var paint = try Paint.init();
+        defer paint.deinit();
+        sk_paint_set_color(paint.handle, color);
+        sk_canvas_draw_simple_text(self.canvas, text.ptr, text.len, x, y, paint.handle);
+    }
+
+    pub fn flush(self: *MetalCanvas) void {
+        sk_surface_flush_and_submit(self.surface);
+    }
+
+    pub fn present(self: *MetalCanvas) void {
+        sk_surface_present_to_layer(self.context, self.surface, self.layer);
+    }
+};
