@@ -1,3 +1,12 @@
 .zig-cache/
 zig-out/
 .DS_Store
+
+# Skia build artifacts (build yourself or download prebuilds)
+.depot_tools/
+.skia-src/
+vendor/
+
+# Test outputs
+test_output.ppm
+*.png
