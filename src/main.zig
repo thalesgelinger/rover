@@ -3,6 +3,7 @@ const zlua = @import("zlua");
 const args_module = @import("cli/args.zig");
 const lua_vm = @import("runtime/lua_vm.zig");
 const rover_api = @import("runtime/rover_api.zig");
+const node_builder = @import("runtime/node_builder.zig");
 const platform = @import("platform/platform.zig");
 const skia = @import("render/skia.zig");
 const fps_counter_module = @import("render/fps_counter.zig");
@@ -31,12 +32,23 @@ pub fn main() !void {
     rover_api.register(vm.lua);
 
     // Load and execute Lua file
-    vm.loadFile(parsed_args.lua_file) catch |err| {
+    const app_ref = vm.loadFile(parsed_args.lua_file) catch |err| {
         std.debug.print("Error loading Lua file: {}\n", .{err});
         return err;
     };
 
     std.debug.print("Success: Lua file loaded\n", .{});
+
+    // Build node tree
+    var builder = node_builder.NodeBuilder.init(allocator, vm.lua, app_ref);
+    defer builder.deinit();
+
+    var root = try builder.build();
+    defer root.deinit(vm.lua);
+
+    if (parsed_args.debug_tree) {
+        node_builder.debugPrint(&root);
+    }
 
     // Create window
     std.debug.print("Creating window...\n", .{});

@@ -18,7 +18,7 @@ pub const LuaVm = struct {
         self.lua.*.deinit();
     }
 
-    pub fn loadFile(self: *LuaVm, file_path: []const u8) !void {
+    pub fn loadFile(self: *LuaVm, file_path: []const u8) !i32 {
         const file = try std.fs.cwd().openFile(file_path, .{});
         defer file.close();
 
@@ -31,6 +31,13 @@ pub const LuaVm = struct {
 
         try self.lua.*.loadString(content_z);
         try self.lua.*.protectedCall(.{ .args = 0, .results = 1 });
+
+        if (!self.lua.*.isTable(-1)) {
+            self.lua.*.pop(1);
+            return error.InvalidAppReturn;
+        }
+
+        return try self.lua.*.ref(zlua.registry_index);
     }
 
     pub fn getGlobal(self: *LuaVm, name: []const u8) !void {
