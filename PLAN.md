@@ -42,6 +42,7 @@ rover build main.lua -p ios   # build only (future)
 - Build Rust staticlib, link into Xcode target; embed Lua (source in dev, bytecode in release) + assets/
 - Copy `main.lua` + `assets/` into app bundle
 - Launch via `xcrun simctl install/launch`; target sim default
+- App name/bundle fixed for now; allow custom later
 - Later: device signing/profile + JIT toggle (off on iOS)
 
 ## Android (later)
