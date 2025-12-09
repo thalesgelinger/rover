@@ -40,9 +40,9 @@ struct ContentView: View {
 final class RoverHost: ObservableObject {
     @Published var image: CGImage?
     @Published var hits: [HitRect] = []
+    @Published var imageSize: CGSize = .zero
     private var handle: UnsafeMutableRawPointer?
     private var lastSize: CGSize = .zero
-    private var imageSize: CGSize = .zero
 
     func start(targetSize: CGSize) {
         guard handle == nil else { render(size: targetSize); return }
@@ -78,13 +78,14 @@ final class RoverHost: ObservableObject {
         rover_image_free(img)
         guard let provider = CGDataProvider(data: data as CFData) else { return }
         let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(.premultipliedFirst)
         if let cg = CGImage(width: Int(img.width),
                             height: Int(img.height),
                             bitsPerComponent: 8,
                             bitsPerPixel: 32,
                             bytesPerRow: img.row_bytes,
                             space: colorSpace,
-                            bitmapInfo: CGBitmapInfo.byteOrder32Big.union(.premultipliedLast),
+                            bitmapInfo: bitmapInfo,
                             provider: provider,
                             decode: nil,
                             shouldInterpolate: true,

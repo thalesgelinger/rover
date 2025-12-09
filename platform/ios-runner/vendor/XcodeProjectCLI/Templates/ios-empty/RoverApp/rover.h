@@ -9,6 +9,9 @@ extern "C" {
 typedef struct {
     uint8_t *data;
     size_t len;
+    int32_t width;
+    int32_t height;
+    size_t row_bytes;
     char *hits_json;
 } RoverImage;
 

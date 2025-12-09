@@ -76,7 +76,10 @@ impl IosRunner {
         Ok(out)
     }
 
-    pub fn build_and_run_sim(&self, entry: &Path) -> Result<()> {
+        pub fn build_and_run_sim(&self, entry: &Path) -> Result<()> {
+        if self.build_dir.exists() {
+            fs::remove_dir_all(&self.build_dir).ok();
+        }
         self.stage_payload(entry)?;
         let lib = self.build_rust_staticlib()?;
         let project_dir = self.generate_project()?;
@@ -173,31 +176,55 @@ fn select_sim_device() -> Result<SimDevice> {
     let devices_obj = json
         .get("devices")
         .ok_or_else(|| anyhow!("missing devices"))?;
-    let mut chosen: Option<SimDevice> = None;
+    let mut candidates: Vec<((u32, u32, u32), SimDevice)> = Vec::new();
     if let Some(map) = devices_obj.as_object() {
         for (runtime, list) in map {
             if !runtime.contains("iOS") {
                 continue;
             }
+            let version = parse_runtime_version(runtime);
             if let Some(arr) = list.as_array() {
                 for item in arr {
                     let dev: SimDevice = serde_json::from_value(item.clone())?;
                     let available = dev.is_available.unwrap_or(true);
                     if available && dev.name.contains("iPhone") {
-                        chosen = Some(dev);
-                        break;
+                        candidates.push((version, dev));
                     }
                 }
             }
-            if chosen.is_some() {
-                break;
-            }
         }
     }
-    chosen.ok_or_else(|| anyhow!("no available iOS simulator"))
+    candidates
+        .into_iter()
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, d)| d)
+        .ok_or_else(|| anyhow!("no available iOS simulator"))
+}
+
+fn parse_runtime_version(runtime: &str) -> (u32, u32, u32) {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for ch in runtime.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            parts.push(current.clone());
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    let major = parts.get(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let patch = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, patch)
 }
 
 fn boot_device(dev: &SimDevice) -> Result<()> {
+    if dev.state.as_deref() == Some("Booted") {
+        return Ok(());
+    }
     let status = Command::new("xcrun")
         .arg("simctl")
         .arg("boot")
@@ -213,6 +240,9 @@ fn boot_device(dev: &SimDevice) -> Result<()> {
 
 fn build_app(project_dir: &Path, dev: &SimDevice, build_dir: &Path) -> Result<PathBuf> {
     let derived = build_dir.join("DerivedData");
+    if derived.exists() {
+        fs::remove_dir_all(&derived).ok();
+    }
     let status = Command::new("xcodebuild")
         .current_dir(project_dir)
         .arg("-project")
