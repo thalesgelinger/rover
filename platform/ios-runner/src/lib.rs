@@ -7,8 +7,8 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 const BUILD_ROOT: &str = ".rover/build/ios-sim";
-const VENDOR_XCCLI: &str = "platform/ios-runner/vendor/XcodeProjectCLI";
 const BUNDLE_ID: &str = "dev.rover.app";
+const IOS_SIM_TARGET: &str = "aarch64-apple-ios-sim";
 
 pub struct IosRunner {
     build_dir: PathBuf,
@@ -16,8 +16,9 @@ pub struct IosRunner {
 
 impl IosRunner {
     pub fn new() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
-            build_dir: PathBuf::from(BUILD_ROOT),
+            build_dir: cwd.join(BUILD_ROOT),
         }
     }
 
@@ -54,12 +55,6 @@ impl IosRunner {
 
     pub fn generate_project(&self) -> Result<PathBuf> {
         fs::create_dir_all(&self.build_dir).context("create build dir")?;
-        let xcc_bin = self.build_swift_tool()?;
-        if !xcc_bin.exists() {
-            return Err(anyhow!("xcodeprojectcli binary missing at {}", xcc_bin.display()));
-        }
-
-
         let template = Path::new("platform/ios-runner/vendor/XcodeProjectCLI/Templates/ios-empty");
         let out = self.build_dir.join("project");
         if out.exists() {
@@ -68,23 +63,24 @@ impl IosRunner {
         if !template.exists() {
             return Err(anyhow!("template missing at {}", template.display()));
         }
-        let status = Command::new(&xcc_bin)
-            .arg("--template")
-            .arg(template)
-            .arg("--out")
-            .arg(&out)
-            .status()
-            .context("run xcodeprojectcli copy")?;
-        if !status.success() {
-            return Err(anyhow!("xcodeprojectcli copy failed"));
-        }
+        fs::create_dir_all(&out).context("create project dir")?;
+        copy_dir(template, &out).with_context(|| format!("copy template from {}", template.display()))?;
+
+        let proj_dir = out.join("RoverApp.xcodeproj");
+        fs::create_dir_all(&proj_dir).context("create xcodeproj dir")?;
+        let pbx_src = template.join("project.pbxproj");
+        let pbx_target = proj_dir.join("project.pbxproj");
+        fs::copy(&pbx_src, &pbx_target)
+            .with_context(|| format!("copy pbxproj {}", pbx_src.display()))?;
 
         Ok(out)
     }
 
     pub fn build_and_run_sim(&self, entry: &Path) -> Result<()> {
         self.stage_payload(entry)?;
+        let lib = self.build_rust_staticlib()?;
         let project_dir = self.generate_project()?;
+        self.place_staticlib(&project_dir, &lib)?;
         let device = select_sim_device()?;
         boot_device(&device)?;
         let app_path = build_app(&project_dir, &device, &self.build_dir)?;
@@ -93,23 +89,65 @@ impl IosRunner {
         Ok(())
     }
 
-    fn build_swift_tool(&self) -> Result<PathBuf> {
-
-        let xcc_path = Path::new(VENDOR_XCCLI);
-        if !xcc_path.exists() {
-            return Err(anyhow!("XcodeProjectCLI vendor missing at {}", xcc_path.display()));
-        }
-        let status = Command::new("swift")
+    fn build_rust_staticlib(&self) -> Result<PathBuf> {
+        let sdk = sim_sdk_path()?;
+        let cc = "/usr/bin/clang";
+        let ar = "/usr/bin/ar";
+        let status = Command::new("cargo")
             .arg("build")
-            .current_dir(xcc_path)
+            .arg("-p")
+            .arg("rover-runtime")
+            .arg("--target")
+            .arg(IOS_SIM_TARGET)
+            .env("MACOSX_DEPLOYMENT_TARGET", "16.0")
+            .env("CC_aarch64-apple-ios-sim", cc)
+            .env("AR_aarch64-apple-ios-sim", ar)
+            .env(
+                "CFLAGS_aarch64-apple-ios-sim",
+                format!("-isysroot {} -arch arm64 -mios-simulator-version-min=16.0", sdk),
+            )
+            .env(
+                "LDFLAGS_aarch64-apple-ios-sim",
+                format!("-isysroot {} -arch arm64 -mios-simulator-version-min=16.0", sdk),
+            )
             .status()
-            .context("swift build XcodeProjectCLI")?;
+            .context("cargo build rover-runtime (ios sim)")?;
         if !status.success() {
-            return Err(anyhow!("swift build failed"));
+            return Err(anyhow!("cargo build rover-runtime failed"));
         }
-        Ok(xcc_path.join(".build/debug/xcodeprojectcli"))
+        let out = Path::new("target")
+            .join(IOS_SIM_TARGET)
+            .join("debug/librover_runtime.a");
+        if !out.exists() {
+            return Err(anyhow!("missing staticlib at {}", out.display()));
+        }
+        Ok(out)
     }
 
+    fn place_staticlib(&self, project_dir: &Path, lib: &Path) -> Result<()> {
+        let dest = project_dir.join("librover_runtime.a");
+        fs::copy(lib, &dest)
+            .with_context(|| format!("copy {} to {}", lib.display(), dest.display()))?;
+        Ok(())
+    }
+
+}
+
+fn sim_sdk_path() -> Result<String> {
+    let output = Command::new("xcrun")
+        .arg("--sdk")
+        .arg("iphonesimulator")
+        .arg("--show-sdk-path")
+        .output()
+        .context("xcrun --show-sdk-path")?;
+    if !output.status.success() {
+        return Err(anyhow!("xcrun --show-sdk-path failed"));
+    }
+    let sdk = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sdk.is_empty() {
+        return Err(anyhow!("empty sdk path"));
+    }
+    Ok(sdk)
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +248,7 @@ fn bundle_payload(build_dir: &Path, app: &Path) -> Result<()> {
     if target.exists() {
         fs::remove_dir_all(&target).ok();
     }
+    fs::create_dir_all(&target)?;
     copy_dir(&payload, &target)
 }
 

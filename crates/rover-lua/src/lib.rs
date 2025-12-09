@@ -4,15 +4,20 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
-use mlua::{Function, Lua};
+use mlua::{Function, Lua, RegistryKey};
 
 pub use mlua::Value;
 
+struct ActionBinding {
+    name: String,
+    func: RegistryKey,
+}
+
 pub struct LuaEngine {
     lua: Lua,
-    render_fn: Option<mlua::RegistryKey>,
-    init_fn: Option<mlua::RegistryKey>,
-    actions: Vec<String>,
+    render_fn: Option<RegistryKey>,
+    init_fn: Option<RegistryKey>,
+    actions: Vec<ActionBinding>,
 }
 
 impl LuaEngine {
@@ -54,8 +59,11 @@ impl LuaEngine {
             if k == "render" || k == "init" {
                 continue;
             }
-            if matches!(v, Value::Function(_)) {
-                actions.push(k);
+            if let Value::Function(f) = v {
+                actions.push(ActionBinding {
+                    name: k,
+                    func: self.lua.create_registry_value(f)?,
+                });
             }
         }
 
@@ -85,15 +93,37 @@ impl LuaEngine {
         render_fn.call((state, act)).map_err(Into::into)
     }
 
+    pub fn call_action<'lua>(&'lua self, name: &str, state: Value<'lua>) -> Result<Value<'lua>> {
+        let binding = self
+            .actions
+            .iter()
+            .find(|a| a.name == name)
+            .ok_or_else(|| anyhow!("unknown action {name}"))?;
+        let func: Function = self.lua.registry_value(&binding.func)?;
+        Ok(func.call(state)?)
+    }
+
+    pub fn store_value(&self, value: Value) -> mlua::Result<RegistryKey> {
+        self.lua.create_registry_value(value)
+    }
+
+    pub fn load_value(&self, key: &RegistryKey) -> mlua::Result<Value<'_>> {
+        self.lua.registry_value(key)
+    }
+
+    pub fn replace_value(&self, key: &mut RegistryKey, value: Value) -> mlua::Result<()> {
+        self.lua.replace_registry_value(key, value)
+    }
+
     fn create_actions_table(&self) -> mlua::Result<mlua::Table<'_>> {
         let act = self.lua.create_table()?;
-        for name in &self.actions {
-            let action_name = name.clone();
-            let f = self.lua.create_function(move |lua, ()| {
-                let noop = lua.create_function(|_, ()| Ok(()))?;
-                Ok(noop)
-            })?;
-            act.set(action_name.as_str(), f)?;
+        for binding in &self.actions {
+            let name = binding.name.clone();
+            let label = name.clone();
+            let f = self
+                .lua
+                .create_function(move |lua, ()| Ok(Value::String(lua.create_string(&label)?)))?;
+            act.set(name.as_str(), f)?;
         }
         Ok(act)
     }

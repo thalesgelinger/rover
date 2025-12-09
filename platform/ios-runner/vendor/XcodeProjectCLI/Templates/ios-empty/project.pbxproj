@@ -1,69 +1,3 @@
-import Foundation
-
-struct Args {
-    let template: URL
-    let output: URL
-}
-
-func parseArgs() -> Args {
-    var template: URL?
-    var output: URL?
-    var iter = CommandLine.arguments.dropFirst().makeIterator()
-    while let arg = iter.next() {
-        switch arg {
-        case "--template":
-            if let val = iter.next() { template = URL(fileURLWithPath: val) }
-        case "--out":
-            if let val = iter.next() { output = URL(fileURLWithPath: val) }
-        default:
-            break
-        }
-    }
-    guard let t = template, let o = output else {
-        fputs("usage: xcodeprojectcli --template <dir> --out <dir>\n", stderr)
-        exit(1)
-    }
-    return Args(template: t, output: o)
-}
-
-func copyTemplate(from: URL, to: URL) throws {
-    let fm = FileManager.default
-    if fm.fileExists(atPath: to.path) {
-        try fm.removeItem(at: to)
-    }
-    try fm.createDirectory(at: to, withIntermediateDirectories: true)
-    let enumerator = fm.enumerator(at: from, includingPropertiesForKeys: [.isDirectoryKey])!
-    for case let url as URL in enumerator {
-        let rel = url.path.replacingOccurrences(of: from.path, with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let dest = to.appendingPathComponent(rel)
-        let attrs = try url.resourceValues(forKeys: [.isDirectoryKey])
-        if attrs.isDirectory == true {
-            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
-        } else {
-            try fm.copyItem(at: url, to: dest)
-        }
-    }
-}
-
-func writePBXProj(to output: URL) throws {
-    let projDir = output.appendingPathComponent("RoverApp.xcodeproj")
-    let fm = FileManager.default
-    try fm.createDirectory(at: projDir, withIntermediateDirectories: true)
-    let pbx = projDir.appendingPathComponent("project.pbxproj")
-    try pbxprojContent.data(using: .utf8)!.write(to: pbx)
-}
-
-let args = parseArgs()
-do {
-    try copyTemplate(from: args.template, to: args.output)
-    try writePBXProj(to: args.output)
-    print("generated project at \(args.output.path)")
-} catch {
-    fputs("error: \(error)\n", stderr)
-    exit(1)
-}
-
-let pbxprojContent = """
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
@@ -269,5 +203,3 @@ let pbxprojContent = """
 	};
 	rootObject = 1A2B3C4D5E6F000600000001 /* Project object */;
 }
-"""
-

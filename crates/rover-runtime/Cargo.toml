@@ -3,6 +3,12 @@ name = "rover-runtime"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["lib", "staticlib"]
+
 [dependencies]
 anyhow = { workspace = true }
+mlua = { workspace = true }
 rover-lua = { path = "../rover-lua" }
+rover-render = { path = "../rover-render" }
+serde_json = "1"

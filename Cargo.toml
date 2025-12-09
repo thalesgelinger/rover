@@ -18,4 +18,4 @@ authors = ["Rover Contributors"]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-mlua = { version = "0.9", features = ["luajit", "vendored"] }
+mlua = { version = "0.9", features = ["lua54", "vendored"] }

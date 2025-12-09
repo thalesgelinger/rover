@@ -86,8 +86,8 @@ fn run(opts: RunOpts) -> Result<()> {
     runtime
         .load_entry(&opts.entry)
         .with_context(|| format!("load {}", opts.entry.display()))?;
-    let state = runtime.init_state().context("init state")?;
-    let view = runtime.render(state).context("render app")?;
+    runtime.init_state().context("init state")?;
+    let view = runtime.render_view().context("render app")?;
     println!("[rover] render output: {:?}", view);
 
     dispatch_platform_run(&opts, &opts.entry)?;

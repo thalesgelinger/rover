@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
+serde = { workspace = true }
+rover-lua = { path = "../rover-lua" }

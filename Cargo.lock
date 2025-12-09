@@ -329,6 +329,8 @@ name = "rover-render"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rover-lua",
+ "serde",
 ]
 
 [[package]]
@@ -336,7 +338,10 @@ name = "rover-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "mlua",
  "rover-lua",
+ "rover-render",
+ "serde_json",
 ]
 
 [[package]]
