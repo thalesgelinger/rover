@@ -53,11 +53,26 @@ impl IosRunner {
     pub fn generate_project(&self) -> Result<()> {
         fs::create_dir_all(&self.build_dir).context("create build dir")?;
         let xcc_bin = self.build_swift_tool()?;
-        // TODO: copy template into build dir and patch plist/targets via xcodeprojectcli
-        // run a quick check to ensure binary exists
         if !xcc_bin.exists() {
             return Err(anyhow!("xcodeprojectcli binary missing at {}", xcc_bin.display()));
         }
+
+        let template = Path::new("platform/ios-runner/vendor/XcodeProjectCLI/Templates/ios-empty");
+        let out = self.build_dir.join("project");
+        if !template.exists() {
+            return Err(anyhow!("template missing at {}", template.display()));
+        }
+        let status = Command::new(&xcc_bin)
+            .arg("--template")
+            .arg(template)
+            .arg("--out")
+            .arg(&out)
+            .status()
+            .context("run xcodeprojectcli copy")?;
+        if !status.success() {
+            return Err(anyhow!("xcodeprojectcli copy failed"));
+        }
+
         Ok(())
     }
 
