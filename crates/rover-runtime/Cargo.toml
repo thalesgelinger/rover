@@ -12,3 +12,4 @@ mlua = { workspace = true }
 rover-lua = { path = "../rover-lua" }
 rover-render = { path = "../rover-render" }
 serde_json = "1"
+skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "gl", "binary-cache"] }

@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use mlua::RegistryKey;
 use rover_lua::LuaEngine;
-use rover_render::ViewNode;
+use rover_render::{SkiaRenderer, ViewNode};
 
 pub struct Runtime {
     lua: LuaEngine,
+    renderer: SkiaRenderer,
     state: Option<RegistryKey>,
     entry: Option<PathBuf>,
 }
@@ -18,8 +19,10 @@ pub struct Runtime {
 impl Runtime {
     pub fn new() -> Result<Self> {
         let lua = LuaEngine::new()?;
+        let renderer = SkiaRenderer::new();
         Ok(Self {
             lua,
+            renderer,
             state: None,
             entry: None,
         })
@@ -54,6 +57,11 @@ impl Runtime {
         let view = self.lua.render(state)?;
         let debug = format!("{view:?}");
         ViewNode::from_value(&view).with_context(|| format!("render value {debug}"))
+    }
+
+    pub fn render_png(&self, width: i32, height: i32) -> Result<rover_render::RenderResult> {
+        let view = self.render_view()?;
+        self.renderer.render(&view, width, height)
     }
 
     pub fn render_or_init(&mut self) -> Result<ViewNode> {
@@ -100,6 +108,10 @@ fn encode_view(view: ViewNode) -> Result<CString> {
     Ok(CString::new(json)?)
 }
 
+fn encode_hits(json: String) -> Result<CString> {
+    Ok(CString::new(json)?)
+}
+
 fn ptr_to_string(ptr: *const c_char) -> Option<String> {
     if ptr.is_null() {
         return None;
@@ -129,6 +141,17 @@ pub extern "C" fn rover_destroy(handle: *mut RuntimeHandle) {
         drop(Box::from_raw(handle));
     }
 }
+
+#[repr(C)]
+pub struct RoverImage {
+    pub data: *mut u8,
+    pub len: usize,
+    pub width: i32,
+    pub height: i32,
+    pub row_bytes: usize,
+    pub hits_json: *mut c_char,
+}
+
 
 #[no_mangle]
 pub extern "C" fn rover_render_json(handle: *mut RuntimeHandle) -> *mut c_char {
@@ -166,6 +189,64 @@ pub extern "C" fn rover_dispatch_action_json(
     {
         Ok(cstr) => cstr.into_raw(),
         Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rover_render_rgba(
+    handle: *mut RuntimeHandle,
+    width: i32,
+    height: i32,
+) -> RoverImage {
+    if handle.is_null() {
+        return RoverImage {
+            data: std::ptr::null_mut(),
+            len: 0,
+            width: 0,
+            height: 0,
+            row_bytes: 0,
+            hits_json: std::ptr::null_mut(),
+        };
+    }
+    let runtime = unsafe { &mut *handle };
+    match runtime.runtime.render_png(width, height) {
+        Ok(out) => {
+            let len = out.buffer.len();
+            let mut buf = out.buffer;
+            let data = buf.as_mut_ptr();
+            std::mem::forget(buf);
+            let hits_json = encode_hits(out.hits_json)
+                .map(|s| s.into_raw())
+                .unwrap_or(std::ptr::null_mut());
+            RoverImage {
+                data,
+                len,
+                width: out.width,
+                height: out.height,
+                row_bytes: out.row_bytes,
+                hits_json,
+            }
+        }
+        Err(_) => RoverImage {
+            data: std::ptr::null_mut(),
+            len: 0,
+            width: 0,
+            height: 0,
+            row_bytes: 0,
+            hits_json: std::ptr::null_mut(),
+        },
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rover_image_free(img: RoverImage) {
+    if !img.data.is_null() && img.len > 0 {
+        unsafe {
+            let _ = Vec::from_raw_parts(img.data, img.len, img.len);
+        }
+    }
+    if !img.hits_json.is_null() {
+        rover_string_free(img.hits_json);
     }
 }
 

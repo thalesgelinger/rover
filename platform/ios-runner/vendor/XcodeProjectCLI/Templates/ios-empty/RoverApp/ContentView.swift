@@ -4,59 +4,101 @@ struct ContentView: View {
     @StateObject private var host = RoverHost()
 
     var body: some View {
-        ZStack {
-            if let node = host.view {
-                RenderNode(node: node) { action in
-                    host.dispatch(action: action)
+        GeometryReader { geo in
+            ZStack {
+                if let image = host.image {
+                    Image(decorative: image, scale: 1, orientation: .up)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(hitOverlay(size: geo.size))
+                } else {
+                    ProgressView("Loading...")
                 }
-            } else {
-                ProgressView("Loading...")
             }
+            .onAppear { host.start(targetSize: geo.size) }
         }
-        .padding()
-        .onAppear {
-            host.start()
+    }
+
+    private func hitOverlay(size: CGSize) -> some View {
+        let imgSize = host.imageSize
+        let scaleX = imgSize.width > 0 ? size.width / imgSize.width : 1
+        let scaleY = imgSize.height > 0 ? size.height / imgSize.height : 1
+        return ZStack {
+            ForEach(host.hits.indices, id: \.self) { idx in
+                let hit = host.hits[idx]
+                Button(action: { host.dispatch(action: hit.action) }) {
+                    Color.clear
+                }
+                .frame(width: hit.w * scaleX, height: hit.h * scaleY)
+                .position(x: (hit.x + hit.w / 2) * scaleX, y: (hit.y + hit.h / 2) * scaleY)
+            }
         }
     }
 }
 
 final class RoverHost: ObservableObject {
-    @Published var view: ViewNode?
+    @Published var image: CGImage?
+    @Published var hits: [HitRect] = []
     private var handle: UnsafeMutableRawPointer?
+    private var lastSize: CGSize = .zero
+    private var imageSize: CGSize = .zero
 
-    func start() {
-        guard handle == nil else { return }
+    func start(targetSize: CGSize) {
+        guard handle == nil else { render(size: targetSize); return }
+        lastSize = targetSize
         let root = (Bundle.main.bundlePath as NSString).appendingPathComponent("rover")
         root.withCString { ptr in
             handle = rover_create(ptr)
         }
-        render()
+        render(size: targetSize)
     }
 
-    func render() {
+    func render(size: CGSize) {
         guard let handle else { return }
-        if let ptr = rover_render_json(handle) {
-            updateView(from: ptr)
-            rover_string_free(ptr)
-        }
+        lastSize = size
+        let width = Int(size.width.rounded(.up))
+        let height = Int(size.height.rounded(.up))
+        let img = rover_render_rgba(handle, Int32(width), Int32(height))
+        apply(image: img)
     }
 
     func dispatch(action: String) {
         guard let handle else { return }
         action.withCString { ptr in
-            if let out = rover_dispatch_action_json(handle, ptr) {
-                updateView(from: out)
-                rover_string_free(out)
-            }
+            _ = rover_dispatch_action_json(handle, ptr)
         }
+        render(size: lastSize)
     }
 
-    private func updateView(from ptr: UnsafeMutablePointer<CChar>) {
-        let text = String(cString: ptr)
-        guard let data = text.data(using: .utf8) else { return }
-        if let node = try? JSONDecoder().decode(ViewNode.self, from: data) {
+    private func apply(image img: RoverImage) {
+        guard let base = img.data, img.len > 0 else { return }
+        let hitsStr = img.hits_json.flatMap { String(cString: $0) }
+        let data = Data(bytes: base, count: img.len)
+        rover_image_free(img)
+        guard let provider = CGDataProvider(data: data as CFData) else { return }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        if let cg = CGImage(width: Int(img.width),
+                            height: Int(img.height),
+                            bitsPerComponent: 8,
+                            bitsPerPixel: 32,
+                            bytesPerRow: img.row_bytes,
+                            space: colorSpace,
+                            bitmapInfo: CGBitmapInfo.byteOrder32Big.union(.premultipliedLast),
+                            provider: provider,
+                            decode: nil,
+                            shouldInterpolate: true,
+                            intent: .defaultIntent) {
+            let hitsDecoded: [HitRect]
+            if let hitsStr, let data = hitsStr.data(using: .utf8) {
+                hitsDecoded = (try? JSONDecoder().decode([HitRect].self, from: data)) ?? []
+            } else {
+                hitsDecoded = []
+            }
             DispatchQueue.main.async {
-                self.view = node
+                self.image = cg
+                self.hits = hitsDecoded
+                self.imageSize = CGSize(width: Int(img.width), height: Int(img.height))
             }
         }
     }
@@ -68,98 +110,10 @@ final class RoverHost: ObservableObject {
     }
 }
 
-struct RenderNode: View {
-    let node: ViewNode
-    var onAction: (String) -> Void
-
-    var body: some View {
-        switch node.kind {
-        case "col":
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(node.children.enumerated()), id: \.0) { _, child in
-                    RenderNode(node: child, onAction: onAction)
-                }
-            }
-            .frame(maxWidth: frameWidth(node.width), maxHeight: frameHeight(node.height))
-        case "row":
-            HStack(alignment: .center, spacing: 8) {
-                ForEach(Array(node.children.enumerated()), id: \.0) { _, child in
-                    RenderNode(node: child, onAction: onAction)
-                }
-            }
-            .frame(maxWidth: frameWidth(node.width), maxHeight: frameHeight(node.height))
-        case "text":
-            Text(node.text ?? "")
-                .frame(maxWidth: frameWidth(node.width), maxHeight: frameHeight(node.height))
-        case "button":
-            Button(node.text ?? "Button") {
-                if let action = node.action {
-                    onAction(action)
-                }
-            }
-            .frame(maxWidth: frameWidth(node.width), maxHeight: frameHeight(node.height))
-        default:
-            EmptyView()
-        }
-    }
-
-    private func frameWidth(_ dim: Dimension?) -> CGFloat? {
-        guard let dim else { return nil }
-        switch dim {
-        case .auto:
-            return nil
-        case .full:
-            return .infinity
-        case .px(let v):
-            return CGFloat(v)
-        }
-    }
-
-    private func frameHeight(_ dim: Dimension?) -> CGFloat? {
-        guard let dim else { return nil }
-        switch dim {
-        case .auto:
-            return nil
-        case .full:
-            return .infinity
-        case .px(let v):
-            return CGFloat(v)
-        }
-    }
-}
-
-struct ViewNode: Decodable {
-    let kind: String
-    let children: [ViewNode]
-    let text: String?
-    let width: Dimension?
-    let height: Dimension?
-    let action: String?
-}
-
-enum Dimension: Decodable {
-    case auto
-    case full
-    case px(Double)
-
-    private enum CodingKeys: String, CodingKey {
-        case kind
-        case value
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try container.decode(String.self, forKey: .kind)
-        switch kind {
-        case "auto":
-            self = .auto
-        case "full":
-            self = .full
-        case "px":
-            let value = try container.decode(Double.self, forKey: .value)
-            self = .px(value)
-        default:
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "unknown dimension"))
-        }
-    }
+struct HitRect: Decodable {
+    let action: String
+    let x: Double
+    let y: Double
+    let w: Double
+    let h: Double
 }
