@@ -14,6 +14,8 @@ use skia_safe::ColorType;
 #[cfg(any(target_os = "ios", target_os = "android"))]
 use std::ffi::c_void;
 #[cfg(target_os = "android")]
+use std::ffi::CStr;
+#[cfg(target_os = "android")]
 use std::os::raw::c_char;
 
 #[cfg(target_os = "android")]
@@ -190,10 +192,19 @@ impl RenderSurface {
         let device = device as vk::Device;
         let queue = queue as vk::Queue;
         let image = image as vk::Image;
-        let format = format as vk::Format;
-        let image_layout = image_layout as vk::ImageLayout;
-        let image_usage_flags = image_usage_flags as vk::ImageUsageFlags;
+        let format: vk::Format = unsafe { std::mem::transmute(format as i32) };
+        let image_layout: vk::ImageLayout = unsafe { std::mem::transmute(image_layout as i32) };
+        let image_usage_flags: vk::ImageUsageFlags = unsafe { std::mem::transmute(image_usage_flags) };
         let sample_count = sample_count.max(1) as u32;
+
+        if instance.is_null()
+            || physical_device.is_null()
+            || device.is_null()
+            || queue.is_null()
+            || image.is_null()
+        {
+            return Err(anyhow!("null vulkan handle"));
+        }
 
         let get_proc = |of: vk::GetProcOf| -> vk::GetProcResult {
             unsafe {
@@ -207,6 +218,49 @@ impl RenderSurface {
                 }
             }
         };
+
+        let required_instance_procs = [
+            CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceProperties\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceFeatures\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceFormatProperties\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceImageFormatProperties\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceQueueFamilyProperties\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkGetPhysicalDeviceMemoryProperties\0").unwrap(),
+        ];
+
+        for name in required_instance_procs {
+            let ptr = get_proc(vk::GetProcOf::Instance(instance, name.as_ptr()));
+            if ptr.is_null() {
+                return Err(anyhow!(format!("missing instance proc {}", name.to_string_lossy())));
+            }
+        }
+
+        let required_device_procs = [
+            CStr::from_bytes_with_nul(b"vkGetDeviceQueue\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkQueueSubmit\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkQueueWaitIdle\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkDeviceWaitIdle\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkCreateCommandPool\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkAllocateCommandBuffers\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkFreeCommandBuffers\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkCreateSemaphore\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkCreateFence\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkWaitForFences\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkResetFences\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkCreateBuffer\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkDestroyBuffer\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkCreateImage\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkDestroyImage\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkAllocateMemory\0").unwrap(),
+            CStr::from_bytes_with_nul(b"vkFreeMemory\0").unwrap(),
+        ];
+
+        for name in required_device_procs {
+            let ptr = get_proc(vk::GetProcOf::Device(device, name.as_ptr()));
+            if ptr.is_null() {
+                return Err(anyhow!(format!("missing device proc {}", name.to_string_lossy())));
+            }
+        }
 
         let backend = vk::BackendContext::new(
             instance,
@@ -236,8 +290,8 @@ impl RenderSurface {
         image_info.image_usage_flags = image_usage_flags;
 
         let backend_render_target = backend_render_targets::make_vk((width, height), &image_info);
-        let color_type =
-            color_type_from_vk_format(format).ok_or_else(|| anyhow!("unsupported vk format"))?;
+        let color_type = color_type_from_vk_format(format)
+            .ok_or_else(|| anyhow!(format!("unsupported vk format {format:?}")))?;
         let surface = gpu::surfaces::wrap_backend_render_target(
             &mut context,
             &backend_render_target,
@@ -246,7 +300,14 @@ impl RenderSurface {
             None,
             None,
         )
-        .ok_or_else(|| anyhow!("wrap vulkan surface"))?;
+        .ok_or_else(|| {
+            anyhow!(format!(
+                "wrap vulkan surface format={:?} layout={:?} usage=0x{:x} sample_count={sample_count}",
+                format,
+                image_layout,
+                image_usage_flags as u32
+            ))
+        })?;
         Ok(Self {
             backend: RenderSurfaceBackend::Vulkan { surface, context },
         })
