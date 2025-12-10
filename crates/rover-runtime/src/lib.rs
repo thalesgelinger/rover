@@ -18,6 +18,7 @@ pub struct Runtime {
     hits: Vec<rover_render::ActionHit>,
     dirty: bool,
     layer_tree: Option<LayerNode>,
+    scale_factor: f32,
 }
 
 impl Runtime {
@@ -32,6 +33,7 @@ impl Runtime {
             hits: Vec::new(),
             dirty: true,
             layer_tree: None,
+            scale_factor: 1.0,
         })
     }
 
@@ -41,6 +43,13 @@ impl Runtime {
         self.hits.clear();
         self.dirty = true;
         self.layer_tree = None;
+        
+        // Load custom fonts if available
+        if let Some(root) = path.parent() {
+            let fonts_dir = root.join("assets").join("fonts");
+            self.renderer.load_custom_fonts(&fonts_dir).ok();
+        }
+        
         self.lua.load_app(path)
     }
 
@@ -148,6 +157,15 @@ impl Runtime {
 
     pub fn entry(&self) -> Option<&PathBuf> {
         self.entry.as_ref()
+    }
+
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        if (self.scale_factor - scale).abs() > 0.01 {
+            self.scale_factor = scale;
+            self.renderer.set_scale_factor(scale);
+            self.dirty = true;
+            self.layer_tree = None;
+        }
     }
 }
 
@@ -306,11 +324,13 @@ pub extern "C" fn rover_render_metal(
     texture: *mut c_void,
     width: i32,
     height: i32,
+    scale: f32,
 ) -> bool {
     if handle.is_null() {
         return false;
     }
     let runtime = unsafe { &mut *handle };
+    runtime.runtime.set_scale_factor(scale);
     if !runtime.runtime.is_dirty() {
         return false;
     }

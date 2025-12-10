@@ -50,7 +50,7 @@ final class RoverMetalView: UIView {
     @objc private func step() {
         autoreleasepool {
             guard let metalLayer = layer as? CAMetalLayer else { return }
-            host.render(layer: metalLayer)
+            host.render(layer: metalLayer, scale: contentScaleFactor)
         }
     }
 
@@ -85,7 +85,7 @@ final class RoverMetalHost {
         }
     }
 
-    func render(layer: CAMetalLayer) {
+    func render(layer: CAMetalLayer, scale: CGFloat) {
         guard let handle, let device, let queue = commandQueue else { return }
         layer.device = device
         guard let drawable = layer.nextDrawable() else { return }
@@ -95,7 +95,8 @@ final class RoverMetalHost {
                                     Unmanaged.passUnretained(queue).toOpaque(),
                                     Unmanaged.passUnretained(texture).toOpaque(),
                                     Int32(texture.width),
-                                    Int32(texture.height))
+                                    Int32(texture.height),
+                                    Float(scale))
         if ok, let commandBuffer = queue.makeCommandBuffer() {
             commandBuffer.present(drawable)
             commandBuffer.commit()

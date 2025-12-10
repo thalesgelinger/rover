@@ -185,13 +185,43 @@ impl RenderSurface {
 
 pub struct SkiaRenderer {
     font_collection: textlayout::FontCollection,
+    scale_factor: f32,
 }
 
 impl SkiaRenderer {
     pub fn new() -> Self {
         let mut font_collection = textlayout::FontCollection::new();
         font_collection.set_default_font_manager(FontMgr::default(), None);
-        Self { font_collection }
+        Self { font_collection, scale_factor: 1.0 }
+    }
+
+    pub fn load_custom_fonts(&mut self, fonts_dir: &std::path::Path) -> Result<()> {
+        if !fonts_dir.exists() {
+            return Ok(());
+        }
+        
+        let font_mgr = FontMgr::default();
+        for entry in std::fs::read_dir(fonts_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("ttf") 
+                || path.extension().and_then(|s| s.to_str()) == Some("otf") {
+                if let Ok(data) = std::fs::read(&path) {
+                    if let Some(_typeface) = font_mgr.new_from_data(&data, None) {
+                        self.font_collection.set_default_font_manager(font_mgr.clone(), None);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_scale_factor(&mut self, scale: f32) {
+        self.scale_factor = scale;
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor
     }
 
     pub fn build_layer_tree(&self, view: &ViewNode, bounds: Rect) -> Result<LayerNode> {
@@ -321,7 +351,7 @@ impl SkiaRenderer {
         let mut builder =
             textlayout::ParagraphBuilder::new(&textlayout::ParagraphStyle::default(), self.font_collection.clone());
         let mut text_style = textlayout::TextStyle::new();
-        text_style.set_font_size(16.0);
+        text_style.set_font_size(16.0 * self.scale_factor);
         text_style.set_color(color);
         builder.push_style(&text_style);
         builder.add_text(text);

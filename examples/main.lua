@@ -16,7 +16,7 @@ function app.render(s, act)
     return rover.col {
         height = 300,
         width = 'full',
-        rover.text { "Count: " .. s },
+        rover.text { "Value: " .. s },
         rover.row {
             rover.button { "Increase", on_click = act.increase() },
             rover.button { "Decrease", on_click = act.decrease() }
