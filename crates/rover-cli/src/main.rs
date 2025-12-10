@@ -211,17 +211,57 @@ fn start_file_watcher(entry: &PathBuf, devserver: DevServer) -> Result<()> {
         .watch(&watch_dir, RecursiveMode::Recursive)
         .with_context(|| format!("watch {}", watch_dir.display()))?;
 
+    let watch_dir_clone = watch_dir.clone();
     std::thread::spawn(move || {
         let _debouncer = debouncer;
         loop {
             if rx.recv().is_ok() {
                 println!("[rover] file changed, triggering reload...");
-                if let Err(e) = devserver.trigger() {
-                    eprintln!("[rover] reload trigger failed: {e}");
+                match collect_lua_files(&watch_dir_clone) {
+                    Ok(files) => {
+                        if let Err(e) = devserver.trigger(files) {
+                            eprintln!("[rover] reload trigger failed: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("[rover] failed to collect files: {e}"),
                 }
             }
         }
     });
 
+    Ok(())
+}
+
+fn collect_lua_files(dir: &PathBuf) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+    use std::collections::HashMap;
+    use std::fs;
+    
+    let mut files = HashMap::new();
+    collect_lua_files_rec(dir, dir, &mut files)?;
+    Ok(files)
+}
+
+fn collect_lua_files_rec(
+    root: &PathBuf,
+    current: &PathBuf,
+    files: &mut std::collections::HashMap<String, Vec<u8>>,
+) -> Result<()> {
+    use std::fs;
+    
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if path.is_dir() {
+            collect_lua_files_rec(root, &path, files)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("lua") {
+            let content = fs::read(&path)?;
+            let rel_path = path.strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            files.insert(rel_path, content);
+        }
+    }
     Ok(())
 }
