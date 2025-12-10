@@ -3,9 +3,20 @@ name = "rover-render"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+metal = []
+vulkan = []
+
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "metal", "binary-cache"] }
+skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "binary-cache", "gl"] }
 rover-lua = { path = "../rover-lua" }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "metal", "binary-cache"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "gl", "binary-cache"] }
