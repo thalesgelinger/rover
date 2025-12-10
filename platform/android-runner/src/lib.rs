@@ -1,0 +1,284 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{anyhow, Context, Result};
+
+const BUILD_ROOT: &str = ".rover/build/android";
+const PACKAGE_NAME: &str = "dev.rover.app";
+const ANDROID_TARGET: &str = "aarch64-linux-android";
+const MIN_API: u32 = 28;
+
+pub struct AndroidRunner {
+    build_dir: PathBuf,
+}
+
+impl AndroidRunner {
+    pub fn new() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Self {
+            build_dir: cwd.join(BUILD_ROOT),
+        }
+    }
+
+    pub fn ensure_prereqs(&self) -> Result<()> {
+        check_cmd("adb")?;
+        
+        // Check ANDROID_HOME or ANDROID_SDK_ROOT
+        let sdk_root = std::env::var("ANDROID_HOME")
+            .or_else(|_| std::env::var("ANDROID_SDK_ROOT"))
+            .context("ANDROID_HOME or ANDROID_SDK_ROOT not set")?;
+        
+        // Check NDK
+        let _ndk_root = std::env::var("ANDROID_NDK_ROOT")
+            .or_else(|_| detect_ndk_from_sdk(&sdk_root))?;
+        
+        // Verify rustup target installed
+        let output = Command::new("rustup")
+            .args(["target", "list", "--installed"])
+            .output()
+            .context("rustup target list")?;
+        let installed = String::from_utf8_lossy(&output.stdout);
+        if !installed.contains(ANDROID_TARGET) {
+            return Err(anyhow!(
+                "Android target not installed. Run: rustup target add {}",
+                ANDROID_TARGET
+            ));
+        }
+        
+        Ok(())
+    }
+
+    pub fn stage_payload(&self, entry: &Path) -> Result<()> {
+        let entry = entry
+            .canonicalize()
+            .with_context(|| format!("canonicalize {}", entry.display()))?;
+        let assets_src = entry.parent().map(|p| p.join("assets"));
+        
+        let project_assets = self.build_dir.join("project/app/src/main/assets/rover");
+        fs::create_dir_all(&project_assets).context("create assets dir")?;
+        
+        // Copy main.lua
+        fs::copy(&entry, project_assets.join("main.lua"))
+            .context("copy main.lua")?;
+        
+        // Copy assets/ if exists
+        if let Some(assets) = assets_src {
+            if assets.exists() {
+                let dest = project_assets.join("assets");
+                if dest.exists() {
+                    fs::remove_dir_all(&dest).context("clean old assets")?;
+                }
+                fs::create_dir_all(&dest).context("create assets dest")?;
+                copy_dir(&assets, &dest)?;
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn generate_project(&self) -> Result<PathBuf> {
+        fs::create_dir_all(&self.build_dir).context("create build dir")?;
+        let template = Path::new("platform/android-runner/templates/android-empty");
+        let out = self.build_dir.join("project");
+        
+        if out.exists() {
+            fs::remove_dir_all(&out).context("clean old project")?;
+        }
+        
+        if !template.exists() {
+            return Err(anyhow!("template missing at {}", template.display()));
+        }
+        
+        fs::create_dir_all(&out).context("create project dir")?;
+        copy_dir(template, &out)
+            .with_context(|| format!("copy template from {}", template.display()))?;
+        
+        Ok(out)
+    }
+
+    pub fn build_rust_staticlib(&self) -> Result<PathBuf> {
+        let ndk_root = std::env::var("ANDROID_NDK_ROOT")
+            .or_else(|_| {
+                let sdk = std::env::var("ANDROID_HOME")
+                    .or_else(|_| std::env::var("ANDROID_SDK_ROOT"))?;
+                detect_ndk_from_sdk(&sdk)
+            })?;
+        
+        let host = detect_host_tag()?;
+        let toolchain_base = format!("{}/toolchains/llvm/prebuilt/{}", ndk_root, host);
+        
+        let cc = format!("{}/bin/aarch64-linux-android{}-clang", toolchain_base, MIN_API);
+        let ar = format!("{}/bin/llvm-ar", toolchain_base);
+        
+        let status = Command::new("cargo")
+            .arg("build")
+            .arg("-p")
+            .arg("rover-runtime")
+            .arg("--target")
+            .arg(ANDROID_TARGET)
+            .env(format!("CC_{}", ANDROID_TARGET.replace('-', "_")), &cc)
+            .env(format!("AR_{}", ANDROID_TARGET.replace('-', "_")), &ar)
+            .status()
+            .context("cargo build rover-runtime (android)")?;
+        
+        if !status.success() {
+            return Err(anyhow!("cargo build rover-runtime failed"));
+        }
+        
+        let lib = PathBuf::from("target")
+            .join(ANDROID_TARGET)
+            .join("debug/librover_runtime.a");
+        
+        if !lib.exists() {
+            return Err(anyhow!("staticlib missing at {}", lib.display()));
+        }
+        
+        Ok(lib)
+    }
+
+    pub fn build_apk(&self, staticlib: &Path) -> Result<PathBuf> {
+        let project = self.build_dir.join("project");
+        
+        // Copy staticlib to jniLibs
+        let jni_libs = project.join("app/src/main/jniLibs/arm64-v8a");
+        fs::create_dir_all(&jni_libs).context("create jniLibs dir")?;
+        fs::copy(staticlib, jni_libs.join("librover_runtime.a"))
+            .context("copy staticlib")?;
+        
+        // Build APK
+        let gradlew = if cfg!(target_os = "windows") {
+            "gradlew.bat"
+        } else {
+            "./gradlew"
+        };
+        
+        let status = Command::new(gradlew)
+            .current_dir(&project)
+            .arg("assembleDebug")
+            .status()
+            .context("gradlew assembleDebug")?;
+        
+        if !status.success() {
+            return Err(anyhow!("gradlew assembleDebug failed"));
+        }
+        
+        let apk = project.join("app/build/outputs/apk/debug/app-debug.apk");
+        if !apk.exists() {
+            return Err(anyhow!("APK not found at {}", apk.display()));
+        }
+        
+        Ok(apk)
+    }
+
+    pub fn install_and_launch(&self, apk: &Path) -> Result<()> {
+        // Install
+        let status = Command::new("adb")
+            .args(["install", "-r"])
+            .arg(apk)
+            .status()
+            .context("adb install")?;
+        
+        if !status.success() {
+            return Err(anyhow!("adb install failed"));
+        }
+        
+        // Launch
+        let activity = format!("{}/.MainActivity", PACKAGE_NAME);
+        let status = Command::new("adb")
+            .args(["shell", "am", "start", "-n", &activity])
+            .status()
+            .context("adb launch")?;
+        
+        if !status.success() {
+            return Err(anyhow!("adb launch failed"));
+        }
+        
+        Ok(())
+    }
+
+    pub fn build_and_run(&self, entry: &Path) -> Result<()> {
+        if self.build_dir.exists() {
+            fs::remove_dir_all(&self.build_dir).ok();
+        }
+        
+        self.stage_payload(entry)?;
+        let project = self.generate_project()?;
+        println!("[rover][android] building rust staticlib...");
+        let lib = self.build_rust_staticlib()?;
+        println!("[rover][android] building apk...");
+        let apk = self.build_apk(&lib)?;
+        println!("[rover][android] installing and launching...");
+        self.install_and_launch(&apk)?;
+        
+        Ok(())
+    }
+}
+
+fn check_cmd(cmd: &str) -> Result<()> {
+    let which_cmd = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    
+    let status = Command::new(which_cmd)
+        .arg(cmd)
+        .status()
+        .with_context(|| format!("{} {}", which_cmd, cmd))?;
+    
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("{} not found", cmd))
+    }
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    for entry in fs::read_dir(src).with_context(|| format!("read_dir {}", src.display()))? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            fs::create_dir_all(&dst_path)?;
+            copy_dir(&entry.path(), &dst_path)?;
+        } else {
+            fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn detect_ndk_from_sdk(sdk_root: &str) -> Result<String> {
+    let ndk_dir = PathBuf::from(sdk_root).join("ndk");
+    if !ndk_dir.exists() {
+        return Err(anyhow!("NDK not found in SDK. Install via sdkmanager."));
+    }
+    
+    // Find highest version
+    let mut versions: Vec<String> = fs::read_dir(&ndk_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().ok().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    
+    versions.sort();
+    versions.last()
+        .map(|v| ndk_dir.join(v).to_string_lossy().into_owned())
+        .ok_or_else(|| anyhow!("No NDK version found in {}", ndk_dir.display()))
+}
+
+fn detect_host_tag() -> Result<String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    
+    let tag = match (os, arch) {
+        ("macos", "x86_64") => "darwin-x86_64",
+        ("macos", "aarch64") => "darwin-x86_64", // NDK uses x86_64 for both
+        ("linux", "x86_64") => "linux-x86_64",
+        ("windows", "x86_64") => "windows-x86_64",
+        _ => return Err(anyhow!("unsupported host: {}-{}", os, arch)),
+    };
+    
+    Ok(tag.to_string())
+}
