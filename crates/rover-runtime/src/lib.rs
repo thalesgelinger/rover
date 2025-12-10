@@ -20,9 +20,20 @@ use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong};
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
 #[cfg(target_os = "android")]
-use ndk::native_window::NativeWindow;
+use ndk_sys;
+
 #[cfg(target_os = "android")]
-use std::ptr;
+fn log_android(tag: &str, msg: &str) {
+    if let (Ok(tag), Ok(msg)) = (CString::new(tag), CString::new(msg)) {
+        unsafe {
+            ndk_sys::__android_log_write(
+                6, // ANDROID_LOG_ERROR
+                tag.as_ptr(),
+                msg.as_ptr(),
+            );
+        }
+    }
+}
 
 pub struct Runtime {
     lua: LuaEngine,
@@ -231,7 +242,12 @@ pub extern "C" fn rover_create(root: *const c_char) -> *mut RuntimeHandle {
 
     match runtime_from_entry_dir(&root) {
         Ok(runtime) => Box::into_raw(Box::new(RuntimeHandle { runtime })),
-        Err(_) => std::ptr::null_mut(),
+        Err(err) => {
+            #[cfg(target_os = "android")]
+            log_android("Rover", &format!("runtime_from_entry_dir failed: {err}"));
+            let _ = err;
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -388,8 +404,10 @@ pub extern "C" fn rover_render_vulkan(
     }
     let runtime = unsafe { &mut *handle };
     runtime.runtime.set_scale_factor(scale);
+    log_android("Rover", "render_vulkan start");
     if !runtime.runtime.is_dirty() {
-        return false;
+        log_android("Rover", "render_vulkan skipped: not dirty; forcing");
+        runtime.runtime.mark_dirty();
     }
     let result = runtime.runtime.ensure_state().and_then(|_| {
         let mut surface = unsafe {
@@ -412,17 +430,33 @@ pub extern "C" fn rover_render_vulkan(
         };
         runtime.runtime.render_if_dirty(&mut surface)
     });
-    matches!(result, Ok(true))
+    match result {
+        Ok(true) => {
+            log_android("Rover", "render_vulkan ok: rendered");
+            true
+        }
+        Ok(false) => {
+            log_android("Rover", "render_vulkan finished: not dirty");
+            false
+        }
+        Err(err) => {
+            log_android("Rover", &format!("render_vulkan failed: {err}"));
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_dev_rover_app_RoverNative_initVulkan(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     entry: JString,
     surface: JObject,
+    scale: jfloat,
 ) -> jlong {
+    log_android("Rover", "initVulkan enter");
+    log_android("Rover", "initVulkan enter");
     let path: String = match env.get_string(&entry) {
         Ok(s) => s.to_string_lossy().into_owned(),
         Err(_) => return 0,
@@ -433,18 +467,25 @@ pub extern "system" fn Java_dev_rover_app_RoverNative_initVulkan(
     };
     let runtime = rover_create(c_path.as_ptr());
     if runtime.is_null() {
+        log_android("Rover", "rover_create returned null");
         return 0;
     }
-    let window = match ndk::native_window::NativeWindow::from_surface(&env, surface) {
-        Ok(w) => w,
-        Err(_) => {
+    let dirty = unsafe { (&*runtime).runtime.is_dirty() };
+    log_android("Rover", &format!("runtime dirty after create={dirty}"));
+    let raw_env = env.get_native_interface();
+    let raw_surface = surface.into_raw();
+    let window = match unsafe { ndk::native_window::NativeWindow::from_surface(raw_env, raw_surface) } {
+        Some(w) => w,
+        None => {
+            log_android("Rover", "NativeWindow::from_surface returned null");
             unsafe { rover_destroy(runtime) };
             return 0;
         }
     };
-    let session = match android_vulkan::VulkanSession::new(window) {
+    let session = match android_vulkan::VulkanSession::new(window, scale as f32) {
         Ok(s) => s,
-        Err(_) => {
+        Err(err) => {
+            log_android("Rover", &format!("VulkanSession::new failed: {err}"));
             unsafe { rover_destroy(runtime) };
             return 0;
         }
@@ -466,6 +507,24 @@ pub extern "system" fn Java_dev_rover_app_RoverNative_renderVulkan(
     let state = unsafe { &mut *(handle as *mut AndroidVulkanState) };
     let rendered = state.session.render_rgba(state.runtime).unwrap_or(false);
     if rendered { 1 } else { 0 }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_surfaceChanged(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    width: jint,
+    height: jint,
+) {
+    if handle == 0 {
+        return;
+    }
+    let state = unsafe { &mut *(handle as *mut AndroidVulkanState) };
+    state
+        .session
+        .request_resize(width as u32, height as u32);
 }
 
 #[cfg(target_os = "android")]
@@ -540,11 +599,13 @@ pub extern "C" fn rover_string_free(ptr: *mut c_char) {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_dev_rover_app_RoverNative_init(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     entry: JString,
 ) -> jlong {
+
     let path: String = match env.get_string(&entry) {
+
         Ok(s) => s.to_string_lossy().into_owned(),
         Err(_) => return 0,
     };
@@ -581,5 +642,5 @@ pub extern "system" fn Java_dev_rover_app_RoverNative_renderRgba(
         .byte_array_from_slice(slice)
         .unwrap_or_else(|_| env.new_byte_array(0).unwrap());
     rover_image_free(img);
-    arr
+    arr.into_raw()
 }

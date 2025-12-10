@@ -1,13 +1,23 @@
-use std::ffi::c_void;
-use std::sync::Arc;
+use std::ffi::{c_void, CStr};
+use std::os::raw::c_char;
+use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
+use crate::log_android;
 use ash::extensions::{
     ext::DebugUtils,
     khr::{AndroidSurface, Surface, Swapchain},
 };
 use ash::vk;
+use ash::vk::Handle;
 use ndk::native_window::NativeWindow;
+
+static INSTANCE_PROC_ADDR: OnceLock<vk::PFN_vkGetInstanceProcAddr> = OnceLock::new();
+static DEVICE_PROC_ADDR: OnceLock<vk::PFN_vkGetDeviceProcAddr> = OnceLock::new();
+static INSTANCE_PROC_MISS: AtomicUsize = AtomicUsize::new(0);
+static DEVICE_PROC_MISS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct VulkanSession {
     entry: ash::Entry,
@@ -22,6 +32,8 @@ pub struct VulkanSession {
     swapchain_loader: Swapchain,
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
+    surface_format: vk::SurfaceFormatKHR,
+    present_mode: vk::PresentModeKHR,
     image_format: vk::Format,
     extent: vk::Extent2D,
     image_available: Vec<vk::Semaphore>,
@@ -30,17 +42,20 @@ pub struct VulkanSession {
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     current_frame: usize,
-    _window: Arc<NativeWindow>,
+    pending_extent: Option<vk::Extent2D>,
+    scale_factor: f32,
+    window: Arc<NativeWindow>,
 }
 
 impl VulkanSession {
-    pub fn new(window: NativeWindow) -> Result<Self> {
+    pub fn new(window: NativeWindow, scale_factor: f32) -> Result<Self> {
         let window = Arc::new(window);
-        let entry = unsafe { ash::Entry::load()? };
+        let entry = unsafe { ash::Entry::linked() };
+        let app_name = CStr::from_bytes_with_nul(b"rover\0").unwrap();
         let app_info = vk::ApplicationInfo::builder()
-            .application_name(b"rover\0".as_ptr() as *const i8)
+            .application_name(app_name)
             .application_version(0)
-            .engine_name(b"rover\0".as_ptr() as *const i8)
+            .engine_name(app_name)
             .engine_version(0)
             .api_version(vk::API_VERSION_1_1);
 
@@ -57,6 +72,8 @@ impl VulkanSession {
         let instance = unsafe { entry.create_instance(&instance_info, None) }
             .context("create instance")?;
 
+        INSTANCE_PROC_ADDR.get_or_init(|| entry.static_fn().get_instance_proc_addr);
+
         let surface_loader = Surface::new(&entry, &instance);
         let android_surface_loader = AndroidSurface::new(&entry, &instance);
         let surface = unsafe {
@@ -70,6 +87,8 @@ impl VulkanSession {
         let (physical_device, queue_family_index, surface_caps) =
             pick_device(&instance, &surface_loader, surface)?;
 
+        INSTANCE_PROC_ADDR.get_or_init(|| entry.static_fn().get_instance_proc_addr);
+
         let priorities = [1.0f32];
         let queue_info = vk::DeviceQueueCreateInfo::builder()
             .queue_family_index(queue_family_index)
@@ -82,7 +101,11 @@ impl VulkanSession {
         let device = unsafe { instance.create_device(physical_device, &device_info, None) }
             .context("create device")?;
 
+        INSTANCE_PROC_ADDR.get_or_init(|| entry.static_fn().get_instance_proc_addr);
+        DEVICE_PROC_ADDR.get_or_init(|| instance.fp_v1_0().get_device_proc_addr);
+
         let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
+
         let swapchain_loader = Swapchain::new(&instance, &device);
         let surface_format =
             choose_surface_format(&instance, physical_device, surface, &surface_loader)?;
@@ -96,7 +119,7 @@ impl VulkanSession {
             surface_format,
             present_mode,
             extent,
-            queue_family_index,
+            None,
         )?;
 
         let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }
@@ -127,6 +150,8 @@ impl VulkanSession {
             swapchain_loader,
             swapchain,
             swapchain_images,
+            surface_format,
+            present_mode,
             image_format: surface_format.format,
             extent,
             image_available,
@@ -135,11 +160,36 @@ impl VulkanSession {
             command_pool,
             command_buffers,
             current_frame: 0,
-            _window: window,
+            pending_extent: None,
+            scale_factor,
+            window,
         })
     }
 
+    pub fn request_resize(&mut self, width: u32, height: u32) {
+        if width > 0 && height > 0 {
+            self.pending_extent = Some(vk::Extent2D { width, height });
+        }
+    }
+
     pub fn render_rgba(&mut self, runtime: *mut crate::RuntimeHandle) -> Result<bool> {
+        let target_extent = vk::Extent2D {
+            width: self.window.width() as u32,
+            height: self.window.height() as u32,
+        };
+
+        if target_extent.width == 0 || target_extent.height == 0 {
+            return Ok(false);
+        }
+
+        if let Some(extent) = self.pending_extent.take() {
+            if extent != self.extent {
+                self.recreate_swapchain(extent)?;
+            }
+        } else if target_extent != self.extent {
+            self.recreate_swapchain(target_extent)?;
+        }
+
         let idx = self.current_frame % self.image_available.len();
         let fence = self.in_flight[idx];
         unsafe {
@@ -149,30 +199,48 @@ impl VulkanSession {
             self.device.reset_fences(&[fence]).context("reset fence")?;
         }
 
-        let (image_index, _) = unsafe {
+        let (image_index, suboptimal) = match unsafe {
             self.swapchain_loader.acquire_next_image(
                 self.swapchain,
                 u64::MAX,
                 self.image_available[idx],
                 vk::Fence::null(),
             )
-        }
-        .context("acquire next image")?;
+        } {
+            Ok(res) => res,
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                self.recreate_swapchain(target_extent)?;
+                return Ok(false);
+            }
+            Err(err) => return Err(err).context("acquire next image"),
+        };
 
-        let cmd = self.command_buffers[idx];
-        record_barriers(
-            &self.device,
-            cmd,
-            self.swapchain_images[image_index as usize],
-            self.queue_family_index,
+        let image = self.swapchain_images[image_index as usize];
+        self.transition_image(
+            idx,
+            image,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            std::slice::from_ref(&self.image_available[idx]),
+            &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
+            &[],
+            vk::Fence::null(),
         )?;
 
-        let format = self.image_format.as_raw();
-        let image = self.swapchain_images[image_index as usize];
-        let layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL.as_raw();
-        let usage = (vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST).as_raw();
+        unsafe {
+            self.device
+                .queue_wait_idle(self.queue)
+                .context("wait queue after to-color")?;
+        }
 
-        let scale = 1.0f32;
+        let format = self.image_format.as_raw() as u32;
+        let layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL.as_raw() as u32;
+        let usage = (vk::ImageUsageFlags::COLOR_ATTACHMENT
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::SAMPLED)
+            .as_raw() as u32;
+
         let rendered = unsafe {
             crate::rover_render_vulkan(
                 runtime,
@@ -188,21 +256,77 @@ impl VulkanSession {
                 self.extent.width as i32,
                 self.extent.height as i32,
                 1,
-                scale,
-                Some(get_instance_proc_addr),
-                Some(get_device_proc_addr),
+                self.scale_factor,
+                get_instance_proc_addr,
+                get_device_proc_addr,
             )
         };
 
         unsafe {
-            self.device.end_command_buffer(cmd).context("end cmd")?;
+            self.device
+                .queue_wait_idle(self.queue)
+                .context("wait queue after render")?;
         }
 
+        self.transition_image(
+
+            idx,
+            image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            &[],
+            &[],
+            std::slice::from_ref(&self.render_finished[idx]),
+            fence,
+        )?;
+
+        let present_info = vk::PresentInfoKHR::builder()
+            .wait_semaphores(std::slice::from_ref(&self.render_finished[idx]))
+            .swapchains(std::slice::from_ref(&self.swapchain))
+            .image_indices(std::slice::from_ref(&image_index));
+
+        let mut needs_recreate = suboptimal;
+        match unsafe { self.swapchain_loader.queue_present(self.queue, &present_info) } {
+            Ok(_) => {}
+            Err(vk::Result::SUBOPTIMAL_KHR) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                needs_recreate = true;
+            }
+            Err(err) => return Err(err).context("queue present"),
+        }
+
+        self.current_frame = (self.current_frame + 1) % self.image_available.len();
+        if needs_recreate {
+            self.recreate_swapchain(target_extent)?;
+        }
+        Ok(rendered)
+    }
+
+    fn transition_image(
+        &self,
+        idx: usize,
+        image: vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+        wait_semaphores: &[vk::Semaphore],
+        wait_stages: &[vk::PipelineStageFlags],
+        signal_semaphores: &[vk::Semaphore],
+        fence: vk::Fence,
+    ) -> Result<()> {
+        let cmd = self.command_buffers[idx];
+        record_transition(
+            &self.device,
+            cmd,
+            image,
+            self.queue_family_index,
+            old_layout,
+            new_layout,
+        )?;
+
         let submit_info = vk::SubmitInfo::builder()
-            .wait_semaphores(std::slice::from_ref(&self.image_available[idx]))
-            .wait_dst_stage_mask(&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(wait_stages)
             .command_buffers(std::slice::from_ref(&cmd))
-            .signal_semaphores(std::slice::from_ref(&self.render_finished[idx]));
+            .signal_semaphores(signal_semaphores);
 
         unsafe {
             self.device
@@ -210,19 +334,104 @@ impl VulkanSession {
                 .context("queue submit")?;
         }
 
-        let present_info = vk::PresentInfoKHR::builder()
-            .wait_semaphores(std::slice::from_ref(&self.render_finished[idx]))
-            .swapchains(std::slice::from_ref(&self.swapchain))
-            .image_indices(std::slice::from_ref(&image_index));
+        Ok(())
+    }
 
+    fn recreate_swapchain(&mut self, new_extent: vk::Extent2D) -> Result<()> {
         unsafe {
-            self.swapchain_loader
-                .queue_present(self.queue, &present_info)
-                .context("queue present")?;
+            self.device.device_wait_idle().ok();
         }
 
-        self.current_frame = (self.current_frame + 1) % self.image_available.len();
-        Ok(rendered)
+        self.destroy_swapchain_resources();
+
+        let surface_caps = unsafe {
+            self.surface_loader
+                .get_physical_device_surface_capabilities(self.physical_device, self.surface)
+        }
+        .context("surface caps")?;
+
+        let extent = choose_extent(surface_caps, new_extent.width, new_extent.height);
+        let surface_format = choose_surface_format(
+            &self.instance,
+            self.physical_device,
+            self.surface,
+            &self.surface_loader,
+        )?;
+        let present_mode = choose_present_mode(
+            &self.instance,
+            self.physical_device,
+            self.surface,
+            &self.surface_loader,
+        );
+
+        let swapchain = create_swapchain(
+            &self.swapchain_loader,
+            self.surface,
+            surface_caps,
+            surface_format,
+            present_mode,
+            extent,
+            None,
+        )?;
+
+
+        let swapchain_images = unsafe { self.swapchain_loader.get_swapchain_images(swapchain) }
+            .context("get swapchain images")?;
+
+        let image_available = create_semaphores(&self.device, swapchain_images.len())?;
+        let render_finished = create_semaphores(&self.device, swapchain_images.len())?;
+        let in_flight = create_fences(&self.device, swapchain_images.len())?;
+
+        let command_pool_info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(self.queue_family_index)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let command_pool = unsafe { self.device.create_command_pool(&command_pool_info, None) }
+            .context("command pool")?;
+
+        let command_buffers = allocate_cmd_buffers(&self.device, command_pool, swapchain_images.len())?;
+
+        self.swapchain = swapchain;
+        self.swapchain_images = swapchain_images;
+        self.surface_format = surface_format;
+        self.present_mode = present_mode;
+        self.image_format = surface_format.format;
+        self.extent = extent;
+        self.image_available = image_available;
+        self.render_finished = render_finished;
+        self.in_flight = in_flight;
+        self.command_pool = command_pool;
+        self.command_buffers = command_buffers;
+        self.current_frame = 0;
+
+        Ok(())
+    }
+
+    fn destroy_swapchain_resources(&mut self) {
+        unsafe {
+            for &f in &self.in_flight {
+                self.device.destroy_fence(f, None);
+            }
+            for &s in &self.image_available {
+                self.device.destroy_semaphore(s, None);
+            }
+            for &s in &self.render_finished {
+                self.device.destroy_semaphore(s, None);
+            }
+            if self.command_pool != vk::CommandPool::null() {
+                self.device.destroy_command_pool(self.command_pool, None);
+            }
+            if self.swapchain != vk::SwapchainKHR::null() {
+                self.swapchain_loader.destroy_swapchain(self.swapchain, None);
+            }
+        }
+
+        self.in_flight.clear();
+        self.image_available.clear();
+        self.render_finished.clear();
+        self.command_buffers.clear();
+        self.swapchain_images.clear();
+        self.swapchain = vk::SwapchainKHR::null();
+        self.command_pool = vk::CommandPool::null();
     }
 
     pub fn width(&self) -> u32 {
@@ -238,17 +447,9 @@ impl Drop for VulkanSession {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().ok();
-            for &f in &self.in_flight {
-                self.device.destroy_fence(f, None);
-            }
-            for &s in &self.image_available {
-                self.device.destroy_semaphore(s, None);
-            }
-            for &s in &self.render_finished {
-                self.device.destroy_semaphore(s, None);
-            }
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
+        }
+        self.destroy_swapchain_resources();
+        unsafe {
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
@@ -258,33 +459,56 @@ impl Drop for VulkanSession {
 
 pub(crate) unsafe extern "system" fn get_instance_proc_addr(
     instance: *const c_void,
-    name: *const i8,
+    name: *const u8,
 ) -> *const c_void {
-    if instance.is_null() {
-        return std::ptr::null();
-    }
-    let instance = vk::Instance::from_raw(instance as u64);
-    if let Ok(entry) = ash::Entry::load() {
-        entry.static_fn().get_instance_proc_addr(instance, name) as *const c_void
+    let func = match INSTANCE_PROC_ADDR.get() {
+        Some(f) => *f,
+        None => return ptr::null(),
+    };
+    let instance = if instance.is_null() {
+        vk::Instance::null()
     } else {
-        std::ptr::null()
+        vk::Instance::from_raw(instance as u64)
+    };
+    let ptr = match func(instance, name as *const u8) {
+        Some(p) => p as *const c_void,
+        None => ptr::null(),
+    };
+    if ptr.is_null() && !name.is_null() {
+        if INSTANCE_PROC_MISS.fetch_add(1, Ordering::Relaxed) < 5 {
+            if let Ok(s) = CStr::from_ptr(name as *const c_char).to_str() {
+                log_android("Rover", &format!("missing instance proc {s}"));
+            }
+        }
     }
+    ptr
 }
 
 pub(crate) unsafe extern "system" fn get_device_proc_addr(
     device: *const c_void,
-    name: *const i8,
+    name: *const u8,
 ) -> *const c_void {
-    if device.is_null() {
-        return std::ptr::null();
-    }
-    let raw = vk::Device::from_raw(device as u64);
-    if let Ok(entry) = ash::Entry::load() {
-        let dev = ash::Device::load(&entry.static_fn(), raw);
-        dev.fp_v1_0().get_device_proc_addr(raw, name) as *const c_void
+    let func = match DEVICE_PROC_ADDR.get() {
+        Some(f) => *f,
+        None => return ptr::null(),
+    };
+    let device = if device.is_null() {
+        vk::Device::null()
     } else {
-        std::ptr::null()
+        vk::Device::from_raw(device as u64)
+    };
+    let ptr = match func(device, name as *const u8) {
+        Some(p) => p as *const c_void,
+        None => ptr::null(),
+    };
+    if ptr.is_null() && !name.is_null() {
+        if DEVICE_PROC_MISS.fetch_add(1, Ordering::Relaxed) < 5 {
+            if let Ok(s) = CStr::from_ptr(name as *const c_char).to_str() {
+                log_android("Rover", &format!("missing device proc {s}"));
+            }
+        }
     }
+    ptr
 }
 
 fn pick_device(
@@ -301,8 +525,7 @@ fn pick_device(
             }
             let supports_present = unsafe {
                 surface_loader.get_physical_device_surface_support(device, index as u32, surface)
-            }?
-            .as_bool();
+            }?;
             if supports_present {
                 let caps = unsafe {
                     surface_loader.get_physical_device_surface_capabilities(device, surface)
@@ -369,7 +592,7 @@ fn create_swapchain(
     format: vk::SurfaceFormatKHR,
     present_mode: vk::PresentModeKHR,
     extent: vk::Extent2D,
-    _queue_family_index: u32,
+    old_swapchain: Option<vk::SwapchainKHR>,
 ) -> Result<vk::SwapchainKHR> {
     let mut image_count = caps.min_image_count + 1;
     if caps.max_image_count > 0 && image_count > caps.max_image_count {
@@ -387,7 +610,8 @@ fn create_swapchain(
         .pre_transform(caps.current_transform)
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
         .present_mode(present_mode)
-        .clipped(true);
+        .clipped(true)
+        .old_swapchain(old_swapchain.unwrap_or(vk::SwapchainKHR::null()));
     unsafe { loader.create_swapchain(&create_info, None) }.context("create swapchain")
 }
 
@@ -422,12 +646,35 @@ fn allocate_cmd_buffers(
     Ok(bufs)
 }
 
-fn record_barriers(
+fn record_transition(
     device: &ash::Device,
     cmd: vk::CommandBuffer,
     image: vk::Image,
     queue_family_index: u32,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
 ) -> Result<()> {
+    let (src_access, dst_access, src_stage, dst_stage) = match (old_layout, new_layout) {
+        (vk::ImageLayout::PRESENT_SRC_KHR, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => (
+            vk::AccessFlags::MEMORY_READ,
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::COLOR_ATTACHMENT_READ,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        ),
+        (vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR) => (
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags::empty(),
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+        ),
+        _ => (
+            vk::AccessFlags::empty(),
+            vk::AccessFlags::empty(),
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+        ),
+    };
+
     unsafe {
         device
             .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
@@ -435,9 +682,9 @@ fn record_barriers(
         let begin = vk::CommandBufferBeginInfo::builder();
         device.begin_command_buffer(cmd, &begin).context("begin cmd")?;
 
-        let pre_barrier = vk::ImageMemoryBarrier::builder()
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        let barrier = vk::ImageMemoryBarrier::builder()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
             .src_queue_family_index(queue_family_index)
             .dst_queue_family_index(queue_family_index)
             .image(image)
@@ -448,46 +695,20 @@ fn record_barriers(
                 base_array_layer: 0,
                 layer_count: 1,
             })
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::COLOR_ATTACHMENT_READ,
-            );
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access);
+
         device.cmd_pipeline_barrier(
             cmd,
-            vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            src_stage,
+            dst_stage,
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[*pre_barrier],
+            &[*barrier],
         );
 
-        let post_barrier = vk::ImageMemoryBarrier::builder()
-            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .src_queue_family_index(queue_family_index)
-            .dst_queue_family_index(queue_family_index)
-            .image(image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .src_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::COLOR_ATTACHMENT_READ,
-            )
-            .dst_access_mask(vk::AccessFlags::empty());
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[*post_barrier],
-        );
+        device.end_command_buffer(cmd).context("end cmd")?;
     }
     Ok(())
 }
