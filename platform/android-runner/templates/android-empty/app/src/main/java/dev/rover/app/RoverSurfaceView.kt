@@ -14,6 +14,7 @@ class RoverSurfaceView @JvmOverloads constructor(
 
     interface Listener {
         fun onSurfaceReady(surface: android.view.Surface)
+        fun onSurfaceChanged(surface: android.view.Surface, width: Int, height: Int)
         fun onSurfaceDestroyed()
     }
 
@@ -28,7 +29,7 @@ class RoverSurfaceView @JvmOverloads constructor(
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        // no-op
+        listener?.onSurfaceChanged(holder.surface, width, height)
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
