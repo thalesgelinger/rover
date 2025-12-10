@@ -140,6 +140,36 @@ fn install_rover_api(lua: &Lua) -> mlua::Result<()> {
     rover.set("row", identity_primitive(lua, "row")?)?;
     rover.set("text", identity_primitive(lua, "text")?)?;
     rover.set("button", identity_primitive(lua, "button")?)?;
+    
+    // Input components
+    rover.set("input", identity_primitive(lua, "input")?)?;
+    rover.set("textarea", identity_primitive(lua, "textarea")?)?;
+    rover.set("checkbox", identity_primitive(lua, "checkbox")?)?;
+    rover.set("switch", identity_primitive(lua, "switch")?)?;
+    rover.set("slider", identity_primitive(lua, "slider")?)?;
+    rover.set("radio_group", identity_primitive(lua, "radio_group")?)?;
+
+    // Feedback components
+    rover.set("badge", identity_primitive(lua, "badge")?)?;
+    rover.set("spinner", identity_primitive(lua, "spinner")?)?;
+    rover.set("progress", identity_primitive(lua, "progress")?)?;
+    rover.set("avatar", identity_primitive(lua, "avatar")?)?;
+    rover.set("separator", identity_primitive(lua, "separator")?)?;
+
+    // Layout components
+    rover.set("card", identity_primitive(lua, "card")?)?;
+    rover.set("card_header", identity_primitive(lua, "card_header")?)?;
+    rover.set("card_footer", identity_primitive(lua, "card_footer")?)?;
+    rover.set("scroll_area", identity_primitive(lua, "scroll_area")?)?;
+    rover.set("stack", identity_primitive(lua, "stack")?)?;
+    rover.set("list", identity_primitive(lua, "list")?)?;
+    rover.set("list_item", identity_primitive(lua, "list_item")?)?;
+
+    // Overlay components
+    rover.set("dialog", identity_primitive(lua, "dialog")?)?;
+    rover.set("sheet", identity_primitive(lua, "sheet")?)?;
+    rover.set("popover", identity_primitive(lua, "popover")?)?;
+    rover.set("tooltip", identity_primitive(lua, "tooltip")?)?;
 
     globals.set("rover", rover)?;
     Ok(())

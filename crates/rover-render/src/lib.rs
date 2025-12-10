@@ -114,6 +114,18 @@ pub struct ViewNode {
     pub width: Option<Dimension>,
     pub height: Option<Dimension>,
     pub action: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub change_action: Option<String>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub checked: Option<bool>,
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -718,6 +730,13 @@ impl ViewNode {
                     _ => None,
                 };
 
+                let value = table.get::<_, Option<String>>("value").ok().flatten();
+                let change_action = table.get::<_, Option<String>>("on_change").ok().flatten();
+                let placeholder = table.get::<_, Option<String>>("placeholder").ok().flatten();
+                let disabled = table.get::<_, Option<bool>>("disabled").ok().flatten().unwrap_or(false);
+                let checked = table.get::<_, Option<bool>>("checked").ok().flatten();
+                let icon = table.get::<_, Option<String>>("icon").ok().flatten();
+
                 Ok(ViewNode {
                     kind,
                     children,
@@ -726,6 +745,12 @@ impl ViewNode {
                     width,
                     height,
                     action,
+                    value,
+                    change_action,
+                    placeholder,
+                    disabled,
+                    checked,
+                    icon,
                 })
             }
             _ => Err(anyhow!("expected render to return table")),
