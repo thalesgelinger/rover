@@ -18,6 +18,7 @@ typedef struct {
 
 void *rover_create(const char *root_path);
 void rover_destroy(void *handle);
+bool rover_enable_hot_reload(void *handle);
 char *rover_render_json(void *handle);
 char *rover_dispatch_action_json(void *handle, const char *action);
 RoverImage rover_render_rgba(void *handle, int width, int height);

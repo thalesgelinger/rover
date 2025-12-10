@@ -9,6 +9,7 @@ use serde_json::Value as JsonValue;
 const BUILD_ROOT: &str = ".rover/build/ios-sim";
 const BUNDLE_ID: &str = "dev.rover.app";
 const IOS_SIM_TARGET: &str = "aarch64-apple-ios-sim";
+const DEV_CONFIG_NAME: &str = ".rover_devserver.json";
 
 pub struct IosRunner {
     build_dir: PathBuf,
@@ -49,6 +50,15 @@ impl IosRunner {
                 }
                 fs::create_dir_all(&dest).context("create assets dest")?;
                 copy_dir(&assets, &dest)?;
+            }
+        }
+
+        // Copy dev config if present
+        let cfg = entry.parent().map(|p| p.join(DEV_CONFIG_NAME));
+        if let Some(cfg_path) = cfg {
+            if cfg_path.exists() {
+                fs::copy(&cfg_path, app_dir.join(DEV_CONFIG_NAME))
+                    .with_context(|| format!("copy {}", cfg_path.display()))?;
             }
         }
 
@@ -99,6 +109,7 @@ impl IosRunner {
         let sdk = sim_sdk_path()?;
         let cc = "/usr/bin/clang";
         let ar = "/usr/bin/ar";
+        let libcxx_include = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include/c++/v1";
         let status = Command::new("cargo")
             .arg("build")
             .arg("-p")
@@ -107,16 +118,38 @@ impl IosRunner {
             .arg(IOS_SIM_TARGET)
             .env("MACOSX_DEPLOYMENT_TARGET", "16.0")
             .env("CC_aarch64-apple-ios-sim", cc)
+            .env("CXX_aarch64-apple-ios-sim", "/usr/bin/clang++")
             .env("AR_aarch64-apple-ios-sim", ar)
             .env(
-                "CFLAGS_aarch64-apple-ios-sim",
+                "CFLAGS_aarch64_apple_ios_sim",
                 format!(
-                    "-isysroot {} -arch arm64 -mios-simulator-version-min=16.0",
-                    sdk
+                    "-isysroot {} -arch arm64 -mios-simulator-version-min=16.0 -isystem {}",
+                    sdk, libcxx_include
                 ),
             )
             .env(
-                "LDFLAGS_aarch64-apple-ios-sim",
+                "CXXFLAGS_aarch64_apple_ios_sim",
+                format!(
+                    "-isysroot {} -arch arm64 -mios-simulator-version-min=16.0 -std=c++17 -stdlib=libc++ -isystem {}",
+                    sdk, libcxx_include
+                ),
+            )
+            .env(
+                "BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim",
+                format!(
+                    "-isysroot {} -arch arm64 --target=arm64-apple-ios16.0-simulator -std=c++17 -stdlib=libc++ -D_LIBCPP_ABI_VERSION=2 -isystem {}",
+                    sdk, libcxx_include
+                ),
+            )
+            .env(
+                "BINDGEN_EXTRA_CLANG_ARGS",
+                format!(
+                    "-isysroot {} -arch arm64 --target=arm64-apple-ios16.0-simulator -std=c++17 -stdlib=libc++ -D_LIBCPP_ABI_VERSION=2 -isystem {}",
+                    sdk, libcxx_include
+                ),
+            )
+            .env(
+                "LDFLAGS_aarch64_apple_ios_sim",
                 format!(
                     "-isysroot {} -arch arm64 -mios-simulator-version-min=16.0",
                     sdk

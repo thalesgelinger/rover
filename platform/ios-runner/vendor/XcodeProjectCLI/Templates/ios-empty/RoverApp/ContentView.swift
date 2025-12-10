@@ -20,6 +20,7 @@ struct MetalHostView: UIViewRepresentable {
 final class RoverMetalView: UIView {
     private let host = RoverMetalHost()
     private var displayLink: CADisplayLink?
+    private var banner: UILabel?
 
     override class var layerClass: AnyClass { CAMetalLayer.self }
 
@@ -39,6 +40,9 @@ final class RoverMetalView: UIView {
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = false
         host.start(layer: metalLayer)
+        if host.isHotReloadEnabled() {
+            showBanner()
+        }
         startDisplayLink()
     }
 
@@ -60,6 +64,9 @@ final class RoverMetalView: UIView {
             metalLayer.drawableSize = CGSize(width: bounds.width * contentScaleFactor,
                                              height: bounds.height * contentScaleFactor)
         }
+        if let banner {
+            banner.frame = CGRect(x: 12, y: 12, width: 120, height: 28)
+        }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -67,12 +74,27 @@ final class RoverMetalView: UIView {
         let point = touch.location(in: self)
         host.pointerTap(point: point, scale: contentScaleFactor)
     }
+
+    private func showBanner() {
+        let label = UILabel()
+        label.text = "HOT RELOAD"
+        label.font = .boldSystemFont(ofSize: 12)
+        label.textColor = .white
+        label.textAlignment = .center
+        label.backgroundColor = UIColor.red.withAlphaComponent(0.8)
+        label.layer.cornerRadius = 6
+        label.layer.masksToBounds = true
+        addSubview(label)
+        banner = label
+        setNeedsLayout()
+    }
 }
 
 final class RoverMetalHost {
     private var handle: UnsafeMutableRawPointer?
     private var device: MTLDevice?
     private var commandQueue: MTLCommandQueue?
+    private var hotReloadEnabled = false
 
     func start(layer: CAMetalLayer) {
         guard handle == nil else { return }
@@ -82,6 +104,9 @@ final class RoverMetalHost {
         let root = (Bundle.main.bundlePath as NSString).appendingPathComponent("rover")
         root.withCString { ptr in
             handle = rover_create(ptr)
+        }
+        if let handle {
+            hotReloadEnabled = rover_enable_hot_reload(handle)
         }
     }
 
@@ -108,6 +133,8 @@ final class RoverMetalHost {
         let scaled = CGPoint(x: point.x * scale, y: point.y * scale)
         _ = rover_pointer_tap(handle, Float(scaled.x), Float(scaled.y))
     }
+
+    func isHotReloadEnabled() -> Bool { hotReloadEnabled }
 
     deinit {
         if let handle {
