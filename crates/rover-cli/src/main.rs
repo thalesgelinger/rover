@@ -7,19 +7,15 @@ use rover_runtime::Runtime;
 
 #[derive(Parser, Debug)]
 #[command(name = "rover", about = "Lua-first mobile runner", version)]
-#[command(arg_required_else_help = true, subcommand_negates_reqs = true)]
 struct Cli {
-    #[arg(value_name = "ENTRY", help = "Lua entry file (default run)")]
+    #[arg(value_name = "ENTRY", help = "Lua entry file")]
     entry: Option<PathBuf>,
 
     #[arg(short = 'p', long = "platform", value_enum, default_value = "ios")]
-    platform: Platform,
+    platform: Option<Platform>,
 
-    #[arg(long, value_name = "UDID", help = "iOS device UDID (disables sim)")]
+    #[arg(long, value_name = "UDID", help = "iOS device UDID")]
     device: Option<String>,
-
-    #[arg(long, default_value_t = true, help = "Target simulator (default)")]
-    sim: bool,
 
     #[arg(long, help = "Verbose logging")]
     verbose: bool,
@@ -66,12 +62,12 @@ fn main() -> Result<()> {
         Some(Command::Build(opts)) => build(opts),
         None => {
             let entry = cli.entry.ok_or_else(|| anyhow::anyhow!("ENTRY required"))?;
-            let device = cli.device.clone();
+            let platform = cli.platform.unwrap_or(Platform::Ios);
             let opts = RunOpts {
                 entry,
-                platform: cli.platform,
-                device: device.clone(),
-                sim: device.is_none() && cli.sim,
+                platform,
+                device: cli.device.clone(),
+                sim: cli.device.is_none(),
                 verbose: cli.verbose,
             };
             run(opts)
