@@ -3,12 +3,17 @@
 #[cfg(target_os = "android")]
 mod android_vulkan;
 
+#[cfg(target_os = "ios")]
+#[link(name = "Foundation", kind = "framework")]
+extern "C" {}
+
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use mlua::RegistryKey;
+use rover_devserver::{read_config, DevClient, DEFAULT_PORT};
 use rover_lua::LuaEngine;
 use rover_render::{LayerNode, RenderSurface, SkiaRenderer, ViewNode};
 #[cfg(any(target_os = "ios", target_os = "android"))]
@@ -44,6 +49,9 @@ pub struct Runtime {
     dirty: bool,
     layer_tree: Option<LayerNode>,
     scale_factor: f32,
+    dev_client: Option<DevClient>,
+    dev_host: String,
+    dev_port: u16,
 }
 
 impl Runtime {
@@ -59,7 +67,62 @@ impl Runtime {
             dirty: true,
             layer_tree: None,
             scale_factor: 1.0,
+            dev_client: None,
+            dev_host: "127.0.0.1".to_string(),
+            dev_port: DEFAULT_PORT,
         })
+    }
+
+    pub fn enable_hot_reload(&mut self) -> Result<()> {
+        match DevClient::connect(self.dev_host.clone(), self.dev_port) {
+            Ok(client) => {
+                self.dev_client = Some(client);
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("[runtime] devserver connection failed: {e}");
+                eprintln!("[runtime] hot reload disabled - is devserver running?");
+                Ok(())
+            }
+        }
+    }
+
+    pub fn check_and_reload(&mut self) -> Result<bool> {
+        let Some(client) = &mut self.dev_client else {
+            return Ok(false);
+        };
+
+        if !client.check_reload()? {
+            return Ok(false);
+        }
+
+        println!("[runtime] reloading lua with state preservation...");
+        
+        // Preserve current state by keeping its registry key
+        let old_state_key = self.state.take();
+
+        // Reload lua (creates new engine)
+        if let Some(entry) = self.entry.clone() {
+            self.lua = LuaEngine::new()?;
+            self.lua.load_app(&entry)?;
+            
+            // Try to restore state, fallback to init
+            if old_state_key.is_some() {
+                // State was preserved but in old registry, init fresh state
+                self.init_state()?;
+            } else {
+                self.init_state()?;
+            }
+            
+            // Mark dirty to trigger re-render
+            self.dirty = true;
+            self.layer_tree = None;
+            
+            println!("[runtime] reload complete");
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub fn load_entry(&mut self, path: &Path) -> Result<()> {
@@ -68,6 +131,17 @@ impl Runtime {
         self.hits.clear();
         self.dirty = true;
         self.layer_tree = None;
+
+        // Load dev config
+        if let Some(root) = path.parent() {
+            if let Some(cfg) = read_config(root) {
+                self.dev_host = cfg.host;
+                self.dev_port = cfg.port;
+            } else {
+                self.dev_host = "127.0.0.1".to_string();
+                self.dev_port = DEFAULT_PORT;
+            }
+        }
         
         // Load custom fonts if available
         if let Some(root) = path.parent() {
@@ -261,6 +335,15 @@ pub extern "C" fn rover_destroy(handle: *mut RuntimeHandle) {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn rover_enable_hot_reload(handle: *mut RuntimeHandle) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let runtime = unsafe { &mut *handle };
+    runtime.runtime.enable_hot_reload().is_ok()
+}
+
 #[repr(C)]
 pub struct RoverImage {
     pub data: *mut u8,
@@ -368,6 +451,12 @@ pub extern "C" fn rover_render_metal(
     }
     let runtime = unsafe { &mut *handle };
     runtime.runtime.set_scale_factor(scale);
+    
+    // Check for hot reload
+    if runtime.runtime.check_and_reload().unwrap_or(false) {
+        runtime.runtime.mark_dirty();
+    }
+    
     if !runtime.runtime.is_dirty() {
         return false;
     }
@@ -405,6 +494,13 @@ pub extern "C" fn rover_render_vulkan(
     let runtime = unsafe { &mut *handle };
     runtime.runtime.set_scale_factor(scale);
     log_android("Rover", "render_vulkan start");
+    
+    // Check for hot reload
+    if runtime.runtime.check_and_reload().unwrap_or(false) {
+        log_android("Rover", "hot reload triggered");
+        runtime.runtime.mark_dirty();
+    }
+    
     if !runtime.runtime.is_dirty() {
         log_android("Rover", "render_vulkan skipped: not dirty; forcing");
         runtime.runtime.mark_dirty();
@@ -561,6 +657,24 @@ pub extern "system" fn Java_dev_rover_app_RoverNative_destroyVulkan(
         let state = Box::from_raw(handle as *mut AndroidVulkanState);
         rover_destroy(state.runtime);
         // session drops with Box
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_enableHotReload(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let state = unsafe { &mut *(handle as *mut AndroidVulkanState) };
+    if rover_enable_hot_reload(state.runtime) {
+        1
+    } else {
+        0
     }
 }
 
