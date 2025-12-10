@@ -138,6 +138,12 @@ pub struct ActionHit {
 }
 
 #[derive(Debug, Clone)]
+pub enum RenderLayer {
+    Base,
+    Overlay,
+}
+
+#[derive(Debug, Clone)]
 pub struct LayerNode {
     pub kind: String,
     pub bounds: Rect,
@@ -147,6 +153,8 @@ pub struct LayerNode {
     pub children: Vec<LayerNode>,
     pub icon: Option<String>,
     pub progress: f32,
+    pub layer: RenderLayer,
+    pub modal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -606,6 +614,13 @@ impl SkiaRenderer {
         }
         let progress = node.value.as_ref().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
         
+        let layer = match node.kind.as_str() {
+            "dialog" | "sheet" | "popover" | "tooltip" => RenderLayer::Overlay,
+            _ => RenderLayer::Base,
+        };
+        
+        let modal = matches!(node.kind.as_str(), "dialog" | "sheet");
+        
         Ok(LayerNode {
             kind: node.kind.clone(),
             bounds,
@@ -615,6 +630,8 @@ impl SkiaRenderer {
             children,
             icon: node.icon.clone(),
             progress,
+            layer,
+            modal,
         })
     }
 
@@ -681,6 +698,13 @@ impl SkiaRenderer {
     }
 
     fn draw_layer(&self, layer: &LayerNode, canvas: &mut Canvas, hits: &mut Vec<ActionHit>) -> Result<()> {
+        if matches!(layer.layer, RenderLayer::Overlay) {
+            let backdrop = Rect::from_xywh(0.0, 0.0, 10000.0, 10000.0);
+            let mut paint = Paint::default();
+            paint.set_color(Color::from_argb(180, 0, 0, 0));
+            canvas.draw_rect(backdrop, &paint);
+        }
+        
         match layer.kind.as_str() {
             "text" => {
                 if let Some(ref text) = layer.text {
@@ -841,6 +865,37 @@ impl SkiaRenderer {
                         w: layer.bounds.width(),
                         h: layer.bounds.height(),
                     });
+                }
+            }
+            "dialog" | "sheet" => {
+                let dialog_width = layer.bounds.width() * 0.8;
+                let dialog_height = layer.bounds.height() * 0.6;
+                let dialog_x = (layer.bounds.width() - dialog_width) / 2.0;
+                let dialog_y = (layer.bounds.height() - dialog_height) / 2.0;
+                let dialog_rect = Rect::from_xywh(dialog_x, dialog_y, dialog_width, dialog_height);
+                
+                self.draw_rounded_rect(canvas, dialog_rect, self.theme.radii.lg, &self.theme.palette.background);
+                let mut paint = Paint::default();
+                paint.set_color(self.theme.palette.border);
+                paint.set_stroke_width(1.0);
+                paint.set_style(skia_safe::PaintStyle::Stroke);
+                paint.set_anti_alias(true);
+                let rrect = skia_safe::RRect::new_rect_xy(dialog_rect, self.theme.radii.lg, self.theme.radii.lg);
+                canvas.draw_rrect(rrect, &paint);
+            }
+            "popover" | "tooltip" => {
+                self.draw_rounded_rect(canvas, layer.bounds, self.theme.radii.md, &self.theme.palette.background);
+                let mut paint = Paint::default();
+                paint.set_color(self.theme.palette.border);
+                paint.set_stroke_width(1.0);
+                paint.set_style(skia_safe::PaintStyle::Stroke);
+                paint.set_anti_alias(true);
+                let rrect = skia_safe::RRect::new_rect_xy(layer.bounds, self.theme.radii.md, self.theme.radii.md);
+                canvas.draw_rrect(rrect, &paint);
+                if let Some(ref text) = layer.text {
+                    let text_x = layer.bounds.left() + self.theme.spacing.sm;
+                    let text_y = layer.bounds.top() + self.theme.spacing.sm + self.theme.typography.sm;
+                    self.draw_text_colored_sized(canvas, text, Point::new(text_x, text_y), layer.style.color, self.theme.typography.sm);
                 }
             }
             _ => {}
