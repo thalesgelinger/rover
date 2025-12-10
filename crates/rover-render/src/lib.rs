@@ -145,6 +145,8 @@ pub struct LayerNode {
     pub action: Option<String>,
     pub style: ResolvedStyle,
     pub children: Vec<LayerNode>,
+    pub icon: Option<String>,
+    pub progress: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -588,6 +590,8 @@ impl SkiaRenderer {
             }
             _ => {}
         }
+        let progress = node.value.as_ref().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+        
         Ok(LayerNode {
             kind: node.kind.clone(),
             bounds,
@@ -595,6 +599,8 @@ impl SkiaRenderer {
             action: node.action.clone(),
             style,
             children,
+            icon: node.icon.clone(),
+            progress,
         })
     }
 
@@ -740,6 +746,67 @@ impl SkiaRenderer {
                 paint.set_anti_alias(true);
                 let rrect = skia_safe::RRect::new_rect_xy(layer.bounds, layer.style.radius, layer.style.radius);
                 canvas.draw_rrect(rrect, &paint);
+            }
+            "spinner" => {
+                let center = Point::new(
+                    layer.bounds.left() + layer.bounds.width() / 2.0,
+                    layer.bounds.top() + layer.bounds.height() / 2.0,
+                );
+                let radius = layer.bounds.width().min(layer.bounds.height()) / 2.0 - 2.0;
+                let mut paint = Paint::default();
+                paint.set_color(self.theme.palette.primary);
+                paint.set_stroke_width(2.0);
+                paint.set_style(skia_safe::PaintStyle::Stroke);
+                paint.set_anti_alias(true);
+                canvas.draw_circle(center, radius, &paint);
+            }
+            "progress" => {
+                self.draw_rounded_rect(canvas, layer.bounds, layer.style.radius, &self.theme.palette.muted);
+                let progress_width = layer.bounds.width() * (layer.progress.clamp(0.0, 1.0));
+                let progress_rect = Rect::from_xywh(
+                    layer.bounds.left(),
+                    layer.bounds.top(),
+                    progress_width,
+                    layer.bounds.height(),
+                );
+                self.draw_rounded_rect(canvas, progress_rect, layer.style.radius, &self.theme.palette.primary);
+            }
+            "avatar" => {
+                let size = layer.bounds.width().min(layer.bounds.height());
+                let avatar_rect = Rect::from_xywh(layer.bounds.left(), layer.bounds.top(), size, size);
+                self.draw_rounded_rect(canvas, avatar_rect, size / 2.0, &self.theme.palette.muted);
+                if let Some(ref text) = layer.text {
+                    let text_x = layer.bounds.left() + size / 2.0 - self.theme.typography.base / 2.0;
+                    let text_y = layer.bounds.top() + size / 2.0 + self.theme.typography.base / 3.0;
+                    self.draw_text_colored(canvas, text, Point::new(text_x, text_y), self.theme.palette.foreground);
+                }
+            }
+            "list_item" => {
+                if let Some(ref icon_name) = layer.icon {
+                    if let Some(icon_path) = IconPaths::get(icon_name, 24.0) {
+                        let mut paint = Paint::default();
+                        paint.set_color(layer.style.color);
+                        paint.set_anti_alias(true);
+                        canvas.save();
+                        canvas.translate((layer.bounds.left() + self.theme.spacing.sm, layer.bounds.top() + self.theme.spacing.sm));
+                        canvas.draw_path(&icon_path, &paint);
+                        canvas.restore();
+                    }
+                }
+                if let Some(ref text) = layer.text {
+                    let text_x = layer.bounds.left() + if layer.icon.is_some() { 40.0 } else { self.theme.spacing.sm };
+                    let text_y = layer.bounds.top() + layer.bounds.height() / 2.0 + self.theme.typography.base / 3.0;
+                    self.draw_text_colored(canvas, text, Point::new(text_x, text_y), layer.style.color);
+                }
+                if let Some(ref action) = layer.action {
+                    hits.push(ActionHit {
+                        action: action.clone(),
+                        x: layer.bounds.left(),
+                        y: layer.bounds.top(),
+                        w: layer.bounds.width(),
+                        h: layer.bounds.height(),
+                    });
+                }
             }
             _ => {}
         }
