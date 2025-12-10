@@ -1,19 +1,37 @@
 package dev.rover.app
 
 import android.os.Bundle
-import android.os.Bundle
+import android.util.Log
 import android.view.Choreographer
 import android.view.MotionEvent
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
-    private var nativeHandle: Long = 0
+    private var nativeHandle: Long = 0L
     private lateinit var surfaceView: RoverSurfaceView
     private var entryPath: String = ""
+    private val choreographer: Choreographer by lazy { Choreographer.getInstance() }
+    private var isRendering: Boolean = false
+    private lateinit var frameCallback: Choreographer.FrameCallback
+    private var lastRenderOk: Boolean = true
+
+    init {
+        frameCallback = Choreographer.FrameCallback {
+            if (isRendering && nativeHandle != 0L) {
+                val ok = RoverNative.renderVulkan(nativeHandle)
+                if (!ok && lastRenderOk) {
+                    Log.e("Rover", "renderVulkan returned false")
+                }
+                lastRenderOk = ok
+                choreographer.postFrameCallback(frameCallback)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         entryPath = copyAssetsToFiles()
+        Log.i("Rover", "entryPath=$entryPath")
 
         surfaceView = RoverSurfaceView(this)
         surfaceView.listener = this
@@ -26,28 +44,54 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
         setContentView(surfaceView)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (nativeHandle != 0L) {
+            startRendering()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        stopRendering()
+    }
+
     override fun onSurfaceReady(surface: android.view.Surface) {
         if (nativeHandle != 0L) return
-        nativeHandle = RoverNative.initVulkan(entryPath, surface)
+        nativeHandle = RoverNative.initVulkan(entryPath, surface, resources.displayMetrics.density)
+        Log.i("Rover", "initVulkan handle=$nativeHandle")
         if (nativeHandle != 0L) {
-            scheduleFrame()
+            startRendering()
+        } else {
+            Log.e("Rover", "initVulkan failed")
+        }
+    }
+
+    override fun onSurfaceChanged(surface: android.view.Surface, width: Int, height: Int) {
+        if (nativeHandle != 0L) {
+            RoverNative.surfaceChanged(nativeHandle, width, height)
+            startRendering()
         }
     }
 
     override fun onSurfaceDestroyed() {
+        stopRendering()
         if (nativeHandle != 0L) {
             RoverNative.destroyVulkan(nativeHandle)
             nativeHandle = 0
         }
     }
 
-    private fun scheduleFrame() {
-        Choreographer.getInstance().postFrameCallback { _ ->
-            if (nativeHandle != 0L) {
-                RoverNative.renderVulkan(nativeHandle)
-                scheduleFrame()
-            }
-        }
+    private fun startRendering() {
+        if (isRendering || nativeHandle == 0L) return
+        isRendering = true
+        choreographer.postFrameCallback(frameCallback)
+    }
+
+    private fun stopRendering() {
+        if (!isRendering) return
+        isRendering = false
+        choreographer.removeFrameCallback(frameCallback)
     }
 
     private fun copyAssetsToFiles(): String {
@@ -61,6 +105,6 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
                 }
             }
         }
-        return outDir.resolve("main.lua").absolutePath
+        return outDir.absolutePath
     }
 }
