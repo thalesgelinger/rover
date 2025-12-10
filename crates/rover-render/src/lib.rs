@@ -288,10 +288,11 @@ impl SkiaRenderer {
                 paint.set_color(Color::from_rgb(50, 90, 240));
                 canvas.draw_rect(layer.bounds, &paint);
                 if let Some(ref text) = layer.text {
-                    self.draw_text(
+                    self.draw_text_colored(
                         canvas,
                         text,
                         Point::new(layer.bounds.left() + 8.0, layer.bounds.top() + 26.0),
+                        Color::WHITE,
                     );
                 }
                 if let Some(ref action) = layer.action {
@@ -313,9 +314,16 @@ impl SkiaRenderer {
     }
 
     fn draw_text(&self, canvas: &mut Canvas, text: &str, at: Point) {
+        self.draw_text_colored(canvas, text, at, Color::BLACK);
+    }
+
+    fn draw_text_colored(&self, canvas: &mut Canvas, text: &str, at: Point, color: Color) {
         let mut builder =
             textlayout::ParagraphBuilder::new(&textlayout::ParagraphStyle::default(), self.font_collection.clone());
-        builder.push_style(&textlayout::TextStyle::new());
+        let mut text_style = textlayout::TextStyle::new();
+        text_style.set_font_size(16.0);
+        text_style.set_color(color);
+        builder.push_style(&text_style);
         builder.add_text(text);
         let mut paragraph = builder.build();
         paragraph.layout(1000.0);

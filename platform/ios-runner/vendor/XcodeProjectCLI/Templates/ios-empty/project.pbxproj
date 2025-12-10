@@ -138,26 +138,27 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		1A2B3C4D5E6F001900000001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/RoverApp";
-				INFOPLIST_FILE = RoverApp/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)";
-				PRODUCT_BUNDLE_IDENTIFIER = dev.rover.app;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphonesimulator iphoneos";
-				TARGETED_DEVICE_FAMILY = "1";
-				SWIFT_OBJC_BRIDGING_HEADER = RoverApp/RoverApp-Bridging-Header.h;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Debug;
+	1A2B3C4D5E6F001900000001 /* Debug */ = {
+		isa = XCBuildConfiguration;
+		buildSettings = {
+			ALWAYS_SEARCH_USER_PATHS = NO;
+			CODE_SIGN_STYLE = Automatic;
+			CURRENT_PROJECT_VERSION = 1;
+			HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/RoverApp";
+			INFOPLIST_FILE = RoverApp/Info.plist;
+			IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+			LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)";
+			OTHER_LDFLAGS = "-lc++";
+			PRODUCT_BUNDLE_IDENTIFIER = dev.rover.app;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SDKROOT = iphoneos;
+			SUPPORTED_PLATFORMS = "iphonesimulator iphoneos";
+			TARGETED_DEVICE_FAMILY = "1";
+			SWIFT_OBJC_BRIDGING_HEADER = RoverApp/RoverApp-Bridging-Header.h;
+			SWIFT_VERSION = 5.0;
 		};
+		name = Debug;
+	};
 		1A2B3C4D5E6F001A00000001 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -168,6 +169,7 @@
 				INFOPLIST_FILE = RoverApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)";
+				OTHER_LDFLAGS = "-lc++";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.rover.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

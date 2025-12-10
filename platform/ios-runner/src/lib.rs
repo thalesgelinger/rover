@@ -195,8 +195,29 @@ fn select_sim_device() -> Result<SimDevice> {
                 for item in arr {
                     let dev: SimDevice = serde_json::from_value(item.clone())?;
                     let available = dev.is_available.unwrap_or(true);
-                    if available && dev.name.contains("iPhone") {
+                    // Prefer non-SE models
+                    if available && dev.name.contains("iPhone") && !dev.name.contains("SE") {
                         candidates.push((version, dev));
+                    }
+                }
+            }
+        }
+    }
+    // Fallback to SE if no other iPhone found
+    if candidates.is_empty() {
+        if let Some(map) = devices_obj.as_object() {
+            for (runtime, list) in map {
+                if !runtime.contains("iOS") {
+                    continue;
+                }
+                let version = parse_runtime_version(runtime);
+                if let Some(arr) = list.as_array() {
+                    for item in arr {
+                        let dev: SimDevice = serde_json::from_value(item.clone())?;
+                        let available = dev.is_available.unwrap_or(true);
+                        if available && dev.name.contains("iPhone") {
+                            candidates.push((version, dev));
+                        }
                     }
                 }
             }
