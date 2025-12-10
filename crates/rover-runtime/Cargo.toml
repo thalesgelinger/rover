@@ -11,11 +11,13 @@ anyhow = { workspace = true }
 mlua = { workspace = true }
 rover-lua = { path = "../rover-lua" }
 rover-render = { path = "../rover-render" }
+rover-devserver = { path = "../rover-devserver" }
 serde_json = "1"
-skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "vulkan", "binary-cache"] }
+skia-safe = { version = "0.82", default-features = false, features = ["textlayout", "binary-cache"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ash = { version = "0.37", default-features = false, features = ["linked"] }
 ndk = "0.8"
 ndk-sys = "0.4"
+skia-safe = { version = "0.82", default-features = false, features = ["textlayout", "vulkan", "binary-cache"] }

@@ -12,11 +12,11 @@ vulkan = []
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "binary-cache"] }
+skia-safe = { version = "0.82", default-features = false, features = ["textlayout", "binary-cache"] }
 rover-lua = { path = "../rover-lua" }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "metal", "binary-cache"] }
+skia-safe = { version = "0.82", default-features = false, features = ["textlayout", "metal", "binary-cache"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "vulkan", "binary-cache"] }
+skia-safe = { version = "0.82", default-features = false, features = ["textlayout", "vulkan", "binary-cache"] }
