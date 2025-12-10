@@ -69,7 +69,12 @@ impl Runtime {
             layer_tree: None,
             scale_factor: 1.0,
             dev_client: None,
-            dev_host: "127.0.0.1".to_string(),
+            dev_host: {
+                #[cfg(target_os = "android")]
+                { "10.0.2.2".to_string() }
+                #[cfg(not(target_os = "android"))]
+                { "127.0.0.1".to_string() }
+            },
             dev_port: DEFAULT_PORT,
             is_reloading: false,
         })

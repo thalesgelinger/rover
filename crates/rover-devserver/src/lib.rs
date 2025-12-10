@@ -215,11 +215,23 @@ impl DevClient {
             return Ok(false);
         };
 
-        // Check for SYNC header
+        // Temporarily switch to blocking to avoid partial header reads
+        stream.set_nonblocking(false).ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
         let mut header = [0u8; 5];
-        match stream.read(&mut header) {
-            Ok(5) if &header == SYNC_CMD.as_bytes() => {
-                // Read file sync
+        let read_res = stream.read_exact(&mut header);
+
+        // Restore nonblocking for normal polling
+        stream.set_nonblocking(true).ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .ok();
+
+        match read_res {
+            Ok(()) if &header == SYNC_CMD.as_bytes() => {
                 match Self::read_sync(stream) {
                     Ok(files) => {
                         self.pending_sync = Some(files);
@@ -232,7 +244,7 @@ impl DevClient {
                     }
                 }
             }
-            Ok(_) => Ok(false),
+            Ok(()) => Ok(false),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(false),
             Err(_) => {
@@ -243,10 +255,7 @@ impl DevClient {
     }
 
     fn read_sync(stream: &mut TcpStream) -> Result<HashMap<String, Vec<u8>>> {
-        // Set blocking for sync read
-        stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-        
+        // Stream already in blocking mode with timeout
         let mut count_buf = [0u8; 4];
         stream.read_exact(&mut count_buf)?;
         let count = u32::from_le_bytes(count_buf);
@@ -271,8 +280,6 @@ impl DevClient {
             files.insert(path, content);
         }
         
-        // Restore nonblocking
-        stream.set_nonblocking(true)?;
         Ok(files)
     }
 
