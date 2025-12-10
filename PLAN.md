@@ -30,7 +30,7 @@ Flutter-like engine with Lua UI: Rust + Skia GPU, minimal platform shells, full 
 - **Surface**: VkSurfaceKHR from ANativeWindow
 - **Vsync**: Choreographer frame callbacks
 - **Input**: MotionEvent → Rust hit-testing (same as iOS)
-- **Assets**: AssetManager direct access (zero-copy)
+- **Assets**: Packaged in APK; currently copied to app files (AssetManager direct TBD)
 - **Build**: android-runner crate, Gradle + NDK, adb automation
 
 ## Implementation Phases
@@ -83,6 +83,7 @@ Flutter-like engine with Lua UI: Rust + Skia GPU, minimal platform shells, full 
 1. Complete Vulkan instance/device/swapchain setup in Kotlin
 2. Implement acquire/present in frame callback
 3. Pass VkImage handles to Rust via JNI
+- Status: surface create/change/destroy wired through JNI; swapchain recreates on resize/present errors; still need tighter WSI + asset manager work.
 
 ### Phase 9: End-to-End Testing
 1. Build rover CLI release
@@ -101,7 +102,7 @@ Flutter-like engine with Lua UI: Rust + Skia GPU, minimal platform shells, full 
 - **Vulkan-only**: No GLES fallback (simpler, best perf, 94% coverage)
 - **Min API 28**: Android 9+ (modern Vulkan drivers)
 - **ARM64 first**: `aarch64-linux-android` target (emulator + device)
-- **AssetManager direct**: No extraction, zero-copy asset access
+- **AssetManager target**: Goal is zero-copy; current build copies assets into app files
 - **NDK r26**: Latest LTS, excellent Rust support
 
 ## Future Component Additions

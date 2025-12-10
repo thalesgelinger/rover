@@ -10,6 +10,9 @@ cargo build -p rover-cli --release
 
 # Run example on iOS simulator
 ./target/release/rover examples/main.lua -p ios
+
+# Run example on Android (needs SDK/NDK + Gradle; mise: `mise install gradle`)
+./target/release/rover examples/main.lua -p android
 ```
 
 ## Usage
@@ -37,5 +40,5 @@ Commands:
 ## Status
 
 ✅ iOS simulator with Metal  
-🚧 Android (planned)  
+🚧 Android (emulator, Vulkan; requires Android SDK/NDK + Gradle available via PATH or mise `mise install gradle`)  
 🚧 Physical device support (planned)
