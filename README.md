@@ -23,12 +23,27 @@ rover <ENTRY> [OPTIONS]
 Options:
   -p, --platform <PLATFORM>  Target platform [default: ios] [possible values: ios, android]
       --device <UDID>        iOS device UDID (runs on device instead of simulator)
+      --watch                Watch for file changes and hot reload (dev only)
       --verbose              Verbose logging
 
 Commands:
   run    Run the app (default)
   build  Build only (no run)
 ```
+
+### Hot Reload
+
+Watch mode enables instant hot reload during development:
+
+```bash
+# Run with hot reload on iOS
+./target/release/rover examples/main.lua -p ios --watch
+
+# Run with hot reload on Android
+./target/release/rover examples/main.lua -p android --watch
+```
+
+Changes to `.lua` files trigger automatic reload while preserving app state.
 
 ## Architecture
 
