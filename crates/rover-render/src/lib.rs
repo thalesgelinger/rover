@@ -643,19 +643,43 @@ impl SkiaRenderer {
         match layer.kind.as_str() {
             "text" => {
                 if let Some(ref text) = layer.text {
-                    self.draw_text(canvas, text, Point::new(layer.bounds.left(), layer.bounds.top()));
-                }
-            }
-            "button" => {
-                let mut paint = Paint::default();
-                paint.set_color(Color::from_rgb(50, 90, 240));
-                canvas.draw_rect(layer.bounds, &paint);
-                if let Some(ref text) = layer.text {
                     self.draw_text_colored(
                         canvas,
                         text,
-                        Point::new(layer.bounds.left() + 8.0, layer.bounds.top() + 26.0),
-                        Color::WHITE,
+                        Point::new(layer.bounds.left(), layer.bounds.top() + layer.style.padding),
+                        layer.style.color,
+                    );
+                }
+            }
+            "button" => {
+                self.draw_rounded_rect(canvas, layer.bounds, layer.style.radius, &layer.style.background);
+                if let Some(ref text) = layer.text {
+                    let text_x = layer.bounds.left() + layer.style.padding;
+                    let text_y = layer.bounds.top() + layer.bounds.height() / 2.0 + self.theme.typography.base / 3.0;
+                    self.draw_text_colored(canvas, text, Point::new(text_x, text_y), layer.style.color);
+                }
+                if let Some(ref action) = layer.action {
+                    hits.push(ActionHit {
+                        action: action.clone(),
+                        x: layer.bounds.left(),
+                        y: layer.bounds.top(),
+                        w: layer.bounds.width(),
+                        h: layer.bounds.height(),
+                    });
+                }
+            }
+            "input" | "textarea" => {
+                self.draw_rounded_rect(canvas, layer.bounds, layer.style.radius, &self.theme.palette.input);
+                let text_x = layer.bounds.left() + layer.style.padding;
+                let text_y = layer.bounds.top() + layer.bounds.height() / 2.0 + self.theme.typography.base / 3.0;
+                if let Some(ref text) = layer.text {
+                    self.draw_text_colored(canvas, text, Point::new(text_x, text_y), layer.style.color);
+                } else {
+                    self.draw_text_colored(
+                        canvas,
+                        &layer.text.clone().unwrap_or_default(),
+                        Point::new(text_x, text_y),
+                        self.theme.palette.muted_foreground,
                     );
                 }
                 if let Some(ref action) = layer.action {
@@ -668,6 +692,55 @@ impl SkiaRenderer {
                     });
                 }
             }
+            "checkbox" | "switch" => {
+                let size = 20.0 * self.scale_factor;
+                let check_rect = Rect::from_xywh(layer.bounds.left(), layer.bounds.top(), size, size);
+                let bg = if layer.text.as_deref() == Some("true") {
+                    self.theme.palette.primary
+                } else {
+                    self.theme.palette.input
+                };
+                self.draw_rounded_rect(canvas, check_rect, layer.style.radius, &bg);
+                if let Some(ref action) = layer.action {
+                    hits.push(ActionHit {
+                        action: action.clone(),
+                        x: layer.bounds.left(),
+                        y: layer.bounds.top(),
+                        w: size,
+                        h: size,
+                    });
+                }
+            }
+            "badge" => {
+                self.draw_rounded_rect(canvas, layer.bounds, layer.style.radius, &layer.style.background);
+                if let Some(ref text) = layer.text {
+                    let text_x = layer.bounds.left() + layer.style.padding;
+                    let text_y = layer.bounds.top() + layer.style.padding + self.theme.typography.sm;
+                    self.draw_text_colored_sized(canvas, text, Point::new(text_x, text_y), layer.style.color, self.theme.typography.sm);
+                }
+            }
+            "separator" => {
+                let mut paint = Paint::default();
+                paint.set_color(self.theme.palette.border);
+                paint.set_stroke_width(1.0);
+                paint.set_anti_alias(true);
+                let mid_y = layer.bounds.top() + layer.bounds.height() / 2.0;
+                canvas.draw_line(
+                    Point::new(layer.bounds.left(), mid_y),
+                    Point::new(layer.bounds.right(), mid_y),
+                    &paint,
+                );
+            }
+            "card" | "card_header" | "card_footer" => {
+                self.draw_rounded_rect(canvas, layer.bounds, layer.style.radius, &layer.style.background);
+                let mut paint = Paint::default();
+                paint.set_color(self.theme.palette.border);
+                paint.set_stroke_width(1.0);
+                paint.set_style(skia_safe::PaintStyle::Stroke);
+                paint.set_anti_alias(true);
+                let rrect = skia_safe::RRect::new_rect_xy(layer.bounds, layer.style.radius, layer.style.radius);
+                canvas.draw_rrect(rrect, &paint);
+            }
             _ => {}
         }
         for child in &layer.children {
@@ -676,15 +749,31 @@ impl SkiaRenderer {
         Ok(())
     }
 
+    fn draw_rounded_rect(&self, canvas: &mut Canvas, rect: Rect, radius: f32, color: &Color) {
+        let mut paint = Paint::default();
+        paint.set_color(*color);
+        paint.set_anti_alias(true);
+        if radius > 0.0 {
+            let rrect = skia_safe::RRect::new_rect_xy(rect, radius, radius);
+            canvas.draw_rrect(rrect, &paint);
+        } else {
+            canvas.draw_rect(rect, &paint);
+        }
+    }
+
     fn draw_text(&self, canvas: &mut Canvas, text: &str, at: Point) {
         self.draw_text_colored(canvas, text, at, Color::BLACK);
     }
 
     fn draw_text_colored(&self, canvas: &mut Canvas, text: &str, at: Point, color: Color) {
+        self.draw_text_colored_sized(canvas, text, at, color, self.theme.typography.base);
+    }
+
+    fn draw_text_colored_sized(&self, canvas: &mut Canvas, text: &str, at: Point, color: Color, size: f32) {
         let mut builder =
             textlayout::ParagraphBuilder::new(&textlayout::ParagraphStyle::default(), self.font_collection.clone());
         let mut text_style = textlayout::TextStyle::new();
-        text_style.set_font_size(16.0 * self.scale_factor);
+        text_style.set_font_size(size * self.scale_factor);
         text_style.set_color(color);
         builder.push_style(&text_style);
         builder.add_text(text);
