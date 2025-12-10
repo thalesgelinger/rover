@@ -19,8 +19,10 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 
 mod theme;
+mod icons;
 
 pub use theme::{Palette, Radii, Spacing, Theme, Typography};
+pub use icons::IconPaths;
 
 #[cfg(target_os = "android")]
 type VulkanGetInstanceProcAddr = unsafe extern "system" fn(*const c_void, *const c_char) -> *const c_void;
