@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use mlua::RegistryKey;
 use rover_lua::LuaEngine;
-use rover_render::{RenderSurface, SkiaRenderer, ViewNode};
+use rover_render::{LayerNode, RenderSurface, SkiaRenderer, ViewNode};
 use std::ffi::c_void;
 
 pub struct Runtime {
@@ -17,6 +17,7 @@ pub struct Runtime {
     entry: Option<PathBuf>,
     hits: Vec<rover_render::ActionHit>,
     dirty: bool,
+    layer_tree: Option<LayerNode>,
 }
 
 impl Runtime {
@@ -30,6 +31,7 @@ impl Runtime {
             entry: None,
             hits: Vec::new(),
             dirty: true,
+            layer_tree: None,
         })
     }
 
@@ -38,6 +40,7 @@ impl Runtime {
         self.state = None;
         self.hits.clear();
         self.dirty = true;
+        self.layer_tree = None;
         self.lua.load_app(path)
     }
 
@@ -77,9 +80,19 @@ impl Runtime {
 
     pub fn render_into_surface(&mut self, surface: &mut RenderSurface) -> Result<()> {
         self.ensure_state()?;
-        let view = self.render_view()?;
-        let result = self.renderer.render_into_surface(&view, surface)?;
-        self.hits = result.hits;
+        
+        if self.layer_tree.is_none() || self.dirty {
+            let view = self.render_view()?;
+            let (width, height) = surface.size();
+            let bounds = skia_safe::Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+            self.layer_tree = Some(self.renderer.build_layer_tree(&view, bounds)?);
+        }
+        
+        if let Some(ref layer) = self.layer_tree {
+            let result = self.renderer.render_layer_tree(layer, surface)?;
+            self.hits = result.hits;
+        }
+        
         self.dirty = false;
         Ok(())
     }
@@ -107,6 +120,7 @@ impl Runtime {
         let next = self.lua.call_action(action, state)?;
         self.lua.replace_value(state_key, next)?;
         self.dirty = true;
+        self.layer_tree = None;
         self.render_view()
     }
 

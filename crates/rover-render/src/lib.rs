@@ -12,6 +12,7 @@ pub enum Dimension {
     Auto,
     Full,
     Px(f32),
+    Flex(f32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +35,15 @@ pub struct ActionHit {
     pub h: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct LayerNode {
+    pub kind: String,
+    pub bounds: Rect,
+    pub text: Option<String>,
+    pub action: Option<String>,
+    pub children: Vec<LayerNode>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderResult {
     pub buffer: Vec<u8>,
@@ -42,6 +52,33 @@ pub struct RenderResult {
     pub row_bytes: usize,
     pub hits_json: String,
     pub hits: Vec<ActionHit>,
+    pub layer_tree: Option<LayerTreeSerialized>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerTreeSerialized {
+    pub root: LayerNodeSerialized,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerNodeSerialized {
+    pub kind: String,
+    pub bounds: (f32, f32, f32, f32),
+    pub text: Option<String>,
+    pub action: Option<String>,
+    pub children: Vec<LayerNodeSerialized>,
+}
+
+impl From<&LayerNode> for LayerNodeSerialized {
+    fn from(node: &LayerNode) -> Self {
+        Self {
+            kind: node.kind.clone(),
+            bounds: (node.bounds.left(), node.bounds.top(), node.bounds.width(), node.bounds.height()),
+            text: node.text.clone(),
+            action: node.action.clone(),
+            children: node.children.iter().map(|c| c.into()).collect(),
+        }
+    }
 }
 
 pub struct RenderSurface {
@@ -146,28 +183,31 @@ impl RenderSurface {
     }
 }
 
-pub struct SkiaRenderer;
+pub struct SkiaRenderer {
+    font_collection: textlayout::FontCollection,
+}
 
 impl SkiaRenderer {
     pub fn new() -> Self {
-        Self
+        let mut font_collection = textlayout::FontCollection::new();
+        font_collection.set_default_font_manager(FontMgr::default(), None);
+        Self { font_collection }
     }
 
-    pub fn render_into_surface(
+    pub fn build_layer_tree(&self, view: &ViewNode, bounds: Rect) -> Result<LayerNode> {
+        self.layout_node(view, bounds)
+    }
+
+    pub fn render_layer_tree(
         &self,
-        view: &ViewNode,
+        layer: &LayerNode,
         surface: &mut RenderSurface,
     ) -> Result<RenderResult> {
         let mut hits = Vec::new();
         let (width, height) = surface.size();
         let canvas = surface.canvas();
         canvas.clear(Color::WHITE);
-        self.draw_node(
-            view,
-            canvas,
-            Rect::from_xywh(0.0, 0.0, width as f32, height as f32),
-            &mut hits,
-        )?;
+        self.draw_layer(layer, canvas, &mut hits)?;
         let snapshot = surface.snapshot_rgba();
         surface.flush();
         let hits_json = serde_json::to_string(&hits)?;
@@ -182,7 +222,21 @@ impl SkiaRenderer {
             row_bytes,
             hits_json,
             hits,
+            layer_tree: Some(LayerTreeSerialized {
+                root: layer.into(),
+            }),
         })
+    }
+
+    pub fn render_into_surface(
+        &self,
+        view: &ViewNode,
+        surface: &mut RenderSurface,
+    ) -> Result<RenderResult> {
+        let (width, height) = surface.size();
+        let bounds = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+        let layer = self.build_layer_tree(view, bounds)?;
+        self.render_layer_tree(&layer, surface)
     }
 
     pub fn render_rgba(&self, view: &ViewNode, width: i32, height: i32) -> Result<RenderResult> {
@@ -190,68 +244,77 @@ impl SkiaRenderer {
         self.render_into_surface(view, &mut surface)
     }
 
-    fn draw_node(
-        &self,
-        node: &ViewNode,
-        canvas: &mut Canvas,
-        bounds: Rect,
-        hits: &mut Vec<ActionHit>,
-    ) -> Result<()> {
+    fn layout_node(&self, node: &ViewNode, bounds: Rect) -> Result<LayerNode> {
+        let mut children = Vec::new();
         match node.kind.as_str() {
             "col" => {
+                let sizes = compute_flex_sizes(&node.children, bounds.height(), false);
                 let mut y = bounds.top();
-                for child in &node.children {
-                    let h = child.height_px(bounds.height() / node.children.len().max(1) as f32);
-                    let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), h);
-                    self.draw_node(child, canvas, rect, hits)?;
-                    y += h + 8.0;
+                for (child, size) in node.children.iter().zip(sizes.iter()) {
+                    let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), *size);
+                    children.push(self.layout_node(child, rect)?);
+                    y += size + 8.0;
                 }
             }
             "row" => {
+                let sizes = compute_flex_sizes(&node.children, bounds.width(), true);
                 let mut x = bounds.left();
-                for child in &node.children {
-                    let w = child.width_px(bounds.width() / node.children.len().max(1) as f32);
-                    let rect = Rect::from_xywh(x, bounds.top(), w, bounds.height());
-                    self.draw_node(child, canvas, rect, hits)?;
-                    x += w + 8.0;
+                for (child, size) in node.children.iter().zip(sizes.iter()) {
+                    let rect = Rect::from_xywh(x, bounds.top(), *size, bounds.height());
+                    children.push(self.layout_node(child, rect)?);
+                    x += size + 8.0;
                 }
             }
+            _ => {}
+        }
+        Ok(LayerNode {
+            kind: node.kind.clone(),
+            bounds,
+            text: node.text.clone(),
+            action: node.action.clone(),
+            children,
+        })
+    }
+
+    fn draw_layer(&self, layer: &LayerNode, canvas: &mut Canvas, hits: &mut Vec<ActionHit>) -> Result<()> {
+        match layer.kind.as_str() {
             "text" => {
-                let text = node.text.clone().unwrap_or_default();
-                self.draw_text(canvas, &text, Point::new(bounds.left(), bounds.top()));
+                if let Some(ref text) = layer.text {
+                    self.draw_text(canvas, text, Point::new(layer.bounds.left(), layer.bounds.top()));
+                }
             }
             "button" => {
                 let mut paint = Paint::default();
                 paint.set_color(Color::from_rgb(50, 90, 240));
-                canvas.draw_rect(bounds, &paint);
-                let text = node.text.clone().unwrap_or_else(|| "Button".into());
-                self.draw_text(
-                    canvas,
-                    &text,
-                    Point::new(bounds.left() + 8.0, bounds.top() + 26.0),
-                );
-                if let Some(action) = node.action.clone() {
+                canvas.draw_rect(layer.bounds, &paint);
+                if let Some(ref text) = layer.text {
+                    self.draw_text(
+                        canvas,
+                        text,
+                        Point::new(layer.bounds.left() + 8.0, layer.bounds.top() + 26.0),
+                    );
+                }
+                if let Some(ref action) = layer.action {
                     hits.push(ActionHit {
-                        action,
-                        x: bounds.left(),
-                        y: bounds.top(),
-                        w: bounds.width(),
-                        h: bounds.height(),
+                        action: action.clone(),
+                        x: layer.bounds.left(),
+                        y: layer.bounds.top(),
+                        w: layer.bounds.width(),
+                        h: layer.bounds.height(),
                     });
                 }
             }
             _ => {}
         }
+        for child in &layer.children {
+            self.draw_layer(child, canvas, hits)?;
+        }
         Ok(())
     }
 
     fn draw_text(&self, canvas: &mut Canvas, text: &str, at: Point) {
-        let mut paint = Paint::default();
-        paint.set_color(Color::BLACK);
-        let mut collection = textlayout::FontCollection::new();
-        collection.set_default_font_manager(FontMgr::default(), None);
         let mut builder =
-            textlayout::ParagraphBuilder::new(&textlayout::ParagraphStyle::default(), collection);
+            textlayout::ParagraphBuilder::new(&textlayout::ParagraphStyle::default(), self.font_collection.clone());
         builder.push_style(&textlayout::TextStyle::new());
         builder.add_text(text);
         let mut paragraph = builder.build();
@@ -309,21 +372,38 @@ impl ViewNode {
         }
     }
 
-    fn width_px(&self, default: f32) -> f32 {
-        match self.width {
-            Some(Dimension::Px(v)) => v,
-            Some(Dimension::Full) => default,
-            _ => default,
-        }
-    }
+}
 
-    fn height_px(&self, default: f32) -> f32 {
-        match self.height {
-            Some(Dimension::Px(v)) => v,
-            Some(Dimension::Full) => default,
-            _ => default,
+fn compute_flex_sizes(children: &[ViewNode], available: f32, is_horizontal: bool) -> Vec<f32> {
+    let spacing = 8.0;
+    let total_spacing = spacing * (children.len().saturating_sub(1) as f32);
+    let available_for_content = (available - total_spacing).max(0.0);
+    
+    let mut fixed_total = 0.0;
+    let mut flex_total = 0.0;
+    
+    for child in children {
+        let dim = if is_horizontal { &child.width } else { &child.height };
+        match dim {
+            Some(Dimension::Px(v)) => fixed_total += v,
+            Some(Dimension::Flex(weight)) => flex_total += weight,
+            _ => {}
         }
     }
+    
+    let remaining = (available_for_content - fixed_total).max(0.0);
+    let flex_unit = if flex_total > 0.0 { remaining / flex_total } else { 0.0 };
+    let default_size = if children.is_empty() { 0.0 } else { available_for_content / children.len() as f32 };
+    
+    children.iter().map(|child| {
+        let dim = if is_horizontal { &child.width } else { &child.height };
+        match dim {
+            Some(Dimension::Px(v)) => *v,
+            Some(Dimension::Full) => available_for_content,
+            Some(Dimension::Flex(weight)) => flex_unit * weight,
+            Some(Dimension::Auto) | None => default_size,
+        }
+    }).collect()
 }
 
 fn parse_dimension(value: Option<Value>) -> Result<Option<Dimension>> {
@@ -333,9 +413,20 @@ fn parse_dimension(value: Option<Value>) -> Result<Option<Dimension>> {
             let txt = s.to_string_lossy();
             if txt == "full" {
                 Ok(Some(Dimension::Full))
+            } else if txt == "auto" {
+                Ok(Some(Dimension::Auto))
             } else {
                 Err(anyhow!("unknown dimension string {txt}"))
             }
+        }
+        Some(Value::Table(t)) => {
+            if let Ok(kind) = t.get::<_, String>("kind") {
+                if kind == "flex" {
+                    let weight = t.get::<_, Option<f32>>("value")?.unwrap_or(1.0);
+                    return Ok(Some(Dimension::Flex(weight)));
+                }
+            }
+            Err(anyhow!("invalid dimension table"))
         }
         Some(Value::Integer(i)) => Ok(Some(Dimension::Px(i as f32))),
         Some(Value::Number(n)) => Ok(Some(Dimension::Px(n as f32))),
