@@ -7,6 +7,7 @@ object RoverNative {
     external fun pointerTap(handle: Long, x: Float, y: Float): Boolean
     external fun destroyVulkan(handle: Long)
     external fun enableHotReload(handle: Long): Boolean
+    external fun isReloading(handle: Long): Boolean
 
     init {
         try {

@@ -23,6 +23,10 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
     init {
         frameCallback = Choreographer.FrameCallback {
             if (isRendering && nativeHandle != 0L) {
+                val reloading = RoverNative.isReloading(nativeHandle)
+                if (reloading && banner == null) showBanner()
+                else if (!reloading && banner != null) hideBanner()
+                
                 val ok = RoverNative.renderVulkan(nativeHandle)
                 if (!ok && lastRenderOk) {
                     Log.e("Rover", "renderVulkan returned false")
@@ -68,8 +72,7 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
         nativeHandle = RoverNative.initVulkan(entryPath, surface, resources.displayMetrics.density)
         Log.i("Rover", "initVulkan handle=$nativeHandle")
         if (nativeHandle != 0L) {
-            val enabled = RoverNative.enableHotReload(nativeHandle)
-            if (enabled) showBanner()
+            RoverNative.enableHotReload(nativeHandle)
             startRendering()
         } else {
             Log.e("Rover", "initVulkan failed")
@@ -120,8 +123,8 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
     private fun showBanner() {
         if (banner != null) return
         val tv = TextView(this)
-        tv.text = "HOT RELOAD"
-        tv.setBackgroundColor(0xCCFF0000.toInt())
+        tv.text = "RELOADING..."
+        tv.setBackgroundColor(0xE6FF9800.toInt())
         tv.setTextColor(0xFFFFFFFF.toInt())
         tv.textSize = 12f
         tv.setPadding(16, 8, 16, 8)
@@ -131,5 +134,10 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
         params.topMargin = 16
         banner = tv
         root.addView(tv, params)
+    }
+    
+    private fun hideBanner() {
+        banner?.let { root.removeView(it) }
+        banner = null
     }
 }

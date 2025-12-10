@@ -40,9 +40,6 @@ final class RoverMetalView: UIView {
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = false
         host.start(layer: metalLayer)
-        if host.isHotReloadEnabled() {
-            showBanner()
-        }
         startDisplayLink()
     }
 
@@ -54,6 +51,12 @@ final class RoverMetalView: UIView {
     @objc private func step() {
         autoreleasepool {
             guard let metalLayer = layer as? CAMetalLayer else { return }
+            let isReloading = host.isReloading()
+            if isReloading && banner == nil {
+                showBanner()
+            } else if !isReloading && banner != nil {
+                hideBanner()
+            }
             host.render(layer: metalLayer, scale: contentScaleFactor)
         }
     }
@@ -77,16 +80,21 @@ final class RoverMetalView: UIView {
 
     private func showBanner() {
         let label = UILabel()
-        label.text = "HOT RELOAD"
+        label.text = "RELOADING..."
         label.font = .boldSystemFont(ofSize: 12)
         label.textColor = .white
         label.textAlignment = .center
-        label.backgroundColor = UIColor.red.withAlphaComponent(0.8)
+        label.backgroundColor = UIColor.orange.withAlphaComponent(0.9)
         label.layer.cornerRadius = 6
         label.layer.masksToBounds = true
         addSubview(label)
         banner = label
         setNeedsLayout()
+    }
+    
+    private func hideBanner() {
+        banner?.removeFromSuperview()
+        banner = nil
     }
 }
 
@@ -135,6 +143,11 @@ final class RoverMetalHost {
     }
 
     func isHotReloadEnabled() -> Bool { hotReloadEnabled }
+    
+    func isReloading() -> Bool {
+        guard let handle else { return false }
+        return rover_is_reloading(handle)
+    }
 
     deinit {
         if let handle {

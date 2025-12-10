@@ -52,6 +52,7 @@ pub struct Runtime {
     dev_client: Option<DevClient>,
     dev_host: String,
     dev_port: u16,
+    is_reloading: bool,
 }
 
 impl Runtime {
@@ -70,6 +71,7 @@ impl Runtime {
             dev_client: None,
             dev_host: "127.0.0.1".to_string(),
             dev_port: DEFAULT_PORT,
+            is_reloading: false,
         })
     }
 
@@ -88,23 +90,56 @@ impl Runtime {
     }
 
     pub fn check_and_reload(&mut self) -> Result<bool> {
-        let Some(client) = &mut self.dev_client else {
-            return Ok(false);
+        let should_reload = {
+            let Some(client) = &mut self.dev_client else {
+                return Ok(false);
+            };
+            client.check_reload()?
         };
 
-        if !client.check_reload()? {
+        if !should_reload {
             return Ok(false);
         }
 
+        self.is_reloading = true;
         println!("[runtime] reloading lua with state preservation...");
+        
+        // Get synced files and write to cache
+        if let Some(client) = &mut self.dev_client {
+            if let Some(files) = client.take_sync() {
+                if let Some(entry) = &self.entry {
+                    let root = entry.parent().unwrap_or(entry.as_path());
+                    let cache_dir = root.join("rover-dev");
+                    std::fs::create_dir_all(&cache_dir).ok();
+                    
+                    for (rel_path, content) in files {
+                        let file_path = cache_dir.join(&rel_path);
+                        if let Some(parent) = file_path.parent() {
+                            std::fs::create_dir_all(parent).ok();
+                        }
+                        std::fs::write(&file_path, content).ok();
+                    }
+                }
+            }
+        }
         
         // Preserve current state by keeping its registry key
         let old_state_key = self.state.take();
 
         // Reload lua (creates new engine)
         if let Some(entry) = self.entry.clone() {
+            // Update entry to rover-dev if it exists
+            let root = entry.parent().unwrap_or(entry.as_path());
+            let dev_entry = root.join("rover-dev/main.lua");
+            let reload_entry = if dev_entry.exists() {
+                dev_entry
+            } else {
+                entry.clone()
+            };
+            
             self.lua = LuaEngine::new()?;
-            self.lua.load_app(&entry)?;
+            self.lua.load_app(&reload_entry)?;
+            self.entry = Some(reload_entry);
             
             // Try to restore state, fallback to init
             if old_state_key.is_some() {
@@ -118,11 +153,22 @@ impl Runtime {
             self.dirty = true;
             self.layer_tree = None;
             
+            // Send ack and clear reload flag after completion
+            if let Some(client) = &mut self.dev_client {
+                client.ack_reload().ok();
+            }
+            self.is_reloading = false;
+            
             println!("[runtime] reload complete");
             Ok(true)
         } else {
+            self.is_reloading = false;
             Ok(false)
         }
+    }
+
+    pub fn is_reloading(&self) -> bool {
+        self.is_reloading
     }
 
     pub fn load_entry(&mut self, path: &Path) -> Result<()> {
@@ -279,7 +325,15 @@ struct AndroidVulkanState {
 }
 
 fn runtime_from_entry_dir(root: &Path) -> Result<Runtime> {
-    let entry = root.join("main.lua");
+    // Prefer hot-reloaded cache over bundled files
+    let dev_entry = root.join("rover-dev/main.lua");
+    let entry = if dev_entry.exists() {
+        println!("[runtime] loading from rover-dev cache");
+        dev_entry
+    } else {
+        root.join("main.lua")
+    };
+    
     if !entry.exists() {
         return Err(anyhow!("entry missing at {}", entry.display()));
     }
@@ -342,6 +396,15 @@ pub extern "C" fn rover_enable_hot_reload(handle: *mut RuntimeHandle) -> bool {
     }
     let runtime = unsafe { &mut *handle };
     runtime.runtime.enable_hot_reload().is_ok()
+}
+
+#[no_mangle]
+pub extern "C" fn rover_is_reloading(handle: *mut RuntimeHandle) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let runtime = unsafe { &*handle };
+    runtime.runtime.is_reloading()
 }
 
 #[repr(C)]
@@ -672,6 +735,24 @@ pub extern "system" fn Java_dev_rover_app_RoverNative_enableHotReload(
     }
     let state = unsafe { &mut *(handle as *mut AndroidVulkanState) };
     if rover_enable_hot_reload(state.runtime) {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_isReloading(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let state = unsafe { &*(handle as *mut AndroidVulkanState) };
+    if rover_is_reloading(state.runtime) {
         1
     } else {
         0
