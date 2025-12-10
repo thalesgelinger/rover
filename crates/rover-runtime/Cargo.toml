@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["lib", "staticlib"]
+crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -12,4 +12,10 @@ mlua = { workspace = true }
 rover-lua = { path = "../rover-lua" }
 rover-render = { path = "../rover-render" }
 serde_json = "1"
-skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "gl", "binary-cache"] }
+skia-safe = { version = "0.81", default-features = false, features = ["textlayout", "vulkan", "binary-cache"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ash = { version = "0.37", default-features = false, features = ["linked"] }
+ndk = "0.8"
+ndk-sys = "0.4"

@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(target_os = "android")]
+mod android_vulkan;
+
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
@@ -8,7 +11,18 @@ use anyhow::{anyhow, Context, Result};
 use mlua::RegistryKey;
 use rover_lua::LuaEngine;
 use rover_render::{LayerNode, RenderSurface, SkiaRenderer, ViewNode};
+#[cfg(any(target_os = "ios", target_os = "android"))]
 use std::ffi::c_void;
+#[cfg(target_os = "android")]
+use jni::objects::{JClass, JObject, JString};
+#[cfg(target_os = "android")]
+use jni::sys::{jboolean, jbyteArray, jfloat, jint, jlong};
+#[cfg(target_os = "android")]
+use jni::JNIEnv;
+#[cfg(target_os = "android")]
+use ndk::native_window::NativeWindow;
+#[cfg(target_os = "android")]
+use std::ptr;
 
 pub struct Runtime {
     lua: LuaEngine,
@@ -173,6 +187,12 @@ pub struct RuntimeHandle {
     runtime: Runtime,
 }
 
+#[cfg(target_os = "android")]
+struct AndroidVulkanState {
+    runtime: *mut RuntimeHandle,
+    session: android_vulkan::VulkanSession,
+}
+
 fn runtime_from_entry_dir(root: &Path) -> Result<Runtime> {
     let entry = root.join("main.lua");
     if !entry.exists() {
@@ -316,6 +336,7 @@ pub extern "C" fn rover_render_rgba(
     }
 }
 
+#[cfg(target_os = "ios")]
 #[no_mangle]
 pub extern "C" fn rover_render_metal(
     handle: *mut RuntimeHandle,
@@ -339,6 +360,149 @@ pub extern "C" fn rover_render_metal(
         runtime.runtime.render_if_dirty(&mut surface)
     });
     matches!(result, Ok(true))
+}
+
+#[cfg(target_os = "android")]
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn rover_render_vulkan(
+    handle: *mut RuntimeHandle,
+    instance: *const c_void,
+    physical_device: *const c_void,
+    device: *const c_void,
+    queue: *const c_void,
+    queue_family_index: u32,
+    image: *const c_void,
+    image_format: u32,
+    image_layout: u32,
+    image_usage_flags: u32,
+    width: i32,
+    height: i32,
+    sample_count: i32,
+    scale: f32,
+    vk_get_instance_proc_addr: unsafe extern "system" fn(*const c_void, *const c_char) -> *const c_void,
+    vk_get_device_proc_addr: unsafe extern "system" fn(*const c_void, *const c_char) -> *const c_void,
+) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let runtime = unsafe { &mut *handle };
+    runtime.runtime.set_scale_factor(scale);
+    if !runtime.runtime.is_dirty() {
+        return false;
+    }
+    let result = runtime.runtime.ensure_state().and_then(|_| {
+        let mut surface = unsafe {
+            RenderSurface::vulkan(
+                instance,
+                physical_device,
+                device,
+                queue,
+                queue_family_index,
+                image,
+                image_format,
+                image_layout,
+                image_usage_flags,
+                width,
+                height,
+                sample_count,
+                vk_get_instance_proc_addr,
+                vk_get_device_proc_addr,
+            )?
+        };
+        runtime.runtime.render_if_dirty(&mut surface)
+    });
+    matches!(result, Ok(true))
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_initVulkan(
+    env: JNIEnv,
+    _class: JClass,
+    entry: JString,
+    surface: JObject,
+) -> jlong {
+    let path: String = match env.get_string(&entry) {
+        Ok(s) => s.to_string_lossy().into_owned(),
+        Err(_) => return 0,
+    };
+    let c_path = match CString::new(path) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let runtime = rover_create(c_path.as_ptr());
+    if runtime.is_null() {
+        return 0;
+    }
+    let window = match ndk::native_window::NativeWindow::from_surface(&env, surface) {
+        Ok(w) => w,
+        Err(_) => {
+            unsafe { rover_destroy(runtime) };
+            return 0;
+        }
+    };
+    let session = match android_vulkan::VulkanSession::new(window) {
+        Ok(s) => s,
+        Err(_) => {
+            unsafe { rover_destroy(runtime) };
+            return 0;
+        }
+    };
+    let state = AndroidVulkanState { runtime, session };
+    Box::into_raw(Box::new(state)) as jlong
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_renderVulkan(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let state = unsafe { &mut *(handle as *mut AndroidVulkanState) };
+    let rendered = state.session.render_rgba(state.runtime).unwrap_or(false);
+    if rendered { 1 } else { 0 }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_pointerTap(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    x: jfloat,
+    y: jfloat,
+) -> jboolean {
+    if handle == 0 {
+        return 0;
+    }
+    let state = unsafe { &mut *(handle as *mut AndroidVulkanState) };
+    if rover_pointer_tap(state.runtime, x, y) {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_destroyVulkan(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    if handle == 0 {
+        return;
+    }
+    unsafe {
+        let state = Box::from_raw(handle as *mut AndroidVulkanState);
+        rover_destroy(state.runtime);
+        // session drops with Box
+    }
 }
 
 #[no_mangle]
@@ -370,4 +534,52 @@ pub extern "C" fn rover_string_free(ptr: *mut c_char) {
     unsafe {
         drop(CString::from_raw(ptr));
     }
+}
+
+// JNI bridge (Android only)
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_init(
+    env: JNIEnv,
+    _class: JClass,
+    entry: JString,
+) -> jlong {
+    let path: String = match env.get_string(&entry) {
+        Ok(s) => s.to_string_lossy().into_owned(),
+        Err(_) => return 0,
+    };
+    let c_path = CString::new(path).unwrap_or_default();
+    let handle = rover_create(c_path.as_ptr());
+    handle as jlong
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_destroy(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    rover_destroy(handle as *mut RuntimeHandle);
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_rover_app_RoverNative_renderRgba(
+    env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    width: jint,
+    height: jint,
+) -> jbyteArray {
+    let img = rover_render_rgba(handle as *mut RuntimeHandle, width, height);
+    if img.data.is_null() || img.len == 0 {
+        return std::ptr::null_mut();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(img.data, img.len) };
+    let arr = env
+        .byte_array_from_slice(slice)
+        .unwrap_or_else(|_| env.new_byte_array(0).unwrap());
+    rover_image_free(img);
+    arr
 }

@@ -1,10 +1,25 @@
 use anyhow::{anyhow, Result};
 use rover_lua::Value;
 use serde::{Deserialize, Serialize};
-use skia_safe::gpu::{self, backend_render_targets, mtl, SurfaceOrigin};
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use skia_safe::gpu::{self, backend_render_targets, SurfaceOrigin};
+#[cfg(target_os = "ios")]
+use skia_safe::gpu::mtl;
+#[cfg(target_os = "android")]
+use skia_safe::gpu::vk;
 use skia_safe::surfaces;
-use skia_safe::{textlayout, Canvas, Color, ColorType, FontMgr, Paint, Point, Rect};
+use skia_safe::{textlayout, Canvas, Color, FontMgr, Paint, Point, Rect};
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use skia_safe::ColorType;
+#[cfg(any(target_os = "ios", target_os = "android"))]
 use std::ffi::c_void;
+#[cfg(target_os = "android")]
+use std::os::raw::c_char;
+
+#[cfg(target_os = "android")]
+type VulkanGetInstanceProcAddr = unsafe extern "system" fn(*const c_void, *const c_char) -> *const c_void;
+#[cfg(target_os = "android")]
+type VulkanGetDeviceProcAddr = unsafe extern "system" fn(*const c_void, *const c_char) -> *const c_void;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
@@ -94,10 +109,25 @@ pub struct SurfaceSnapshot {
 
 enum RenderSurfaceBackend {
     CpuRaster(skia_safe::Surface),
+    #[cfg(target_os = "ios")]
     Metal {
         surface: skia_safe::Surface,
         context: gpu::DirectContext,
     },
+    #[cfg(target_os = "android")]
+    Vulkan {
+        surface: skia_safe::Surface,
+        context: gpu::DirectContext,
+    },
+}
+
+#[cfg(target_os = "android")]
+fn color_type_from_vk_format(format: vk::Format) -> Option<ColorType> {
+    match format {
+        vk::Format::R8G8B8A8_UNORM => Some(ColorType::RGBA8888),
+        vk::Format::B8G8R8A8_UNORM => Some(ColorType::BGRA8888),
+        _ => None,
+    }
 }
 
 impl RenderSurface {
@@ -109,6 +139,7 @@ impl RenderSurface {
         })
     }
 
+    #[cfg(target_os = "ios")]
     pub unsafe fn metal(
         device: *mut c_void,
         queue: *mut c_void,
@@ -136,9 +167,104 @@ impl RenderSurface {
         })
     }
 
+    #[cfg(target_os = "android")]
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn vulkan(
+        instance: *const c_void,
+        physical_device: *const c_void,
+        device: *const c_void,
+        queue: *const c_void,
+        queue_family_index: u32,
+        image: *const c_void,
+        format: u32,
+        image_layout: u32,
+        image_usage_flags: u32,
+        width: i32,
+        height: i32,
+        sample_count: i32,
+        vk_get_instance_proc_addr: VulkanGetInstanceProcAddr,
+        vk_get_device_proc_addr: VulkanGetDeviceProcAddr,
+    ) -> Result<Self> {
+        let instance = instance as vk::Instance;
+        let physical_device = physical_device as vk::PhysicalDevice;
+        let device = device as vk::Device;
+        let queue = queue as vk::Queue;
+        let image = image as vk::Image;
+        let format = format as vk::Format;
+        let image_layout = image_layout as vk::ImageLayout;
+        let image_usage_flags = image_usage_flags as vk::ImageUsageFlags;
+        let sample_count = sample_count.max(1) as u32;
+
+        let get_proc = |of: vk::GetProcOf| -> vk::GetProcResult {
+            unsafe {
+                match of {
+                    vk::GetProcOf::Instance(inst, name) => {
+                        vk_get_instance_proc_addr(inst as *const c_void, name)
+                    }
+                    vk::GetProcOf::Device(dev, name) => {
+                        vk_get_device_proc_addr(dev as *const c_void, name)
+                    }
+                }
+            }
+        };
+
+        let backend = vk::BackendContext::new(
+            instance,
+            physical_device,
+            device,
+            (queue, queue_family_index as usize),
+            &get_proc,
+        );
+        let mut context = gpu::direct_contexts::make_vulkan(&backend, None)
+            .ok_or_else(|| anyhow!("vulkan context"))?;
+
+        let mut image_info = unsafe {
+            vk::ImageInfo::new(
+                image,
+                vk::Alloc::default(),
+                vk::ImageTiling::OPTIMAL,
+                image_layout,
+                format,
+                1,
+                queue_family_index,
+                None,
+                None,
+                None,
+            )
+        };
+        image_info.sample_count = sample_count;
+        image_info.image_usage_flags = image_usage_flags;
+
+        let backend_render_target = backend_render_targets::make_vk((width, height), &image_info);
+        let color_type =
+            color_type_from_vk_format(format).ok_or_else(|| anyhow!("unsupported vk format"))?;
+        let surface = gpu::surfaces::wrap_backend_render_target(
+            &mut context,
+            &backend_render_target,
+            SurfaceOrigin::TopLeft,
+            color_type,
+            None,
+            None,
+        )
+        .ok_or_else(|| anyhow!("wrap vulkan surface"))?;
+        Ok(Self {
+            backend: RenderSurfaceBackend::Vulkan { surface, context },
+        })
+    }
+
     pub fn canvas(&mut self) -> &mut Canvas {
         match &mut self.backend {
-            RenderSurfaceBackend::CpuRaster(surface) | RenderSurfaceBackend::Metal { surface, .. } => {
+            RenderSurfaceBackend::CpuRaster(surface) => {
+                #[allow(invalid_reference_casting)]
+                unsafe { &mut *(surface.canvas() as *const Canvas as *mut Canvas) }
+            }
+            #[cfg(target_os = "ios")]
+            RenderSurfaceBackend::Metal { surface, .. } => {
+                #[allow(invalid_reference_casting)]
+                unsafe { &mut *(surface.canvas() as *const Canvas as *mut Canvas) }
+            }
+            #[cfg(target_os = "android")]
+            RenderSurfaceBackend::Vulkan { surface, .. } => {
                 #[allow(invalid_reference_casting)]
                 unsafe { &mut *(surface.canvas() as *const Canvas as *mut Canvas) }
             }
@@ -147,9 +273,11 @@ impl RenderSurface {
 
     pub fn size(&mut self) -> (i32, i32) {
         let info = match &mut self.backend {
-            RenderSurfaceBackend::CpuRaster(surface) | RenderSurfaceBackend::Metal { surface, .. } => {
-                surface.image_info()
-            }
+            RenderSurfaceBackend::CpuRaster(surface) => surface.image_info(),
+            #[cfg(target_os = "ios")]
+            RenderSurfaceBackend::Metal { surface, .. } => surface.image_info(),
+            #[cfg(target_os = "android")]
+            RenderSurfaceBackend::Vulkan { surface, .. } => surface.image_info(),
         };
         (info.width(), info.height())
     }
@@ -169,14 +297,22 @@ impl RenderSurface {
                     row_bytes,
                 })
             }
+            #[cfg(target_os = "ios")]
             RenderSurfaceBackend::Metal { .. } => None,
+            #[cfg(target_os = "android")]
+            RenderSurfaceBackend::Vulkan { .. } => None,
         }
     }
 
     pub fn flush(&mut self) {
         match &mut self.backend {
             RenderSurfaceBackend::CpuRaster(_) => {}
+            #[cfg(target_os = "ios")]
             RenderSurfaceBackend::Metal { context, .. } => {
+                context.flush_and_submit();
+            }
+            #[cfg(target_os = "android")]
+            RenderSurfaceBackend::Vulkan { context, .. } => {
                 context.flush_and_submit();
             }
         }

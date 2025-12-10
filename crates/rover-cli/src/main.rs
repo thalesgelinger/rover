@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use rover_android_runner::AndroidRunner;
 use rover_ios_runner::IosRunner;
 use rover_runtime::Runtime;
 
@@ -115,8 +116,8 @@ fn dispatch_platform_run(opts: &RunOpts, entry: &PathBuf) -> Result<()> {
             Ok(())
         }
         Platform::Android => {
-            println!("[rover] android run not yet implemented");
-            Ok(())
+            let runner = AndroidRunner::new();
+            runner.build_and_run(entry)
         }
     }
 }
@@ -131,7 +132,12 @@ fn dispatch_platform_build(opts: &RunOpts, entry: &PathBuf) -> Result<()> {
             Ok(())
         }
         Platform::Android => {
-            println!("[rover] android build not yet implemented");
+            let runner = AndroidRunner::new();
+            runner.ensure_prereqs()?;
+            let _project = runner.generate_project()?;
+            runner.stage_payload(entry)?;
+            let lib = runner.build_rust_shared()?;
+            let _apk = runner.build_apk(&lib)?;
             Ok(())
         }
     }

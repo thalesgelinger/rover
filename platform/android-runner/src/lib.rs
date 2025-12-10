@@ -54,15 +54,12 @@ impl AndroidRunner {
             .canonicalize()
             .with_context(|| format!("canonicalize {}", entry.display()))?;
         let assets_src = entry.parent().map(|p| p.join("assets"));
-        
+
         let project_assets = self.build_dir.join("project/app/src/main/assets/rover");
         fs::create_dir_all(&project_assets).context("create assets dir")?;
-        
-        // Copy main.lua
-        fs::copy(&entry, project_assets.join("main.lua"))
-            .context("copy main.lua")?;
-        
-        // Copy assets/ if exists
+
+        fs::copy(&entry, project_assets.join("main.lua")).context("copy main.lua")?;
+
         if let Some(assets) = assets_src {
             if assets.exists() {
                 let dest = project_assets.join("assets");
@@ -73,7 +70,7 @@ impl AndroidRunner {
                 copy_dir(&assets, &dest)?;
             }
         }
-        
+
         Ok(())
     }
 
@@ -97,20 +94,20 @@ impl AndroidRunner {
         Ok(out)
     }
 
-    pub fn build_rust_staticlib(&self) -> Result<PathBuf> {
+    pub fn build_rust_shared(&self) -> Result<PathBuf> {
         let ndk_root = std::env::var("ANDROID_NDK_ROOT")
             .or_else(|_| {
                 let sdk = std::env::var("ANDROID_HOME")
                     .or_else(|_| std::env::var("ANDROID_SDK_ROOT"))?;
                 detect_ndk_from_sdk(&sdk)
             })?;
-        
+
         let host = detect_host_tag()?;
         let toolchain_base = format!("{}/toolchains/llvm/prebuilt/{}", ndk_root, host);
-        
+
         let cc = format!("{}/bin/aarch64-linux-android{}-clang", toolchain_base, MIN_API);
         let ar = format!("{}/bin/llvm-ar", toolchain_base);
-        
+
         let status = Command::new("cargo")
             .arg("build")
             .arg("-p")
@@ -121,96 +118,107 @@ impl AndroidRunner {
             .env(format!("AR_{}", ANDROID_TARGET.replace('-', "_")), &ar)
             .status()
             .context("cargo build rover-runtime (android)")?;
-        
+
         if !status.success() {
             return Err(anyhow!("cargo build rover-runtime failed"));
         }
-        
+
         let lib = PathBuf::from("target")
             .join(ANDROID_TARGET)
-            .join("debug/librover_runtime.a");
-        
+            .join("debug/librover_runtime.so");
+
         if !lib.exists() {
-            return Err(anyhow!("staticlib missing at {}", lib.display()));
+            return Err(anyhow!("shared lib missing at {}", lib.display()));
         }
-        
+
         Ok(lib)
     }
 
-    pub fn build_apk(&self, staticlib: &Path) -> Result<PathBuf> {
+    pub fn build_apk(&self, shared: &Path) -> Result<PathBuf> {
         let project = self.build_dir.join("project");
-        
-        // Copy staticlib to jniLibs
+
         let jni_libs = project.join("app/src/main/jniLibs/arm64-v8a");
         fs::create_dir_all(&jni_libs).context("create jniLibs dir")?;
-        fs::copy(staticlib, jni_libs.join("librover_runtime.a"))
-            .context("copy staticlib")?;
-        
-        // Build APK
-        let gradlew = if cfg!(target_os = "windows") {
-            "gradlew.bat"
+        fs::copy(shared, jni_libs.join("librover_runtime.so"))
+            .context("copy shared lib")?;
+
+        let gradle_cmd = if project.join("gradlew").exists() {
+            if cfg!(target_os = "windows") { "gradlew.bat" } else { "./gradlew" }
         } else {
-            "./gradlew"
+            "gradle"
         };
-        
-        let status = Command::new(gradlew)
+
+        let status = Command::new(gradle_cmd)
             .current_dir(&project)
             .arg("assembleDebug")
             .status()
-            .context("gradlew assembleDebug")?;
-        
+            .context("gradle assembleDebug")?;
+
         if !status.success() {
-            return Err(anyhow!("gradlew assembleDebug failed"));
+            return Err(anyhow!("gradle assembleDebug failed"));
         }
-        
+
         let apk = project.join("app/build/outputs/apk/debug/app-debug.apk");
         if !apk.exists() {
             return Err(anyhow!("APK not found at {}", apk.display()));
         }
-        
+
         Ok(apk)
     }
 
     pub fn install_and_launch(&self, apk: &Path) -> Result<()> {
-        // Install
         let status = Command::new("adb")
             .args(["install", "-r"])
             .arg(apk)
             .status()
             .context("adb install")?;
-        
+
         if !status.success() {
             return Err(anyhow!("adb install failed"));
         }
-        
-        // Launch
+
         let activity = format!("{}/.MainActivity", PACKAGE_NAME);
         let status = Command::new("adb")
             .args(["shell", "am", "start", "-n", &activity])
             .status()
             .context("adb launch")?;
-        
+
         if !status.success() {
             return Err(anyhow!("adb launch failed"));
         }
-        
+
         Ok(())
     }
 
-    pub fn build_and_run(&self, entry: &Path) -> Result<()> {
+    pub fn build_only(&self, entry: &Path) -> Result<PathBuf> {
+        self.ensure_prereqs()?;
         if self.build_dir.exists() {
             fs::remove_dir_all(&self.build_dir).ok();
         }
-        
-        self.stage_payload(entry)?;
+
         let _project = self.generate_project()?;
-        println!("[rover][android] building rust staticlib...");
-        let lib = self.build_rust_staticlib()?;
+        self.stage_payload(entry)?;
+        println!("[rover][android] building rust shared...");
+        let lib = self.build_rust_shared()?;
+        println!("[rover][android] building apk...");
+        self.build_apk(&lib)
+    }
+
+    pub fn build_and_run(&self, entry: &Path) -> Result<()> {
+        self.ensure_prereqs()?;
+        if self.build_dir.exists() {
+            fs::remove_dir_all(&self.build_dir).ok();
+        }
+
+        let _project = self.generate_project()?;
+        self.stage_payload(entry)?;
+        println!("[rover][android] building rust shared...");
+        let lib = self.build_rust_shared()?;
         println!("[rover][android] building apk...");
         let apk = self.build_apk(&lib)?;
         println!("[rover][android] installing and launching...");
         self.install_and_launch(&apk)?;
-        
+
         Ok(())
     }
 }

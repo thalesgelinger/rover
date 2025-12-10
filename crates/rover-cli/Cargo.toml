@@ -13,3 +13,4 @@ clap = { workspace = true }
 serde = { workspace = true }
 rover-runtime = { path = "../rover-runtime" }
 rover-ios-runner = { path = "../../platform/ios-runner" }
+rover-android-runner = { path = "../../platform/android-runner" }
