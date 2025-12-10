@@ -9,7 +9,7 @@ const PACKAGE_NAME: &str = "dev.rover.app";
 const ANDROID_TARGET: &str = "aarch64-linux-android";
 const MIN_API: u32 = 28;
 const GRADLE_VERSION: &str = "8.2.1";
-const DEV_CONFIG_NAME: &str = ".rover_devserver.json";
+const DEV_CONFIG_NAME: &str = "rover.lua";
 
 pub struct AndroidRunner {
     build_dir: PathBuf,

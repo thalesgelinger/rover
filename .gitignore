@@ -3,3 +3,4 @@
 **/.DS_Store
 platform/ios-runner/.build
 platform/ios-runner/vendor/XcodeProjectCLI/.build
+rover.lua

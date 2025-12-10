@@ -7,12 +7,15 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
+use mlua::Lua;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use std::collections::HashMap;
 
 pub const DEFAULT_PORT: u16 = 9876;
-pub const CONFIG_FILE: &str = ".rover_devserver.json";
+pub const CONFIG_FILE: &str = "rover.lua";
 const RELOAD_CMD: &str = "RELOAD\n";
+const SYNC_CMD: &str = "SYNC\n";
+const ACK_CMD: &str = "ACK\n";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevConfig {
@@ -23,8 +26,12 @@ pub struct DevConfig {
 /// Simple TCP devserver for hot reload
 /// Sends RELOAD command to all connected clients when trigger() is called
 pub struct DevServer {
-    tx: Sender<()>,
+    tx: Sender<SyncMessage>,
     port: u16,
+}
+
+enum SyncMessage {
+    Reload(HashMap<String, Vec<u8>>),
 }
 
 impl DevServer {
@@ -47,8 +54,10 @@ impl DevServer {
         self.port
     }
 
-    pub fn trigger(&self) -> Result<()> {
-        self.tx.send(()).context("send reload trigger")
+    pub fn trigger(&self, files: HashMap<String, Vec<u8>>) -> Result<()> {
+        self.tx
+            .send(SyncMessage::Reload(files))
+            .context("send reload trigger")
     }
 }
 
@@ -62,7 +71,7 @@ fn bind_port(base: u16) -> Result<(TcpListener, u16)> {
     Err(anyhow!("could not bind devserver port starting at {base}"))
 }
 
-fn run_server(listener: TcpListener, rx: Receiver<()>, port: u16) -> Result<()> {
+fn run_server(listener: TcpListener, rx: Receiver<SyncMessage>, port: u16) -> Result<()> {
     listener
         .set_nonblocking(true)
         .context("set nonblocking")?;
@@ -84,11 +93,11 @@ fn run_server(listener: TcpListener, rx: Receiver<()>, port: u16) -> Result<()> 
         }
 
         // Check for reload trigger
-        if rx.try_recv().is_ok() {
-            println!("[devserver] triggering reload for {} clients", clients.len());
+        if let Ok(SyncMessage::Reload(files)) = rx.try_recv() {
+            println!("[devserver] syncing {} files to {} clients", files.len(), clients.len());
             clients.retain_mut(|client| {
-                if client.write_all(RELOAD_CMD.as_bytes()).is_ok() {
-                    client.flush().is_ok()
+                if send_sync(client, &files).is_ok() {
+                    true
                 } else {
                     println!("[devserver] client disconnected");
                     false
@@ -100,19 +109,60 @@ fn run_server(listener: TcpListener, rx: Receiver<()>, port: u16) -> Result<()> 
     }
 }
 
-/// Write dev config JSON next to entry
+fn send_sync(client: &mut TcpStream, files: &HashMap<String, Vec<u8>>) -> Result<()> {
+    // Send SYNC header
+    client.write_all(SYNC_CMD.as_bytes())?;
+    
+    // Send file count as u32
+    let count = files.len() as u32;
+    client.write_all(&count.to_le_bytes())?;
+    
+    // Send each file
+    for (path, content) in files {
+        let path_bytes = path.as_bytes();
+        client.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
+        client.write_all(path_bytes)?;
+        client.write_all(&(content.len() as u32).to_le_bytes())?;
+        client.write_all(content)?;
+    }
+    
+    client.flush()?;
+    Ok(())
+}
+
+/// Write dev config to rover.lua
 pub fn write_config(dir: &Path, cfg: &DevConfig) -> Result<()> {
     let path = dir.join(CONFIG_FILE);
-    let data = json!({ "host": cfg.host, "port": cfg.port });
-    std::fs::write(&path, serde_json::to_vec_pretty(&data)?)
+    let lua_content = format!(
+        r#"return {{
+  dev = {{
+    host = "{}",
+    port = {}
+  }}
+}}
+"#,
+        cfg.host, cfg.port
+    );
+    std::fs::write(&path, lua_content)
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// Read dev config if present
+/// Read dev config from rover.lua if present
 pub fn read_config(dir: &Path) -> Option<DevConfig> {
     let path = dir.join(CONFIG_FILE);
-    let data = std::fs::read(&path).ok()?;
-    serde_json::from_slice(&data).ok()
+    if !path.exists() {
+        return None;
+    }
+    
+    let lua = Lua::new();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let config: mlua::Table = lua.load(&content).eval().ok()?;
+    
+    let dev: mlua::Table = config.get("dev").ok()?;
+    let host: String = dev.get("host").ok()?;
+    let port: u16 = dev.get("port").ok()?;
+    
+    Some(DevConfig { host, port })
 }
 
 /// Client for connecting to devserver and receiving reload commands
@@ -121,6 +171,7 @@ pub struct DevClient {
     last_attempt: std::time::Instant,
     host: String,
     port: u16,
+    pending_sync: Option<HashMap<String, Vec<u8>>>,
 }
 
 impl DevClient {
@@ -131,6 +182,7 @@ impl DevClient {
             last_attempt: std::time::Instant::now(),
             host,
             port,
+            pending_sync: None,
         })
     }
 
@@ -163,20 +215,76 @@ impl DevClient {
             return Ok(false);
         };
 
-        let mut buf = [0u8; 128];
-        match stream.read(&mut buf) {
-            Ok(n) if n > 0 => {
-                let msg = String::from_utf8_lossy(&buf[..n]);
-                Ok(msg.contains("RELOAD"))
+        // Check for SYNC header
+        let mut header = [0u8; 5];
+        match stream.read(&mut header) {
+            Ok(5) if &header == SYNC_CMD.as_bytes() => {
+                // Read file sync
+                match Self::read_sync(stream) {
+                    Ok(files) => {
+                        self.pending_sync = Some(files);
+                        Ok(true)
+                    }
+                    Err(e) => {
+                        eprintln!("[devclient] sync read failed: {e}");
+                        self.stream = None;
+                        Ok(false)
+                    }
+                }
             }
             Ok(_) => Ok(false),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(false),
             Err(_) => {
-                // Connection lost, retry later
                 self.stream = None;
                 Ok(false)
             }
         }
+    }
+
+    fn read_sync(stream: &mut TcpStream) -> Result<HashMap<String, Vec<u8>>> {
+        // Set blocking for sync read
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        
+        let mut count_buf = [0u8; 4];
+        stream.read_exact(&mut count_buf)?;
+        let count = u32::from_le_bytes(count_buf);
+        
+        let mut files = HashMap::new();
+        for _ in 0..count {
+            let mut path_len_buf = [0u8; 4];
+            stream.read_exact(&mut path_len_buf)?;
+            let path_len = u32::from_le_bytes(path_len_buf) as usize;
+            
+            let mut path_buf = vec![0u8; path_len];
+            stream.read_exact(&mut path_buf)?;
+            let path = String::from_utf8(path_buf)?;
+            
+            let mut content_len_buf = [0u8; 4];
+            stream.read_exact(&mut content_len_buf)?;
+            let content_len = u32::from_le_bytes(content_len_buf) as usize;
+            
+            let mut content = vec![0u8; content_len];
+            stream.read_exact(&mut content)?;
+            
+            files.insert(path, content);
+        }
+        
+        // Restore nonblocking
+        stream.set_nonblocking(true)?;
+        Ok(files)
+    }
+
+    pub fn take_sync(&mut self) -> Option<HashMap<String, Vec<u8>>> {
+        self.pending_sync.take()
+    }
+
+    pub fn ack_reload(&mut self) -> Result<()> {
+        if let Some(stream) = &mut self.stream {
+            stream.write_all(ACK_CMD.as_bytes()).ok();
+            stream.flush().ok();
+        }
+        Ok(())
     }
 }

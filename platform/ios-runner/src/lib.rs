@@ -9,7 +9,7 @@ use serde_json::Value as JsonValue;
 const BUILD_ROOT: &str = ".rover/build/ios-sim";
 const BUNDLE_ID: &str = "dev.rover.app";
 const IOS_SIM_TARGET: &str = "aarch64-apple-ios-sim";
-const DEV_CONFIG_NAME: &str = ".rover_devserver.json";
+const DEV_CONFIG_NAME: &str = "rover.lua";
 
 pub struct IosRunner {
     build_dir: PathBuf,
