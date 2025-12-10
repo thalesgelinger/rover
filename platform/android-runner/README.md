@@ -7,6 +7,7 @@ Android platform support for Rover engine.
 - **Android SDK** (API 28+)
 - **Android NDK** r26 or later
 - **Rust target**: `aarch64-linux-android`
+- **Gradle CLI** (in PATH) or Android Studio (wrapper detected)
 - **Emulator or physical device** (ARM64)
 
 ## Environment Setup
@@ -34,11 +35,13 @@ rover examples/main.lua -p android
 rover build examples/main.lua -p android
 ```
 
+- Activity drives Choreographer vsync; rendering stops on pause/destroy and resizes on `surfaceChanged`.
+
 ## Architecture
 
-- **Vulkan-only rendering** (API 28+, best performance)
-- **Zero-copy asset access** via AssetManager
-- **Minimal JNI bridge** - vsync + touch events only
+- **Vulkan-only rendering** (API 28+, SurfaceView + Choreographer)
+- **Asset flow**: Lua + assets copied into app files (AssetManager passthrough still TODO)
+- **JNI bridge**: surface create/change/destroy, density scaling, vsync + tap input
 - **Shared core** with iOS (rover-lua, rover-render, rover-runtime)
 
 ## Build Output
