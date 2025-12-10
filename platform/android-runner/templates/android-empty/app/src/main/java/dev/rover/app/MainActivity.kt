@@ -3,12 +3,17 @@ package dev.rover.app
 import android.os.Bundle
 import android.util.Log
 import android.view.Choreographer
+import android.view.Gravity
 import android.view.MotionEvent
+import android.widget.FrameLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
     private var nativeHandle: Long = 0L
     private lateinit var surfaceView: RoverSurfaceView
+    private lateinit var root: FrameLayout
+    private var banner: TextView? = null
     private var entryPath: String = ""
     private val choreographer: Choreographer by lazy { Choreographer.getInstance() }
     private var isRendering: Boolean = false
@@ -41,7 +46,9 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
             }
             true
         }
-        setContentView(surfaceView)
+        root = FrameLayout(this)
+        root.addView(surfaceView)
+        setContentView(root)
     }
 
     override fun onResume() {
@@ -61,6 +68,8 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
         nativeHandle = RoverNative.initVulkan(entryPath, surface, resources.displayMetrics.density)
         Log.i("Rover", "initVulkan handle=$nativeHandle")
         if (nativeHandle != 0L) {
+            val enabled = RoverNative.enableHotReload(nativeHandle)
+            if (enabled) showBanner()
             startRendering()
         } else {
             Log.e("Rover", "initVulkan failed")
@@ -106,5 +115,21 @@ class MainActivity : AppCompatActivity(), RoverSurfaceView.Listener {
             }
         }
         return outDir.absolutePath
+    }
+
+    private fun showBanner() {
+        if (banner != null) return
+        val tv = TextView(this)
+        tv.text = "HOT RELOAD"
+        tv.setBackgroundColor(0xCCFF0000.toInt())
+        tv.setTextColor(0xFFFFFFFF.toInt())
+        tv.textSize = 12f
+        tv.setPadding(16, 8, 16, 8)
+        val params = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        params.gravity = Gravity.TOP or Gravity.START
+        params.leftMargin = 16
+        params.topMargin = 16
+        banner = tv
+        root.addView(tv, params)
     }
 }

@@ -9,6 +9,7 @@ const PACKAGE_NAME: &str = "dev.rover.app";
 const ANDROID_TARGET: &str = "aarch64-linux-android";
 const MIN_API: u32 = 28;
 const GRADLE_VERSION: &str = "8.2.1";
+const DEV_CONFIG_NAME: &str = ".rover_devserver.json";
 
 pub struct AndroidRunner {
     build_dir: PathBuf,
@@ -69,6 +70,15 @@ impl AndroidRunner {
                 }
                 fs::create_dir_all(&dest).context("create assets dest")?;
                 copy_dir(&assets, &dest)?;
+            }
+        }
+
+        // Copy dev config if present
+        let cfg = entry.parent().map(|p| p.join(DEV_CONFIG_NAME));
+        if let Some(cfg_path) = cfg {
+            if cfg_path.exists() {
+                fs::copy(&cfg_path, project_assets.join(DEV_CONFIG_NAME))
+                    .with_context(|| format!("copy {}", cfg_path.display()))?;
             }
         }
 
