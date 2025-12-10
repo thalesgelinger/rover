@@ -203,7 +203,7 @@ impl AndroidRunner {
         }
         
         self.stage_payload(entry)?;
-        let project = self.generate_project()?;
+        let _project = self.generate_project()?;
         println!("[rover][android] building rust staticlib...");
         let lib = self.build_rust_staticlib()?;
         println!("[rover][android] building apk...");

@@ -5,6 +5,7 @@ members = [
     "crates/rover-lua",
     "crates/rover-render",
     "platform/ios-runner",
+    "platform/android-runner",
 ]
 resolver = "2"
 
