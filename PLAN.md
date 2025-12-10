@@ -105,18 +105,49 @@ Flutter-like engine with Lua UI: Rust + Skia GPU, minimal platform shells, full 
 - **AssetManager target**: Goal is zero-copy; current build copies assets into app files
 - **NDK r26**: Latest LTS, excellent Rust support
 
-## Future Component Additions
+## Component Catalog Roadmap (Lua + render + runtime)
+- Events: `on_click`/`on_change` dispatch to `app.*` actions; handlers do not return values.
+- Focus: runtime tracks focused input (Option A), keyboard is native (iOS/Android), Rust routes keystrokes to focused node.
+- Layers: add overlay layer (z-index) for dialog/sheet/popover/tooltip; overlay hit-test blocks base when modal.
+- Styling: ship fixed Material/shadcn defaults first; defer custom styling API; use 8px spacing grid, rounded corners.
+- Icons: bundle Lucide subset (20–30 common icons) rendered via Skia paths; `icon = "user"` etc.
+- Lists: auto-virtualize at 50+ items; clip to viewport; perf-first.
+- Animation: defer; later expose Lua animation API (fade/slide/scale presets or animated values).
 
-### Unified (No Platform Code Needed)
-- `rover.input`: Text field component in rover-lua + rover-render
-- `rover.scrollview`: Layout engine extension, touch gesture handling in Rust
-- `rover.image`: Asset loading in rover-render, Skia image decoding
-- `rover.grid`: Layout primitive, flex-like sizing
+### Phase A: Foundation (prereqs for all components)
+1) Theme module: colors (primary, success, warning, error, border), radii, spacing, typography.
+2) Layering: `RenderLayer` enum, overlay sorting, backdrop drawing.
+3) Input events: extend `ViewNode` with `value`/`change_action`; runtime/FFI path for text input; hit-test updates to return focused node.
+4) Icon pack: embed Lucide subset; parser to paths; render helper.
+5) Component registration: add Lua constructors for all new kinds; keep identity_primitive where possible; validate props.
 
-### Platform-Specific (Optional FFI)
-- `rover.camera`: JNI/Swift bridge, capability detection
-- `rover.gps`: Location services, permission handling
-- `rover.haptics`: Vibration/haptic feedback
+### Phase B: Core Inputs (6)
+- `input`, `textarea`, `checkbox`, `switch`, `slider`, `radio_group` (with `options`, `selected`).
+- Render: focus ring, disabled state, pressed/hover visuals (where applicable), thumb/track for slider.
+- Events: `on_change` emits new value/bool/number.
+- Tests/demo: `examples/inputs.lua` showing all inputs.
+
+### Phase C: Feedback & Display (5)
+- `badge` (variants), `spinner`, `progress` (bar/circle), `avatar` (image or initials fallback), `separator` (h/v).
+- Demo: `examples/feedback.lua`.
+
+### Phase D: Layout & Containers (7)
+- `card`, `card_header`, `card_footer`, `scroll_area`, `stack` (dir + spacing), `list`, `list_item` (title, subtitle, icon, on_click).
+- Lists auto-virtualize; separators between items; 56px row height default.
+- Demo: `examples/layout.lua` and `examples/list.lua`.
+
+### Phase E: Overlays (4)
+- `dialog`, `sheet` (side/bottom), `popover`, `tooltip` using overlay layer/backdrop.
+- Modal hits block base; popover/tooltip anchored positioning.
+- Demo: `examples/overlays.lua`.
+
+### Phase F: Polish & QA
+- Visual QA vs shadcn references; color/spacing audit.
+- Performance: render 100+ nodes @60fps; list virtualization correctness; overlay hit-tests.
+- Docs: `COMPONENTS.md` with API tables and Lua snippets.
+
+## Future Component Additions (post-MVP)
+- `tabs`, `select`, `combobox`, `accordion`, `toast`, `image`, `grid`, animation API.
 
 ## Notes
 - LuaJIT interpreter-only on iOS (no JIT compilation allowed)

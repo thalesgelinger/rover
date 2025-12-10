@@ -18,6 +18,10 @@ use std::ffi::CStr;
 #[cfg(target_os = "android")]
 use std::os::raw::c_char;
 
+mod theme;
+
+pub use theme::{Palette, Radii, Spacing, Theme, Typography};
+
 #[cfg(target_os = "android")]
 type VulkanGetInstanceProcAddr = unsafe extern "system" fn(*const c_void, *const c_char) -> *const c_void;
 #[cfg(target_os = "android")]
@@ -33,10 +37,77 @@ pub enum Dimension {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum ColorSpec {
+    Named(String),
+    Rgba(u8, u8, u8, u8),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Style {
+    #[serde(default)]
+    pub background: Option<ColorSpec>,
+    #[serde(default)]
+    pub color: Option<ColorSpec>,
+    #[serde(default)]
+    pub padding: Option<f32>,
+    #[serde(default)]
+    pub radius: Option<f32>,
+    #[serde(default)]
+    pub gap: Option<f32>,
+}
+
+impl Style {
+    fn merged_with(&self, overrides: &Style) -> Style {
+        Style {
+            background: overrides.background.clone().or_else(|| self.background.clone()),
+            color: overrides.color.clone().or_else(|| self.color.clone()),
+            padding: overrides.padding.or(self.padding),
+            radius: overrides.radius.or(self.radius),
+            gap: overrides.gap.or(self.gap),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedStyle {
+    pub background: Color,
+    pub color: Color,
+    pub radius: f32,
+    pub padding: f32,
+    pub gap: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StyleSnapshot {
+    pub background: (u8, u8, u8, u8),
+    pub color: (u8, u8, u8, u8),
+    pub radius: f32,
+    pub padding: f32,
+    pub gap: f32,
+}
+
+impl From<&ResolvedStyle> for StyleSnapshot {
+    fn from(style: &ResolvedStyle) -> Self {
+        let bg = style.background;
+        let fg = style.color;
+        Self {
+            background: (bg.a(), bg.r(), bg.g(), bg.b()),
+            color: (fg.a(), fg.r(), fg.g(), fg.b()),
+            radius: style.radius,
+            padding: style.padding,
+            gap: style.gap,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewNode {
     pub kind: String,
     #[serde(default)]
     pub children: Vec<ViewNode>,
+    #[serde(default)]
+    pub style: Style,
     pub text: Option<String>,
     pub width: Option<Dimension>,
     pub height: Option<Dimension>,
@@ -58,6 +129,7 @@ pub struct LayerNode {
     pub bounds: Rect,
     pub text: Option<String>,
     pub action: Option<String>,
+    pub style: ResolvedStyle,
     pub children: Vec<LayerNode>,
 }
 
@@ -83,6 +155,7 @@ pub struct LayerNodeSerialized {
     pub bounds: (f32, f32, f32, f32),
     pub text: Option<String>,
     pub action: Option<String>,
+    pub style: StyleSnapshot,
     pub children: Vec<LayerNodeSerialized>,
 }
 
@@ -93,6 +166,7 @@ impl From<&LayerNode> for LayerNodeSerialized {
             bounds: (node.bounds.left(), node.bounds.top(), node.bounds.width(), node.bounds.height()),
             text: node.text.clone(),
             action: node.action.clone(),
+            style: (&node.style).into(),
             children: node.children.iter().map(|c| c.into()).collect(),
         }
     }
@@ -383,13 +457,18 @@ impl RenderSurface {
 pub struct SkiaRenderer {
     font_collection: textlayout::FontCollection,
     scale_factor: f32,
+    theme: Theme,
 }
 
 impl SkiaRenderer {
     pub fn new() -> Self {
         let mut font_collection = textlayout::FontCollection::new();
         font_collection.set_default_font_manager(FontMgr::default(), None);
-        Self { font_collection, scale_factor: 1.0 }
+        Self {
+            font_collection,
+            scale_factor: 1.0,
+            theme: Theme::default(),
+        }
     }
 
     pub fn load_custom_fonts(&mut self, fonts_dir: &std::path::Path) -> Result<()> {
@@ -472,6 +551,7 @@ impl SkiaRenderer {
     }
 
     fn layout_node(&self, node: &ViewNode, bounds: Rect) -> Result<LayerNode> {
+        let style = self.resolve_style(&node.kind, &node.style);
         let mut children = Vec::new();
         match node.kind.as_str() {
             "col" => {
@@ -499,8 +579,50 @@ impl SkiaRenderer {
             bounds,
             text: node.text.clone(),
             action: node.action.clone(),
+            style,
             children,
         })
+    }
+
+    fn resolve_style(&self, kind: &str, overrides: &Style) -> ResolvedStyle {
+        let base = match kind {
+            "button" => Style {
+                background: Some(ColorSpec::Named("primary".into())),
+                color: Some(ColorSpec::Named("primary_foreground".into())),
+                padding: Some(self.theme.spacing.md),
+                radius: Some(self.theme.radii.md),
+                gap: Some(self.theme.spacing.sm),
+            },
+            "text" => Style {
+                background: None,
+                color: Some(ColorSpec::Named("foreground".into())),
+                padding: None,
+                radius: None,
+                gap: None,
+            },
+            _ => Style::default(),
+        };
+        
+        let merged = base.merged_with(overrides);
+        
+        let background = merged.background
+            .map(|c| self.color_from_spec(&c))
+            .unwrap_or(Color::TRANSPARENT);
+        let color = merged.color
+            .map(|c| self.color_from_spec(&c))
+            .unwrap_or(self.theme.palette.foreground);
+        let radius = merged.radius.unwrap_or(0.0);
+        let padding = merged.padding.unwrap_or(self.theme.spacing.sm);
+        let gap = merged.gap.unwrap_or(self.theme.spacing.sm);
+        
+        ResolvedStyle { background, color, radius, padding, gap }
+    }
+
+    fn color_from_spec(&self, spec: &ColorSpec) -> Color {
+        match spec {
+            ColorSpec::Named(name) => self.theme.resolve_color(name),
+            ColorSpec::Rgba(r, g, b, a) => Color::from_argb(*a, *r, *g, *b),
+        }
     }
 
     fn draw_layer(&self, layer: &LayerNode, canvas: &mut Canvas, hits: &mut Vec<ActionHit>) -> Result<()> {
@@ -597,6 +719,7 @@ impl ViewNode {
                 Ok(ViewNode {
                     kind,
                     children,
+                    style: Style::default(),
                     text,
                     width,
                     height,
@@ -606,7 +729,6 @@ impl ViewNode {
             _ => Err(anyhow!("expected render to return table")),
         }
     }
-
 }
 
 fn compute_flex_sizes(children: &[ViewNode], available: f32, is_horizontal: bool) -> Vec<f32> {
