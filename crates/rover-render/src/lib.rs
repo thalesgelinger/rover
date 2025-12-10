@@ -569,23 +569,37 @@ impl SkiaRenderer {
     fn layout_node(&self, node: &ViewNode, bounds: Rect) -> Result<LayerNode> {
         let style = self.resolve_style(&node.kind, &node.style);
         let mut children = Vec::new();
+        let gap = style.gap;
+        
         match node.kind.as_str() {
-            "col" => {
+            "col" | "stack" => {
                 let sizes = compute_flex_sizes(&node.children, bounds.height(), false);
-                let mut y = bounds.top();
+                let mut y = bounds.top() + style.padding;
                 for (child, size) in node.children.iter().zip(sizes.iter()) {
-                    let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), *size);
+                    let rect = Rect::from_xywh(bounds.left() + style.padding, y, bounds.width() - 2.0 * style.padding, *size);
                     children.push(self.layout_node(child, rect)?);
-                    y += size + 8.0;
+                    y += size + gap;
                 }
             }
             "row" => {
                 let sizes = compute_flex_sizes(&node.children, bounds.width(), true);
-                let mut x = bounds.left();
+                let mut x = bounds.left() + style.padding;
                 for (child, size) in node.children.iter().zip(sizes.iter()) {
-                    let rect = Rect::from_xywh(x, bounds.top(), *size, bounds.height());
+                    let rect = Rect::from_xywh(x, bounds.top() + style.padding, *size, bounds.height() - 2.0 * style.padding);
                     children.push(self.layout_node(child, rect)?);
-                    x += size + 8.0;
+                    x += size + gap;
+                }
+            }
+            "scroll_area" | "list" => {
+                let item_height = 56.0;
+                let mut y = bounds.top();
+                for child in &node.children {
+                    let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), item_height);
+                    children.push(self.layout_node(child, rect)?);
+                    y += item_height;
+                    if y > bounds.bottom() {
+                        break;
+                    }
                 }
             }
             _ => {}
@@ -619,6 +633,27 @@ impl SkiaRenderer {
                 padding: None,
                 radius: None,
                 gap: None,
+            },
+            "card" | "card_header" | "card_footer" => Style {
+                background: Some(ColorSpec::Named("background".into())),
+                color: Some(ColorSpec::Named("foreground".into())),
+                padding: Some(self.theme.spacing.md),
+                radius: Some(self.theme.radii.lg),
+                gap: Some(self.theme.spacing.sm),
+            },
+            "stack" | "scroll_area" | "list" => Style {
+                background: None,
+                color: Some(ColorSpec::Named("foreground".into())),
+                padding: Some(self.theme.spacing.sm),
+                radius: None,
+                gap: Some(self.theme.spacing.sm),
+            },
+            "list_item" => Style {
+                background: None,
+                color: Some(ColorSpec::Named("foreground".into())),
+                padding: Some(self.theme.spacing.sm),
+                radius: None,
+                gap: Some(self.theme.spacing.xs),
             },
             _ => Style::default(),
         };
