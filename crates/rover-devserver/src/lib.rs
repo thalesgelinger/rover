@@ -215,20 +215,8 @@ impl DevClient {
             return Ok(false);
         };
 
-        // Temporarily switch to blocking to avoid partial header reads
-        stream.set_nonblocking(false).ok();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
-
         let mut header = [0u8; 5];
         let read_res = stream.read_exact(&mut header);
-
-        // Restore nonblocking for normal polling
-        stream.set_nonblocking(true).ok();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
-            .ok();
 
         match read_res {
             Ok(()) if &header == SYNC_CMD.as_bytes() => {
@@ -247,6 +235,10 @@ impl DevClient {
             Ok(()) => Ok(false),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                self.stream = None;
+                Ok(false)
+            }
             Err(_) => {
                 self.stream = None;
                 Ok(false)
