@@ -1,76 +1,29 @@
 # PLAN.md
 
-## Vision
+## Goal
+Flutter-like engine with Lua UI: Rust + Skia GPU, minimal platform shells (iOS first), full frame scheduler, retained scene tree, Rust hit-testing, assets/fonts in Rust, Lua as UI DSL.
 
-Lua-first mobile framework powered by Rust + Skia; iOS first, Android next.
+## Engine targets
+- Skia on Metal (iOS): CAMetalLayer, MtlBackendContext, GPU surfaces; avoid CPU copies.
+- Vulkan/GL (Android later) with same RenderSurface API.
+- Frame scheduler: vsync-driven (CADisplayLink), state/dirty tracking, layout + paint per frame.
+- Retained layer tree: build from Lua virtual tree; cache layout/text; incremental paint.
+- Input: pointer/touch forwarded to Rust; hit-testing in Rust (no Swift overlay buttons); action dispatch updates state + triggers re-render.
+- Assets/fonts: Rust loaders, device scale support, font fallback cache.
+- Output: Skia draws into GPU surface; present via swapchain; optional screenshot/debug RGBA fallback.
 
-## DX target
-```
-rover main.lua                # default platform (sim on macOS => iOS sim)
-rover main.lua -p ios         # iOS sim (default)
-rover main.lua -p ios --device <udid>  # later
-rover build main.lua -p ios   # build only (future)
-```
+## Near-term tasks (iOS)
+1) RenderSurface abstraction in rover-render: CPU fallback + Metal surface impl.
+2) Runtime frame loop: vsync tick, dirty flag, layout/paint into RenderSurface.
+3) Layer tree + hit-test: build retained nodes from Lua values; compute bounds; hit map for pointer events.
+4) Input bridge: Swift forwards touches to Rust (x,y,phase); Rust returns actions/state.
+5) Metal shell: CAMetalLayer host view; create Skia surface each frame; present.
+6) Fonts/assets: load in Rust; expose scale factor from Swift; cache fonts.
+7) CLI/run: keep current staging/build; ensure sim/device selection stable.
 
-## Runtime architecture
-- Rust core hosts event/render loop
-- Skia (rust-skia) surfaces per platform
-- Lua via mlua + LuaJIT (interpreter only on iOS; JIT later on Android/desktop)
-- State reducer pattern: app.init (optional), app.render(required), custom actions
-- No globals; props/state passed; layout primitives map to Skia draw + hit-test
+## Android later
+- EGL/Vulkan surface binding, same RenderSurface API.
 
-## Workspace layout (proposed)
-- `crates/rover-cli`: CLI binary, args, progress/log piping
-- `crates/rover-runtime`: state/event loop, platform-agnostic core
-- `crates/rover-lua`: mlua bindings exposing rover API
-- `crates/rover-render`: Skia wrapper + surfaces abstraction
-- `platform/ios-runner`: iOS glue/staticlib, Xcode templates, sim harness
-- `examples/`: Lua samples + assets
-
-## Lua API (MVP)
-- `rover.app()` returns table
-- Required: `render(state, act)`; optional: `init()` returns initial state
-- Actions: functions on app table become reducers; wired as `act.<name>()`
-- Primitives: `rover.col`, `rover.row`, `rover.text`, `rover.button`
-- Layout props: width/height numbers or `"full"`; basic style only
-- Events: on_click on button; expands later (touch, key)
-
-## iOS flow (sim first)
-- Prereqs: Rust toolchain + Xcode/CLT installed by user
-- Embed XcodeProjectCLI Swift package (vendored) inside runner; no user install
-- Generate/patch Xcode project; template lives in `platform/ios-runner`
-- Build Rust staticlib, link into Xcode target; embed Lua (source in dev, bytecode in release) + assets/
-- Copy `main.lua` + `assets/` into app bundle
-- Launch via `xcrun simctl install/launch`; target sim default
-- App name/bundle fixed for now; allow custom later
-- Later: device signing/profile + JIT toggle (off on iOS)
-
-## Android (later)
-- Post-iOS MVP: cargo-ndk build, Skia backend, adb install/run; JIT can be on
-
-## CLI shape
-- `rover run <entry> [-p ios] [--sim|--device <udid>] [--verbose]`
-- Handles: validate deps, prepare build dir, generate project, build, install, launch
-- Logs to stdout/stderr; forward Lua errors; basic progress steps
-
-## Packaging strategy
-- Dev: load Lua from filesystem for easy edits; include assets/ via copy
-- Release: bundle Lua bytecode + assets inside app; Rust compiled static; fat binaries for sim/arm64
-
-## DX backlog
-- Better logs and error surfacing
-- Hot reload watching Lua files
-- Inspector/overlay for layout+state
-
-## Phases
-- Phase 0: CLI scaffold + iOS sim run happy-path
-- Phase 1: Stable runtime bindings (layout, events) + assets bundle
-- Phase 2: iOS packaging polish, basic build command
-- Phase 3: Android bring-up
-- Phase 4: DX extras (reload, overlay)
-
-## Open items
-- Confirm LuaJIT interpreter-only on iOS accepted (yes)
-- Asset folder convention: `assets/` beside entry (yes)
-- Android work starts after iOS MVP
-- Build command scope minimal initially (generate + archive); refine later
+## Notes
+- LuaJIT interpreter-only on iOS; assets in `assets/` beside entry.
+- Keep Swift/Kotlin minimal: create surface, forward events, vsync hook.

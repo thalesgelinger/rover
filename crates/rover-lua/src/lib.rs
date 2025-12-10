@@ -145,7 +145,10 @@ fn install_rover_api(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-fn identity_primitive<'lua>(lua: &'lua Lua, kind: &'static str) -> mlua::Result<mlua::Function<'lua>> {
+fn identity_primitive<'lua>(
+    lua: &'lua Lua,
+    kind: &'static str,
+) -> mlua::Result<mlua::Function<'lua>> {
     lua.create_function(move |_, value: Value| match value {
         Value::Table(t) => {
             t.set("kind", kind)?;

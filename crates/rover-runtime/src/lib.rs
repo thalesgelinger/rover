@@ -7,13 +7,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use mlua::RegistryKey;
 use rover_lua::LuaEngine;
-use rover_render::{SkiaRenderer, ViewNode};
+use rover_render::{RenderSurface, SkiaRenderer, ViewNode};
+use std::ffi::c_void;
 
 pub struct Runtime {
     lua: LuaEngine,
     renderer: SkiaRenderer,
     state: Option<RegistryKey>,
     entry: Option<PathBuf>,
+    hits: Vec<rover_render::ActionHit>,
+    dirty: bool,
 }
 
 impl Runtime {
@@ -25,12 +28,16 @@ impl Runtime {
             renderer,
             state: None,
             entry: None,
+            hits: Vec::new(),
+            dirty: true,
         })
     }
 
     pub fn load_entry(&mut self, path: &Path) -> Result<()> {
         self.entry = Some(path.to_path_buf());
         self.state = None;
+        self.hits.clear();
+        self.dirty = true;
         self.lua.load_app(path)
     }
 
@@ -59,9 +66,30 @@ impl Runtime {
         ViewNode::from_value(&view).with_context(|| format!("render value {debug}"))
     }
 
-    pub fn render_png(&self, width: i32, height: i32) -> Result<rover_render::RenderResult> {
+    pub fn render_png(&mut self, width: i32, height: i32) -> Result<rover_render::RenderResult> {
+        self.ensure_state()?;
         let view = self.render_view()?;
-        self.renderer.render(&view, width, height)
+        let result = self.renderer.render_rgba(&view, width, height)?;
+        self.hits = result.hits.clone();
+        self.dirty = false;
+        Ok(result)
+    }
+
+    pub fn render_into_surface(&mut self, surface: &mut RenderSurface) -> Result<()> {
+        self.ensure_state()?;
+        let view = self.render_view()?;
+        let result = self.renderer.render_into_surface(&view, surface)?;
+        self.hits = result.hits;
+        self.dirty = false;
+        Ok(())
+    }
+
+    pub fn render_if_dirty(&mut self, surface: &mut RenderSurface) -> Result<bool> {
+        if !self.dirty {
+            return Ok(false);
+        }
+        self.render_into_surface(surface)?;
+        Ok(true)
     }
 
     pub fn render_or_init(&mut self) -> Result<ViewNode> {
@@ -78,7 +106,30 @@ impl Runtime {
         let state = self.lua.load_value(state_key)?;
         let next = self.lua.call_action(action, state)?;
         self.lua.replace_value(state_key, next)?;
+        self.dirty = true;
         self.render_view()
+    }
+
+    pub fn pointer_tap(&mut self, x: f32, y: f32) -> Result<bool> {
+        if let Some(hit) = self
+            .hits
+            .iter()
+            .find(|h| x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h)
+        {
+            let action = hit.action.clone();
+            self.dispatch_action(&action)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
     }
 
     pub fn entry(&self) -> Option<&PathBuf> {
@@ -152,18 +203,13 @@ pub struct RoverImage {
     pub hits_json: *mut c_char,
 }
 
-
 #[no_mangle]
 pub extern "C" fn rover_render_json(handle: *mut RuntimeHandle) -> *mut c_char {
     if handle.is_null() {
         return std::ptr::null_mut();
     }
     let runtime = unsafe { &mut *handle };
-    match runtime
-        .runtime
-        .render_or_init()
-        .and_then(encode_view)
-    {
+    match runtime.runtime.render_or_init().and_then(encode_view) {
         Ok(cstr) => cstr.into_raw(),
         Err(_) => std::ptr::null_mut(),
     }
@@ -236,6 +282,38 @@ pub extern "C" fn rover_render_rgba(
             hits_json: std::ptr::null_mut(),
         },
     }
+}
+
+#[no_mangle]
+pub extern "C" fn rover_render_metal(
+    handle: *mut RuntimeHandle,
+    device: *mut c_void,
+    queue: *mut c_void,
+    texture: *mut c_void,
+    width: i32,
+    height: i32,
+) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let runtime = unsafe { &mut *handle };
+    if !runtime.runtime.is_dirty() {
+        return false;
+    }
+    let result = runtime.runtime.ensure_state().and_then(|_| {
+        let mut surface = unsafe { RenderSurface::metal(device, queue, texture, width, height)? };
+        runtime.runtime.render_if_dirty(&mut surface)
+    });
+    matches!(result, Ok(true))
+}
+
+#[no_mangle]
+pub extern "C" fn rover_pointer_tap(handle: *mut RuntimeHandle, x: f32, y: f32) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let runtime = unsafe { &mut *handle };
+    runtime.runtime.pointer_tap(x, y).unwrap_or(false)
 }
 
 #[no_mangle]

@@ -29,7 +29,9 @@ impl IosRunner {
     }
 
     pub fn stage_payload(&self, entry: &Path) -> Result<()> {
-        let entry = entry.canonicalize().with_context(|| format!("canonicalize {}", entry.display()))?;
+        let entry = entry
+            .canonicalize()
+            .with_context(|| format!("canonicalize {}", entry.display()))?;
         let assets_dir = entry.parent().map(|p| p.join("assets"));
 
         let app_dir = self.build_dir.join("app");
@@ -64,7 +66,8 @@ impl IosRunner {
             return Err(anyhow!("template missing at {}", template.display()));
         }
         fs::create_dir_all(&out).context("create project dir")?;
-        copy_dir(template, &out).with_context(|| format!("copy template from {}", template.display()))?;
+        copy_dir(template, &out)
+            .with_context(|| format!("copy template from {}", template.display()))?;
 
         let proj_dir = out.join("RoverApp.xcodeproj");
         fs::create_dir_all(&proj_dir).context("create xcodeproj dir")?;
@@ -76,7 +79,7 @@ impl IosRunner {
         Ok(out)
     }
 
-        pub fn build_and_run_sim(&self, entry: &Path) -> Result<()> {
+    pub fn build_and_run_sim(&self, entry: &Path) -> Result<()> {
         if self.build_dir.exists() {
             fs::remove_dir_all(&self.build_dir).ok();
         }
@@ -107,11 +110,17 @@ impl IosRunner {
             .env("AR_aarch64-apple-ios-sim", ar)
             .env(
                 "CFLAGS_aarch64-apple-ios-sim",
-                format!("-isysroot {} -arch arm64 -mios-simulator-version-min=16.0", sdk),
+                format!(
+                    "-isysroot {} -arch arm64 -mios-simulator-version-min=16.0",
+                    sdk
+                ),
             )
             .env(
                 "LDFLAGS_aarch64-apple-ios-sim",
-                format!("-isysroot {} -arch arm64 -mios-simulator-version-min=16.0", sdk),
+                format!(
+                    "-isysroot {} -arch arm64 -mios-simulator-version-min=16.0",
+                    sdk
+                ),
             )
             .status()
             .context("cargo build rover-runtime (ios sim)")?;
@@ -133,7 +142,6 @@ impl IosRunner {
             .with_context(|| format!("copy {} to {}", lib.display(), dest.display()))?;
         Ok(())
     }
-
 }
 
 fn sim_sdk_path() -> Result<String> {
@@ -233,7 +241,10 @@ fn boot_device(dev: &SimDevice) -> Result<()> {
         .context("simctl boot")?;
     if !status.success() {
         // ignore if already booted
-        println!("[rover][ios] sim boot exited with status {:?}", status.code());
+        println!(
+            "[rover][ios] sim boot exited with status {:?}",
+            status.code()
+        );
     }
     Ok(())
 }
