@@ -155,6 +155,7 @@ pub struct LayerNode {
     pub progress: f32,
     pub layer: RenderLayer,
     pub modal: bool,
+    pub scroll_offset: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -598,16 +599,36 @@ impl SkiaRenderer {
                     x += size + gap;
                 }
             }
-            "scroll_area" | "list" => {
+            "scroll_area" => {
+                // Scroll area: layout all children vertically, they may overflow
+                let item_height = 56.0;
+                let mut y = bounds.top();
+                for child in &node.children {
+                    // Check if this is a list - lay out its items with virtual scrolling
+                    if child.kind == "list" {
+                        for list_child in &child.children {
+                            let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), item_height);
+                            // Only render visible items (virtual scrolling)
+                            if y + item_height >= bounds.top() && y <= bounds.bottom() {
+                                children.push(self.layout_node(list_child, rect)?);
+                            }
+                            y += item_height;
+                        }
+                    } else {
+                        let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), item_height);
+                        children.push(self.layout_node(child, rect)?);
+                        y += item_height;
+                    }
+                }
+            }
+            "list" => {
+                // Standalone list (not in scroll_area): render all items
                 let item_height = 56.0;
                 let mut y = bounds.top();
                 for child in &node.children {
                     let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), item_height);
                     children.push(self.layout_node(child, rect)?);
                     y += item_height;
-                    if y > bounds.bottom() {
-                        break;
-                    }
                 }
             }
             _ => {}
@@ -632,6 +653,7 @@ impl SkiaRenderer {
             progress,
             layer,
             modal,
+            scroll_offset: 0.0,
         })
     }
 

@@ -40,6 +40,8 @@ fn log_android(tag: &str, msg: &str) {
     }
 }
 
+use std::collections::HashMap;
+
 pub struct Runtime {
     lua: LuaEngine,
     renderer: SkiaRenderer,
@@ -53,6 +55,8 @@ pub struct Runtime {
     dev_host: String,
     dev_port: u16,
     is_reloading: bool,
+    scroll_offsets: HashMap<usize, f32>,
+    last_touch_y: Option<f32>,
 }
 
 impl Runtime {
@@ -77,6 +81,8 @@ impl Runtime {
             },
             dev_port: DEFAULT_PORT,
             is_reloading: false,
+            scroll_offsets: HashMap::new(),
+            last_touch_y: None,
         })
     }
 
