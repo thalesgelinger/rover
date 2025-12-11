@@ -313,6 +313,44 @@ impl Runtime {
         self.render_view()
     }
 
+    pub fn pointer_down(&mut self, x: f32, y: f32) {
+        self.last_touch_y = Some(y);
+    }
+    
+    pub fn pointer_move(&mut self, _x: f32, y: f32) {
+        if let Some(last_y) = self.last_touch_y {
+            let delta = y - last_y;
+            // Only scroll if movement > threshold (avoid accidental scrolls)
+            if delta.abs() > 3.0 {
+                // Find scroll_area in layer tree and update offset
+                if let Some(tree) = self.layer_tree.as_mut() {
+                    Self::update_scroll_offset_recursive(tree, delta);
+                }
+                self.dirty = true;
+                self.last_touch_y = Some(y);
+            }
+        }
+    }
+    
+    pub fn pointer_up(&mut self, _x: f32, y: f32) {
+        // Check if this was a tap (minimal movement) vs scroll
+        if let Some(last_y) = self.last_touch_y {
+            let delta = (y - last_y).abs();
+            if delta < 10.0 {
+                // This was a tap, not a scroll
+                if let Some(hit) = self
+                    .hits
+                    .iter()
+                    .find(|h| _x >= h.x && _x <= h.x + h.w && y >= h.y && y <= h.y + h.h)
+                {
+                    let action = hit.action.clone();
+                    let _ = self.dispatch_action(&action);
+                }
+            }
+        }
+        self.last_touch_y = None;
+    }
+
     pub fn pointer_tap(&mut self, x: f32, y: f32) -> Result<bool> {
         if let Some(hit) = self
             .hits
@@ -324,6 +362,18 @@ impl Runtime {
             Ok(true)
         } else {
             Ok(false)
+        }
+    }
+    
+    fn update_scroll_offset_recursive(node: &mut LayerNode, delta: f32) {
+        if node.kind == "scroll_area" {
+            // Apply scroll delta, clamp to valid range
+            let new_offset = (node.scroll_offset - delta).max(0.0);
+            // TODO: clamp to max content height
+            node.scroll_offset = new_offset;
+        }
+        for child in &mut node.children {
+            Self::update_scroll_offset_recursive(child, delta);
         }
     }
 
@@ -792,6 +842,33 @@ pub extern "system" fn Java_dev_rover_app_RoverNative_isReloading(
     } else {
         0
     }
+}
+
+#[no_mangle]
+pub extern "C" fn rover_pointer_down(handle: *mut RuntimeHandle, x: f32, y: f32) {
+    if handle.is_null() {
+        return;
+    }
+    let runtime = unsafe { &mut *handle };
+    runtime.runtime.pointer_down(x, y);
+}
+
+#[no_mangle]
+pub extern "C" fn rover_pointer_move(handle: *mut RuntimeHandle, x: f32, y: f32) {
+    if handle.is_null() {
+        return;
+    }
+    let runtime = unsafe { &mut *handle };
+    runtime.runtime.pointer_move(x, y);
+}
+
+#[no_mangle]
+pub extern "C" fn rover_pointer_up(handle: *mut RuntimeHandle, x: f32, y: f32) {
+    if handle.is_null() {
+        return;
+    }
+    let runtime = unsafe { &mut *handle };
+    runtime.runtime.pointer_up(x, y);
 }
 
 #[no_mangle]

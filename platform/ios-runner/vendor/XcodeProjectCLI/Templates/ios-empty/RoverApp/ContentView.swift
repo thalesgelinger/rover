@@ -72,10 +72,22 @@ final class RoverMetalView: UIView {
         }
     }
 
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        let point = touch.location(in: self)
+        host.pointerDown(point: point, scale: contentScaleFactor)
+    }
+    
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        let point = touch.location(in: self)
+        host.pointerMove(point: point, scale: contentScaleFactor)
+    }
+    
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
         let point = touch.location(in: self)
-        host.pointerTap(point: point, scale: contentScaleFactor)
+        host.pointerUp(point: point, scale: contentScaleFactor)
     }
 
     private func showBanner() {
@@ -136,10 +148,22 @@ final class RoverMetalHost {
         }
     }
 
-    func pointerTap(point: CGPoint, scale: CGFloat) {
+    func pointerDown(point: CGPoint, scale: CGFloat) {
         guard let handle else { return }
         let scaled = CGPoint(x: point.x * scale, y: point.y * scale)
-        _ = rover_pointer_tap(handle, Float(scaled.x), Float(scaled.y))
+        rover_pointer_down(handle, Float(scaled.x), Float(scaled.y))
+    }
+    
+    func pointerMove(point: CGPoint, scale: CGFloat) {
+        guard let handle else { return }
+        let scaled = CGPoint(x: point.x * scale, y: point.y * scale)
+        rover_pointer_move(handle, Float(scaled.x), Float(scaled.y))
+    }
+    
+    func pointerUp(point: CGPoint, scale: CGFloat) {
+        guard let handle else { return }
+        let scaled = CGPoint(x: point.x * scale, y: point.y * scale)
+        rover_pointer_up(handle, Float(scaled.x), Float(scaled.y))
     }
 
     func isHotReloadEnabled() -> Bool { hotReloadEnabled }
