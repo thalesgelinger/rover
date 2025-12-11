@@ -93,14 +93,22 @@ impl LuaEngine {
         render_fn.call((state, act)).map_err(Into::into)
     }
 
-    pub fn call_action<'lua>(&'lua self, name: &str, state: Value<'lua>) -> Result<Value<'lua>> {
+    pub fn call_action<'lua>(
+        &'lua self,
+        name: &str,
+        state: Value<'lua>,
+        param: Option<Value<'lua>>,
+    ) -> Result<Value<'lua>> {
         let binding = self
             .actions
             .iter()
             .find(|a| a.name == name)
             .ok_or_else(|| anyhow!("unknown action {name}"))?;
         let func: Function = self.lua.registry_value(&binding.func)?;
-        Ok(func.call(state)?)
+        match param {
+            Some(p) => Ok(func.call((state, p))?),
+            None => Ok(func.call(state)?),
+        }
     }
 
     pub fn store_value(&self, value: Value) -> mlua::Result<RegistryKey> {
@@ -120,12 +128,34 @@ impl LuaEngine {
         for binding in &self.actions {
             let name = binding.name.clone();
             let label = name.clone();
-            let f = self
-                .lua
-                .create_function(move |lua, ()| Ok(Value::String(lua.create_string(&label)?)))?;
+            let f = self.lua.create_function(move |lua, param: Value| {
+                let t = lua.create_table()?;
+                t.set("action", label.as_str())?;
+                if !matches!(param, Value::Nil) {
+                    t.set("param", param)?;
+                }
+                Ok(Value::Table(t))
+            })?;
             act.set(name.as_str(), f)?;
         }
         Ok(act)
+    }
+    
+    pub fn json_to_lua_value(&self, json: &serde_json::Value) -> mlua::Result<Value<'_>> {
+        match json {
+            serde_json::Value::String(s) => Ok(Value::String(self.lua.create_string(s)?)),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(Value::Integer(i))
+                } else if let Some(f) = n.as_f64() {
+                    Ok(Value::Number(f))
+                } else {
+                    Ok(Value::Nil)
+                }
+            }
+            serde_json::Value::Bool(b) => Ok(Value::Boolean(*b)),
+            _ => Ok(Value::Nil),
+        }
     }
 }
 
@@ -162,7 +192,7 @@ fn install_rover_api(lua: &Lua) -> mlua::Result<()> {
     rover.set("card_footer", identity_primitive(lua, "card_footer")?)?;
     rover.set("scroll_area", identity_primitive(lua, "scroll_area")?)?;
     rover.set("stack", identity_primitive(lua, "stack")?)?;
-    rover.set("list", identity_primitive(lua, "list")?)?;
+    rover.set("list", create_list_helper(lua)?)?;
     rover.set("list_item", identity_primitive(lua, "list_item")?)?;
 
     // Overlay components
@@ -188,6 +218,60 @@ fn identity_primitive<'lua>(
             from: other.type_name(),
             to: "table",
             message: Some("expected table".into()),
+        }),
+    })
+}
+
+fn create_list_helper<'lua>(lua: &'lua Lua) -> mlua::Result<mlua::Function<'lua>> {
+    lua.create_function(|lua, value: Value| match value {
+        Value::Table(config) => {
+            // Check if this is data-driven list (has data/render_item) or simple list (array of items)
+            let has_data = config.get::<_, Option<Value>>("data")?.is_some();
+            
+            if has_data {
+                // Data-driven list: iterate data, call render_item for each
+                let data: mlua::Table = config.get("data")?;
+                let render_item: Function = config.get("render_item")?;
+                let key_fn: Option<Function> = config.get("key").ok();
+                
+                let items = lua.create_table()?;
+                let mut index = 1;
+                
+                for pair in data.pairs::<i64, Value>() {
+                    let (i, item) = pair?;
+                    let rendered = render_item.call::<_, Value>((i, item.clone()))?;
+                    
+                    // If key function provided, extract key and set on item
+                    if let (Some(ref kf), Value::Table(ref t)) = (&key_fn, &rendered) {
+                        let key: Value = kf.call(item)?;
+                        t.set("key", key)?;
+                    }
+                    
+                    items.set(index, rendered)?;
+                    index += 1;
+                }
+                
+                // Create list table with items
+                let list = lua.create_table()?;
+                list.set("kind", "list")?;
+                
+                // Copy rendered items as children
+                for pair in items.pairs::<i64, Value>() {
+                    let (i, child) = pair?;
+                    list.set(i, child)?;
+                }
+                
+                Ok(Value::Table(list))
+            } else {
+                // Simple list: just set kind and return
+                config.set("kind", "list")?;
+                Ok(Value::Table(config))
+            }
+        }
+        other => Err(mlua::Error::FromLuaConversionError {
+            from: other.type_name(),
+            to: "table",
+            message: Some("rover.list expects table".into()),
         }),
     })
 }

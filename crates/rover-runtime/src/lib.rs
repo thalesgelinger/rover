@@ -276,7 +276,31 @@ impl Runtime {
             .as_mut()
             .ok_or_else(|| anyhow!("state not initialized"))?;
         let state = self.lua.load_value(state_key)?;
-        let next = self.lua.call_action(action, state)?;
+        
+        // Parse action: either plain string or JSON {"action":"name","param":value}
+        let (action_name, param_json) = if action.starts_with('{') {
+            // JSON format: parse action and param
+            let parsed: serde_json::Value = serde_json::from_str(action)
+                .with_context(|| format!("parse action JSON: {action}"))?;
+            let action_name = parsed["action"]
+                .as_str()
+                .ok_or_else(|| anyhow!("action missing in JSON"))?
+                .to_string();
+            let param = parsed.get("param").cloned();
+            (action_name, param)
+        } else {
+            // Plain string action
+            (action.to_string(), None)
+        };
+        
+        // Convert param JSON to Lua if present
+        let param = if let Some(p) = param_json {
+            Some(self.lua.json_to_lua_value(&p)?)
+        } else {
+            None
+        };
+        
+        let next = self.lua.call_action(&action_name, state, param)?;
         self.lua.replace_value(state_key, next)?;
         self.dirty = true;
         self.layer_tree = None;

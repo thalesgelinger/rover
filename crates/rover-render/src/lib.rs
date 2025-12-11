@@ -962,13 +962,30 @@ impl ViewNode {
                     }
                 }
 
-                let text = if kind == "text" || kind == "button" {
+                let text = if kind == "text" || kind == "button" || kind == "list_item" || kind == "badge" || kind == "avatar" {
                     table.get::<_, Option<String>>(1).ok().flatten()
                 } else {
                     None
                 };
 
                 let action = match table.get::<_, Option<Value>>("on_click")? {
+                    Some(Value::Table(t)) => {
+                        // Action with params: {action = "name", param = value}
+                        let action_name: String = t.get("action")?;
+                        if let Some(param) = t.get::<_, Option<Value>>("param")? {
+                            // Serialize as JSON: {"action":"name","param":value}
+                            let param_str = match param {
+                                Value::String(s) => format!("\"{}\"", s.to_string_lossy()),
+                                Value::Integer(i) => i.to_string(),
+                                Value::Number(n) => n.to_string(),
+                                Value::Boolean(b) => b.to_string(),
+                                _ => "null".to_string(),
+                            };
+                            Some(format!("{{\"action\":\"{}\",\"param\":{}}}", action_name, param_str))
+                        } else {
+                            Some(format!("{{\"action\":\"{}\"}}", action_name))
+                        }
+                    }
                     Some(Value::String(s)) => Some(s.to_string_lossy().into_owned()),
                     Some(Value::Integer(i)) => Some(i.to_string()),
                     Some(Value::Number(n)) => Some(n.to_string()),

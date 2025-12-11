@@ -1,28 +1,35 @@
 local app = rover.app()
 
 function app.init()
-    return { selected = nil }
+    local items = {}
+    for i = 1, 20 do
+        table.insert(items, "Item " .. i)
+    end
+    return {
+        selected = nil,
+        items = items
+    }
 end
 
 function app.select_item(state, id)
-    return { selected = id }
+    return { selected = id, items = state.items }
 end
 
 function app.render(state, actions)
-    local items = {}
-    for i = 1, 20 do
-        local item_text = "Item " .. i
-        table.insert(items, rover.list_item {
-            item_text,
-            icon = "user",
-            on_click = actions.select_item,
-        })
-    end
-
     return rover.col {
         rover.text { "List Demo" },
         rover.separator {},
-        rover.list(items),
+        rover.list {
+            data = state.items,
+            render_item = function(index, item)
+                return rover.list_item {
+                    item,
+                    icon = "user",
+                    on_click = actions.select_item(index),
+                }
+            end,
+            key = function(item) return item end,
+        },
     }
 end
 
