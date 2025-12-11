@@ -600,18 +600,16 @@ impl SkiaRenderer {
                 }
             }
             "scroll_area" => {
-                // Scroll area: layout all children vertically, they may overflow
+                // Scroll area: layout all children vertically
+                // They can overflow bounds - will be clipped during render
                 let item_height = 56.0;
                 let mut y = bounds.top();
                 for child in &node.children {
-                    // Check if this is a list - lay out its items with virtual scrolling
+                    // Check if this is a list - lay out ALL its items  
                     if child.kind == "list" {
                         for list_child in &child.children {
                             let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), item_height);
-                            // Only render visible items (virtual scrolling)
-                            if y + item_height >= bounds.top() && y <= bounds.bottom() {
-                                children.push(self.layout_node(list_child, rect)?);
-                            }
+                            children.push(self.layout_node(list_child, rect)?);
                             y += item_height;
                         }
                     } else {
@@ -922,8 +920,20 @@ impl SkiaRenderer {
             }
             _ => {}
         }
-        for child in &layer.children {
-            self.draw_layer(child, canvas, hits)?;
+        
+        // Handle scroll_area with clipping and scroll offset
+        if layer.kind == "scroll_area" {
+            canvas.save();
+            canvas.clip_rect(layer.bounds, None, Some(true));
+            canvas.translate((0.0, -layer.scroll_offset));
+            for child in &layer.children {
+                self.draw_layer(child, canvas, hits)?;
+            }
+            canvas.restore();
+        } else {
+            for child in &layer.children {
+                self.draw_layer(child, canvas, hits)?;
+            }
         }
         Ok(())
     }
