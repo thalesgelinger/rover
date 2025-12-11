@@ -7,6 +7,7 @@ mod android_vulkan;
 #[link(name = "Foundation", kind = "framework")]
 extern "C" {}
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
@@ -40,7 +41,6 @@ fn log_android(tag: &str, msg: &str) {
     }
 }
 
-use std::collections::HashMap;
 
 pub struct Runtime {
     lua: LuaEngine,
@@ -56,6 +56,7 @@ pub struct Runtime {
     dev_port: u16,
     is_reloading: bool,
     scroll_offsets: HashMap<usize, f32>,
+    scroll_velocities: HashMap<usize, f32>,
     last_touch_y: Option<f32>,
 }
 
@@ -82,6 +83,7 @@ impl Runtime {
             dev_port: DEFAULT_PORT,
             is_reloading: false,
             scroll_offsets: HashMap::new(),
+            scroll_velocities: HashMap::new(),
             last_touch_y: None,
         })
     }
@@ -246,11 +248,21 @@ impl Runtime {
     pub fn render_into_surface(&mut self, surface: &mut RenderSurface) -> Result<()> {
         self.ensure_state()?;
         
+        // Apply inertia to existing tree if present
+        if let Some(tree) = self.layer_tree.as_mut() {
+            if Self::apply_inertia(tree, &mut self.scroll_offsets, &mut self.scroll_velocities) {
+                self.dirty = true;
+            }
+        }
+
         if self.layer_tree.is_none() || self.dirty {
             let view = self.render_view()?;
             let (width, height) = surface.size();
             let bounds = skia_safe::Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
-            self.layer_tree = Some(self.renderer.build_layer_tree(&view, bounds)?);
+            let mut tree = self.renderer.build_layer_tree(&view, bounds)?;
+            self.apply_scroll_offsets(&mut tree);
+            self.layer_tree = Some(tree);
+            self.dirty = false;
         }
         
         if let Some(ref layer) = self.layer_tree {
@@ -258,8 +270,76 @@ impl Runtime {
             self.hits = result.hits;
         }
         
-        self.dirty = false;
         Ok(())
+    }
+    
+    fn apply_scroll_offsets(&mut self, layer: &mut LayerNode) {
+        let mut next_id = 0usize;
+        Self::assign_scroll_ids(layer, &mut next_id, &mut self.scroll_offsets, &mut self.scroll_velocities);
+    }
+    
+    fn assign_scroll_ids(
+        node: &mut LayerNode,
+        next_id: &mut usize,
+        offsets: &mut HashMap<usize, f32>,
+        velocities: &mut HashMap<usize, f32>,
+    ) {
+        if node.kind == "scroll_area" {
+            let id = *next_id;
+            *next_id += 1;
+            node.scroll_id = Some(id);
+            let stored = offsets.get(&id).copied().unwrap_or(0.0);
+            let max_offset = (node.content_height - node.bounds.height()).max(0.0);
+            let clamped = stored.clamp(0.0, max_offset);
+            node.scroll_offset = clamped;
+            offsets.insert(id, clamped);
+            velocities.entry(id).or_insert(0.0);
+        }
+        for child in node.children.iter_mut() {
+            Self::assign_scroll_ids(child, next_id, offsets, velocities);
+        }
+    }
+
+    fn apply_inertia(
+        node: &mut LayerNode,
+        offsets: &mut HashMap<usize, f32>,
+        velocities: &mut HashMap<usize, f32>,
+    ) -> bool {
+        let mut changed = false;
+        if node.kind == "scroll_area" {
+            if let Some(id) = node.scroll_id {
+                let mut vel = velocities.get(&id).copied().unwrap_or(0.0);
+                let max_offset = (node.content_height - node.bounds.height()).max(0.0);
+                let clamped_offset = node.scroll_offset.clamp(0.0, max_offset);
+                if (clamped_offset - node.scroll_offset).abs() > 0.01 {
+                    node.scroll_offset = clamped_offset;
+                    offsets.insert(id, clamped_offset);
+                    changed = true;
+                }
+                if vel.abs() > 0.05 {
+                    let new_offset = (node.scroll_offset - vel).clamp(0.0, max_offset);
+                    if (new_offset - node.scroll_offset).abs() > 0.01 {
+                        node.scroll_offset = new_offset;
+                        offsets.insert(id, new_offset);
+                        changed = true;
+                    }
+                    vel *= 0.9;
+                    if vel.abs() < 0.05 {
+                        vel = 0.0;
+                    }
+                    velocities.insert(id, vel);
+                    if vel != 0.0 {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for child in node.children.iter_mut() {
+            if Self::apply_inertia(child, offsets, velocities) {
+                changed = true;
+            }
+        }
+        changed
     }
 
     pub fn render_if_dirty(&mut self, surface: &mut RenderSurface) -> Result<bool> {
@@ -323,9 +403,11 @@ impl Runtime {
             // Only scroll if movement > threshold (avoid accidental scrolls)
             if delta.abs() > 3.0 {
                 // Find scroll_area in layer tree and update offset
-                if let Some(tree) = self.layer_tree.as_mut() {
-                    Self::update_scroll_offset_recursive(tree, delta);
-                }
+                    if let Some(tree) = self.layer_tree.as_mut() {
+                        Self::update_scroll_offset_recursive(tree, delta, &mut self.scroll_offsets, &mut self.scroll_velocities);
+                    }
+
+
                 self.dirty = true;
                 self.last_touch_y = Some(y);
             }
@@ -365,15 +447,23 @@ impl Runtime {
         }
     }
     
-    fn update_scroll_offset_recursive(node: &mut LayerNode, delta: f32) {
+    fn update_scroll_offset_recursive(
+        node: &mut LayerNode,
+        delta: f32,
+        offsets: &mut HashMap<usize, f32>,
+        velocities: &mut HashMap<usize, f32>,
+    ) {
         if node.kind == "scroll_area" {
-            // Apply scroll delta, clamp to valid range
-            let new_offset = (node.scroll_offset - delta).max(0.0);
-            // TODO: clamp to max content height
+            let max_offset = (node.content_height - node.bounds.height()).max(0.0);
+            let new_offset = (node.scroll_offset - delta).clamp(0.0, max_offset);
             node.scroll_offset = new_offset;
+            if let Some(id) = node.scroll_id {
+                offsets.insert(id, new_offset);
+                velocities.insert(id, delta);
+            }
         }
         for child in &mut node.children {
-            Self::update_scroll_offset_recursive(child, delta);
+            Self::update_scroll_offset_recursive(child, delta, offsets, velocities);
         }
     }
 

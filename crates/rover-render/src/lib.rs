@@ -156,6 +156,8 @@ pub struct LayerNode {
     pub layer: RenderLayer,
     pub modal: bool,
     pub scroll_offset: f32,
+    pub scroll_id: Option<usize>,
+    pub content_height: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -538,7 +540,7 @@ impl SkiaRenderer {
         let (width, height) = surface.size();
         let canvas = surface.canvas();
         canvas.clear(Color::WHITE);
-        self.draw_layer(layer, canvas, &mut hits)?;
+        self.draw_layer(layer, canvas, &mut hits, 0.0)?;
         let snapshot = surface.snapshot_rgba();
         surface.flush();
         let hits_json = serde_json::to_string(&hits)?;
@@ -579,6 +581,7 @@ impl SkiaRenderer {
         let style = self.resolve_style(&node.kind, &node.style);
         let mut children = Vec::new();
         let gap = style.gap;
+        let mut content_height = bounds.height();
         
         match node.kind.as_str() {
             "col" | "stack" => {
@@ -589,6 +592,7 @@ impl SkiaRenderer {
                     children.push(self.layout_node(child, rect)?);
                     y += size + gap;
                 }
+                content_height = (y - bounds.top()).max(bounds.height());
             }
             "row" => {
                 let sizes = compute_flex_sizes(&node.children, bounds.width(), true);
@@ -598,6 +602,7 @@ impl SkiaRenderer {
                     children.push(self.layout_node(child, rect)?);
                     x += size + gap;
                 }
+                content_height = bounds.height();
             }
             "scroll_area" => {
                 // Scroll area: layout all children vertically
@@ -605,7 +610,6 @@ impl SkiaRenderer {
                 let item_height = 56.0;
                 let mut y = bounds.top();
                 for child in &node.children {
-                    // Check if this is a list - lay out ALL its items  
                     if child.kind == "list" {
                         for list_child in &child.children {
                             let rect = Rect::from_xywh(bounds.left(), y, bounds.width(), item_height);
@@ -618,9 +622,9 @@ impl SkiaRenderer {
                         y += item_height;
                     }
                 }
+                content_height = (y - bounds.top()).max(bounds.height());
             }
             "list" => {
-                // Standalone list (not in scroll_area): render all items
                 let item_height = 56.0;
                 let mut y = bounds.top();
                 for child in &node.children {
@@ -628,6 +632,7 @@ impl SkiaRenderer {
                     children.push(self.layout_node(child, rect)?);
                     y += item_height;
                 }
+                content_height = (y - bounds.top()).max(bounds.height());
             }
             _ => {}
         }
@@ -652,6 +657,8 @@ impl SkiaRenderer {
             layer,
             modal,
             scroll_offset: 0.0,
+            scroll_id: None,
+            content_height,
         })
     }
 
@@ -717,7 +724,7 @@ impl SkiaRenderer {
         }
     }
 
-    fn draw_layer(&self, layer: &LayerNode, canvas: &mut Canvas, hits: &mut Vec<ActionHit>) -> Result<()> {
+    fn draw_layer(&self, layer: &LayerNode, canvas: &mut Canvas, hits: &mut Vec<ActionHit>, y_offset: f32) -> Result<()> {
         if matches!(layer.layer, RenderLayer::Overlay) {
             let backdrop = Rect::from_xywh(0.0, 0.0, 10000.0, 10000.0);
             let mut paint = Paint::default();
@@ -747,7 +754,7 @@ impl SkiaRenderer {
                     hits.push(ActionHit {
                         action: action.clone(),
                         x: layer.bounds.left(),
-                        y: layer.bounds.top(),
+                        y: layer.bounds.top() + y_offset,
                         w: layer.bounds.width(),
                         h: layer.bounds.height(),
                     });
@@ -771,7 +778,7 @@ impl SkiaRenderer {
                     hits.push(ActionHit {
                         action: action.clone(),
                         x: layer.bounds.left(),
-                        y: layer.bounds.top(),
+                        y: layer.bounds.top() + y_offset,
                         w: layer.bounds.width(),
                         h: layer.bounds.height(),
                     });
@@ -790,7 +797,7 @@ impl SkiaRenderer {
                     hits.push(ActionHit {
                         action: action.clone(),
                         x: layer.bounds.left(),
-                        y: layer.bounds.top(),
+                        y: layer.bounds.top() + y_offset,
                         w: size,
                         h: size,
                     });
@@ -881,7 +888,7 @@ impl SkiaRenderer {
                     hits.push(ActionHit {
                         action: action.clone(),
                         x: layer.bounds.left(),
-                        y: layer.bounds.top(),
+                        y: layer.bounds.top() + y_offset,
                         w: layer.bounds.width(),
                         h: layer.bounds.height(),
                     });
@@ -927,12 +934,12 @@ impl SkiaRenderer {
             canvas.clip_rect(layer.bounds, None, Some(true));
             canvas.translate((0.0, -layer.scroll_offset));
             for child in &layer.children {
-                self.draw_layer(child, canvas, hits)?;
+                self.draw_layer(child, canvas, hits, y_offset - layer.scroll_offset)?;
             }
             canvas.restore();
         } else {
             for child in &layer.children {
-                self.draw_layer(child, canvas, hits)?;
+                self.draw_layer(child, canvas, hits, y_offset)?;
             }
         }
         Ok(())

@@ -2,7 +2,7 @@ local app = rover.app()
 
 function app.init()
     local items = {}
-    for i = 1, 20 do
+    for i = 1, 2000 do
         table.insert(items, "Item " .. i)
     end
     return {
