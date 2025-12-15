@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+mlua = { version="0.11.5", features = ["anyhow", "vendored", "lua54"] }
 
 [lib]
 crate-type = ["cdylib", "lib"]
