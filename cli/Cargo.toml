@@ -1,0 +1,11 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rover_core = {path = "../rover_core"}
+
+[[bin]]
+name = "rover"
+path = "src/main.rs"

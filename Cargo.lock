@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
-name = "rover"
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "rover_core",
+]
+
+[[package]]
+name = "rover_core"
 version = "0.1.0"
