@@ -1,9 +1,18 @@
 use anyhow::{Context, Result};
-use mlua::{Error, FromLua, Lua, Value};
+use mlua::{Error, FromLua, Lua, Table, Value};
 
 pub fn run(path: &str) -> Result<()> {
     let lua = Lua::new();
     let content = std::fs::read_to_string(path)?;
+
+    let rover = lua.create_table()?;
+
+    rover.set(
+        "server",
+        lua.create_function(|_, opts: Table| Ok(format!("Server opts so far, {:?}!", opts)))?,
+    )?;
+
+    let _ = lua.globals().set("rover", rover);
 
     lua.load(&content)
         .set_name(path)
