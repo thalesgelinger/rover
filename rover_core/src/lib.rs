@@ -48,7 +48,7 @@ pub fn run(path: &str) -> Result<()> {
         Value::Table(table) => {
             if let Some(app_type) = table.app_type() {
                 match app_type {
-                    AppType::Server => table.run_server()?,
+                    AppType::Server => table.run_server(&lua)?,
                 }
             }
             Ok(())

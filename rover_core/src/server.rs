@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow};
-use mlua::{Function, Lua, Table, Value};
-use rover_server::{HttpMethod, ServerRoute};
-use std::fmt;
+use mlua::{Lua, Table, Value};
+use rover_server::Routes;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
@@ -18,23 +19,19 @@ impl AppServer for Lua {
 }
 
 pub trait Server {
-    fn run_server(&self) -> Result<()>;
-    fn get_routes(&self) -> Result<Vec<ServerRoute>>;
+    fn run_server(&self, lua: &Lua) -> Result<()>;
+    fn get_routes(&self) -> Result<Routes>;
 }
 
 impl Server for Table {
-    fn run_server(&self) -> Result<()> {
+    fn run_server(&self, lua: &Lua) -> Result<()> {
         let routes = self.get_routes()?;
-        rover_server::run(&routes);
+        rover_server::run(lua.clone(), routes);
         Ok(())
     }
 
-    fn get_routes(&self) -> Result<Vec<ServerRoute>> {
-        fn extract_recursive(
-            table: &Table,
-            current_path: &str,
-            routes: &mut Vec<ServerRoute>,
-        ) -> Result<()> {
+    fn get_routes(&self) -> Result<Routes> {
+        fn extract_recursive(table: &Table, current_path: &str, routes: &mut Routes) -> Result<()> {
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
 
@@ -48,25 +45,21 @@ impl Server for Table {
                 match (key, value) {
                     (Value::String(key_str), Value::Function(func)) => {
                         let key_string = key_str.to_str()?.to_string();
-                        let method = HttpMethod::from_str(&key_string).map_err(|_| {
-                            anyhow!(
-                                "Unknown HTTP method '{}' at path '{}'",
-                                key_string,
-                                if current_path.is_empty() {
-                                    "/"
-                                } else {
-                                    current_path
-                                }
-                            )
-                        })?;
 
                         let path = if current_path.is_empty() {
-                            "/".to_string()
+                            "/"
                         } else {
-                            current_path.to_string()
+                            current_path
                         };
 
-                        routes.push(ServerRoute::new(method, path, func));
+                        let valid_methods = vec!["get", "post", "patch", "put", "delete"];
+
+                        if !valid_methods.contains(&key_string.as_str()) {
+                            return Err(anyhow!("Unknown HTTP method '{}' at path '{}'", key_string, path));
+                        }
+
+                        let path = path.to_string();
+                        routes.insert((key_string, path), func);
                     }
                     (Value::String(key_str), Value::Table(nested_table)) => {
                         let key_string = key_str.to_str()?.to_string();
@@ -92,10 +85,9 @@ impl Server for Table {
                     }
                 }
             }
-
             Ok(())
         }
-        let mut routes = vec![];
+        let mut routes = HashMap::new();
         extract_recursive(self, "", &mut routes)?;
         Ok(routes)
     }
