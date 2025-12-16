@@ -1,5 +1,6 @@
 mod app_type;
 mod auto_table;
+mod inspect;
 mod server;
 use server::{AppServer, Server};
 

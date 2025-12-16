@@ -1,7 +1,7 @@
 use anyhow::Result;
 use mlua::{Lua, Table, Value};
 
-use crate::{app_type::AppType, auto_table::AutoTable};
+use crate::{app_type::AppType, auto_table::AutoTable, inspect::Inpesct};
 
 pub trait AppServer {
     fn create_server(&self) -> Result<Table>;
@@ -21,7 +21,7 @@ pub trait Server {
 
 impl Server for Table {
     fn run_server(&self) -> Result<()> {
-        println!("SERVER TABLE: {:?}", self);
+        self.inspect();
         Ok(())
     }
 }
