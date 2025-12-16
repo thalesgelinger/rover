@@ -1,10 +1,31 @@
 use std::collections::HashMap;
 
+use anyhow::anyhow;
 use axum::{
     Router, body, extract::Request, http::StatusCode, response::IntoResponse, routing::any,
 };
-use mlua::{Function, Lua, LuaSerdeExt, Table, Value};
+use mlua::{FromLua, Function, Lua, LuaSerdeExt, Table, Value};
 use tokio::sync::{mpsc, oneshot};
+
+#[derive(Debug)]
+pub struct ServerConfig {
+    port: i32,
+    host: String,
+    debug: bool,
+}
+
+impl FromLua for ServerConfig {
+    fn from_lua(value: Value, lua: &Lua) -> mlua::Result<Self> {
+        match value {
+            Value::Table(config) => Ok(ServerConfig {
+                port: config.get::<i32>("port").unwrap_or(4242),
+                host: config.get::<String>("host").unwrap_or("localhost".into()),
+                debug: config.get::<bool>("debug").unwrap_or(true),
+            }),
+            _ => Err(anyhow!("Server config must be a table"))?,
+        }
+    }
+}
 
 struct LuaRequest {
     method: String,
@@ -49,13 +70,16 @@ fn build_lua_context(lua: &Lua, req: &LuaRequest) -> mlua::Result<Table> {
     Ok(ctx)
 }
 
-async fn server(lua: Lua, routes: Routes) {
+async fn server(lua: Lua, routes: Routes, config: ServerConfig) {
     let (tx, rx) = mpsc::channel(1024);
     event_loop(lua, routes, rx);
 
     let app = Router::new().fallback(any(move |req| handle_all(req, tx.clone())));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", config.host, config.port))
+        .await
+        .unwrap();
+    // WE NEED A LOG HERE
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -189,9 +213,9 @@ async fn handle_all(req: Request, tx: mpsc::Sender<LuaRequest>) -> impl IntoResp
     (resp.status, resp.body)
 }
 
-pub fn run(lua: Lua, routes: Routes) {
+pub fn run(lua: Lua, routes: Routes, config: ServerConfig) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(server(lua, routes));
+    runtime.block_on(server(lua, routes, config));
 }
 
 pub type Routes = HashMap<(String, String), Function>;

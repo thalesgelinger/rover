@@ -1,19 +1,20 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
-use mlua::{Lua, Table, Value};
-use rover_server::Routes;
+use mlua::{FromLua, Lua, Table, Value};
+use rover_server::{Routes, ServerConfig};
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
 pub trait AppServer {
-    fn create_server(&self) -> Result<Table>;
+    fn create_server(&self, config: Table) -> Result<Table>;
 }
 
 impl AppServer for Lua {
-    fn create_server(&self) -> Result<Table> {
+    fn create_server(&self, config: Table) -> Result<Table> {
         let server = self.create_auto_table()?;
         let _ = server.set("__rover_app_type", Value::Integer(AppType::Server.to_i64()))?;
+        let _ = server.set("config", config)?;
         Ok(server)
     }
 }
@@ -26,7 +27,8 @@ pub trait Server {
 impl Server for Table {
     fn run_server(&self, lua: &Lua) -> Result<()> {
         let routes = self.get_routes()?;
-        rover_server::run(lua.clone(), routes);
+        let config: ServerConfig = self.get("config")?;
+        rover_server::run(lua.clone(), routes, config);
         Ok(())
     }
 
@@ -38,6 +40,10 @@ impl Server for Table {
                 // Skip internal rover fields
                 if let Value::String(ref key_str) = key {
                     if key_str.to_str()?.starts_with("__rover_") {
+                        continue;
+                    }
+
+                    if key_str.to_str()?.starts_with("config") {
                         continue;
                     }
                 }
@@ -55,7 +61,11 @@ impl Server for Table {
                         let valid_methods = vec!["get", "post", "patch", "put", "delete"];
 
                         if !valid_methods.contains(&key_string.as_str()) {
-                            return Err(anyhow!("Unknown HTTP method '{}' at path '{}'", key_string, path));
+                            return Err(anyhow!(
+                                "Unknown HTTP method '{}' at path '{}'",
+                                key_string,
+                                path
+                            ));
                         }
 
                         let path = path.to_string();

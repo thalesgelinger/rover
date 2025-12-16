@@ -31,7 +31,7 @@ pub fn run(path: &str) -> Result<()> {
     rover.set(
         "server",
         lua.create_function(|lua, opts: Table| {
-            let server = lua.create_server()?;
+            let server = lua.create_server(opts)?;
             Ok(server)
         })?,
     )?;
