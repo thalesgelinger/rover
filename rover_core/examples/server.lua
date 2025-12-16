@@ -5,3 +5,5 @@ function api.hello.get(ctx)
         message = "Hello World"
     }
 end
+
+return api

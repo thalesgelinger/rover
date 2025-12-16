@@ -1,8 +1,25 @@
+mod app_type;
 mod auto_table;
-use auto_table::AutoTable;
+mod server;
+use server::{AppServer, Server};
 
 use anyhow::{Context, Result};
 use mlua::{Error, FromLua, Lua, Table, Value};
+
+use crate::app_type::AppType;
+
+trait RoverApp {
+    fn app_type(&self) -> Option<AppType>;
+}
+
+impl RoverApp for Table {
+    fn app_type(&self) -> Option<AppType> {
+        match self.get("__rover_app_type") {
+            Ok(Value::Integer(t)) => AppType::from_i64(t),
+            _ => None,
+        }
+    }
+}
 
 pub fn run(path: &str) -> Result<()> {
     let lua = Lua::new();
@@ -13,17 +30,30 @@ pub fn run(path: &str) -> Result<()> {
     rover.set(
         "server",
         lua.create_function(|lua, opts: Table| {
-            let server = lua.create_auto_table()?;
+            let server = lua.create_server()?;
             Ok(server)
         })?,
     )?;
 
     let _ = lua.globals().set("rover", rover);
 
-    lua.load(&content)
+    let app: Value = lua
+        .load(&content)
         .set_name(path)
-        .exec()
-        .context("Failed to execute Lua script")
+        .eval()
+        .context("Failed to execute Lua script")?;
+
+    match app {
+        Value::Table(table) => {
+            if let Some(app_type) = table.app_type() {
+                match app_type {
+                    AppType::Server => table.run_server()?,
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug)]
