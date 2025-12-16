@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use anyhow::{Result, anyhow};
-use mlua::{FromLua, Lua, Table, Value};
-use rover_server::{Routes, ServerConfig};
+use mlua::{Lua, Table, Value};
+use rover_server::{Route, RouteTable, ServerConfig};
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
@@ -21,7 +19,7 @@ impl AppServer for Lua {
 
 pub trait Server {
     fn run_server(&self, lua: &Lua) -> Result<()>;
-    fn get_routes(&self) -> Result<Routes>;
+    fn get_routes(&self) -> Result<RouteTable>;
 }
 
 impl Server for Table {
@@ -32,8 +30,13 @@ impl Server for Table {
         Ok(())
     }
 
-    fn get_routes(&self) -> Result<Routes> {
-        fn extract_recursive(table: &Table, current_path: &str, routes: &mut Routes) -> Result<()> {
+    fn get_routes(&self) -> Result<RouteTable> {
+        fn extract_recursive(
+            table: &Table,
+            current_path: &str,
+            param_names: &mut Vec<String>,
+            routes: &mut Vec<Route>,
+        ) -> Result<()> {
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
 
@@ -68,18 +71,49 @@ impl Server for Table {
                             ));
                         }
 
-                        let path = path.to_string();
-                        routes.insert((key_string, path), func);
+                        let route = Route {
+                            method: key_string,
+                            pattern: path.to_string(),
+                            param_names: param_names.clone(),
+                            handler: func,
+                            is_static: param_names.is_empty(),
+                        };
+                        routes.push(route);
                     }
                     (Value::String(key_str), Value::Table(nested_table)) => {
                         let key_string = key_str.to_str()?.to_string();
-                        let new_path = if current_path.is_empty() {
-                            format!("/{}", key_string)
+
+                        // Check if this is a parameter segment
+                        let (segment, param_name) = if key_string.starts_with("p_") {
+                            let param = key_string.strip_prefix("p_").unwrap();
+                            if param.is_empty() {
+                                return Err(anyhow!(
+                                    "Empty parameter name at path '{}'",
+                                    current_path
+                                ));
+                            }
+                            (format!(":{}", param), Some(param.to_string()))
                         } else {
-                            format!("{}/{}", current_path, key_string)
+                            (key_string.clone(), None)
                         };
 
-                        extract_recursive(&nested_table, &new_path, routes)?;
+                        let new_path = if current_path.is_empty() {
+                            format!("/{}", segment)
+                        } else {
+                            format!("{}/{}", current_path, segment)
+                        };
+
+                        // Add param name if this is a parameter segment
+                        if let Some(param) = param_name {
+                            param_names.push(param);
+                        }
+
+                        extract_recursive(&nested_table, &new_path, param_names, routes)?;
+
+                        // Remove param name after recursion
+                        if key_string.starts_with("p_") {
+                            param_names.pop();
+                        }
                     }
                     (k, v) => {
                         return Err(anyhow!(
@@ -97,8 +131,20 @@ impl Server for Table {
             }
             Ok(())
         }
-        let mut routes = HashMap::new();
-        extract_recursive(self, "", &mut routes)?;
-        Ok(routes)
+
+        let mut routes = Vec::new();
+        let mut param_names = Vec::new();
+        extract_recursive(self, "", &mut param_names, &mut routes)?;
+
+        // Sort routes: static routes first (for exact-match priority)
+        routes.sort_by(|a, b| {
+            match (a.is_static, b.is_static) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            }
+        });
+
+        Ok(RouteTable { routes })
     }
 }
