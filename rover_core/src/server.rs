@@ -1,42 +1,9 @@
 use anyhow::{Result, anyhow};
 use mlua::{Function, Lua, Table, Value};
+use rover_server::{HttpMethod, ServerRoute};
 use std::fmt;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
-
-#[derive(Debug, Clone)]
-pub enum HttpMethod {
-    Get,
-    Post,
-    Put,
-    Delete,
-    Patch,
-}
-
-impl HttpMethod {
-    pub fn from_str(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "get" => Ok(HttpMethod::Get),
-            "post" => Ok(HttpMethod::Post),
-            "put" => Ok(HttpMethod::Put),
-            "delete" => Ok(HttpMethod::Delete),
-            "patch" => Ok(HttpMethod::Patch),
-            _ => Err(anyhow!("Unknown HTTP method: '{}'", s)),
-        }
-    }
-}
-
-impl fmt::Display for HttpMethod {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HttpMethod::Get => write!(f, "GET"),
-            HttpMethod::Post => write!(f, "POST"),
-            HttpMethod::Put => write!(f, "PUT"),
-            HttpMethod::Delete => write!(f, "DELETE"),
-            HttpMethod::Patch => write!(f, "PATCH"),
-        }
-    }
-}
 
 pub trait AppServer {
     fn create_server(&self) -> Result<Table>;
@@ -52,26 +19,21 @@ impl AppServer for Lua {
 
 pub trait Server {
     fn run_server(&self) -> Result<()>;
-    fn get_endpoints(&self) -> Result<Vec<(HttpMethod, String, Function)>>;
+    fn get_routes(&self) -> Result<Vec<ServerRoute>>;
 }
 
 impl Server for Table {
     fn run_server(&self) -> Result<()> {
-        let endpoints = self.get_endpoints()?;
-
-        println!("Found {} endpoint(s):", endpoints.len());
-        for (method, path, _func) in &endpoints {
-            println!("  {} {}", method, path);
-        }
-        rover_server::run();
+        let routes = self.get_routes()?;
+        rover_server::run(&routes);
         Ok(())
     }
 
-    fn get_endpoints(&self) -> Result<Vec<(HttpMethod, String, Function)>> {
+    fn get_routes(&self) -> Result<Vec<ServerRoute>> {
         fn extract_recursive(
             table: &Table,
             current_path: &str,
-            endpoints: &mut Vec<(HttpMethod, String, Function)>,
+            routes: &mut Vec<ServerRoute>,
         ) -> Result<()> {
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
@@ -104,7 +66,7 @@ impl Server for Table {
                             current_path.to_string()
                         };
 
-                        endpoints.push((method, path, func));
+                        routes.push(ServerRoute::new(method, path, func));
                     }
                     (Value::String(key_str), Value::Table(nested_table)) => {
                         let key_string = key_str.to_str()?.to_string();
@@ -114,7 +76,7 @@ impl Server for Table {
                             format!("{}/{}", current_path, key_string)
                         };
 
-                        extract_recursive(&nested_table, &new_path, endpoints)?;
+                        extract_recursive(&nested_table, &new_path, routes)?;
                     }
                     (k, v) => {
                         return Err(anyhow!(
@@ -133,8 +95,8 @@ impl Server for Table {
 
             Ok(())
         }
-        let mut endpoints = vec![];
-        extract_recursive(self, "", &mut endpoints)?;
-        Ok(endpoints)
+        let mut routes = vec![];
+        extract_recursive(self, "", &mut routes)?;
+        Ok(routes)
     }
 }
