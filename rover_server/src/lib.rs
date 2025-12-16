@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use anyhow::anyhow;
 use axum::{
@@ -6,8 +7,9 @@ use axum::{
 };
 use mlua::{FromLua, Function, Lua, LuaSerdeExt, Table, Value};
 use tokio::sync::{mpsc, oneshot};
+use tracing::{info, debug, warn};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
     port: i32,
     host: String,
@@ -15,7 +17,7 @@ pub struct ServerConfig {
 }
 
 impl FromLua for ServerConfig {
-    fn from_lua(value: Value, lua: &Lua) -> mlua::Result<Self> {
+    fn from_lua(value: Value, _lua: &Lua) -> mlua::Result<Self> {
         match value {
             Value::Table(config) => Ok(ServerConfig {
                 port: config.get::<i32>("port").unwrap_or(4242),
@@ -34,6 +36,7 @@ struct LuaRequest {
     query: HashMap<String, String>,
     body: Option<String>,
     respond_to: oneshot::Sender<LuaResponse>,
+    started_at: Instant,
 }
 
 struct LuaResponse {
@@ -72,23 +75,46 @@ fn build_lua_context(lua: &Lua, req: &LuaRequest) -> mlua::Result<Table> {
 
 async fn server(lua: Lua, routes: Routes, config: ServerConfig) {
     let (tx, rx) = mpsc::channel(1024);
-    event_loop(lua, routes, rx);
+    let config_clone = config.clone();
+    event_loop(lua, routes, rx, config.clone());
 
-    let app = Router::new().fallback(any(move |req| handle_all(req, tx.clone())));
+    let addr = format!("{}:{}", config.host, config.port);
+    let app = Router::new().fallback(any(move |req| handle_all(req, tx.clone(), config_clone.clone())));
 
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", config.host, config.port))
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap();
-    // WE NEED A LOG HERE
+    
+    info!("🚀 Rover server running at http://{}", addr);
+    if config.debug {
+        info!("🐛 Debug mode enabled");
+    }
+    
     axum::serve(listener, app).await.unwrap();
 }
 
-fn event_loop(lua: Lua, routes: Routes, mut rx: mpsc::Receiver<LuaRequest>) {
+fn event_loop(lua: Lua, routes: Routes, mut rx: mpsc::Receiver<LuaRequest>, config: ServerConfig) {
     std::thread::spawn(move || {
         while let Some(req) = rx.blocking_recv() {
+            // Log incoming request
+            if config.debug && !req.query.is_empty() {
+                debug!("  ├─ query: {:?}", req.query);
+            }
+            if config.debug {
+                if let Some(ref body) = req.body {
+                    debug!("  └─ body: {}", body);
+                }
+            }
+            
             let handler = match routes.get(&(req.method.clone(), req.path.clone())) {
                 Some(h) => h,
                 None => {
+                    let elapsed = req.started_at.elapsed();
+                    warn!("{} {} - 404 NOT_FOUND in {:.2}ms", 
+                        req.method.to_uppercase(), 
+                        req.path,
+                        elapsed.as_secs_f64() * 1000.0
+                    );
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::NOT_FOUND,
                         body: "Route not found".to_string(),
@@ -165,12 +191,32 @@ fn event_loop(lua: Lua, routes: Routes, mut rx: mpsc::Receiver<LuaRequest>) {
                 ),
             };
 
+            // Log response
+            let elapsed = req.started_at.elapsed();
+            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+            
+            if status.is_success() {
+                info!("{} {} - {} in {:.2}ms", 
+                    req.method.to_uppercase(), 
+                    req.path, 
+                    status.as_u16(),
+                    elapsed_ms
+                );
+            } else if status.is_client_error() || status.is_server_error() {
+                warn!("{} {} - {} in {:.2}ms", 
+                    req.method.to_uppercase(), 
+                    req.path, 
+                    status.as_u16(),
+                    elapsed_ms
+                );
+            }
+            
             let _ = req.respond_to.send(LuaResponse { status, body });
         }
     });
 }
 
-async fn handle_all(req: Request, tx: mpsc::Sender<LuaRequest>) -> impl IntoResponse {
+async fn handle_all(req: Request, tx: mpsc::Sender<LuaRequest>, _config: ServerConfig) -> impl IntoResponse {
     let (parts, body_stream) = req.into_parts();
 
     let headers: HashMap<String, String> = parts
@@ -205,6 +251,7 @@ async fn handle_all(req: Request, tx: mpsc::Sender<LuaRequest>) -> impl IntoResp
         query,
         body: body_str,
         respond_to: resp_tx,
+        started_at: Instant::now(),
     })
     .await
     .unwrap();
@@ -214,6 +261,21 @@ async fn handle_all(req: Request, tx: mpsc::Sender<LuaRequest>) -> impl IntoResp
 }
 
 pub fn run(lua: Lua, routes: Routes, config: ServerConfig) {
+    // Initialize tracing subscriber based on debug mode
+    let log_level = if config.debug { "debug" } else { "info" };
+    
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level))
+        )
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
+        .init();
+    
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(server(lua, routes, config));
 }
