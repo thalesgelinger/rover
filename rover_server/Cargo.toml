@@ -1,0 +1,13 @@
+[package]
+name = "rover_server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8.7"
+tokio = {version="1.48.0", features=["full"]}
+
+
+[lib]
+crate-type = ["cdylib", "lib"]
+bench = false

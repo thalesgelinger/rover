@@ -63,7 +63,7 @@ impl Server for Table {
         for (method, path, _func) in &endpoints {
             println!("  {} {}", method, path);
         }
-
+        rover_server::run();
         Ok(())
     }
 
