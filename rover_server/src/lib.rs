@@ -5,9 +5,12 @@ use anyhow::anyhow;
 use axum::{
     Router, body, extract::Request, http::StatusCode, response::IntoResponse, routing::any,
 };
-use mlua::{FromLua, Function, Lua, LuaSerdeExt, Table, Value};
+use mlua::{
+    FromLua, Function, Lua, LuaSerdeExt, Table,
+    Value::{self, Nil},
+};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -19,11 +22,20 @@ pub struct ServerConfig {
 impl FromLua for ServerConfig {
     fn from_lua(value: Value, _lua: &Lua) -> mlua::Result<Self> {
         match value {
-            Value::Table(config) => Ok(ServerConfig {
-                port: config.get::<i32>("port").unwrap_or(4242),
-                host: config.get::<String>("host").unwrap_or("localhost".into()),
-                debug: config.get::<bool>("debug").unwrap_or(true),
-            }),
+            Value::Table(config) => {
+                let debug = config.get::<Value>("debug")?;
+                let debug = match debug {
+                    Value::Nil => true,
+                    Value::Boolean(val) => val,
+                    _ => Err(anyhow!("Debug should be boolean"))?,
+                };
+
+                Ok(ServerConfig {
+                    port: config.get::<i32>("port").unwrap_or(4242),
+                    host: config.get::<String>("host").unwrap_or("localhost".into()),
+                    debug,
+                })
+            }
             _ => Err(anyhow!("Server config must be a table"))?,
         }
     }
@@ -79,17 +91,18 @@ async fn server(lua: Lua, routes: Routes, config: ServerConfig) {
     event_loop(lua, routes, rx, config.clone());
 
     let addr = format!("{}:{}", config.host, config.port);
-    let app = Router::new().fallback(any(move |req| handle_all(req, tx.clone(), config_clone.clone())));
+    let app = Router::new().fallback(any(move |req| {
+        handle_all(req, tx.clone(), config_clone.clone())
+    }));
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap();
-    
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+
+    println!("Config: {:?}", config);
     info!("🚀 Rover server running at http://{}", addr);
     if config.debug {
         info!("🐛 Debug mode enabled");
     }
-    
+
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -105,13 +118,14 @@ fn event_loop(lua: Lua, routes: Routes, mut rx: mpsc::Receiver<LuaRequest>, conf
                     debug!("  └─ body: {}", body);
                 }
             }
-            
+
             let handler = match routes.get(&(req.method.clone(), req.path.clone())) {
                 Some(h) => h,
                 None => {
                     let elapsed = req.started_at.elapsed();
-                    warn!("{} {} - 404 NOT_FOUND in {:.2}ms", 
-                        req.method.to_uppercase(), 
+                    warn!(
+                        "{} {} - 404 NOT_FOUND in {:.2}ms",
+                        req.method.to_uppercase(),
                         req.path,
                         elapsed.as_secs_f64() * 1000.0
                     );
@@ -194,29 +208,35 @@ fn event_loop(lua: Lua, routes: Routes, mut rx: mpsc::Receiver<LuaRequest>, conf
             // Log response
             let elapsed = req.started_at.elapsed();
             let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-            
+
             if status.is_success() {
-                info!("{} {} - {} in {:.2}ms", 
-                    req.method.to_uppercase(), 
-                    req.path, 
+                info!(
+                    "{} {} - {} in {:.2}ms",
+                    req.method.to_uppercase(),
+                    req.path,
                     status.as_u16(),
                     elapsed_ms
                 );
             } else if status.is_client_error() || status.is_server_error() {
-                warn!("{} {} - {} in {:.2}ms", 
-                    req.method.to_uppercase(), 
-                    req.path, 
+                warn!(
+                    "{} {} - {} in {:.2}ms",
+                    req.method.to_uppercase(),
+                    req.path,
                     status.as_u16(),
                     elapsed_ms
                 );
             }
-            
+
             let _ = req.respond_to.send(LuaResponse { status, body });
         }
     });
 }
 
-async fn handle_all(req: Request, tx: mpsc::Sender<LuaRequest>, _config: ServerConfig) -> impl IntoResponse {
+async fn handle_all(
+    req: Request,
+    tx: mpsc::Sender<LuaRequest>,
+    _config: ServerConfig,
+) -> impl IntoResponse {
     let (parts, body_stream) = req.into_parts();
 
     let headers: HashMap<String, String> = parts
@@ -261,13 +281,12 @@ async fn handle_all(req: Request, tx: mpsc::Sender<LuaRequest>, _config: ServerC
 }
 
 pub fn run(lua: Lua, routes: Routes, config: ServerConfig) {
-    // Initialize tracing subscriber based on debug mode
     let log_level = if config.debug { "debug" } else { "info" };
-    
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level))
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
         )
         .with_target(false)
         .with_thread_ids(false)
@@ -275,7 +294,7 @@ pub fn run(lua: Lua, routes: Routes, config: ServerConfig) {
         .with_file(false)
         .with_line_number(false)
         .init();
-    
+
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(server(lua, routes, config));
 }
