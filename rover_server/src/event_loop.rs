@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use hyper::StatusCode;
+use matchit::Router;
 use mlua::{
     Function, Lua, LuaSerdeExt, Table,
     Value::{self},
@@ -8,10 +9,100 @@ use mlua::{
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::{LuaRequest, LuaResponse, RouteTable, ServerConfig};
+use crate::{LuaRequest, LuaResponse, Route, ServerConfig};
 
-pub fn run(lua: Lua, routes: RouteTable, mut rx: mpsc::Receiver<LuaRequest>, config: ServerConfig) {
+pub struct FastRouter {
+    get_router: Router<usize>,
+    post_router: Router<usize>,
+    put_router: Router<usize>,
+    patch_router: Router<usize>,
+    delete_router: Router<usize>,
+    handlers: Vec<Function>,
+}
+
+impl FastRouter {
+    pub fn from_routes(routes: Vec<Route>) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut get_router = Router::new();
+        let mut post_router = Router::new();
+        let mut put_router = Router::new();
+        let mut patch_router = Router::new();
+        let mut delete_router = Router::new();
+        let mut handlers = Vec::new();
+
+        for (idx, route) in routes.into_iter().enumerate() {
+            let method_str = std::str::from_utf8(&route.method)?;
+            // Convert :param to {param} for matchit syntax
+            let matchit_pattern = route.pattern
+                .split('/')
+                .map(|seg| {
+                    if let Some(param) = seg.strip_prefix(':') {
+                        format!("{{{}}}", param)
+                    } else {
+                        seg.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            
+            let router = match method_str.to_lowercase().as_str() {
+                "get" => &mut get_router,
+                "post" => &mut post_router,
+                "put" => &mut put_router,
+                "patch" => &mut patch_router,
+                "delete" => &mut delete_router,
+                _ => return Err(format!("Unknown HTTP method: {}", method_str).into()),
+            };
+            
+            router.insert(&matchit_pattern, idx)?;
+            handlers.push(route.handler);
+        }
+
+        Ok(Self { 
+            get_router,
+            post_router,
+            put_router,
+            patch_router,
+            delete_router,
+            handlers 
+        })
+    }
+
+    pub fn match_route(&self, method: &str, path: &str) -> Option<(&Function, HashMap<String, String>)> {
+        let router = match method.to_lowercase().as_str() {
+            "get" => &self.get_router,
+            "post" => &self.post_router,
+            "put" => &self.put_router,
+            "patch" => &self.patch_router,
+            "delete" => &self.delete_router,
+            _ => return None,
+        };
+        
+        let matched = router.at(path).ok()?;
+        let handler = &self.handlers[*matched.value];
+        
+        let mut params = HashMap::new();
+        for (name, value) in matched.params.iter() {
+            let decoded = urlencoding::decode(value).ok()?.into_owned();
+            if decoded.is_empty() {
+                return None;
+            }
+            params.insert(name.to_string(), decoded);
+        }
+        
+        Some((handler, params))
+    }
+}
+
+pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, config: ServerConfig) {
     std::thread::spawn(move || {
+        let fast_router = match FastRouter::from_routes(routes) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to initialize router: {}", e);
+                return;
+            }
+        };
+        
         while let Some(req) = rx.blocking_recv() {
             // Validate UTF-8 in method and path
             let method_str = match std::str::from_utf8(&req.method) {
@@ -47,7 +138,7 @@ pub fn run(lua: Lua, routes: RouteTable, mut rx: mpsc::Receiver<LuaRequest>, con
                 }
             }
 
-            let (handler, params) = match match_route(&routes, method_str, path_str) {
+            let (handler, params) = match fast_router.match_route(method_str, path_str) {
                 Some((h, p)) => (h, p),
                 None => {
                     let elapsed = req.started_at.elapsed();
@@ -216,62 +307,7 @@ fn build_lua_context(
     Ok(ctx)
 }
 
-fn match_route<'a>(
-    routes: &'a RouteTable,
-    method: &str,
-    path: &str,
-) -> Option<(&'a Function, HashMap<String, String>)> {
-    for route in &routes.routes {
-        if !route.method.eq_ignore_ascii_case(method.as_bytes()) {
-            continue;
-        }
 
-        if let Some(params) = matches_pattern(&route.pattern, path, &route.param_names) {
-            return Some((&route.handler, params));
-        }
-    }
-    None
-}
-
-fn matches_pattern(
-    pattern: &str,
-    path: &str,
-    _param_names: &[String],
-) -> Option<HashMap<String, String>> {
-    let pattern_parts: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-
-    // Must have same number of segments
-    if pattern_parts.len() != path_parts.len() {
-        return None;
-    }
-
-    let mut params = HashMap::new();
-
-    for (pattern_seg, path_seg) in pattern_parts.iter().zip(path_parts.iter()) {
-        if pattern_seg.starts_with(':') {
-            // Param segment - capture value
-            let param_name = pattern_seg.strip_prefix(':').unwrap();
-
-            // URL decode the value
-            let decoded = urlencoding::decode(path_seg).ok()?.into_owned();
-
-            // Check for empty param value (from double slash)
-            if decoded.is_empty() {
-                return None; // Reject empty params
-            }
-
-            params.insert(param_name.to_string(), decoded);
-        } else {
-            // Static segment - must match exactly
-            if pattern_seg != path_seg {
-                return None;
-            }
-        }
-    }
-
-    Some(params)
-}
 
 fn lua_table_to_json(lua: &Lua, table: Table) -> mlua::Result<String> {
     let json_value: serde_json::Value = lua.from_value(Value::Table(table))?;

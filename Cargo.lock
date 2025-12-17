@@ -509,6 +509,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "matchit"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f926ade0c4e170215ae43342bf13b9310a437609c81f29f86c5df6657582ef9"
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -706,6 +712,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "matchit",
  "mlua",
  "serde_json",
  "smallvec",

@@ -102,7 +102,7 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()
 
     let listener = TcpListener::bind(addr).await?;
 
-    event_loop::run(lua, routes, rx, config.clone());
+    event_loop::run(lua, routes.routes, rx, config.clone());
 
     loop {
         let (stream, _) = listener.accept().await?;
