@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::{LuaRequest, LuaResponse, Route, ServerConfig};
+use crate::request_context::RequestContext;
 
 pub struct FastRouter {
     get_router: Router<usize>,
@@ -156,22 +157,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
                 }
             };
 
-            let ctx = match build_lua_context(&lua, &req, &params) {
-                Ok(c) => c,
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    let status = if error_msg.contains("Invalid UTF-8") {
-                        StatusCode::BAD_REQUEST
-                    } else {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    };
-                    let _ = req.respond_to.send(LuaResponse {
-                        status,
-                        body: error_msg,
-                    });
-                    continue;
-                }
-            };
+            let ctx = build_lua_context(&req, params);
 
             let result: Value = match handler.call(ctx) {
                 Ok(r) => r,
@@ -257,54 +243,15 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
     });
 }
 
-fn build_lua_context(
-    lua: &Lua,
-    req: &LuaRequest,
-    params: &HashMap<String, String>,
-) -> mlua::Result<Table> {
-    let ctx = lua.create_table()?;
-    
-    let method_str = std::str::from_utf8(&req.method)
-        .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in HTTP method".to_string()))?;
-    ctx.set("method", method_str)?;
-    
-    let path_str = std::str::from_utf8(&req.path)
-        .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in request path".to_string()))?;
-    ctx.set("path", path_str)?;
-
-    let headers = lua.create_table()?;
-    for (k, v) in &req.headers {
-        let k_str = std::str::from_utf8(k)
-            .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string()))?;
-        let v_str = std::str::from_utf8(v)
-            .map_err(|_| mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str)))?;
-        headers.set(k_str, v_str)?;
+fn build_lua_context(req: &LuaRequest, params: HashMap<String, String>) -> RequestContext {
+    RequestContext {
+        method: req.method.clone(),
+        path: req.path.clone(),
+        headers: req.headers.clone(),
+        query: req.query.clone(),
+        params,
+        body: req.body.clone(),
     }
-    ctx.set("headers", headers)?;
-
-    let query = lua.create_table()?;
-    for (k, v) in &req.query {
-        let k_str = std::str::from_utf8(k)
-            .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string()))?;
-        let v_str = std::str::from_utf8(v)
-            .map_err(|_| mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str)))?;
-        query.set(k_str, v_str)?;
-    }
-    ctx.set("query", query)?;
-
-    let params_table = lua.create_table()?;
-    for (k, v) in params {
-        params_table.set(k.as_str(), v.as_str())?;
-    }
-    ctx.set("params", params_table)?;
-
-    if let Some(body) = &req.body {
-        let body_str = std::str::from_utf8(body)
-            .map_err(|_| mlua::Error::RuntimeError("Request body contains invalid UTF-8 (binary data not supported)".to_string()))?;
-        ctx.set("body", body_str)?;
-    }
-
-    Ok(ctx)
 }
 
 
