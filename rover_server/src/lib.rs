@@ -1,17 +1,20 @@
 mod event_loop;
+mod status_code;
 use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::anyhow;
-use axum::{
-    Router, body, extract::Request, http::StatusCode, response::IntoResponse, routing::any,
-};
+
+use axum::{Router, body, extract::Request, response::IntoResponse, routing::any};
+
 use mlua::{
     FromLua, Function, Lua,
     Value::{self},
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
+
+use crate::status_code::StatusCode;
 
 #[derive(Clone)]
 pub struct Route {

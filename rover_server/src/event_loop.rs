@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use axum::http::StatusCode;
 use mlua::{
     Function, Lua, LuaSerdeExt, Table,
     Value::{self},
@@ -8,7 +7,7 @@ use mlua::{
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::{LuaRequest, LuaResponse, RouteTable, ServerConfig};
+use crate::{LuaRequest, LuaResponse, RouteTable, ServerConfig, status_code::StatusCode};
 
 pub fn run(lua: Lua, routes: RouteTable, mut rx: mpsc::Receiver<LuaRequest>, config: ServerConfig) {
     std::thread::spawn(move || {
