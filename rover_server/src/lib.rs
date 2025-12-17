@@ -1,10 +1,8 @@
 mod event_loop;
-mod status_code;
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper::server::conn::http2;
 use hyper::service::service_fn;
-use hyper::{Request, Response};
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use std::collections::HashMap;
@@ -21,8 +19,6 @@ use mlua::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
-
-use crate::status_code::StatusCode;
 
 #[derive(Clone)]
 pub struct Route {
@@ -106,15 +102,16 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()
 
     let listener = TcpListener::bind(addr).await?;
 
-    event_loop::run(lua, routes, rx, config);
+    event_loop::run(lua, routes, rx, config.clone());
 
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
+        let tx = tx.clone();
 
         tokio::task::spawn(async move {
             if let Err(err) = auto::Builder::new(TokioExecutor::new())
-                .serve_connection(io, service_fn(hello))
+                .serve_connection(io, service_fn(move |req| handler(req, tx.clone())))
                 .await
             {
                 eprintln!("Error serving connection: {}", err);
@@ -123,57 +120,58 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()
     }
 }
 
-async fn hello(_: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
-    Ok(Response::new(Full::new(Bytes::from("Hello, World!"))))
-}
+async fn handler(
+    req: Request<hyper::body::Incoming>,
+    tx: mpsc::Sender<LuaRequest>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let (parts, body_stream) = req.into_parts();
 
-// async fn handle_all(
-//     req: Request,
-//     tx: mpsc::Sender<LuaRequest>,
-//     _config: ServerConfig,
-// ) -> impl IntoResponse {
-//     let (parts, body_stream) = req.into_parts();
-//
-//     let headers: HashMap<String, String> = parts
-//         .headers
-//         .iter()
-//         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
-//         .collect();
-//
-//     let query: HashMap<String, String> = parts
-//         .uri
-//         .query()
-//         .map(|q| {
-//             form_urlencoded::parse(q.as_bytes())
-//                 .map(|(k, v)| (k.into_owned(), v.into_owned()))
-//                 .collect()
-//         })
-//         .unwrap_or_default();
-//
-//     let body_bytes = body::to_bytes(body_stream, usize::MAX).await.unwrap();
-//     let body_str = if !body_bytes.is_empty() {
-//         Some(String::from_utf8_lossy(&body_bytes).to_string())
-//     } else {
-//         None
-//     };
-//
-//     let (resp_tx, resp_rx) = oneshot::channel();
-//
-//     tx.send(LuaRequest {
-//         method: parts.method.to_string().to_lowercase(),
-//         path: parts.uri.path().to_string(),
-//         headers,
-//         query,
-//         body: body_str,
-//         respond_to: resp_tx,
-//         started_at: Instant::now(),
-//     })
-//     .await
-//     .unwrap();
-//
-//     let resp = resp_rx.await.unwrap();
-//     (resp.status, resp.body)
-// }
+    let headers: HashMap<String, String> = parts
+        .headers
+        .iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+        .collect();
+
+    let query: HashMap<String, String> = parts
+        .uri
+        .query()
+        .map(|q| {
+            form_urlencoded::parse(q.as_bytes())
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let body_bytes = http_body_util::BodyExt::collect(body_stream)
+        .await
+        .unwrap()
+        .to_bytes();
+    let body_str = if !body_bytes.is_empty() {
+        Some(String::from_utf8_lossy(&body_bytes).to_string())
+    } else {
+        None
+    };
+
+    let (resp_tx, resp_rx) = oneshot::channel();
+
+    tx.send(LuaRequest {
+        method: parts.method.to_string().to_lowercase(),
+        path: parts.uri.path().to_string(),
+        headers,
+        query,
+        body: body_str,
+        respond_to: resp_tx,
+        started_at: Instant::now(),
+    })
+    .await
+    .unwrap();
+
+    let resp = resp_rx.await.unwrap();
+
+    let mut response = Response::new(Full::new(Bytes::from(resp.body)));
+    *response.status_mut() = resp.status.into();
+    Ok(response)
+}
 
 pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
     let log_level = if config.debug { "debug" } else { "info" };
