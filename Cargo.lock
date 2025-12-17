@@ -708,6 +708,7 @@ dependencies = [
  "hyper-util",
  "mlua",
  "serde_json",
+ "smallvec",
  "tokio",
  "tracing",
  "tracing-subscriber",

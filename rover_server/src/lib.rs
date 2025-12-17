@@ -5,7 +5,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
-use std::collections::HashMap;
+use smallvec::SmallVec;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -22,7 +22,7 @@ use tracing::info;
 
 #[derive(Clone)]
 pub struct Route {
-    pub method: String,
+    pub method: Bytes,
     pub pattern: String,
     pub param_names: Vec<String>,
     pub handler: Function,
@@ -63,11 +63,11 @@ impl FromLua for ServerConfig {
 }
 
 struct LuaRequest {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    query: HashMap<String, String>,
-    body: Option<String>,
+    method: Bytes,
+    path: Bytes,
+    headers: SmallVec<[(Bytes, Bytes); 16]>,
+    query: SmallVec<[(Bytes, Bytes); 8]>,
+    body: Option<Bytes>,
     respond_to: oneshot::Sender<LuaResponse>,
     started_at: Instant,
 }
@@ -126,18 +126,30 @@ async fn handler(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (parts, body_stream) = req.into_parts();
 
-    let headers: HashMap<String, String> = parts
+    let headers: SmallVec<[(Bytes, Bytes); 16]> = parts
         .headers
         .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+        .filter_map(|(k, v)| {
+            v.to_str().ok().map(|v_str| {
+                (
+                    Bytes::copy_from_slice(k.as_str().as_bytes()),
+                    Bytes::copy_from_slice(v_str.as_bytes()),
+                )
+            })
+        })
         .collect();
 
-    let query: HashMap<String, String> = parts
+    let query: SmallVec<[(Bytes, Bytes); 8]> = parts
         .uri
         .query()
         .map(|q| {
             form_urlencoded::parse(q.as_bytes())
-                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .map(|(k, v)| {
+                    (
+                        Bytes::copy_from_slice(k.as_bytes()),
+                        Bytes::copy_from_slice(v.as_bytes()),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -146,8 +158,8 @@ async fn handler(
         .await
         .unwrap()
         .to_bytes();
-    let body_str = if !body_bytes.is_empty() {
-        Some(String::from_utf8_lossy(&body_bytes).to_string())
+    let body = if !body_bytes.is_empty() {
+        Some(body_bytes)
     } else {
         None
     };
@@ -155,11 +167,11 @@ async fn handler(
     let (resp_tx, resp_rx) = oneshot::channel();
 
     tx.send(LuaRequest {
-        method: parts.method.to_string().to_lowercase(),
-        path: parts.uri.path().to_string(),
+        method: Bytes::copy_from_slice(parts.method.as_str().as_bytes()),
+        path: Bytes::copy_from_slice(parts.uri.path().as_bytes()),
         headers,
         query,
-        body: body_str,
+        body,
         respond_to: resp_tx,
         started_at: Instant::now(),
     })

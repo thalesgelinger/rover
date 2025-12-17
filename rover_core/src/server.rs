@@ -72,7 +72,7 @@ impl Server for Table {
                         }
 
                         let route = Route {
-                            method: key_string,
+                            method: key_string.into(),
                             pattern: path.to_string(),
                             param_names: param_names.clone(),
                             handler: func,
@@ -137,12 +137,10 @@ impl Server for Table {
         extract_recursive(self, "", &mut param_names, &mut routes)?;
 
         // Sort routes: static routes first (for exact-match priority)
-        routes.sort_by(|a, b| {
-            match (a.is_static, b.is_static) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            }
+        routes.sort_by(|a, b| match (a.is_static, b.is_static) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
         });
 
         Ok(RouteTable { routes })

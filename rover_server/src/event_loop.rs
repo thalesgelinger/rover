@@ -13,24 +13,48 @@ use crate::{LuaRequest, LuaResponse, RouteTable, ServerConfig};
 pub fn run(lua: Lua, routes: RouteTable, mut rx: mpsc::Receiver<LuaRequest>, config: ServerConfig) {
     std::thread::spawn(move || {
         while let Some(req) = rx.blocking_recv() {
+            // Validate UTF-8 in method and path
+            let method_str = match std::str::from_utf8(&req.method) {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = req.respond_to.send(LuaResponse {
+                        status: StatusCode::BAD_REQUEST,
+                        body: "Invalid UTF-8 encoding in HTTP method".to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            let path_str = match std::str::from_utf8(&req.path) {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = req.respond_to.send(LuaResponse {
+                        status: StatusCode::BAD_REQUEST,
+                        body: "Invalid UTF-8 encoding in request path".to_string(),
+                    });
+                    continue;
+                }
+            };
+
             // Log incoming request
             if config.debug && !req.query.is_empty() {
                 debug!("  ├─ query: {:?}", req.query);
             }
             if config.debug {
                 if let Some(ref body) = req.body {
-                    debug!("  └─ body: {}", body);
+                    let body_display = std::str::from_utf8(body).unwrap_or("<binary data>");
+                    debug!("  └─ body: {}", body_display);
                 }
             }
 
-            let (handler, params) = match match_route(&routes, &req.method, &req.path) {
+            let (handler, params) = match match_route(&routes, method_str, path_str) {
                 Some((h, p)) => (h, p),
                 None => {
                     let elapsed = req.started_at.elapsed();
                     warn!(
                         "{} {} - 404 NOT_FOUND in {:.2}ms",
-                        req.method.to_uppercase(),
-                        req.path,
+                        method_str,
+                        path_str,
                         elapsed.as_secs_f64() * 1000.0
                     );
                     let _ = req.respond_to.send(LuaResponse {
@@ -44,9 +68,15 @@ pub fn run(lua: Lua, routes: RouteTable, mut rx: mpsc::Receiver<LuaRequest>, con
             let ctx = match build_lua_context(&lua, &req, &params) {
                 Ok(c) => c,
                 Err(e) => {
+                    let error_msg = e.to_string();
+                    let status = if error_msg.contains("Invalid UTF-8") {
+                        StatusCode::BAD_REQUEST
+                    } else {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    };
                     let _ = req.respond_to.send(LuaResponse {
-                        status: StatusCode::INTERNAL_SERVER_ERROR,
-                        body: format!("Failed to build context: {}", e),
+                        status,
+                        body: error_msg,
                     });
                     continue;
                 }
@@ -116,16 +146,16 @@ pub fn run(lua: Lua, routes: RouteTable, mut rx: mpsc::Receiver<LuaRequest>, con
             if status.is_success() {
                 info!(
                     "{} {} - {} in {:.2}ms",
-                    req.method.to_uppercase(),
-                    req.path,
+                    method_str,
+                    path_str,
                     status.as_u16(),
                     elapsed_ms
                 );
             } else if status.is_client_error() || status.is_server_error() {
                 warn!(
                     "{} {} - {} in {:.2}ms",
-                    req.method.to_uppercase(),
-                    req.path,
+                    method_str,
+                    path_str,
                     status.as_u16(),
                     elapsed_ms
                 );
@@ -142,18 +172,32 @@ fn build_lua_context(
     params: &HashMap<String, String>,
 ) -> mlua::Result<Table> {
     let ctx = lua.create_table()?;
-    ctx.set("method", req.method.as_str())?;
-    ctx.set("path", req.path.as_str())?;
+    
+    let method_str = std::str::from_utf8(&req.method)
+        .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in HTTP method".to_string()))?;
+    ctx.set("method", method_str)?;
+    
+    let path_str = std::str::from_utf8(&req.path)
+        .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in request path".to_string()))?;
+    ctx.set("path", path_str)?;
 
     let headers = lua.create_table()?;
     for (k, v) in &req.headers {
-        headers.set(k.as_str(), v.as_str())?;
+        let k_str = std::str::from_utf8(k)
+            .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string()))?;
+        let v_str = std::str::from_utf8(v)
+            .map_err(|_| mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str)))?;
+        headers.set(k_str, v_str)?;
     }
     ctx.set("headers", headers)?;
 
     let query = lua.create_table()?;
     for (k, v) in &req.query {
-        query.set(k.as_str(), v.as_str())?;
+        let k_str = std::str::from_utf8(k)
+            .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string()))?;
+        let v_str = std::str::from_utf8(v)
+            .map_err(|_| mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str)))?;
+        query.set(k_str, v_str)?;
     }
     ctx.set("query", query)?;
 
@@ -164,7 +208,9 @@ fn build_lua_context(
     ctx.set("params", params_table)?;
 
     if let Some(body) = &req.body {
-        ctx.set("body", body.as_str())?;
+        let body_str = std::str::from_utf8(body)
+            .map_err(|_| mlua::Error::RuntimeError("Request body contains invalid UTF-8 (binary data not supported)".to_string()))?;
+        ctx.set("body", body_str)?;
     }
 
     Ok(ctx)
@@ -176,7 +222,7 @@ fn match_route<'a>(
     path: &str,
 ) -> Option<(&'a Function, HashMap<String, String>)> {
     for route in &routes.routes {
-        if route.method != method {
+        if !route.method.eq_ignore_ascii_case(method.as_bytes()) {
             continue;
         }
 
