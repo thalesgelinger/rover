@@ -1,11 +1,19 @@
 mod event_loop;
 mod status_code;
+use http_body_util::Full;
+use hyper::body::Bytes;
+use hyper::server::conn::http2;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::time::Instant;
+use tokio::net::TcpListener;
 
-use anyhow::anyhow;
-
-use axum::{Router, body, extract::Request, response::IntoResponse, routing::any};
+use anyhow::{Result, anyhow};
 
 use mlua::{
     FromLua, Function, Lua,
@@ -31,7 +39,7 @@ pub struct RouteTable {
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    port: i32,
+    port: u16,
     host: String,
     debug: bool,
 }
@@ -48,7 +56,7 @@ impl FromLua for ServerConfig {
                 };
 
                 Ok(ServerConfig {
-                    port: config.get::<i32>("port").unwrap_or(4242),
+                    port: config.get::<u16>("port").unwrap_or(4242),
                     host: config.get::<String>("host").unwrap_or("localhost".into()),
                     debug,
                 })
@@ -73,73 +81,99 @@ struct LuaResponse {
     body: String,
 }
 
-async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) {
+async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()> {
     let (tx, rx) = mpsc::channel(1024);
-    let config_clone = config.clone();
-    event_loop::run(lua, routes, rx, config.clone());
 
     let addr = format!("{}:{}", config.host, config.port);
-    let app = Router::new().fallback(any(move |req| {
-        handle_all(req, tx.clone(), config_clone.clone())
-    }));
-
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-
     info!("🚀 Rover server running at http://{}", addr);
     if config.debug {
         info!("🐛 Debug mode enabled");
     }
 
-    axum::serve(listener, app).await.unwrap();
-}
-
-async fn handle_all(
-    req: Request,
-    tx: mpsc::Sender<LuaRequest>,
-    _config: ServerConfig,
-) -> impl IntoResponse {
-    let (parts, body_stream) = req.into_parts();
-
-    let headers: HashMap<String, String> = parts
-        .headers
-        .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
-        .collect();
-
-    let query: HashMap<String, String> = parts
-        .uri
-        .query()
-        .map(|q| {
-            form_urlencoded::parse(q.as_bytes())
-                .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let body_bytes = body::to_bytes(body_stream, usize::MAX).await.unwrap();
-    let body_str = if !body_bytes.is_empty() {
-        Some(String::from_utf8_lossy(&body_bytes).to_string())
+    let host: [u8; 4] = if config.host == "localhost" {
+        [127, 0, 0, 1]
     } else {
-        None
+        let parts: Vec<u8> = config
+            .host
+            .split('.')
+            .filter_map(|s| s.parse::<u8>().ok())
+            .collect();
+
+        parts.try_into().unwrap_or([127, 0, 0, 1])
     };
 
-    let (resp_tx, resp_rx) = oneshot::channel();
+    let addr = SocketAddr::from((host, config.port));
 
-    tx.send(LuaRequest {
-        method: parts.method.to_string().to_lowercase(),
-        path: parts.uri.path().to_string(),
-        headers,
-        query,
-        body: body_str,
-        respond_to: resp_tx,
-        started_at: Instant::now(),
-    })
-    .await
-    .unwrap();
+    let listener = TcpListener::bind(addr).await?;
 
-    let resp = resp_rx.await.unwrap();
-    (resp.status, resp.body)
+    event_loop::run(lua, routes, rx, config);
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
+
+        tokio::task::spawn(async move {
+            if let Err(err) = auto::Builder::new(TokioExecutor::new())
+                .serve_connection(io, service_fn(hello))
+                .await
+            {
+                eprintln!("Error serving connection: {}", err);
+            }
+        });
+    }
 }
+
+async fn hello(_: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
+    Ok(Response::new(Full::new(Bytes::from("Hello, World!"))))
+}
+
+// async fn handle_all(
+//     req: Request,
+//     tx: mpsc::Sender<LuaRequest>,
+//     _config: ServerConfig,
+// ) -> impl IntoResponse {
+//     let (parts, body_stream) = req.into_parts();
+//
+//     let headers: HashMap<String, String> = parts
+//         .headers
+//         .iter()
+//         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+//         .collect();
+//
+//     let query: HashMap<String, String> = parts
+//         .uri
+//         .query()
+//         .map(|q| {
+//             form_urlencoded::parse(q.as_bytes())
+//                 .map(|(k, v)| (k.into_owned(), v.into_owned()))
+//                 .collect()
+//         })
+//         .unwrap_or_default();
+//
+//     let body_bytes = body::to_bytes(body_stream, usize::MAX).await.unwrap();
+//     let body_str = if !body_bytes.is_empty() {
+//         Some(String::from_utf8_lossy(&body_bytes).to_string())
+//     } else {
+//         None
+//     };
+//
+//     let (resp_tx, resp_rx) = oneshot::channel();
+//
+//     tx.send(LuaRequest {
+//         method: parts.method.to_string().to_lowercase(),
+//         path: parts.uri.path().to_string(),
+//         headers,
+//         query,
+//         body: body_str,
+//         respond_to: resp_tx,
+//         started_at: Instant::now(),
+//     })
+//     .await
+//     .unwrap();
+//
+//     let resp = resp_rx.await.unwrap();
+//     (resp.status, resp.body)
+// }
 
 pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
     let log_level = if config.debug { "debug" } else { "info" };
@@ -157,5 +191,5 @@ pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
         .init();
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(server(lua, routes, config));
+    let _ = runtime.block_on(server(lua, routes, config));
 }
