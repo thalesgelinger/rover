@@ -202,31 +202,22 @@ pub fn run(
                 Value::String(ref s) => (StatusCode::OK, s.to_str().unwrap().to_string()),
 
                 Value::Table(table) => {
-                    if let Ok(status_code) = table.get::<u16>("status") {
-                        if status_code >= 400 {
-                            let message = table
-                                .get::<String>("message")
-                                .unwrap_or_else(|_| "Error".to_string());
-                            (
-                                StatusCode::from_u16(status_code)
-                                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                                message,
-                            )
-                        } else {
-                            let body = lua_table_to_json(&table).unwrap_or_else(|e| {
-                                format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
-                            });
-                            (
-                                StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
-                                body,
-                            )
-                        }
+                    // Try to extract rover response metadata
+                    let status = if let Ok(Value::Table(metadata)) = table.get::<Value>("__rover_response_metadata") {
+                        metadata.get::<u16>("status").unwrap_or(200)
                     } else {
-                        let json = lua_table_to_json(&table).unwrap_or_else(|e| {
-                            format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
-                        });
-                        (StatusCode::OK, json)
-                    }
+                        // Backward compatibility: check for old direct status field
+                        table.get::<u16>("status").unwrap_or(200)
+                    };
+                    
+                    let json = lua_table_to_json(&table).unwrap_or_else(|e| {
+                        format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
+                    });
+                    
+                    (
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                        json
+                    )
                 }
 
                 Value::Integer(i) => (StatusCode::OK, i.to_string()),

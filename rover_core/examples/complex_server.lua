@@ -2,11 +2,11 @@
 local api = rover.server {}
 
 function api.hello.get(ctx)
-    local token = ctx:headers()["Authorization"]
+    local token = ctx:headers()["authorization"]
 
     if not token then
         return api.json:status(401) {
-            message = "Hello World"
+            message = "Unauthorized"
         }
     end
 
