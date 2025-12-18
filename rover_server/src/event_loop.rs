@@ -74,7 +74,7 @@ impl FastRouter {
     }
 }
 
-pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, config: ServerConfig) {
+pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, _config: ServerConfig) {
     std::thread::spawn(move || {
         let fast_router = match FastRouter::from_routes(routes) {
             Ok(r) => r,
@@ -125,10 +125,10 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
             };
 
             // Log incoming request
-            if config.debug && !req.query.is_empty() {
-                debug!("  ├─ query: {:?}", req.query);
-            }
-            if config.debug {
+            if tracing::event_enabled!(tracing::Level::DEBUG) {
+                if !req.query.is_empty() {
+                    debug!("  ├─ query: {:?}", req.query);
+                }
                 if let Some(ref body) = req.body {
                     let body_display = std::str::from_utf8(body).unwrap_or("<binary data>");
                     debug!("  └─ body: {}", body_display);
@@ -227,26 +227,40 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
                 ),
             };
 
+            // Log response with body in debug mode
+            if tracing::event_enabled!(tracing::Level::DEBUG) {
+                let body_preview = if body.len() > 200 {
+                    format!("{}... ({} bytes)", &body[..200], body.len())
+                } else {
+                    body.clone()
+                };
+                debug!("  └─ response body: {}", body_preview);
+            }
+
             // Log response
             let elapsed = req.started_at.elapsed();
             let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
             if status.is_success() {
-                info!(
-                    "{} {} - {} in {:.2}ms",
-                    method,
-                    path_str,
-                    status.as_u16(),
-                    elapsed_ms
-                );
+                if tracing::event_enabled!(tracing::Level::INFO) {
+                    info!(
+                        "{} {} - {} in {:.2}ms",
+                        method,
+                        path_str,
+                        status.as_u16(),
+                        elapsed_ms
+                    );
+                }
             } else if status.is_client_error() || status.is_server_error() {
-                warn!(
-                    "{} {} - {} in {:.2}ms",
-                    method,
-                    path_str,
-                    status.as_u16(),
-                    elapsed_ms
-                );
+                if tracing::event_enabled!(tracing::Level::WARN) {
+                    warn!(
+                        "{} {} - {} in {:.2}ms",
+                        method,
+                        path_str,
+                        status.as_u16(),
+                        elapsed_ms
+                    );
+                }
             }
 
             let _ = req.respond_to.send(LuaResponse { status, body });

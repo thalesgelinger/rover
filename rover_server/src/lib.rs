@@ -80,24 +80,30 @@ pub struct RouteTable {
 pub struct ServerConfig {
     port: u16,
     host: String,
-    debug: bool,
+    log_level: String,
 }
 
 impl FromLua for ServerConfig {
     fn from_lua(value: Value, _lua: &Lua) -> mlua::Result<Self> {
         match value {
             Value::Table(config) => {
-                let debug = config.get::<Value>("debug")?;
-                let debug = match debug {
-                    Value::Nil => true,
-                    Value::Boolean(val) => val,
-                    _ => Err(anyhow!("Debug should be boolean"))?,
+                let log_level = config.get::<Value>("log_level")?;
+                let log_level = match log_level {
+                    Value::Nil => "debug".to_string(),
+                    Value::String(s) => {
+                        let level = s.to_str()?.to_lowercase();
+                        match level.as_str() {
+                            "debug" | "info" | "warn" | "error" | "nope" => level,
+                            _ => Err(anyhow!("log_level must be one of: debug, info, warn, error, nope"))?,
+                        }
+                    }
+                    _ => Err(anyhow!("log_level should be a string"))?,
                 };
 
                 Ok(ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host: config.get::<String>("host").unwrap_or("localhost".into()),
-                    debug,
+                    log_level,
                 })
             }
             _ => Err(anyhow!("Server config must be a table"))?,
@@ -124,9 +130,11 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()
     let (tx, rx) = mpsc::channel(1024);
 
     let addr = format!("{}:{}", config.host, config.port);
-    info!("🚀 Rover server running at http://{}", addr);
-    if config.debug {
-        info!("🐛 Debug mode enabled");
+    if config.log_level != "nope" {
+        info!("🚀 Rover server running at http://{}", addr);
+        if config.log_level == "debug" {
+            info!("🐛 Debug mode enabled");
+        }
     }
 
     let host: [u8; 4] = if config.host == "localhost" {
@@ -229,19 +237,19 @@ async fn handler(
 }
 
 pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
-    let log_level = if config.debug { "debug" } else { "info" };
-
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
-        )
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_file(false)
-        .with_line_number(false)
-        .init();
+    if config.log_level != "nope" {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.log_level)),
+            )
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_file(false)
+            .with_line_number(false)
+            .init();
+    }
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _ = runtime.block_on(server(lua, routes, config));
