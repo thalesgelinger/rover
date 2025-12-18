@@ -18,14 +18,15 @@ function api.reflect.get(ctx)
     return {
         method = ctx.method,
         path = ctx.path,
-        headers = ctx.headers,
-        query = ctx.query
+        headers = ctx:headers(),
+        query = ctx:query()
     }
 end
 
 -- POST with body
 function api.users.post(ctx)
-    if not ctx.body then
+    local body = ctx:body()
+    if not body then
         return {
             status = 400,
             message = "Body required"
@@ -34,7 +35,7 @@ function api.users.post(ctx)
     
     return {
         created = true,
-        body = ctx.body
+        body = body
     }
 end
 

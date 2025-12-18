@@ -21,7 +21,7 @@ use mlua::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum HttpMethod {
     Get = 1,
@@ -33,7 +33,6 @@ pub enum HttpMethod {
 
 impl HttpMethod {
     pub fn from_str(s: &str) -> Option<Self> {
-        // Fast path: direct byte comparison without allocation
         let bytes = s.as_bytes();
         match bytes.len() {
             3 => {
@@ -69,7 +68,7 @@ impl HttpMethod {
             _ => None,
         }
     }
-    
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Get => "GET",
@@ -79,7 +78,7 @@ impl HttpMethod {
             Self::Delete => "DELETE",
         }
     }
-    
+
     pub fn valid_methods() -> &'static [&'static str] {
         &["get", "post", "put", "patch", "delete"]
     }
@@ -122,7 +121,9 @@ impl FromLua for ServerConfig {
                         let level = s.to_str()?.to_lowercase();
                         match level.as_str() {
                             "debug" | "info" | "warn" | "error" | "nope" => level,
-                            _ => Err(anyhow!("log_level must be one of: debug, info, warn, error, nope"))?,
+                            _ => Err(anyhow!(
+                                "log_level must be one of: debug, info, warn, error, nope"
+                            ))?,
                         }
                     }
                     _ => Err(anyhow!("log_level should be a string"))?,
@@ -142,7 +143,7 @@ impl FromLua for ServerConfig {
 struct LuaRequest {
     method: Bytes,
     path: Bytes,
-    headers: SmallVec<[(Bytes, Bytes); 16]>,
+    headers: SmallVec<[(Bytes, Bytes); 8]>,
     query: SmallVec<[(Bytes, Bytes); 8]>,
     body: Option<Bytes>,
     respond_to: oneshot::Sender<LuaResponse>,
@@ -205,33 +206,34 @@ async fn handler(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (parts, body_stream) = req.into_parts();
 
-    let headers: SmallVec<[(Bytes, Bytes); 16]> = parts
-        .headers
-        .iter()
-        .filter_map(|(k, v)| {
-            v.to_str().ok().map(|v_str| {
-                (
-                    Bytes::copy_from_slice(k.as_str().as_bytes()),
-                    Bytes::copy_from_slice(v_str.as_bytes()),
-                )
-            })
-        })
-        .collect();
-
-    let query: SmallVec<[(Bytes, Bytes); 8]> = parts
-        .uri
-        .query()
-        .map(|q| {
-            form_urlencoded::parse(q.as_bytes())
-                .map(|(k, v)| {
+    let headers: SmallVec<[(Bytes, Bytes); 8]> = if parts.headers.is_empty() {
+        SmallVec::new()
+    } else {
+        parts
+            .headers
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str().ok().map(|v_str| {
                     (
-                        Bytes::copy_from_slice(k.as_bytes()),
-                        Bytes::copy_from_slice(v.as_bytes()),
+                        Bytes::copy_from_slice(k.as_str().as_bytes()),
+                        Bytes::copy_from_slice(v_str.as_bytes()),
                     )
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+            })
+            .collect()
+    };
+
+    let query: SmallVec<[(Bytes, Bytes); 8]> = match parts.uri.query() {
+        Some(q) => form_urlencoded::parse(q.as_bytes())
+            .map(|(k, v)| {
+                (
+                    Bytes::copy_from_slice(k.as_bytes()),
+                    Bytes::copy_from_slice(v.as_bytes()),
+                )
+            })
+            .collect(),
+        None => SmallVec::new(),
+    };
 
     let body_bytes = http_body_util::BodyExt::collect(body_stream)
         .await

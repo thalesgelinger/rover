@@ -4,16 +4,16 @@ function api.echo.get(ctx)
     return {
         method = ctx.method,
         path = ctx.path,
-        user_agent = ctx.headers["user-agent"] or "none",
-        page = ctx.query.page or "1",
-        limit = ctx.query.limit or "10"
+        user_agent = ctx:headers()["user-agent"] or "none",
+        page = ctx:query().page or "1",
+        limit = ctx:query().limit or "10"
     }
 end
 
 function api.echo.post(ctx)
     return {
-        received_body = ctx.body or "no body",
-        content_type = ctx.headers["content-type"] or "none"
+        received_body = ctx:body() or "no body",
+        content_type = ctx:headers()["content-type"] or "none"
     }
 end
 

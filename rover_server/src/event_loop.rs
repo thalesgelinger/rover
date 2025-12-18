@@ -17,6 +17,7 @@ use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig};
 pub struct FastRouter {
     router: Router<SmallVec<[(HttpMethod, usize); 2]>>,
     handlers: Vec<Function>,
+    static_routes: HashMap<(String, HttpMethod), usize>,
 }
 
 impl FastRouter {
@@ -24,11 +25,18 @@ impl FastRouter {
         let mut router = Router::new();
         let mut handlers = Vec::new();
         let mut pattern_map: HashMap<Vec<u8>, SmallVec<[(HttpMethod, usize); 2]>> = HashMap::new();
+        let mut static_routes = HashMap::new();
 
-        // Group routes by pattern
         for route in routes {
             let handler_idx = handlers.len();
             handlers.push(route.handler);
+
+            if route.is_static {
+                let pattern_str = std::str::from_utf8(&route.pattern)
+                    .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?
+                    .to_string();
+                static_routes.insert((pattern_str, route.method), handler_idx);
+            }
 
             pattern_map
                 .entry(route.pattern.to_vec())
@@ -36,14 +44,17 @@ impl FastRouter {
                 .push((route.method, handler_idx));
         }
 
-        // Insert into router
         for (pattern_bytes, methods) in pattern_map {
             let pattern_str = std::str::from_utf8(&pattern_bytes)
                 .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?;
             router.insert(pattern_str, methods)?;
         }
 
-        Ok(Self { router, handlers })
+        Ok(Self {
+            router,
+            handlers,
+            static_routes,
+        })
     }
 
     pub fn match_route(
@@ -51,9 +62,12 @@ impl FastRouter {
         method: HttpMethod,
         path: &str,
     ) -> Option<(&Function, HashMap<String, String>)> {
+        if let Some(&handler_idx) = self.static_routes.get(&(path.to_string(), method)) {
+            return Some((&self.handlers[handler_idx], HashMap::new()));
+        }
+
         let matched = self.router.at(path).ok()?;
 
-        // Find handler for this method
         let handler_idx = matched
             .value
             .iter()
@@ -62,7 +76,6 @@ impl FastRouter {
 
         let handler = &self.handlers[handler_idx];
 
-        // Build params with capacity hint
         let mut params = HashMap::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
             let decoded = urlencoding::decode(value).ok()?.into_owned();
@@ -92,7 +105,6 @@ pub fn run(
         };
 
         while let Some(req) = rx.blocking_recv() {
-            // Validate UTF-8 in method
             let method_str = match std::str::from_utf8(&req.method) {
                 Ok(s) => s,
                 Err(_) => {
@@ -104,7 +116,6 @@ pub fn run(
                 }
             };
 
-            // Convert to HttpMethod
             let method = match HttpMethod::from_str(method_str) {
                 Some(m) => m,
                 None => {
@@ -131,7 +142,6 @@ pub fn run(
                 }
             };
 
-            // Log incoming request
             if tracing::event_enabled!(tracing::Level::DEBUG) {
                 if !req.query.is_empty() {
                     debug!("  ├─ query: {:?}", req.query);
@@ -234,7 +244,6 @@ pub fn run(
                 ),
             };
 
-            // Log response with body in debug mode
             if tracing::event_enabled!(tracing::Level::DEBUG) {
                 let body_preview = if body.len() > 200 {
                     format!("{}... ({} bytes)", &body[..200], body.len())
@@ -244,7 +253,6 @@ pub fn run(
                 debug!("  └─ response body: {}", body_preview);
             }
 
-            // Log response
             let elapsed = req.started_at.elapsed();
             let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
@@ -290,27 +298,35 @@ fn build_lua_context(
         .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in request path".to_string()))?;
     ctx.set("path", path_str)?;
 
-    let headers = if req.headers.is_empty() {
-        lua.create_table()?
-    } else {
-        let headers = lua.create_table_with_capacity(0, req.headers.len())?;
-        for (k, v) in &req.headers {
-            let k_str = std::str::from_utf8(k)
-                .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string()))?;
+    let headers_clone = req.headers.clone();
+    let query_clone = req.query.clone();
+    let params_clone = params.clone();
+    let body_clone = req.body.clone();
+
+    let headers_fn = lua.create_function(move |lua, ()| {
+        if headers_clone.is_empty() {
+            return lua.create_table();
+        }
+        let headers = lua.create_table_with_capacity(0, headers_clone.len())?;
+        for (k, v) in &headers_clone {
+            let k_str = std::str::from_utf8(k).map_err(|_| {
+                mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string())
+            })?;
             let v_str = std::str::from_utf8(v).map_err(|_| {
                 mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str))
             })?;
             headers.set(k_str, v_str)?;
         }
-        headers
-    };
-    ctx.set("headers", headers)?;
+        Ok(headers)
+    })?;
+    ctx.set("headers", headers_fn)?;
 
-    let query = if req.query.is_empty() {
-        lua.create_table()?
-    } else {
-        let query = lua.create_table_with_capacity(0, req.query.len())?;
-        for (k, v) in &req.query {
+    let query_fn = lua.create_function(move |lua, ()| {
+        if query_clone.is_empty() {
+            return lua.create_table();
+        }
+        let query = lua.create_table_with_capacity(0, query_clone.len())?;
+        for (k, v) in &query_clone {
             let k_str = std::str::from_utf8(k).map_err(|_| {
                 mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string())
             })?;
@@ -319,29 +335,35 @@ fn build_lua_context(
             })?;
             query.set(k_str, v_str)?;
         }
-        query
-    };
-    ctx.set("query", query)?;
+        Ok(query)
+    })?;
+    ctx.set("query", query_fn)?;
 
-    let params_table = if params.is_empty() {
-        lua.create_table()?
-    } else {
-        let params_table = lua.create_table_with_capacity(0, params.len())?;
-        for (k, v) in params {
+    let params_fn = lua.create_function(move |lua, ()| {
+        if params_clone.is_empty() {
+            return lua.create_table();
+        }
+        let params_table = lua.create_table_with_capacity(0, params_clone.len())?;
+        for (k, v) in &params_clone {
             params_table.set(k.as_str(), v.as_str())?;
         }
-        params_table
-    };
-    ctx.set("params", params_table)?;
+        Ok(params_table)
+    })?;
+    ctx.set("params", params_fn)?;
 
-    if let Some(body) = &req.body {
-        let body_str = std::str::from_utf8(body).map_err(|_| {
-            mlua::Error::RuntimeError(
-                "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
-            )
-        })?;
-        ctx.set("body", body_str)?;
-    }
+    let body_fn = lua.create_function(move |_lua, ()| {
+        if let Some(body) = &body_clone {
+            let body_str = std::str::from_utf8(body).map_err(|_| {
+                mlua::Error::RuntimeError(
+                    "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
+                )
+            })?;
+            Ok(Some(body_str.to_string()))
+        } else {
+            Ok(None)
+        }
+    })?;
+    ctx.set("body", body_fn)?;
 
     Ok(ctx)
 }
