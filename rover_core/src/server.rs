@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use mlua::{Lua, Table, Value};
-use rover_server::{Route, RouteTable, ServerConfig};
+use rover_server::{Bytes, HttpMethod, Route, RouteTable, ServerConfig};
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
@@ -61,19 +61,17 @@ impl Server for Table {
                             current_path
                         };
 
-                        let valid_methods = vec!["get", "post", "patch", "put", "delete"];
-
-                        if !valid_methods.contains(&key_string.as_str()) {
-                            return Err(anyhow!(
-                                "Unknown HTTP method '{}' at path '{}'",
+                        let method = HttpMethod::from_str(&key_string)
+                            .ok_or_else(|| anyhow!(
+                                "Unknown HTTP method '{}' at path '{}'. Valid methods: {}",
                                 key_string,
-                                path
-                            ));
-                        }
+                                path,
+                                HttpMethod::valid_methods().join(", ")
+                            ))?;
 
                         let route = Route {
-                            method: key_string.into(),
-                            pattern: path.to_string(),
+                            method,
+                            pattern: Bytes::from(path.to_string()),
                             param_names: param_names.clone(),
                             handler: func,
                             is_static: param_names.is_empty(),
@@ -83,7 +81,7 @@ impl Server for Table {
                     (Value::String(key_str), Value::Table(nested_table)) => {
                         let key_string = key_str.to_str()?.to_string();
 
-                        // Check if this is a parameter segment
+                        // Check if this is a parameter segment - convert to matchit format immediately
                         let (segment, param_name) = if key_string.starts_with("p_") {
                             let param = key_string.strip_prefix("p_").unwrap();
                             if param.is_empty() {
@@ -92,7 +90,7 @@ impl Server for Table {
                                     current_path
                                 ));
                             }
-                            (format!(":{}", param), Some(param.to_string()))
+                            (format!("{{{}}}", param), Some(param.to_string()))
                         } else {
                             (key_string.clone(), None)
                         };

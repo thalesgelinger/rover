@@ -1,86 +1,67 @@
 use std::collections::HashMap;
 
+use anyhow::Result;
 use hyper::StatusCode;
 use matchit::Router;
 use mlua::{
     Function, Lua, LuaSerdeExt, Table,
     Value::{self},
 };
+use smallvec::SmallVec;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::{LuaRequest, LuaResponse, Route, ServerConfig};
+use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig};
 
 pub struct FastRouter {
-    get_router: Router<usize>,
-    post_router: Router<usize>,
-    put_router: Router<usize>,
-    patch_router: Router<usize>,
-    delete_router: Router<usize>,
+    router: Router<SmallVec<[(HttpMethod, usize); 2]>>,
     handlers: Vec<Function>,
 }
 
 impl FastRouter {
-    pub fn from_routes(routes: Vec<Route>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut get_router = Router::new();
-        let mut post_router = Router::new();
-        let mut put_router = Router::new();
-        let mut patch_router = Router::new();
-        let mut delete_router = Router::new();
+    pub fn from_routes(routes: Vec<Route>) -> Result<Self> {
+        let mut router = Router::new();
         let mut handlers = Vec::new();
+        let mut pattern_map: HashMap<Vec<u8>, SmallVec<[(HttpMethod, usize); 2]>> = HashMap::new();
 
-        for (idx, route) in routes.into_iter().enumerate() {
-            let method_str = std::str::from_utf8(&route.method)?;
-            // Convert :param to {param} for matchit syntax
-            let matchit_pattern = route.pattern
-                .split('/')
-                .map(|seg| {
-                    if let Some(param) = seg.strip_prefix(':') {
-                        format!("{{{}}}", param)
-                    } else {
-                        seg.to_string()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("/");
-            
-            let router = match method_str.to_lowercase().as_str() {
-                "get" => &mut get_router,
-                "post" => &mut post_router,
-                "put" => &mut put_router,
-                "patch" => &mut patch_router,
-                "delete" => &mut delete_router,
-                _ => return Err(format!("Unknown HTTP method: {}", method_str).into()),
-            };
-            
-            router.insert(&matchit_pattern, idx)?;
+        // Group routes by pattern
+        for route in routes {
+            let handler_idx = handlers.len();
             handlers.push(route.handler);
+            
+            pattern_map
+                .entry(route.pattern.to_vec())
+                .or_insert_with(SmallVec::new)
+                .push((route.method, handler_idx));
         }
 
-        Ok(Self { 
-            get_router,
-            post_router,
-            put_router,
-            patch_router,
-            delete_router,
-            handlers 
-        })
+        // Insert into router
+        for (pattern_bytes, methods) in pattern_map {
+            let pattern_str = std::str::from_utf8(&pattern_bytes)
+                .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?;
+            router.insert(pattern_str, methods)?;
+        }
+
+        Ok(Self { router, handlers })
     }
 
-    pub fn match_route(&self, method: &str, path: &str) -> Option<(&Function, HashMap<String, String>)> {
-        let router = match method.to_lowercase().as_str() {
-            "get" => &self.get_router,
-            "post" => &self.post_router,
-            "put" => &self.put_router,
-            "patch" => &self.patch_router,
-            "delete" => &self.delete_router,
-            _ => return None,
-        };
+    pub fn match_route(
+        &self,
+        method: HttpMethod,
+        path: &str,
+    ) -> Option<(&Function, HashMap<String, String>)> {
+        let matched = self.router.at(path).ok()?;
         
-        let matched = router.at(path).ok()?;
-        let handler = &self.handlers[*matched.value];
+        // Find handler for this method
+        let handler_idx = matched.value
+            .iter()
+            .find(|(m, _)| *m == method)
+            .map(|(_, idx)| *idx)?;
         
-        let mut params = HashMap::new();
+        let handler = &self.handlers[handler_idx];
+        
+        // Build params with capacity hint
+        let mut params = HashMap::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
             let decoded = urlencoding::decode(value).ok()?.into_owned();
             if decoded.is_empty() {
@@ -104,13 +85,29 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
         };
         
         while let Some(req) = rx.blocking_recv() {
-            // Validate UTF-8 in method and path
+            // Validate UTF-8 in method
             let method_str = match std::str::from_utf8(&req.method) {
                 Ok(s) => s,
                 Err(_) => {
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::BAD_REQUEST,
                         body: "Invalid UTF-8 encoding in HTTP method".to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            // Convert to HttpMethod
+            let method = match HttpMethod::from_str(method_str) {
+                Some(m) => m,
+                None => {
+                    let _ = req.respond_to.send(LuaResponse {
+                        status: StatusCode::BAD_REQUEST,
+                        body: format!(
+                            "Invalid HTTP method '{}'. Valid methods: {}",
+                            method_str,
+                            HttpMethod::valid_methods().join(", ")
+                        ),
                     });
                     continue;
                 }
@@ -138,13 +135,13 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
                 }
             }
 
-            let (handler, params) = match fast_router.match_route(method_str, path_str) {
+            let (handler, params) = match fast_router.match_route(method, path_str) {
                 Some((h, p)) => (h, p),
                 None => {
                     let elapsed = req.started_at.elapsed();
                     warn!(
                         "{} {} - 404 NOT_FOUND in {:.2}ms",
-                        method_str,
+                        method,
                         path_str,
                         elapsed.as_secs_f64() * 1000.0
                     );
@@ -237,7 +234,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
             if status.is_success() {
                 info!(
                     "{} {} - {} in {:.2}ms",
-                    method_str,
+                    method,
                     path_str,
                     status.as_u16(),
                     elapsed_ms
@@ -245,7 +242,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, con
             } else if status.is_client_error() || status.is_server_error() {
                 warn!(
                     "{} {} - {} in {:.2}ms",
-                    method_str,
+                    method,
                     path_str,
                     status.as_u16(),
                     elapsed_ms

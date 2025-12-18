@@ -1,6 +1,6 @@
 mod event_loop;
 use http_body_util::Full;
-use hyper::body::Bytes;
+pub use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -20,10 +20,53 @@ use mlua::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum HttpMethod {
+    Get = 1,
+    Post = 2,
+    Put = 4,
+    Patch = 8,
+    Delete = 16,
+}
+
+impl HttpMethod {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "get" => Some(Self::Get),
+            "post" => Some(Self::Post),
+            "put" => Some(Self::Put),
+            "patch" => Some(Self::Patch),
+            "delete" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+    
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+        }
+    }
+    
+    pub fn valid_methods() -> &'static [&'static str] {
+        &["get", "post", "put", "patch", "delete"]
+    }
+}
+
+impl std::fmt::Display for HttpMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Clone)]
 pub struct Route {
-    pub method: Bytes,
-    pub pattern: String,
+    pub method: HttpMethod,
+    pub pattern: Bytes,
     pub param_names: Vec<String>,
     pub handler: Function,
     pub is_static: bool,
