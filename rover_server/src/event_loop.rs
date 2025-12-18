@@ -4,13 +4,14 @@ use anyhow::Result;
 use hyper::StatusCode;
 use matchit::Router;
 use mlua::{
-    Function, Lua, LuaSerdeExt, Table,
+    Function, Lua, Table,
     Value::{self},
 };
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::to_json::ToJson;
 use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig};
 
 pub struct FastRouter {
@@ -28,7 +29,7 @@ impl FastRouter {
         for route in routes {
             let handler_idx = handlers.len();
             handlers.push(route.handler);
-            
+
             pattern_map
                 .entry(route.pattern.to_vec())
                 .or_insert_with(SmallVec::new)
@@ -51,15 +52,16 @@ impl FastRouter {
         path: &str,
     ) -> Option<(&Function, HashMap<String, String>)> {
         let matched = self.router.at(path).ok()?;
-        
+
         // Find handler for this method
-        let handler_idx = matched.value
+        let handler_idx = matched
+            .value
             .iter()
             .find(|(m, _)| *m == method)
             .map(|(_, idx)| *idx)?;
-        
+
         let handler = &self.handlers[handler_idx];
-        
+
         // Build params with capacity hint
         let mut params = HashMap::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
@@ -69,12 +71,17 @@ impl FastRouter {
             }
             params.insert(name.to_string(), decoded);
         }
-        
+
         Some((handler, params))
     }
 }
 
-pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, _config: ServerConfig) {
+pub fn run(
+    lua: Lua,
+    routes: Vec<Route>,
+    mut rx: mpsc::Receiver<LuaRequest>,
+    _config: ServerConfig,
+) {
     std::thread::spawn(move || {
         let fast_router = match FastRouter::from_routes(routes) {
             Ok(r) => r,
@@ -83,7 +90,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, _co
                 return;
             }
         };
-        
+
         while let Some(req) = rx.blocking_recv() {
             // Validate UTF-8 in method
             let method_str = match std::str::from_utf8(&req.method) {
@@ -196,7 +203,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, _co
                                 message,
                             )
                         } else {
-                            let body = lua_table_to_json(&lua, table).unwrap_or_else(|e| {
+                            let body = lua_table_to_json(&table).unwrap_or_else(|e| {
                                 format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
                             });
                             (
@@ -205,7 +212,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: mpsc::Receiver<LuaRequest>, _co
                             )
                         }
                     } else {
-                        let json = lua_table_to_json(&lua, table).unwrap_or_else(|e| {
+                        let json = lua_table_to_json(&table).unwrap_or_else(|e| {
                             format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
                         });
                         (StatusCode::OK, json)
@@ -274,11 +281,11 @@ fn build_lua_context(
     params: &HashMap<String, String>,
 ) -> mlua::Result<Table> {
     let ctx = lua.create_table()?;
-    
+
     let method_str = std::str::from_utf8(&req.method)
         .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in HTTP method".to_string()))?;
     ctx.set("method", method_str)?;
-    
+
     let path_str = std::str::from_utf8(&req.path)
         .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in request path".to_string()))?;
     ctx.set("path", path_str)?;
@@ -287,18 +294,21 @@ fn build_lua_context(
     for (k, v) in &req.headers {
         let k_str = std::str::from_utf8(k)
             .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string()))?;
-        let v_str = std::str::from_utf8(v)
-            .map_err(|_| mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str)))?;
+        let v_str = std::str::from_utf8(v).map_err(|_| {
+            mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str))
+        })?;
         headers.set(k_str, v_str)?;
     }
     ctx.set("headers", headers)?;
 
     let query = lua.create_table()?;
     for (k, v) in &req.query {
-        let k_str = std::str::from_utf8(k)
-            .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string()))?;
-        let v_str = std::str::from_utf8(v)
-            .map_err(|_| mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str)))?;
+        let k_str = std::str::from_utf8(k).map_err(|_| {
+            mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string())
+        })?;
+        let v_str = std::str::from_utf8(v).map_err(|_| {
+            mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str))
+        })?;
         query.set(k_str, v_str)?;
     }
     ctx.set("query", query)?;
@@ -310,17 +320,19 @@ fn build_lua_context(
     ctx.set("params", params_table)?;
 
     if let Some(body) = &req.body {
-        let body_str = std::str::from_utf8(body)
-            .map_err(|_| mlua::Error::RuntimeError("Request body contains invalid UTF-8 (binary data not supported)".to_string()))?;
+        let body_str = std::str::from_utf8(body).map_err(|_| {
+            mlua::Error::RuntimeError(
+                "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
+            )
+        })?;
         ctx.set("body", body_str)?;
     }
 
     Ok(ctx)
 }
 
-
-
-fn lua_table_to_json(lua: &Lua, table: Table) -> mlua::Result<String> {
-    let json_value: serde_json::Value = lua.from_value(Value::Table(table))?;
-    Ok(serde_json::to_string(&json_value).unwrap())
+fn lua_table_to_json(table: &Table) -> Result<String> {
+    table
+        .to_json_string()
+        .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))
 }
