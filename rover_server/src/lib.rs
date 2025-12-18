@@ -33,12 +33,39 @@ pub enum HttpMethod {
 
 impl HttpMethod {
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "get" => Some(Self::Get),
-            "post" => Some(Self::Post),
-            "put" => Some(Self::Put),
-            "patch" => Some(Self::Patch),
-            "delete" => Some(Self::Delete),
+        // Fast path: direct byte comparison without allocation
+        let bytes = s.as_bytes();
+        match bytes.len() {
+            3 => {
+                if bytes.eq_ignore_ascii_case(b"get") {
+                    Some(Self::Get)
+                } else if bytes.eq_ignore_ascii_case(b"put") {
+                    Some(Self::Put)
+                } else {
+                    None
+                }
+            }
+            4 => {
+                if bytes.eq_ignore_ascii_case(b"post") {
+                    Some(Self::Post)
+                } else {
+                    None
+                }
+            }
+            5 => {
+                if bytes.eq_ignore_ascii_case(b"patch") {
+                    Some(Self::Patch)
+                } else {
+                    None
+                }
+            }
+            6 => {
+                if bytes.eq_ignore_ascii_case(b"delete") {
+                    Some(Self::Delete)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
