@@ -2,12 +2,9 @@ use mlua::{Table, Value};
 
 const MAX_DEPTH: usize = 64;
 
-/// Trait for converting Lua values directly to JSON without intermediate allocations
 pub trait ToJson {
-    /// Serialize to JSON bytes, writing directly to the provided buffer
     fn to_json(&self, buf: &mut Vec<u8>) -> mlua::Result<()>;
 
-    /// Serialize to JSON string
     fn to_json_string(&self) -> mlua::Result<String> {
         let mut buf = Vec::with_capacity(256);
         self.to_json(&mut buf)?;
@@ -27,15 +24,14 @@ enum TableType {
     Object,
 }
 
-/// Detect whether a Lua table should be serialized as JSON array or object
-fn detect_table_type(table: &Table) -> mlua::Result<TableType> {
+fn detect_and_collect(table: &Table) -> mlua::Result<(TableType, Vec<(Value, Value)>)> {
+    let mut pairs = Vec::new();
     let mut max_index = 0;
     let mut has_sequential = true;
     let mut count = 0;
 
-    // First pass: check all keys
     for pair in table.pairs::<Value, Value>() {
-        let (key, _) = pair?;
+        let (key, value) = pair?;
         count += 1;
 
         match key {
@@ -45,22 +41,23 @@ fn detect_table_type(table: &Table) -> mlua::Result<TableType> {
                 }
             }
             Value::Integer(_) => {
-                // Non-positive integer key means it's an object
                 has_sequential = false;
             }
             _ => {
-                // Non-integer key means it's an object
                 has_sequential = false;
             }
         }
+
+        pairs.push((key, value));
     }
 
-    // If we have sequential indices from 1..max_index with no gaps, it's an array
-    if has_sequential && max_index > 0 && max_index == count {
-        Ok(TableType::Array { len: max_index })
+    let table_type = if has_sequential && max_index > 0 && max_index == count {
+        TableType::Array { len: max_index }
     } else {
-        Ok(TableType::Object)
-    }
+        TableType::Object
+    };
+
+    Ok((table_type, pairs))
 }
 
 #[inline]
@@ -71,13 +68,15 @@ fn serialize_table(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Resu
         ));
     }
 
-    match detect_table_type(table)? {
-        TableType::Array { len } => serialize_array(table, buf, len, depth),
-        TableType::Object => serialize_object(table, buf, depth),
+    let (table_type, pairs) = detect_and_collect(table)?;
+
+    match table_type {
+        TableType::Array { len } => serialize_array_from_table(table, buf, len, depth),
+        TableType::Object => serialize_object_from_pairs(pairs, buf, depth),
     }
 }
 
-fn serialize_array(
+fn serialize_array_from_table(
     table: &Table,
     buf: &mut Vec<u8>,
     len: usize,
@@ -98,19 +97,20 @@ fn serialize_array(
     Ok(())
 }
 
-fn serialize_object(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Result<()> {
+fn serialize_object_from_pairs(
+    pairs: Vec<(Value, Value)>,
+    buf: &mut Vec<u8>,
+    depth: usize,
+) -> mlua::Result<()> {
     buf.push(b'{');
 
     let mut first = true;
-    for pair in table.pairs::<Value, Value>() {
-        let (key, value) = pair?;
-
+    for (key, value) in pairs {
         if !first {
             buf.push(b',');
         }
         first = false;
 
-        // Serialize key as string
         match key {
             Value::String(s) => {
                 serialize_str(s.to_str()?, buf);
@@ -207,7 +207,6 @@ fn serialize_str<S: AsRef<str>>(s: S, buf: &mut Vec<u8>) {
             b'\x0C' => b'f',
             _ => {
                 if byte < 0x20 {
-                    // Control character - need unicode escape
                     if start < i {
                         buf.extend_from_slice(&bytes[start..i]);
                     }
@@ -220,18 +219,15 @@ fn serialize_str<S: AsRef<str>>(s: S, buf: &mut Vec<u8>) {
             }
         };
 
-        // Flush unescaped portion
         if start < i {
             buf.extend_from_slice(&bytes[start..i]);
         }
 
-        // Write escaped character
         buf.push(b'\\');
         buf.push(escape);
         start = i + 1;
     }
 
-    // Flush remaining unescaped portion
     if start < bytes.len() {
         buf.extend_from_slice(&bytes[start..]);
     }
@@ -316,14 +312,12 @@ mod tests {
         let lua = Lua::new();
         let table = lua.create_table().unwrap();
         table.set(1, "first").unwrap();
-        table.set(2, Value::Nil).unwrap(); // Creates a gap
+        table.set(2, Value::Nil).unwrap();
         table.set(3, "third").unwrap();
 
         let json = table.to_json_string().unwrap();
-        // When there's a gap (nil value), Lua treats it as an object with numeric keys
-        // because it's not a proper sequence anymore
         assert!(json.contains("\"1\":\"first\""));
         assert!(json.contains("\"3\":\"third\""));
-        assert!(!json.contains("\"2\"")); // key 2 shouldn't exist
+        assert!(!json.contains("\"2\""));
     }
 }
