@@ -290,33 +290,48 @@ fn build_lua_context(
         .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in request path".to_string()))?;
     ctx.set("path", path_str)?;
 
-    let headers = lua.create_table()?;
-    for (k, v) in &req.headers {
-        let k_str = std::str::from_utf8(k)
-            .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string()))?;
-        let v_str = std::str::from_utf8(v).map_err(|_| {
-            mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str))
-        })?;
-        headers.set(k_str, v_str)?;
-    }
+    let headers = if req.headers.is_empty() {
+        lua.create_table()?
+    } else {
+        let headers = lua.create_table_with_capacity(0, req.headers.len())?;
+        for (k, v) in &req.headers {
+            let k_str = std::str::from_utf8(k)
+                .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string()))?;
+            let v_str = std::str::from_utf8(v).map_err(|_| {
+                mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str))
+            })?;
+            headers.set(k_str, v_str)?;
+        }
+        headers
+    };
     ctx.set("headers", headers)?;
 
-    let query = lua.create_table()?;
-    for (k, v) in &req.query {
-        let k_str = std::str::from_utf8(k).map_err(|_| {
-            mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string())
-        })?;
-        let v_str = std::str::from_utf8(v).map_err(|_| {
-            mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str))
-        })?;
-        query.set(k_str, v_str)?;
-    }
+    let query = if req.query.is_empty() {
+        lua.create_table()?
+    } else {
+        let query = lua.create_table_with_capacity(0, req.query.len())?;
+        for (k, v) in &req.query {
+            let k_str = std::str::from_utf8(k).map_err(|_| {
+                mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string())
+            })?;
+            let v_str = std::str::from_utf8(v).map_err(|_| {
+                mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str))
+            })?;
+            query.set(k_str, v_str)?;
+        }
+        query
+    };
     ctx.set("query", query)?;
 
-    let params_table = lua.create_table()?;
-    for (k, v) in params {
-        params_table.set(k.as_str(), v.as_str())?;
-    }
+    let params_table = if params.is_empty() {
+        lua.create_table()?
+    } else {
+        let params_table = lua.create_table_with_capacity(0, params.len())?;
+        for (k, v) in params {
+            params_table.set(k.as_str(), v.as_str())?;
+        }
+        params_table
+    };
     ctx.set("params", params_table)?;
 
     if let Some(body) = &req.body {
