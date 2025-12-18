@@ -1,4 +1,5 @@
 # Rover
+<img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/5605ca56-530a-4fe5-a719-dd0f862af3ac" />
 
 Opinionated Lua runtime for building full-stack applications. Write backends, frontends (coming soon), and everything in between using Lua's speed and simplicity.
 
