@@ -1,7 +1,7 @@
 local api = rover.server {}
 
 function api.echo.get(ctx)
-    return {
+    return api.json {
         method = ctx.method,
         path = ctx.path,
         user_agent = ctx:headers()["user-agent"] or "none",
@@ -11,7 +11,7 @@ function api.echo.get(ctx)
 end
 
 function api.echo.post(ctx)
-    return {
+    return api.json {
         received_body = ctx:body() or "no body",
         content_type = ctx:headers()["content-type"] or "none"
     }
