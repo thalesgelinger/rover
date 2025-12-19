@@ -216,8 +216,8 @@ async fn handler(
             .filter_map(|(k, v)| {
                 v.to_str().ok().map(|v_str| {
                     (
-                        Bytes::copy_from_slice(k.as_str().as_bytes()),
-                        Bytes::copy_from_slice(v_str.as_bytes()),
+                        Bytes::from(k.as_str().to_string()),
+                        Bytes::from(v_str.to_string()),
                     )
                 })
             })
@@ -228,8 +228,8 @@ async fn handler(
         Some(q) => form_urlencoded::parse(q.as_bytes())
             .map(|(k, v)| {
                 (
-                    Bytes::copy_from_slice(k.as_bytes()),
-                    Bytes::copy_from_slice(v.as_bytes()),
+                    Bytes::from(k.into_owned()),
+                    Bytes::from(v.into_owned()),
                 )
             })
             .collect(),
@@ -249,8 +249,8 @@ async fn handler(
     let (resp_tx, resp_rx) = oneshot::channel();
 
     tx.send(LuaRequest {
-        method: Bytes::copy_from_slice(parts.method.as_str().as_bytes()),
-        path: Bytes::copy_from_slice(parts.uri.path().as_bytes()),
+        method: Bytes::from(parts.method.as_str().to_string()),
+        path: Bytes::from(parts.uri.path().to_string()),
         headers,
         query,
         body,
