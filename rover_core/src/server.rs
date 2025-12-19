@@ -13,6 +13,37 @@ impl AppServer for Lua {
         let server = self.create_auto_table()?;
         let _ = server.set("__rover_app_type", Value::Integer(AppType::Server.to_i64()))?;
         let _ = server.set("config", config)?;
+
+        let json_helper = self.create_table()?;
+
+        let json_call = self.create_function(|_lua, (_self, data): (Table, Table)| {
+            data.set("__rover_status", 200)?;
+            Ok(data)
+        })?;
+
+        let status_fn = self.create_function(|lua, (_self, status_code): (Table, u16)| {
+            let builder_call =
+                lua.create_function(move |_lua, (_builder, data): (Table, Table)| {
+                    data.set("__rover_status", status_code)?;
+                    Ok(data)
+                })?;
+
+            let builder = lua.create_table()?;
+            let builder_meta = lua.create_table()?;
+            builder_meta.set("__call", builder_call)?;
+            let _ = builder.set_metatable(Some(builder_meta));
+
+            Ok(builder)
+        })?;
+
+        json_helper.set("status", status_fn)?;
+
+        let json_meta = self.create_table()?;
+        json_meta.set("__call", json_call)?;
+        let _ = json_helper.set_metatable(Some(json_meta));
+
+        server.set("json", json_helper)?;
+
         Ok(server)
     }
 }
@@ -42,11 +73,11 @@ impl Server for Table {
 
                 // Skip internal rover fields
                 if let Value::String(ref key_str) = key {
-                    if key_str.to_str()?.starts_with("__rover_") {
-                        continue;
-                    }
-
-                    if key_str.to_str()?.starts_with("config") {
+                    let key_str_val = key_str.to_str()?;
+                    if key_str_val.starts_with("__rover_")
+                        || key_str_val == "config"
+                        || key_str_val == "json"
+                    {
                         continue;
                     }
                 }
@@ -61,13 +92,14 @@ impl Server for Table {
                             current_path
                         };
 
-                        let method = HttpMethod::from_str(&key_string)
-                            .ok_or_else(|| anyhow!(
+                        let method = HttpMethod::from_str(&key_string).ok_or_else(|| {
+                            anyhow!(
                                 "Unknown HTTP method '{}' at path '{}'. Valid methods: {}",
                                 key_string,
                                 path,
                                 HttpMethod::valid_methods().join(", ")
-                            ))?;
+                            )
+                        })?;
 
                         let route = Route {
                             method,

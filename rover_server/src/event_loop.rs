@@ -95,48 +95,30 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
             };
 
             let (status, body) = match result {
-                Value::String(ref s) => (StatusCode::OK, Bytes::from(s.to_str().unwrap().to_string())),
-
                 Value::Table(table) => {
-                    if let Ok(status_code) = table.get::<u16>("status") {
-                        if status_code >= 400 {
-                            let message = table
-                                .get::<String>("message")
-                                .unwrap_or_else(|_| "Error".to_string());
-                            (
-                                StatusCode::from_u16(status_code)
-                                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                                Bytes::from(message),
-                            )
-                        } else {
-                            let body = lua_table_to_json(&table).unwrap_or_else(|e| {
-                                format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
-                            });
-                            (
-                                StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
-                                Bytes::from(body),
-                            )
-                        }
+                    // Check if this is a rover json response (marked with __rover_status)
+                    let status_code = if let Ok(code) = table.get::<u16>("__rover_status") {
+                        // Remove the marker field before serialization
+                        let _ = table.raw_remove("__rover_status");
+                        code
                     } else {
-                        let json = lua_table_to_json(&table).unwrap_or_else(|e| {
-                            format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
-                        });
-                        (StatusCode::OK, Bytes::from(json))
-                    }
+                        200 // Default status for legacy raw tables
+                    };
+                    
+                    // Serialize the table to JSON
+                    let json = lua_table_to_json(&table).unwrap_or_else(|e| {
+                        format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
+                    });
+                    
+                    (
+                        StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
+                        Bytes::from(json),
+                    )
                 }
-
-                Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string())),
-                Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string())),
-
-                Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string())),
-
-                Value::Nil => (StatusCode::NO_CONTENT, Bytes::new()),
-
-                Value::Error(e) => (StatusCode::INTERNAL_SERVER_ERROR, Bytes::from(e.to_string())),
 
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Bytes::from("Unsupported return type"),
+                    Bytes::from("Handler must return api.json{...}"),
                 ),
             };
 
