@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use mlua::{Lua, Table, Value};
-use rover_server::{Bytes, HttpMethod, Route, RouteTable, ServerConfig};
+use rover_server::{Bytes, HttpMethod, Route, RouteTable, ServerConfig, RoverResponse};
+use rover_server::to_json::ToJson;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
@@ -17,32 +18,92 @@ impl AppServer for Lua {
         let json_helper = self.create_table()?;
 
         let json_call = self.create_function(|_lua, (_self, data): (Table, Table)| {
-            data.set("__rover_status", 200)?;
-            Ok(data)
+            let json = data.to_json_string().map_err(|e| {
+                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+            })?;
+            Ok(RoverResponse::json(200, Bytes::from(json), None))
         })?;
 
-        let status_fn = self.create_function(|lua, (_self, status_code): (Table, u16)| {
-            let builder_call =
-                lua.create_function(move |_lua, (_builder, data): (Table, Table)| {
-                    data.set("__rover_status", status_code)?;
-                    Ok(data)
-                })?;
-
-            let builder = lua.create_table()?;
-            let builder_meta = lua.create_table()?;
-            builder_meta.set("__call", builder_call)?;
-            let _ = builder.set_metatable(Some(builder_meta));
-
-            Ok(builder)
+        let json_status_fn = self.create_function(|_lua, (_self, status_code, data): (Table, u16, Table)| {
+            let json = data.to_json_string().map_err(|e| {
+                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+            })?;
+            Ok(RoverResponse::json(status_code, Bytes::from(json), None))
         })?;
+        json_helper.set("status", json_status_fn)?;
 
-        json_helper.set("status", status_fn)?;
-
-        let json_meta = self.create_table()?;
-        json_meta.set("__call", json_call)?;
-        let _ = json_helper.set_metatable(Some(json_meta));
-
+        let meta = self.create_table()?;
+        meta.set("__call", json_call)?;
+        let _ = json_helper.set_metatable(Some(meta));
         server.set("json", json_helper)?;
+
+        let text_helper = self.create_table()?;
+
+        let text_call = self.create_function(|_lua, (_self, content): (Table, String)| {
+            Ok(RoverResponse::text(200, Bytes::from(content), None))
+        })?;
+
+        let text_status_fn = self.create_function(|_lua, (_self, status_code, content): (Table, u16, String)| {
+            Ok(RoverResponse::text(status_code, Bytes::from(content), None))
+        })?;
+        text_helper.set("status", text_status_fn)?;
+
+        let text_meta = self.create_table()?;
+        text_meta.set("__call", text_call)?;
+        let _ = text_helper.set_metatable(Some(text_meta));
+        server.set("text", text_helper)?;
+
+        let html_helper = self.create_table()?;
+
+        let html_call = self.create_function(|_lua, (_self, content): (Table, String)| {
+            Ok(RoverResponse::html(200, Bytes::from(content), None))
+        })?;
+
+        let html_status_fn = self.create_function(|_lua, (_self, status_code, content): (Table, u16, String)| {
+            Ok(RoverResponse::html(status_code, Bytes::from(content), None))
+        })?;
+        html_helper.set("status", html_status_fn)?;
+
+        let html_meta = self.create_table()?;
+        html_meta.set("__call", html_call)?;
+        let _ = html_helper.set_metatable(Some(html_meta));
+        server.set("html", html_helper)?;
+
+        let redirect_helper = self.create_table()?;
+
+        let redirect_call = self.create_function(|_lua, (_self, location): (Table, String)| {
+            Ok(RoverResponse::redirect(302, location))
+        })?;
+
+        let redirect_permanent = self.create_function(|_lua, (_self, location): (Table, String)| {
+            Ok(RoverResponse::redirect(301, location))
+        })?;
+        redirect_helper.set("permanent", redirect_permanent)?;
+
+        let redirect_status_fn = self.create_function(|_lua, (_self, status_code, location): (Table, u16, String)| {
+            Ok(RoverResponse::redirect(status_code, location))
+        })?;
+        redirect_helper.set("status", redirect_status_fn)?;
+
+        let redirect_meta = self.create_table()?;
+        redirect_meta.set("__call", redirect_call)?;
+        let _ = redirect_helper.set_metatable(Some(redirect_meta));
+        server.set("redirect", redirect_helper)?;
+
+        let error_fn = self.create_function(|lua, (_self, (status, message)): (Table, (u16, String))| {
+            let table = lua.create_table()?;
+            table.set("error", message)?;
+            let json = table.to_json_string().map_err(|e| {
+                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+            })?;
+            Ok(RoverResponse::json(status, Bytes::from(json), None))
+        })?;
+        server.set("error", error_fn)?;
+
+        let no_content_fn = self.create_function(|_lua, _: Table| {
+            Ok(RoverResponse::empty(204))
+        })?;
+        server.set("no_content", no_content_fn)?;
 
         Ok(server)
     }
@@ -71,12 +132,17 @@ impl Server for Table {
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
 
-                // Skip internal rover fields
+                // Skip internal rover fields and API helpers
                 if let Value::String(ref key_str) = key {
                     let key_str_val = key_str.to_str()?;
                     if key_str_val.starts_with("__rover_")
                         || key_str_val == "config"
                         || key_str_val == "json"
+                        || key_str_val == "text"
+                        || key_str_val == "html"
+                        || key_str_val == "redirect"
+                        || key_str_val == "error"
+                        || key_str_val == "no_content"
                     {
                         continue;
                     }

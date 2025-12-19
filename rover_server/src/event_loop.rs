@@ -2,14 +2,11 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use hyper::{body::Bytes, StatusCode};
-use mlua::{
-    Lua, Table,
-    Value::{self},
-};
+use mlua::{Lua, Table, Value};
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
 
-use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig};
+use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig, RoverResponse};
 use crate::{fast_router::FastRouter, to_json::ToJson};
 
 pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: ServerConfig) {
@@ -95,30 +92,54 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
             };
 
             let (status, body) = match result {
-                Value::Table(table) => {
-                    // Check if this is a rover json response (marked with __rover_status)
-                    let status_code = if let Ok(code) = table.get::<u16>("__rover_status") {
-                        // Remove the marker field before serialization
-                        let _ = table.raw_remove("__rover_status");
-                        code
+                Value::UserData(ref ud) => {
+                    if let Ok(response) = ud.borrow::<RoverResponse>() {
+                        (
+                            StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK),
+                            response.body.clone(),
+                        )
                     } else {
-                        200 // Default status for legacy raw tables
-                    };
-                    
-                    // Serialize the table to JSON
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Bytes::from("Invalid userdata type"),
+                        )
+                    }
+                }
+
+                Value::String(ref s) => (
+                    StatusCode::OK,
+                    Bytes::from(s.to_str().unwrap().to_string())
+                ),
+
+                Value::Table(table) => {
                     let json = lua_table_to_json(&table).unwrap_or_else(|e| {
                         format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
                     });
-                    
-                    (
-                        StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
-                        Bytes::from(json),
-                    )
+                    (StatusCode::OK, Bytes::from(json))
                 }
 
+                // Fast path: integers
+                Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string())),
+
+                // Fast path: numbers
+                Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string())),
+
+                // Fast path: booleans
+                Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string())),
+
+                // Fast path: nil -> 204 No Content
+                Value::Nil => (StatusCode::NO_CONTENT, Bytes::new()),
+
+                // Lua errors
+                Value::Error(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Bytes::from(e.to_string())
+                ),
+
+                // Unsupported types
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Bytes::from("Handler must return api.json{...}"),
+                    Bytes::from("Unsupported return type"),
                 ),
             };
 

@@ -106,6 +106,15 @@ fn serialize_object_from_pairs(
 
     let mut first = true;
     for (key, value) in pairs {
+        // Skip internal rover markers (performance optimization - no serialization)
+        if let Value::String(ref s) = key {
+            if let Ok(key_str) = s.to_str() {
+                if key_str.starts_with("__rover_") {
+                    continue;
+                }
+            }
+        }
+
         if !first {
             buf.push(b',');
         }
