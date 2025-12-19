@@ -153,7 +153,7 @@ struct LuaRequest {
 
 struct LuaResponse {
     status: StatusCode,
-    body: String,
+    body: Bytes,
 }
 
 async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()> {
@@ -262,7 +262,7 @@ async fn handler(
 
     let resp = resp_rx.await.unwrap();
 
-    let mut response = Response::new(Full::new(Bytes::from(resp.body)));
+    let mut response = Response::new(Full::new(resp.body));
     *response.status_mut() = resp.status.into();
     Ok(response)
 }

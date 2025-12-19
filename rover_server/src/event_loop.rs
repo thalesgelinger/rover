@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use hyper::StatusCode;
+use hyper::{body::Bytes, StatusCode};
 use mlua::{
     Lua, Table,
     Value::{self},
@@ -25,11 +25,11 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                 None => {
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::BAD_REQUEST,
-                        body: format!(
+                        body: Bytes::from(format!(
                             "Invalid HTTP method '{}'. Valid methods: {}",
                             method_str,
                             HttpMethod::valid_methods().join(", ")
-                        ),
+                        )),
                     });
                     continue;
                 }
@@ -60,7 +60,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                     );
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::NOT_FOUND,
-                        body: "Route not found".to_string(),
+                        body: Bytes::from("Route not found"),
                     });
                     continue;
                 }
@@ -77,7 +77,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                     };
                     let _ = req.respond_to.send(LuaResponse {
                         status,
-                        body: error_msg,
+                        body: Bytes::from(error_msg),
                     });
                     continue;
                 }
@@ -88,14 +88,14 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                 Err(e) => {
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::INTERNAL_SERVER_ERROR,
-                        body: format!("Lua error: {}", e),
+                        body: Bytes::from(format!("Lua error: {}", e)),
                     });
                     continue;
                 }
             };
 
             let (status, body) = match result {
-                Value::String(ref s) => (StatusCode::OK, s.to_str().unwrap().to_string()),
+                Value::String(ref s) => (StatusCode::OK, Bytes::from(s.to_str().unwrap().to_string())),
 
                 Value::Table(table) => {
                     if let Ok(status_code) = table.get::<u16>("status") {
@@ -106,7 +106,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                             (
                                 StatusCode::from_u16(status_code)
                                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                                message,
+                                Bytes::from(message),
                             )
                         } else {
                             let body = lua_table_to_json(&table).unwrap_or_else(|e| {
@@ -114,37 +114,37 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                             });
                             (
                                 StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
-                                body,
+                                Bytes::from(body),
                             )
                         }
                     } else {
                         let json = lua_table_to_json(&table).unwrap_or_else(|e| {
                             format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
                         });
-                        (StatusCode::OK, json)
+                        (StatusCode::OK, Bytes::from(json))
                     }
                 }
 
-                Value::Integer(i) => (StatusCode::OK, i.to_string()),
-                Value::Number(n) => (StatusCode::OK, n.to_string()),
+                Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string())),
+                Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string())),
 
-                Value::Boolean(b) => (StatusCode::OK, b.to_string()),
+                Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string())),
 
-                Value::Nil => (StatusCode::NO_CONTENT, String::new()),
+                Value::Nil => (StatusCode::NO_CONTENT, Bytes::new()),
 
-                Value::Error(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+                Value::Error(e) => (StatusCode::INTERNAL_SERVER_ERROR, Bytes::from(e.to_string())),
 
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Unsupported return type".to_string(),
+                    Bytes::from("Unsupported return type"),
                 ),
             };
 
             if tracing::event_enabled!(tracing::Level::DEBUG) {
                 let body_preview = if body.len() > 200 {
-                    format!("{}... ({} bytes)", &body[..200], body.len())
+                    format!("{}... ({} bytes)", String::from_utf8_lossy(&body[..200]), body.len())
                 } else {
-                    body.clone()
+                    String::from_utf8_lossy(&body).to_string()
                 };
                 debug!("  └─ response body: {}", body_preview);
             }
