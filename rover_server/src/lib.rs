@@ -1,5 +1,6 @@
 mod event_loop;
 mod to_json;
+mod fast_router;
 use http_body_util::Full;
 pub use hyper::body::Bytes;
 use hyper::service::service_fn;

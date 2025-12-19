@@ -2,119 +2,23 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use hyper::StatusCode;
-use matchit::Router;
 use mlua::{
-    Function, Lua, Table,
+    Lua, Table,
     Value::{self},
 };
-use smallvec::SmallVec;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
 
-use crate::to_json::ToJson;
 use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig};
+use crate::{fast_router::FastRouter, to_json::ToJson};
 
-pub struct FastRouter {
-    router: Router<SmallVec<[(HttpMethod, usize); 2]>>,
-    handlers: Vec<Function>,
-    static_routes: HashMap<(String, HttpMethod), usize>,
-}
-
-impl FastRouter {
-    pub fn from_routes(routes: Vec<Route>) -> Result<Self> {
-        let mut router = Router::new();
-        let mut handlers = Vec::new();
-        let mut pattern_map: HashMap<Vec<u8>, SmallVec<[(HttpMethod, usize); 2]>> = HashMap::new();
-        let mut static_routes = HashMap::new();
-
-        for route in routes {
-            let handler_idx = handlers.len();
-            handlers.push(route.handler);
-
-            if route.is_static {
-                let pattern_str = std::str::from_utf8(&route.pattern)
-                    .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?
-                    .to_string();
-                static_routes.insert((pattern_str, route.method), handler_idx);
-            }
-
-            pattern_map
-                .entry(route.pattern.to_vec())
-                .or_insert_with(SmallVec::new)
-                .push((route.method, handler_idx));
-        }
-
-        for (pattern_bytes, methods) in pattern_map {
-            let pattern_str = std::str::from_utf8(&pattern_bytes)
-                .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?;
-            router.insert(pattern_str, methods)?;
-        }
-
-        Ok(Self {
-            router,
-            handlers,
-            static_routes,
-        })
-    }
-
-    pub fn match_route(
-        &self,
-        method: HttpMethod,
-        path: &str,
-    ) -> Option<(&Function, HashMap<String, String>)> {
-        if let Some(&handler_idx) = self.static_routes.get(&(path.to_string(), method)) {
-            return Some((&self.handlers[handler_idx], HashMap::new()));
-        }
-
-        let matched = self.router.at(path).ok()?;
-
-        let handler_idx = matched
-            .value
-            .iter()
-            .find(|(m, _)| *m == method)
-            .map(|(_, idx)| *idx)?;
-
-        let handler = &self.handlers[handler_idx];
-
-        let mut params = HashMap::with_capacity(matched.params.len());
-        for (name, value) in matched.params.iter() {
-            let decoded = urlencoding::decode(value).ok()?.into_owned();
-            if decoded.is_empty() {
-                return None;
-            }
-            params.insert(name.to_string(), decoded);
-        }
-
-        Some((handler, params))
-    }
-}
-
-pub fn run(
-    lua: Lua,
-    routes: Vec<Route>,
-    mut rx: mpsc::Receiver<LuaRequest>,
-    _config: ServerConfig,
-) {
-    std::thread::spawn(move || {
-        let fast_router = match FastRouter::from_routes(routes) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Failed to initialize router: {}", e);
-                return;
-            }
-        };
+pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: ServerConfig) {
+    std::thread::spawn(move || -> Result<()> {
+        let fast_router = FastRouter::from_routes(routes)?;
 
         while let Some(req) = rx.blocking_recv() {
-            let method_str = match std::str::from_utf8(&req.method) {
-                Ok(s) => s,
-                Err(_) => {
-                    let _ = req.respond_to.send(LuaResponse {
-                        status: StatusCode::BAD_REQUEST,
-                        body: "Invalid UTF-8 encoding in HTTP method".to_string(),
-                    });
-                    continue;
-                }
-            };
+            // Methods should be only lua functions, so lua function is utf8 safe
+            let method_str = unsafe { std::str::from_utf8_unchecked(&req.method) };
 
             let method = match HttpMethod::from_str(method_str) {
                 Some(m) => m,
@@ -131,16 +35,8 @@ pub fn run(
                 }
             };
 
-            let path_str = match std::str::from_utf8(&req.path) {
-                Ok(s) => s,
-                Err(_) => {
-                    let _ = req.respond_to.send(LuaResponse {
-                        status: StatusCode::BAD_REQUEST,
-                        body: "Invalid UTF-8 encoding in request path".to_string(),
-                    });
-                    continue;
-                }
-            };
+            // Paths should be only lua functions, so lua function is utf8 safe
+            let path_str = unsafe { std::str::from_utf8_unchecked(&req.path) };
 
             if tracing::event_enabled!(tracing::Level::DEBUG) {
                 if !req.query.is_empty() {
@@ -280,6 +176,7 @@ pub fn run(
 
             let _ = req.respond_to.send(LuaResponse { status, body });
         }
+        Ok(())
     });
 }
 
@@ -287,7 +184,7 @@ fn build_lua_context(
     lua: &Lua,
     req: &LuaRequest,
     params: &HashMap<String, String>,
-) -> mlua::Result<Table> {
+) -> Result<Table> {
     let ctx = lua.create_table()?;
 
     let method_str = std::str::from_utf8(&req.method)
