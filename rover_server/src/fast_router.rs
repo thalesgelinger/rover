@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
 use matchit::Router;
@@ -7,10 +8,17 @@ use smallvec::SmallVec;
 
 use crate::{HttpMethod, Route};
 
+#[inline]
+fn hash_path(path: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish()
+}
+
 pub struct FastRouter {
     router: Router<SmallVec<[(HttpMethod, usize); 2]>>,
     handlers: Vec<Function>,
-    static_routes: HashMap<(String, HttpMethod), usize>,
+    static_routes: HashMap<(u64, HttpMethod), usize>,
 }
 
 impl FastRouter {
@@ -26,9 +34,9 @@ impl FastRouter {
 
             if route.is_static {
                 let pattern_str = std::str::from_utf8(&route.pattern)
-                    .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?
-                    .to_string();
-                static_routes.insert((pattern_str, route.method), handler_idx);
+                    .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?;
+                let path_hash = hash_path(pattern_str);
+                static_routes.insert((path_hash, route.method), handler_idx);
             }
 
             pattern_map
@@ -55,7 +63,8 @@ impl FastRouter {
         method: HttpMethod,
         path: &str,
     ) -> Option<(&Function, HashMap<String, String>)> {
-        if let Some(&handler_idx) = self.static_routes.get(&(path.to_string(), method)) {
+        let path_hash = hash_path(path);
+        if let Some(&handler_idx) = self.static_routes.get(&(path_hash, method)) {
             return Some((&self.handlers[handler_idx], HashMap::new()));
         }
 
