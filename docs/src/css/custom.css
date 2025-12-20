@@ -1,0 +1,44 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* Tokyo Night Day Theme (Light Mode) */
+:root {
+  --ifm-color-primary: #2e7de9;
+  --ifm-color-primary-dark: #1e6dd4;
+  --ifm-color-primary-darker: #1a63c7;
+  --ifm-color-primary-darkest: #1652a3;
+  --ifm-color-primary-light: #4d8df0;
+  --ifm-color-primary-lighter: #5c97f2;
+  --ifm-color-primary-lightest: #7aa7f4;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(46, 125, 233, 0.15);
+
+  /* Tokyo Night Day colors */
+  --ifm-background-color: #e1e2e7;
+  --ifm-font-color-base: #3760bf;
+  --ifm-heading-color: #3760bf;
+}
+
+/* Tokyo Night Night Theme (Dark Mode) */
+[data-theme='dark'] {
+  --ifm-color-primary: #7aa2f7;
+  --ifm-color-primary-dark: #5a8cf5;
+  --ifm-color-primary-darker: #4a7ff3;
+  --ifm-color-primary-darkest: #1e5fec;
+  --ifm-color-primary-light: #9ab8f9;
+  --ifm-color-primary-lighter: #aac5fa;
+  --ifm-color-primary-lightest: #caddfc;
+  --docusaurus-highlighted-code-line-bg: rgba(122, 162, 247, 0.15);
+
+  /* Tokyo Night Storm colors */
+  --ifm-background-color: #24283b;
+  --ifm-background-surface-color: #1a1b26;
+  --ifm-font-color-base: #c0caf5;
+  --ifm-heading-color: #c0caf5;
+  --ifm-menu-color-background-active: #292e42;
+  --ifm-navbar-background-color: #1a1b26;
+  --ifm-footer-background-color: #1a1b26;
+}
