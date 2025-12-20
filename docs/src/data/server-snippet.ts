@@ -7,8 +7,10 @@ function api.hello.get(ctx)
 end
 
 function api.hello.p_id.get(ctx)
+    local id = ctx:params().id
+
     return api.json {
-        message = "Hello " .. ctx:params().id
+        message = "Hello " .. id
     }
 end
 
