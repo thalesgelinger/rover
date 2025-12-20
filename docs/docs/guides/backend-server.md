@@ -92,5 +92,5 @@ Routes are built from nested table access:
 
 ## Next Steps
 
-- [Context API](/guides/context-api) - Access request data
-- [Response Builders](/guides/response-builders) - Return structured responses
+- [Context API](/docs/guides/context-api) - Access request data
+- [Response Builders](/docs/guides/response-builders) - Return structured responses

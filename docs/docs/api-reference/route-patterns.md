@@ -119,5 +119,5 @@ end
 
 ## Next Steps
 
-- [Context API](/guides/context-api) - Access route parameters and request data
-- [Backend Server](/guides/backend-server) - Learn more about building APIs
+- [Context API](/docs/guides/context-api) - Access route parameters and request data
+- [Backend Server](/docs/guides/backend-server) - Learn more about building APIs

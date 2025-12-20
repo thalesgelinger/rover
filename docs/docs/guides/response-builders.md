@@ -137,5 +137,5 @@ end
 
 ## Next Steps
 
-- [Configuration](/api-reference/configuration) - Configure server options
-- [Route Patterns](/api-reference/route-patterns) - Learn about routing
+- [Configuration](/docs/api-reference/configuration) - Configure server options
+- [Route Patterns](/docs/api-reference/route-patterns) - Learn about routing

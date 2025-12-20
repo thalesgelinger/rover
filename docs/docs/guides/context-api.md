@@ -124,5 +124,5 @@ return api
 
 ## Next Steps
 
-- [Response Builders](/guides/response-builders) - Learn how to return structured responses
-- [Configuration](/api-reference/configuration) - Configure your server
+- [Response Builders](/docs/guides/response-builders) - Learn how to return structured responses
+- [Configuration](/docs/api-reference/configuration) - Configure your server

@@ -7,7 +7,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'Rover',
   tagline: 'Lua runtime for building REAL full-stack applications - web, mobile, desktop, and backends',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/rover-icon.svg',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {
@@ -40,7 +40,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          routeBasePath: '/', // Docs-only mode
+          routeBasePath: '/docs', // Docs at /docs
         },
         blog: false, // Disable blog
         theme: {
@@ -60,7 +60,7 @@ const config: Config = {
       title: 'Rover',
       logo: {
         alt: 'Rover Logo',
-        src: 'img/logo.svg',
+        src: 'img/rover-icon.svg',
       },
       items: [
         {
@@ -84,7 +84,7 @@ const config: Config = {
           items: [
             {
               label: 'Getting Started',
-              to: '/intro',
+              to: '/docs/intro',
             },
           ],
         },

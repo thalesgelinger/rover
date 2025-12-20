@@ -1,44 +1,118 @@
 /**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+ * Rover Custom Theme
+ * Brand colors: Bright Red #D40000, Carmesin #FF155F, Dark Gray #1a1a1a, Ice #f2f2f2
  */
 
-/* Tokyo Night Day Theme (Light Mode) */
+/* Light Mode - Rover Theme */
 :root {
-  --ifm-color-primary: #2e7de9;
-  --ifm-color-primary-dark: #1e6dd4;
-  --ifm-color-primary-darker: #1a63c7;
-  --ifm-color-primary-darkest: #1652a3;
-  --ifm-color-primary-light: #4d8df0;
-  --ifm-color-primary-lighter: #5c97f2;
-  --ifm-color-primary-lightest: #7aa7f4;
+  /* Primary colors - Carmesin as main brand color */
+  --ifm-color-primary: #FF155F;
+  --ifm-color-primary-dark: #e61356;
+  --ifm-color-primary-darker: #d91251;
+  --ifm-color-primary-darkest: #b30f43;
+  --ifm-color-primary-light: #ff2e71;
+  --ifm-color-primary-lighter: #ff3b79;
+  --ifm-color-primary-lightest: #ff558d;
+  
+  /* Accent color - Bright Red */
+  --rover-red: #D40000;
+  --rover-carmesin: #FF155F;
+  --rover-dark: #1a1a1a;
+  --rover-ice: #f2f2f2;
+  
+  /* Background and text */
+  --ifm-background-color: #ffffff;
+  --ifm-background-surface-color: #f2f2f2;
+  --ifm-font-color-base: #2d2d2d;
+  --ifm-heading-color: #1a1a1a;
+  
+  /* Code blocks */
   --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(46, 125, 233, 0.15);
-
-  /* Tokyo Night Day colors */
-  --ifm-background-color: #e1e2e7;
-  --ifm-font-color-base: #3760bf;
-  --ifm-heading-color: #3760bf;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 21, 95, 0.1);
+  
+  /* Links */
+  --ifm-link-color: #FF155F;
+  --ifm-link-hover-color: #D40000;
+  
+  /* Menu and navbar */
+  --ifm-navbar-background-color: #ffffff;
+  --ifm-navbar-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --ifm-menu-color-background-active: rgba(255, 21, 95, 0.1);
+  
+  /* Footer */
+  --ifm-footer-background-color: #f2f2f2;
 }
 
-/* Tokyo Night Night Theme (Dark Mode) */
+/* Dark Mode - Rover Theme */
 [data-theme='dark'] {
-  --ifm-color-primary: #7aa2f7;
-  --ifm-color-primary-dark: #5a8cf5;
-  --ifm-color-primary-darker: #4a7ff3;
-  --ifm-color-primary-darkest: #1e5fec;
-  --ifm-color-primary-light: #9ab8f9;
-  --ifm-color-primary-lighter: #aac5fa;
-  --ifm-color-primary-lightest: #caddfc;
-  --docusaurus-highlighted-code-line-bg: rgba(122, 162, 247, 0.15);
+  /* Primary colors - Lighter carmesin for dark mode */
+  --ifm-color-primary: #ff3b79;
+  --ifm-color-primary-dark: #ff2268;
+  --ifm-color-primary-darker: #ff1561;
+  --ifm-color-primary-darkest: #d40051;
+  --ifm-color-primary-light: #ff548a;
+  --ifm-color-primary-lighter: #ff6197;
+  --ifm-color-primary-lightest: #ff7ba7;
+  
+  /* Accent colors */
+  --rover-red: #ff2e71;
+  --rover-carmesin: #ff3b79;
+  --rover-dark: #1a1a1a;
+  --rover-ice: #f2f2f2;
+  
+  /* Background and text */
+  --ifm-background-color: #1a1a1a;
+  --ifm-background-surface-color: #242424;
+  --ifm-font-color-base: #e8e8e8;
+  --ifm-heading-color: #f2f2f2;
+  
+  /* Code blocks */
+  --docusaurus-highlighted-code-line-bg: rgba(255, 59, 121, 0.15);
+  
+  /* Links */
+  --ifm-link-color: #ff3b79;
+  --ifm-link-hover-color: #ff548a;
+  
+  /* Menu and navbar */
+  --ifm-navbar-background-color: #1a1a1a;
+  --ifm-menu-color-background-active: rgba(255, 59, 121, 0.15);
+  
+  /* Footer */
+  --ifm-footer-background-color: #1a1a1a;
+  --ifm-footer-link-color: #e8e8e8;
+  
+  /* Borders */
+  --ifm-toc-border-color: #2d2d2d;
+  --ifm-hr-background-color: #2d2d2d;
+}
 
-  /* Tokyo Night Storm colors */
-  --ifm-background-color: #24283b;
-  --ifm-background-surface-color: #1a1b26;
-  --ifm-font-color-base: #c0caf5;
-  --ifm-heading-color: #c0caf5;
-  --ifm-menu-color-background-active: #292e42;
-  --ifm-navbar-background-color: #1a1b26;
-  --ifm-footer-background-color: #1a1b26;
+/* Button styling with brand colors */
+.button--primary {
+  background-color: var(--rover-carmesin);
+  border-color: var(--rover-carmesin);
+}
+
+.button--primary:hover {
+  background-color: var(--rover-red);
+  border-color: var(--rover-red);
+}
+
+.button--secondary {
+  border-color: var(--rover-carmesin);
+  color: var(--rover-carmesin);
+}
+
+.button--secondary:hover {
+  background-color: var(--rover-carmesin);
+  color: white;
+}
+
+[data-theme='dark'] .button--secondary {
+  border-color: var(--rover-carmesin);
+  color: var(--rover-carmesin);
+}
+
+[data-theme='dark'] .button--secondary:hover {
+  background-color: var(--rover-carmesin);
+  color: white;
 }
