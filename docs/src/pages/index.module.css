@@ -89,6 +89,13 @@
   margin-top: 1rem;
 }
 
+.buttons a {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .platforms {
   display: flex;
   gap: 1rem;
@@ -125,6 +132,12 @@
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 20px 60px rgba(212, 0, 0, 0.3);
+}
+
+@media screen and (max-width: 576px) {
+  .codeWindow {
+    border-radius: 8px;
+  }
 }
 
 .codeWindowHeader {
@@ -214,6 +227,7 @@
   margin: 0;
   border-radius: 0;
   font-size: 0.9rem;
+  overflow-x: auto;
 }
 
 .codeBlock pre {
@@ -221,12 +235,15 @@
   padding: 1.5rem;
   background: transparent;
   border-radius: 0;
+  overflow-x: auto;
 }
 
 .codeBlock code {
   background: transparent;
   font-size: 0.9rem;
   line-height: 1.6;
+  white-space: pre;
+  word-wrap: normal;
 }
 
 .features {
@@ -289,7 +306,11 @@
 
   .heroContainer {
     grid-template-columns: 1fr;
-    gap: 3rem;
+    gap: 2rem;
+  }
+
+  .heroLogo {
+    height: 80px;
   }
 
   .heroTitle {
@@ -317,11 +338,143 @@
     order: -1;
   }
 
-  .codeContent {
+  .codeWindow {
+    max-width: 100%;
+  }
+
+  .codeWindowHeader {
+    padding: 0.5rem 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .codeWindowDots {
+    order: 1;
+  }
+
+  .codeTabs {
+    order: 3;
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .codeTabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .codeWindowTitle {
+    order: 2;
+    margin-left: auto;
+    margin-right: 0;
+  }
+
+  .codeTab {
+    white-space: nowrap;
+    flex-shrink: 0;
     font-size: 0.8rem;
+    padding: 0.35rem 0.6rem;
+  }
+
+  .codeBlock code {
+    font-size: 0.75rem;
+  }
+
+  .codeBlock pre {
+    padding: 1rem;
   }
 
   .featureGrid {
     grid-template-columns: 1fr;
+  }
+
+  .platforms {
+    gap: 0.75rem;
+  }
+
+  .platformBadge {
+    font-size: 0.85rem;
+    padding: 0.4rem 0.8rem;
+  }
+}
+
+@media screen and (max-width: 576px) {
+  .heroBanner {
+    padding: 2rem 1rem;
+  }
+
+  .heroContainer {
+    gap: 1.5rem;
+  }
+
+  .heroLogo {
+    height: 60px;
+  }
+
+  .heroTitle {
+    font-size: 2rem;
+  }
+
+  .heroTagline {
+    font-size: 1.1rem;
+  }
+
+  .heroDescription {
+    font-size: 0.95rem;
+  }
+
+  .buttons {
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+  }
+
+  .buttons a {
+    padding: 0.75rem 1.5rem;
+    font-size: 0.95rem;
+  }
+
+  .codeWindowHeader {
+    padding: 0.4rem 0.5rem;
+  }
+
+  .codeWindowDot {
+    width: 10px;
+    height: 10px;
+  }
+
+  .codeTab {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.5rem;
+  }
+
+  .wipBadge {
+    font-size: 0.6rem;
+    padding: 0.1rem 0.3rem;
+  }
+
+  .codeWindowTitle {
+    font-size: 0.75rem;
+  }
+
+  .codeBlock code {
+    font-size: 0.7rem;
+  }
+
+  .codeBlock pre {
+    padding: 0.75rem;
+  }
+
+  .platformBadge {
+    font-size: 0.8rem;
+    padding: 0.35rem 0.7rem;
+  }
+
+  .feature {
+    padding: 1.5rem;
+  }
+
+  .features {
+    padding: 3rem 1rem;
   }
 }
