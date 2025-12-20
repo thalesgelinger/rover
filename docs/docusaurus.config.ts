@@ -6,7 +6,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Rover',
-  tagline: 'Opinionated Lua runtime for building full-stack applications',
+  tagline: 'Lua runtime for building REAL full-stack applications - web, mobile, desktop, and backends',
   favicon: 'img/favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future

@@ -1,9 +1,9 @@
 # Rover
 <img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/5605ca56-530a-4fe5-a719-dd0f862af3ac" />
 
-Opinionated Lua runtime for building full-stack applications. Write backends, frontends (coming soon), and everything in between using Lua's speed and simplicity.
+Opinionated Lua runtime for building REAL full-stack applications. Write backends, mobile apps, desktop apps, web frontends - everything - using Lua's speed and simplicity.
 
-Rover is an all-in-one tool that maximizes Lua's power - not a framework, but a complete runtime with batteries included.
+Rover is an all-in-one tool that maximizes Lua's power across all platforms - not a framework, but a complete runtime with batteries included for web, mobile, and desktop.
 
 ## Quick Start
 
@@ -17,8 +17,9 @@ cargo build --release
 ## What's Included
 
 - ✅ **Backend Server**: HTTP server with built-in routing
-- 🚧 **UI Framework**: Native UI components (comming soon)
+- 🚧 **UI Framework**: Native UI components for mobile, desktop, and web (coming soon)
 - 🔧 **Zero Config**: Opinionated defaults that just work
+- 🌍 **Cross-Platform**: One codebase for web, mobile (iOS/Android), and desktop
 
 ## Examples
 
