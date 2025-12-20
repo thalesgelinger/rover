@@ -9,5 +9,12 @@ export default $config({
       home: "cloudflare",
     };
   },
-  async run() {},
+  async run() {
+    new sst.cloudflare.StaticSite("RoverDocs", {
+      build: {
+        command: "npm run build",
+        output: "build",
+      },
+    });
+  },
 });

@@ -1,6 +1,7 @@
-import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import {roverLightTheme} from './src/data/prism-rover-light';
+import {roverDarkTheme} from './src/data/prism-rover-dark';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -15,14 +16,9 @@ const config: Config = {
   },
 
   // Set the production url of your site here
-  url: 'https://thalesgelinger.github.io',
+  url: 'https://your-domain.pages.dev', // Update with actual Cloudflare domain after deploy
   // Set the /<baseUrl>/ pathname under which your site is served
-  // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/rover/',
-
-  // GitHub pages deployment config.
-  organizationName: 'thalesgelinger', // GitHub username
-  projectName: 'rover', // Repository name
+  baseUrl: '/',
 
   onBrokenLinks: 'throw',
 
@@ -101,8 +97,8 @@ const config: Config = {
       copyright: `Copyright © ${new Date().getFullYear()} Rover. Built with Docusaurus.`,
     },
     prism: {
-      theme: prismThemes.github,
-      darkTheme: prismThemes.dracula,
+      theme: roverLightTheme,
+      darkTheme: roverDarkTheme,
       additionalLanguages: ['lua', 'bash'],
     },
   } satisfies Preset.ThemeConfig,
