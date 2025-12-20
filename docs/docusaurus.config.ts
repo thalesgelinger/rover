@@ -15,15 +15,14 @@ const config: Config = {
   },
 
   // Set the production url of your site here
-  url: 'https://your-docusaurus-site.example.com',
+  url: 'https://thalesgelinger.github.io',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/',
+  baseUrl: '/rover/',
 
   // GitHub pages deployment config.
-  // If you aren't using GitHub pages, you don't need these.
-  organizationName: 'your-org', // Usually your GitHub org/user name.
-  projectName: 'rover', // Usually your repo name.
+  organizationName: 'thalesgelinger', // GitHub username
+  projectName: 'rover', // Repository name
 
   onBrokenLinks: 'throw',
 
@@ -71,7 +70,7 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          href: 'https://github.com/your-org/rover',
+          href: 'https://github.com/thalesgelinger/rover',
           label: 'GitHub',
           position: 'right',
         },
@@ -94,7 +93,7 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/your-org/rover',
+              href: 'https://github.com/thalesgelinger/rover',
             },
           ],
         },
