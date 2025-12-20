@@ -5,12 +5,12 @@ function app.init()
     return ""
 end
 
-function ws.on.message(act, msg)
-    act.new_message(msg)
+function ws.on.message(msg)
+    app.fire:new_message(msg)
 end
 
-function app.new_message(state)
-    return state
+function app.new_message(_, msg)
+    return msg
 end
 
 function app.render(state)
