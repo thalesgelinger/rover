@@ -1,7 +1,4 @@
-local api = rover.server {
-    port = 3000,
-    log_level = "debug" -- Options: "debug", "info", "warn", "error", "nope"
-}
+local api = rover.server {}
 
 function api.hello.get(ctx)
     return api.json {
