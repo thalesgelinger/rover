@@ -50,7 +50,7 @@ function HomepageHeader() {
       <div className={styles.heroContainer}>
         <div className={styles.heroContent}>
           <div className={styles.logoContainer}>
-            <img src="/rover/img/rover-logo.svg" alt="Rover Logo" className={styles.heroLogo} />
+            <img src="/img/rover-colorido.svg" alt="Rover Logo" className={styles.heroLogo} />
           </div>
           <Heading as="h1" className={styles.heroTitle}>
             Rover
