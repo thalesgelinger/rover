@@ -1,4 +1,4 @@
-import type {ReactNode} from 'react';
+import {ReactNode, useState} from 'react';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
@@ -6,20 +6,38 @@ import Heading from '@theme/Heading';
 import CodeBlock from '@theme/CodeBlock';
 
 import styles from './index.module.css';
-import heroSnippet from '@site/src/data/hero-snippet';
+import {snippets} from '@site/src/data/snippets';
 
 function CodeSnippet() {
+  const [activeTab, setActiveTab] = useState(0);
+  const currentSnippet = snippets[activeTab];
+
   return (
     <div className={styles.heroCode}>
       <div className={styles.codeWindow}>
         <div className={styles.codeWindowHeader}>
-          <span className={styles.codeWindowDot}></span>
-          <span className={styles.codeWindowDot}></span>
-          <span className={styles.codeWindowDot}></span>
+          <div className={styles.codeWindowDots}>
+            <span className={styles.codeWindowDot}></span>
+            <span className={styles.codeWindowDot}></span>
+            <span className={styles.codeWindowDot}></span>
+          </div>
+          <div className={styles.codeTabs}>
+            {snippets.map((snippet, index) => (
+              <button
+                key={snippet.value}
+                type="button"
+                className={`${styles.codeTab} ${activeTab === index ? styles.codeTabActive : ''}`}
+                onClick={() => setActiveTab(index)}
+              >
+                {snippet.label}
+                {snippet.wip && <span className={styles.wipBadge}>WIP</span>}
+              </button>
+            ))}
+          </div>
           <span className={styles.codeWindowTitle}>main.lua</span>
         </div>
         <CodeBlock language="lua" className={styles.codeBlock}>
-          {heroSnippet}
+          {currentSnippet.code}
         </CodeBlock>
       </div>
     </div>

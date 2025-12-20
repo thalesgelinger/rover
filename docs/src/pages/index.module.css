@@ -132,8 +132,14 @@
   padding: 0.75rem 1rem;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 1rem;
   border-bottom: 1px solid #2d2d2d;
+}
+
+.codeWindowDots {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .codeWindowDot {
@@ -153,6 +159,48 @@
 
 .codeWindowDot:nth-child(3) {
   background: #7dd3c0;
+}
+
+.codeTabs {
+  display: flex;
+  gap: 0.25rem;
+  flex: 1;
+}
+
+.codeTab {
+  background: transparent;
+  border: none;
+  color: #6b6b6b;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  font-family: 'Monaco', 'Menlo', monospace;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.codeTab:hover {
+  background: rgba(255, 59, 121, 0.1);
+  color: #e8e8e8;
+}
+
+.codeTabActive {
+  background: rgba(255, 21, 95, 0.15);
+  color: #ff3b79;
+  border-bottom: 2px solid #ff3b79;
+}
+
+.wipBadge {
+  font-size: 0.65rem;
+  padding: 0.15rem 0.4rem;
+  background: rgba(255, 158, 100, 0.2);
+  color: #ff9e64;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
 }
 
 .codeWindowTitle {
