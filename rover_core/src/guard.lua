@@ -58,4 +58,25 @@ function Guard:object(schema)
     return v
 end
 
+-- Helper function to wrap validation in xpcall without stack traces
+function Guard.validate(fn)
+    local success, result = xpcall(fn, function(err)
+        local err_str = tostring(err)
+        -- Remove "runtime error: " prefix
+        err_str = err_str:gsub("^runtime error: ", "")
+        -- Remove stack traceback
+        local stack_pos = err_str:find("\nstack traceback:")
+        if stack_pos then
+            err_str = err_str:sub(1, stack_pos - 1)
+        end
+        return err_str
+    end)
+    
+    if not success then
+        error(result, 0)  -- Re-throw with level 0 (no additional stack info)
+    end
+    
+    return result
+end
+
 return Guard
