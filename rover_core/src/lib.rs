@@ -1,7 +1,9 @@
 mod app_type;
 mod auto_table;
+mod guard;
 mod inspect;
 mod server;
+use guard::{BodyValue, Guard};
 use server::{AppServer, Server};
 
 use anyhow::{Context, Result};
@@ -35,6 +37,28 @@ pub fn run(path: &str) -> Result<()> {
             Ok(server)
         })?,
     )?;
+
+    let guard_table = lua.create_table()?;
+
+    let guard_meta = lua.create_table()?;
+    guard_meta.set("__index", Guard)?;
+
+    guard_meta.set(
+        "__call",
+        lua.create_function(|lua, (_self, data, schema): (Value, Table, Table)| {
+            use crate::guard::validate_table;
+            validate_table(lua, &data, &schema, "")
+        })?,
+    )?;
+
+    let _ = guard_table.set_metatable(Some(guard_meta));
+
+    guard_table.set(
+        "__body_value",
+        lua.create_function(|_lua, json_string: String| Ok(BodyValue::new(json_string)))?,
+    )?;
+
+    rover.set("guard", guard_table)?;
 
     let _ = lua.globals().set("rover", rover);
 

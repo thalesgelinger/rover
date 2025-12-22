@@ -251,16 +251,27 @@ fn build_lua_context(
     })?;
     ctx.set("params", params_fn)?;
 
-    let body_fn = lua.create_function(move |_lua, ()| {
+    let body_fn = lua.create_function(move |lua, ()| {
         if let Some(body) = &body_clone {
             let body_str = std::str::from_utf8(body).map_err(|_| {
                 mlua::Error::RuntimeError(
                     "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
                 )
             })?;
-            Ok(Some(body_str.to_string()))
+            
+            let globals = lua.globals();
+            let rover: Table = globals.get("rover")?;
+            let guard: Table = rover.get("guard")?;
+            
+            if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
+                constructor.call(body_str.to_string())
+            } else {
+                Ok(Value::String(lua.create_string(body_str)?))
+            }
         } else {
-            Ok(None)
+            Err(mlua::Error::RuntimeError(
+                "Request has no body".to_string(),
+            ))
         }
     })?;
     ctx.set("body", body_fn)?;
