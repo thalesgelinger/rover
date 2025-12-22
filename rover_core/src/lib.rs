@@ -49,9 +49,29 @@ pub fn run(path: &str) -> Result<()> {
     guard_meta.set("__index", guard.clone())?;
     guard_meta.set(
         "__call",
-        lua.create_function(|lua, (_self, data, schema): (Value, Table, Table)| {
-            use crate::guard::validate_table;
-            validate_table(lua, &data, &schema, "")
+        lua.create_function(|lua, (data, schema): (Value, Value)| {
+            use crate::guard::{validate_table, ValidationErrors};
+
+            // Extract the table from data
+            let data_table = match data {
+                Value::Table(ref t) => t.clone(),
+                _ => return Err(mlua::Error::RuntimeError("First argument must be a table".to_string())),
+            };
+
+            // Extract the table from schema
+            let schema_table = match schema {
+                Value::Table(ref t) => t.clone(),
+                _ => return Err(mlua::Error::RuntimeError("Second argument must be a table".to_string())),
+            };
+
+            match validate_table(lua, &data_table, &schema_table, "") {
+                Ok(validated) => Ok(validated),
+                Err(errors) => {
+                    // Return ValidationErrors that formats nicely when converted to string
+                    let validation_errors = ValidationErrors::new(errors);
+                    Err(mlua::Error::ExternalError(std::sync::Arc::new(validation_errors)))
+                }
+            }
         })?,
     )?;
     
