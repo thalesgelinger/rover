@@ -1,307 +1,200 @@
-use mlua::{Error as LuaError, FromLua, Lua, Table, UserData, UserDataMethods, Value};
+use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value};
 use serde_json;
 
-#[derive(Debug, Clone)]
-pub enum ValidatorType {
-    String,
-    Number,
-    Integer,
-    Boolean,
-    Array(Box<Validator>),  
-    Object(Table),         
-}
-
-#[derive(Debug, Clone)]
-pub struct Validator {
-    validator_type: ValidatorType,
-    required: bool,
-    required_msg: Option<String>,
-    default_value: Option<DefaultValue>,
-    enum_values: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone)]
-pub enum DefaultValue {
-    String(String),
-    Number(f64),
-    Integer(i64),
-    Boolean(bool),
-    Nil,
-}
-
-impl Validator {
-    fn new(validator_type: ValidatorType) -> Self {
-        Self {
-            validator_type,
-            required: false,
-            required_msg: None,
-            default_value: None,
-            enum_values: None,
+/// Validate a single field value based on config passed from Lua
+pub fn validate_field(
+    lua: &Lua,
+    field_name: &str,
+    value: Value,
+    config: &Table,
+) -> mlua::Result<Value> {
+    let validator_type: String = config.get("type")?;
+    let required: bool = config.get("required").unwrap_or(false);
+    let required_msg: Option<String> = match config.raw_get("required_msg") {
+        Ok(Value::String(s)) => Some(s.to_str()?.to_string()),
+        _ => None,
+    };
+    let default_value: Option<Value> = match config.raw_get("default") {
+        Ok(v@Value::String(_)) | Ok(v@Value::Number(_)) | Ok(v@Value::Integer(_)) | Ok(v@Value::Boolean(_)) => Some(v),
+        _ => None,
+    };
+    let enum_values: Option<Vec<String>> = match config.raw_get("enum") {
+        Ok(Value::Table(t)) => {
+            let mut values = Vec::new();
+            for i in 1..=t.len()? {
+                if let Ok(Value::String(s)) = t.get(i) {
+                    values.push(s.to_str()?.to_string());
+                }
+            }
+            Some(values)
         }
+        _ => None,
+    };
+
+    // Handle missing/nil values
+    if matches!(value, Value::Nil) {
+        // Check for default first, then required
+        if let Some(default) = default_value {
+            return Ok(default);
+        }
+        
+        if required {
+            let msg = required_msg.unwrap_or_else(|| format!("Missing required field: {}", field_name));
+            return Err(LuaError::RuntimeError(msg));
+        }
+        
+        return Ok(Value::Nil);
     }
 
-    fn validate(&self, lua: &Lua, field_name: &str, value: Option<Value>) -> mlua::Result<Value> {
-        let value = match value {
-            Some(Value::Nil) | None => {
-                if self.required {
-                    let msg = if let Some(ref custom_msg) = self.required_msg {
-                        custom_msg.clone()
-                    } else {
-                        format!("Missing required field: {}", field_name)
+    // Type validation
+    match validator_type.as_str() {
+        "string" => {
+            if let Value::String(_) = value {
+                // Enum validation
+                if let Some(allowed) = enum_values {
+                    let str_val = match &value {
+                        Value::String(s) => s.to_str()?,
+                        _ => unreachable!(),
                     };
-                    return Err(LuaError::RuntimeError(msg));
-                }
-                
-                if let Some(ref default) = self.default_value {
-                    return Ok(match default {
-                        DefaultValue::String(s) => Value::String(lua.create_string(s)?),
-                        DefaultValue::Number(n) => Value::Number(*n),
-                        DefaultValue::Integer(i) => Value::Integer(*i),
-                        DefaultValue::Boolean(b) => Value::Boolean(*b),
-                        DefaultValue::Nil => Value::Nil,
-                    });
-                }
-                
-                return Ok(Value::Nil);
-            }
-            Some(v) => v,
-        };
-
-        match &self.validator_type {
-            ValidatorType::String => {
-                if let Value::String(_) = value {
-                    if let Some(ref allowed) = self.enum_values {
-                        let str_val = match &value {
-                            Value::String(s) => s.to_str()?,
-                            _ => unreachable!(),
-                        };
-                        if !allowed.contains(&str_val.to_string()) {
-                            return Err(LuaError::RuntimeError(format!(
-                                "Field '{}' must be one of: {}. Got: '{}'",
-                                field_name,
-                                allowed.join(", "),
-                                str_val
-                            )));
-                        }
+                    if !allowed.contains(&str_val.to_string()) {
+                        return Err(LuaError::RuntimeError(format!(
+                            "Field '{}' must be one of: {}. Got: '{}'",
+                            field_name,
+                            allowed.join(", "),
+                            str_val
+                        )));
                     }
-                    Ok(value)
-                } else {
-                    Err(LuaError::RuntimeError(format!(
-                        "Field '{}' must be a string, got {}",
-                        field_name,
-                        value.type_name()
-                    )))
                 }
-            }
-            ValidatorType::Number => {
-                if let Value::Number(_) = value {
-                    Ok(value)
-                } else if let Value::Integer(i) = value {
-                    Ok(Value::Number(i as f64))
-                } else {
-                    Err(LuaError::RuntimeError(format!(
-                        "Field '{}' must be a number, got {}",
-                        field_name,
-                        value.type_name()
-                    )))
-                }
-            }
-            ValidatorType::Integer => {
-                if let Value::Integer(_) = value {
-                    Ok(value)
-                } else if let Value::Number(n) = value {
-                    if n.fract() == 0.0 {
-                        Ok(Value::Integer(n as i64))
-                    } else {
-                        Err(LuaError::RuntimeError(format!(
-                            "Field '{}' must be an integer, got float {}",
-                            field_name, n
-                        )))
-                    }
-                } else {
-                    Err(LuaError::RuntimeError(format!(
-                        "Field '{}' must be an integer, got {}",
-                        field_name,
-                        value.type_name()
-                    )))
-                }
-            }
-            ValidatorType::Boolean => {
-                if let Value::Boolean(_) = value {
-                    Ok(value)
-                } else {
-                    Err(LuaError::RuntimeError(format!(
-                        "Field '{}' must be a boolean, got {}",
-                        field_name,
-                        value.type_name()
-                    )))
-                }
-            }
-            ValidatorType::Array(element_validator) => {
-                if let Value::Table(ref table) = value {
-                    let result = lua.create_table()?;
-                    let len = table.len()?;
-                    
-                    for i in 1..=len {
-                        let elem: Value = table.get(i)?;
-                        let validated = element_validator.validate(
-                            lua,
-                            &format!("{}[{}]", field_name, i),
-                            Some(elem)
-                        )?;
-                        result.set(i, validated)?;
-                    }
-                    
-                    Ok(Value::Table(result))
-                } else {
-                    Err(LuaError::RuntimeError(format!(
-                        "Field '{}' must be an array, got {}",
-                        field_name,
-                        value.type_name()
-                    )))
-                }
-            }
-            ValidatorType::Object(schema) => {
-                if let Value::Table(ref data_table) = value {
-                    validate_table(lua, data_table, schema, field_name)
-                } else {
-                    Err(LuaError::RuntimeError(format!(
-                        "Field '{}' must be an object, got {}",
-                        field_name,
-                        value.type_name()
-                    )))
-                }
-            }
-        }
-    }
-}
-
-impl FromLua for Validator {
-    fn from_lua(value: Value, _lua: &Lua) -> mlua::Result<Self> {
-        match value {
-            Value::UserData(ud) => {
-                Ok(ud.borrow::<Validator>()?.clone())
-            }
-            _ => Err(LuaError::FromLuaConversionError {
-                from: value.type_name(),
-                to: "Validator".to_string(),
-                message: Some("Expected a validator (e.g., g:string())".to_string()),
-            }),
-        }
-    }
-}
-
-impl UserData for Validator {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("required", |_lua, this, msg: Option<String>| {
-            let mut validator = this.clone();
-            validator.required = true;
-            validator.required_msg = msg;
-            Ok(validator)
-        });
-
-        methods.add_method("default", |_lua, this, value: Value| {
-            let mut validator = this.clone();
-            let default_value = match value {
-                Value::String(s) => DefaultValue::String(s.to_str()?.to_string()),
-                Value::Number(n) => DefaultValue::Number(n),
-                Value::Integer(i) => DefaultValue::Integer(i),
-                Value::Boolean(b) => DefaultValue::Boolean(b),
-                Value::Nil => DefaultValue::Nil,
-                _ => return Err(LuaError::RuntimeError(
-                    "Default value must be string, number, integer, boolean, or nil".to_string()
-                )),
-            };
-            validator.default_value = Some(default_value);
-            Ok(validator)
-        });
-
-        methods.add_method("enum", |_lua, this, values: Vec<String>| {
-            if values.is_empty() {
-                return Err(LuaError::RuntimeError("Enum must have at least one value".to_string()));
-            }
-            let mut validator = this.clone();
-            validator.enum_values = Some(values);
-            Ok(validator)
-        });
-    }
-}
-
-/// Guard table that provides validator constructors
-pub struct Guard;
-
-impl UserData for Guard {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("string", |_lua, _this, ()| {
-            Ok(Validator::new(ValidatorType::String))
-        });
-
-        methods.add_method("number", |_lua, _this, ()| {
-            Ok(Validator::new(ValidatorType::Number))
-        });
-
-        methods.add_method("integer", |_lua, _this, ()| {
-            Ok(Validator::new(ValidatorType::Integer))
-        });
-
-        methods.add_method("boolean", |_lua, _this, ()| {
-            Ok(Validator::new(ValidatorType::Boolean))
-        });
-
-        methods.add_method("array", |_lua, _this, element_validator: Validator| {
-            Ok(Validator::new(ValidatorType::Array(Box::new(element_validator))))
-        });
-
-        methods.add_method("object", |_lua, _this, schema: Table| {
-            Ok(Validator::new(ValidatorType::Object(schema)))
-        });
-    }
-}
-
-/// Validate a Lua table against a schema (public for use in lib.rs)
-pub fn validate_table(lua: &Lua, data: &Table, schema: &Table, context: &str) -> mlua::Result<Value> {
-    let result = lua.create_table()?;
-
-    for pair in schema.pairs::<String, Value>() {
-        let (field_name, validator_value) = pair?;
-
-        // Get validator from userdata
-        let validator = match validator_value {
-            Value::UserData(ref ud) => {
-                ud.borrow::<Validator>()
-                    .map_err(|_| LuaError::RuntimeError(format!(
-                        "Field '{}' has invalid validator type",
-                        field_name
-                    )))?
-                    .clone()
-            }
-            _ => {
-                return Err(LuaError::RuntimeError(format!(
-                    "Field '{}' must have a validator (e.g., g:string())",
-                    field_name
+                Ok(value)
+            } else {
+                Err(LuaError::RuntimeError(format!(
+                    "Field '{}' must be a string, got {}",
+                    field_name,
+                    value.type_name()
                 )))
             }
-        };
+        }
+        "number" => {
+            if let Value::Number(_) = value {
+                Ok(value)
+            } else if let Value::Integer(i) = value {
+                Ok(Value::Number(i as f64))
+            } else {
+                Err(LuaError::RuntimeError(format!(
+                    "Field '{}' must be a number, got {}",
+                    field_name,
+                    value.type_name()
+                )))
+            }
+        }
+        "integer" => {
+            if let Value::Integer(_) = value {
+                Ok(value)
+            } else if let Value::Number(n) = value {
+                if n.fract() == 0.0 {
+                    Ok(Value::Integer(n as i64))
+                } else {
+                    Err(LuaError::RuntimeError(format!(
+                        "Field '{}' must be an integer, got float {}",
+                        field_name, n
+                    )))
+                }
+            } else {
+                Err(LuaError::RuntimeError(format!(
+                    "Field '{}' must be an integer, got {}",
+                    field_name,
+                    value.type_name()
+                )))
+            }
+        }
+        "boolean" => {
+            if let Value::Boolean(_) = value {
+                Ok(value)
+            } else {
+                Err(LuaError::RuntimeError(format!(
+                    "Field '{}' must be a boolean, got {}",
+                    field_name,
+                    value.type_name()
+                )))
+            }
+        }
+        "array" => {
+            if let Value::Table(ref table) = value {
+                let result = lua.create_table()?;
+                let len = table.len()?;
+                let element_config: Table = config.get("element")?;
+                
+                for i in 1..=len {
+                    let elem: Value = table.get(i)?;
+                    let validated = validate_field(
+                        lua,
+                        &format!("{}[{}]", field_name, i),
+                        elem,
+                        &element_config
+                    )?;
+                    result.set(i, validated)?;
+                }
+                
+                Ok(Value::Table(result))
+            } else {
+                Err(LuaError::RuntimeError(format!(
+                    "Field '{}' must be an array, got {}",
+                    field_name,
+                    value.type_name()
+                )))
+            }
+        }
+        "object" => {
+            if let Value::Table(ref data_table) = value {
+                let schema: Table = config.get("schema")?;
+                validate_table_internal(lua, data_table, &schema, field_name)
+            } else {
+                Err(LuaError::RuntimeError(format!(
+                    "Field '{}' must be an object, got {}",
+                    field_name,
+                    value.type_name()
+                )))
+            }
+        }
+        _ => Err(LuaError::RuntimeError(format!(
+            "Unknown validator type: {}",
+            validator_type
+        ))),
+    }
+}
 
-        // Get value from data table
-        let lua_value: Value = data.get(&field_name as &str)?;
-        let lua_value = if matches!(lua_value, Value::Nil) {
-            None
-        } else {
-            Some(lua_value)
-        };
+/// Internal table validation helper
+fn validate_table_internal(
+    lua: &Lua,
+    data: &Table,
+    schema: &Table,
+    context: &str,
+) -> mlua::Result<Value> {
+    let result = lua.create_table()?;
 
-        // Validate and set in result table
+    // Use clone_from_pairs to avoid iterator issues across threads
+    let pairs_vec: Vec<(String, Table)> = schema
+        .pairs()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (field_name, validator_config) in pairs_vec {
         let full_field_name = if context.is_empty() {
             field_name.clone()
         } else {
             format!("{}.{}", context, field_name)
         };
-        let validated_value = validator.validate(lua, &full_field_name, lua_value)?;
+        
+        let lua_value: Value = data.get(&field_name as &str)?;
+        let validated_value = validate_field(lua, &full_field_name, lua_value, &validator_config)?;
         result.set(field_name, validated_value)?;
     }
 
     Ok(Value::Table(result))
+}
+
+/// Validate a Lua table against a schema (public API)
+pub fn validate_table(lua: &Lua, data: &Table, schema: &Table, context: &str) -> mlua::Result<Value> {
+    validate_table_internal(lua, data, schema, context)
 }
 
 /// A wrapper around parsed body that can be validated with :expect()

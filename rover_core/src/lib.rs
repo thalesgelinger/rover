@@ -3,7 +3,7 @@ mod auto_table;
 mod guard;
 mod inspect;
 mod server;
-use guard::{BodyValue, Guard};
+use guard::BodyValue;
 use server::{AppServer, Server};
 
 use anyhow::{Context, Result};
@@ -38,11 +38,73 @@ pub fn run(path: &str) -> Result<()> {
         })?,
     )?;
 
-    let guard_table = lua.create_table()?;
-
+    // Create Lua-side guard with chainable validators
+    let guard: Table = lua.load(r#"
+        local Guard = {}
+        
+        -- Helper to create chainable validator
+        local function create_validator(validator_type)
+            return {
+                type = validator_type,
+                required = false,
+                required_msg = nil,
+                default = nil,
+                enum = nil,
+                element = nil,
+                schema = nil,
+                
+                required = function(self, msg)
+                    self.required = true
+                    self.required_msg = msg
+                    return self
+                end,
+                
+                default = function(self, value)
+                    self.default = value
+                    return self
+                end,
+                
+                enum = function(self, values)
+                    self.enum = values
+                    return self
+                end
+            }
+        end
+        
+        function Guard:string()
+            return create_validator("string")
+        end
+        
+        function Guard:number()
+            return create_validator("number")
+        end
+        
+        function Guard:integer()
+            return create_validator("integer")
+        end
+        
+        function Guard:boolean()
+            return create_validator("boolean")
+        end
+        
+        function Guard:array(element_validator)
+            local v = create_validator("array")
+            v.element = element_validator
+            return v
+        end
+        
+        function Guard:object(schema)
+            local v = create_validator("object")
+            v.schema = schema
+            return v
+        end
+        
+        return Guard
+    "#).eval()?;
+    
+    // Add __call metamethod for rover.guard(data, schema)
     let guard_meta = lua.create_table()?;
-    guard_meta.set("__index", Guard)?;
-
+    guard_meta.set("__index", guard.clone())?;
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (_self, data, schema): (Value, Table, Table)| {
@@ -50,15 +112,16 @@ pub fn run(path: &str) -> Result<()> {
             validate_table(lua, &data, &schema, "")
         })?,
     )?;
-
-    let _ = guard_table.set_metatable(Some(guard_meta));
-
-    guard_table.set(
+    
+    let _ = guard.set_metatable(Some(guard_meta));
+    
+    // Add hidden __body_value for BodyValue constructor
+    guard.set(
         "__body_value",
         lua.create_function(|_lua, json_string: String| Ok(BodyValue::new(json_string)))?,
     )?;
-
-    rover.set("guard", guard_table)?;
+    
+    rover.set("guard", guard)?;
 
     let _ = lua.globals().set("rover", rover);
 
