@@ -38,69 +38,11 @@ pub fn run(path: &str) -> Result<()> {
         })?,
     )?;
 
-    // Create Lua-side guard with chainable validators
-    let guard: Table = lua.load(r#"
-        local Guard = {}
-        
-        -- Helper to create chainable validator
-        local function create_validator(validator_type)
-            return {
-                type = validator_type,
-                required = false,
-                required_msg = nil,
-                default = nil,
-                enum = nil,
-                element = nil,
-                schema = nil,
-                
-                required = function(self, msg)
-                    self.required = true
-                    self.required_msg = msg
-                    return self
-                end,
-                
-                default = function(self, value)
-                    self.default = value
-                    return self
-                end,
-                
-                enum = function(self, values)
-                    self.enum = values
-                    return self
-                end
-            }
-        end
-        
-        function Guard:string()
-            return create_validator("string")
-        end
-        
-        function Guard:number()
-            return create_validator("number")
-        end
-        
-        function Guard:integer()
-            return create_validator("integer")
-        end
-        
-        function Guard:boolean()
-            return create_validator("boolean")
-        end
-        
-        function Guard:array(element_validator)
-            local v = create_validator("array")
-            v.element = element_validator
-            return v
-        end
-        
-        function Guard:object(schema)
-            local v = create_validator("object")
-            v.schema = schema
-            return v
-        end
-        
-        return Guard
-    "#).eval()?;
+    // Load guard from embedded Lua file
+    let guard: Table = lua
+        .load(include_str!("guard.lua"))
+        .set_name("guard.lua")
+        .eval()?;
     
     // Add __call metamethod for rover.guard(data, schema)
     let guard_meta = lua.create_table()?;
