@@ -45,14 +45,19 @@ impl LanguageServer for Backend {
     }
 }
 
-pub async fn start_server() {
-    tracing_subscriber::fmt()
-        .with_env_filter(std::env::var("ROVER_LSP_LOG").unwrap_or_else(|_| "info".to_string()))
-        .init();
+pub async fn start_lsp() {
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
     let (service, socket) = LspService::new(|client| Backend { client });
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+pub fn start_server() {
+    tracing_subscriber::fmt()
+        .with_env_filter(std::env::var("ROVER_LSP_LOG").unwrap_or_else(|_| "info".to_string()))
+        .init();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _ = runtime.block_on(start_lsp());
 }
