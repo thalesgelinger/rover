@@ -701,6 +701,7 @@ dependencies = [
  "anyhow",
  "mlua",
  "rover_server",
+ "serde_json",
 ]
 
 [[package]]
