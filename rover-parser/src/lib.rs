@@ -1,7 +1,8 @@
 mod analyzer;
 use tree_sitter::Parser;
 
-use crate::analyzer::{Analyzer, SemanticModel};
+pub use analyzer::SemanticModel;
+use crate::analyzer::Analyzer;
 
 pub fn analyze(code: &str) -> SemanticModel {
     let mut parser = Parser::new();
