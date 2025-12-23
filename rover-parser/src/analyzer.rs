@@ -1285,8 +1285,101 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         }
     }
 
-    fn get_method_call_info(&self, _node: Node) -> Option<(Node, Node, String)> {
-        None
+    fn get_method_call_info<'a>(&self, node: Node<'a>) -> Option<(Node<'a>, Node<'a>, String)> {
+        match node.kind() {
+            "function_call" => {
+                let (method_node, arguments_node) = self.extract_function_call_parts(node)?;
+                let (object_node, method_name) = self.extract_method_target(method_node)?;
+                Some((object_node, arguments_node, method_name))
+            }
+            "method_index_expression" => {
+                if let Some(parent) = node.parent() {
+                    if let Some(info) = self.get_method_call_info(parent) {
+                        return Some(info);
+                    }
+                }
+                None
+            }
+            _ => {
+                // Recursively inspect children until we find a method call
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if let Some(info) = self.get_method_call_info(child) {
+                        return Some(info);
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    fn extract_function_call_parts<'a>(&self, node: Node<'a>) -> Option<(Node<'a>, Node<'a>)> {
+        if node.kind() != "function_call" {
+            return None;
+        }
+
+        let mut cursor = node.walk();
+        let mut method_node: Option<Node<'a>> = None;
+        let mut arguments_node: Option<Node<'a>> = None;
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "method_index_expression" => {
+                    if method_node.is_none() {
+                        method_node = Some(child);
+                    }
+                }
+                "arguments" => {
+                    if arguments_node.is_none() {
+                        arguments_node = Some(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let (Some(method_node), Some(arguments_node)) = (method_node, arguments_node) {
+            Some((method_node, arguments_node))
+        } else {
+            None
+        }
+    }
+
+    fn extract_method_target<'a>(&self, node: Node<'a>) -> Option<(Node<'a>, String)> {
+        if node.kind() != "method_index_expression" {
+            return None;
+        }
+
+        let mut cursor = node.walk();
+        let mut object_node: Option<Node<'a>> = None;
+        let mut method_name: Option<String> = None;
+        let mut after_colon = false;
+
+        for child in node.children(&mut cursor) {
+            let kind = child.kind();
+            if kind == ":" {
+                after_colon = true;
+                continue;
+            }
+
+            if !child.is_named() {
+                continue;
+            }
+
+            if !after_colon {
+                if object_node.is_none() {
+                    object_node = Some(child);
+                }
+            } else if method_name.is_none() && kind == "identifier" {
+                method_name = Some(self.source[child.start_byte()..child.end_byte()].to_string());
+            }
+        }
+
+        if let (Some(object_node), Some(method_name)) = (object_node, method_name) {
+            Some((object_node, method_name))
+        } else {
+            None
+        }
     }
 
     fn find_method_call_in_chain(&self, _node: Node, _method: &str) -> Option<Node> {
@@ -1317,6 +1410,10 @@ mod guard_ast_tests {
         parser.set_language(&language.into()).expect("Error loading Lua parser");
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
+    }
+
+    fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
+        &source[node.start_byte()..node.end_byte()]
     }
 
     fn find_method_call<'a>(tree: &'a tree_sitter::Tree, source: &'a str, method_name: &'a str) -> Option<Node<'a>> {
@@ -1417,5 +1514,61 @@ local schema = someVar:string()
             }
         }
         panic!("Could not find someVar:string() method call");
+    }
+
+    #[test]
+    fn test_get_method_call_info_simple() {
+        let code = r#"
+local g = rover.guard
+local schema = g:string()
+"#;
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+
+        let method_node = find_method_call(&tree, &source, "string").expect("method call");
+        let (object_node, arguments_node, method_name) = analyzer
+            .get_method_call_info(method_node)
+            .expect("method info");
+
+        assert_eq!(method_name, "string");
+        assert_eq!(node_text(&source, object_node), "g");
+        assert_eq!(arguments_node.kind(), "arguments");
+    }
+
+    #[test]
+    fn test_get_method_call_info_rover_guard_object() {
+        let code = r#"
+local schema = rover.guard:string()
+"#;
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+
+        let method_node = find_method_call(&tree, &source, "string").expect("method call");
+        let (object_node, _arguments_node, method_name) = analyzer
+            .get_method_call_info(method_node)
+            .expect("method info");
+
+        assert_eq!(method_name, "string");
+        assert_eq!(node_text(&source, object_node), "rover.guard");
+    }
+
+    #[test]
+    fn test_get_method_call_info_nested_call() {
+        let code = r#"
+local g = rover.guard
+local schema = g:array(g:string())
+"#;
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+
+        let method_node = find_method_call(&tree, &source, "array").expect("method call");
+        let (object_node, arguments_node, method_name) = analyzer
+            .get_method_call_info(method_node)
+            .expect("method info");
+
+        assert_eq!(method_name, "array");
+        assert_eq!(node_text(&source, object_node), "g");
+        let args_text = node_text(&source, arguments_node);
+        assert!(args_text.contains("g:string"), "arguments should include nested guard call");
     }
 }
