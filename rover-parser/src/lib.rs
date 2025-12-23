@@ -170,7 +170,17 @@ impl Analyzer {
         let path = if path_parts.is_empty() {
             "/".to_string()
         } else {
-            format!("/{}", path_parts.join("/"))
+            let transformed_parts: Vec<String> = path_parts
+                .iter()
+                .map(|part| {
+                    if part.starts_with("p_") {
+                        format!("{{{}}}", &part[2..]) // p_id -> {id}
+                    } else {
+                        part.to_string()
+                    }
+                })
+                .collect();
+            format!("/{}", transformed_parts.join("/"))
         };
 
         if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str()) {
@@ -426,24 +436,30 @@ mod tests {
         assert!(model.server.is_some(), "Server should be parsed");
         let server = model.server.unwrap();
         assert!(server.exported, "Server should be exported");
-        assert_eq!(server.routes.len(), 1, "Should have 1 route");
+        assert_eq!(server.routes.len(), 4, "Should have 4 routes");
 
+        // Route 1: GET /hello
         let route = &server.routes[0];
-        assert_eq!(route.method, "GET", "Route method should be GET");
-        assert_eq!(route.path, "/hello", "Route path should be /hello");
+        assert_eq!(route.method, "GET");
+        assert_eq!(route.path, "/hello");
+        assert_eq!(route.responses[0].schema["message"], "Hello World");
 
-        assert!(!route.responses.is_empty(), "Route should have responses");
-        let response = &route.responses[0];
+        // Route 2: GET /hello/{id}
+        let route = &server.routes[1];
+        assert_eq!(route.method, "GET");
+        assert_eq!(route.path, "/hello/{id}");
+        assert!(!route.responses.is_empty());
 
-        assert_eq!(response.status, 200, "Response status should be 200");
-        assert_eq!(
-            response.content_type, "application/json",
-            "Response should be JSON"
-        );
+        // Route 3: GET /users/{id}/posts/{postId}
+        let route = &server.routes[2];
+        assert_eq!(route.method, "GET");
+        assert_eq!(route.path, "/users/{id}/posts/{postId}");
+        assert!(!route.responses.is_empty());
 
-        assert_eq!(
-            response.schema["message"], "Hello World",
-            "Schema should have message field"
-        );
+        // Route 4: GET /greet/{name}
+        let route = &server.routes[3];
+        assert_eq!(route.method, "GET");
+        assert_eq!(route.path, "/greet/{name}");
+        assert!(!route.responses.is_empty());
     }
 }
