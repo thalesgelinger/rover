@@ -1,5 +1,6 @@
 local api = rover.server {}
 
+-- Access request context: method, path, headers, query params
 function api.echo.get(ctx)
     return api.json {
         method = ctx.method,
@@ -10,6 +11,7 @@ function api.echo.get(ctx)
     }
 end
 
+-- POST with request body and content-type header
 function api.echo.post(ctx)
     return api.json {
         received_body = ctx:body() or "no body",

@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn should_read_and_print_lua_file() {
-        let result = run("../examples/hello.lua");
+        let result = run("../examples/starter.lua");
         assert_eq!(result.unwrap(), ());
     }
 
