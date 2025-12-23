@@ -109,9 +109,10 @@ pub struct RouteTable {
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    port: u16,
-    host: String,
-    log_level: String,
+    pub port: u16,
+    pub host: String,
+    pub log_level: String,
+    pub docs: bool,
 }
 
 impl FromLua for ServerConfig {
@@ -137,6 +138,11 @@ impl FromLua for ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host: config.get::<String>("host").unwrap_or("localhost".into()),
                     log_level,
+                    docs: match config.get::<Value>("docs")? {
+                        Value::Nil => true,
+                        Value::Boolean(b) => b,
+                        _ => true,
+                    },
                 })
             }
             _ => Err(anyhow!("Server config must be a table"))?,
@@ -159,12 +165,15 @@ struct LuaResponse {
     body: Bytes,
 }
 
-async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()> {
+async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
     let (tx, rx) = mpsc::channel(1024);
 
     let addr = format!("{}:{}", config.host, config.port);
     if config.log_level != "nope" {
         info!("🚀 Rover server running at http://{}", addr);
+        if config.docs && openapi_spec.is_some() {
+            info!("📚 API docs available at http://{}/docs", addr);
+        }
         if config.log_level == "debug" {
             info!("🐛 Debug mode enabled");
         }
@@ -186,7 +195,7 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()
 
     let listener = TcpListener::bind(addr).await?;
 
-    event_loop::run(lua, routes.routes, rx, config.clone());
+    event_loop::run(lua, routes.routes, rx, config.clone(), openapi_spec);
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -270,7 +279,7 @@ async fn handler(
     Ok(response)
 }
 
-pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
+pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) {
     if config.log_level != "nope" {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -286,5 +295,5 @@ pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
     }
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let _ = runtime.block_on(server(lua, routes, config));
+    let _ = runtime.block_on(server(lua, routes, config, openapi_spec));
 }

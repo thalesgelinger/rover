@@ -707,6 +707,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
+name = "rover-openapi"
+version = "0.1.0"
+dependencies = [
+ "rover-parser",
+ "serde_json",
+]
+
+[[package]]
 name = "rover-parser"
 version = "0.1.0"
 dependencies = [
@@ -721,6 +729,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "mlua",
+ "rover-openapi",
+ "rover-parser",
  "rover_server",
  "serde_json",
 ]
@@ -737,6 +747,7 @@ dependencies = [
  "itoa",
  "matchit",
  "mlua",
+ "rover-openapi",
  "ryu",
  "serde_json",
  "smallvec",

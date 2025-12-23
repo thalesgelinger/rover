@@ -8,8 +8,9 @@ use tracing::{debug, info, warn};
 
 use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig, RoverResponse};
 use crate::{fast_router::FastRouter, to_json::ToJson};
+use rover_openapi;
 
-pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: ServerConfig) {
+pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: ServerConfig, openapi_spec: Option<serde_json::Value>) {
     std::thread::spawn(move || -> Result<()> {
         let fast_router = FastRouter::from_routes(routes)?;
 
@@ -43,6 +44,18 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                     let body_display = std::str::from_utf8(body).unwrap_or("<binary data>");
                     debug!("  └─ body: {}", body_display);
                 }
+            }
+
+            // Handle /docs endpoint if enabled and spec is available
+            if config.docs && path_str == "/docs" && openapi_spec.is_some() {
+                let html = rover_openapi::scalar_html(openapi_spec.as_ref().unwrap());
+                let elapsed = req.started_at.elapsed();
+                debug!("GET /docs - 200 OK in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+                let _ = req.respond_to.send(LuaResponse {
+                    status: StatusCode::OK,
+                    body: Bytes::from(html),
+                });
+                continue;
             }
 
             let (handler, params) = match fast_router.match_route(method, path_str) {
