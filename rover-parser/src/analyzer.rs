@@ -1382,11 +1382,70 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         }
     }
 
-    fn find_method_call_in_chain(&self, _node: Node, _method: &str) -> Option<Node> {
+    fn find_method_call_in_chain<'a>(&self, node: Node<'a>, method: &str) -> Option<Node<'a>> {
+        // Expand search to the node, its descendants, and its ancestors
+        if let Some(found) = self.find_method_call_in_node(node, method) {
+            return Some(found);
+        }
+
+        let mut current = node.parent();
+        while let Some(parent) = current {
+            if let Some(found) = self.find_method_call_in_node(parent, method) {
+                return Some(found);
+            }
+            current = parent.parent();
+        }
+
         None
     }
 
-    fn find_arguments_node(&self, _node: Node) -> Option<Node> {
+    fn find_method_call_in_node<'a>(&self, node: Node<'a>, method: &str) -> Option<Node<'a>> {
+        if node.kind() == "function_call" {
+            if let Some((_object, _args, method_name)) = self.get_method_call_info(node) {
+                if method_name == method {
+                    return Some(node);
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = self.find_method_call_in_node(child, method) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
+    fn find_arguments_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+        // Check if this node is already the arguments node
+        if node.kind() == "arguments" {
+            return Some(node);
+        }
+
+        // Walk up the parent chain to find the enclosing function_call
+        let mut current = Some(node);
+        while let Some(curr) = current {
+            if curr.kind() == "function_call" {
+                let mut cursor = curr.walk();
+                for child in curr.children(&mut cursor) {
+                    if child.kind() == "arguments" {
+                        return Some(child);
+                    }
+                }
+            }
+            current = curr.parent();
+        }
+
+        // Fallback: search direct children for arguments (covers method chains)
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "arguments" {
+                return Some(child);
+            }
+        }
+
         None
     }
 
@@ -1571,4 +1630,87 @@ local schema = g:array(g:string())
         let args_text = node_text(&source, arguments_node);
         assert!(args_text.contains("g:string"), "arguments should include nested guard call");
     }
+
+    #[test]
+    fn test_find_arguments_node_simple() {
+        let code = r#"
+local g = rover.guard
+local schema = g:string()
+"#;
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+
+        let method_node = find_method_call(&tree, &source, "string").expect("method call");
+        let arguments_node = analyzer
+            .find_arguments_node(method_node)
+            .expect("arguments node");
+
+        assert_eq!(arguments_node.kind(), "arguments");
+        let args_text = node_text(&source, arguments_node);
+        assert!(args_text.contains("()"));
+    }
+
+    #[test]
+    fn test_find_arguments_node_nested_chain() {
+        let code = r#"
+local g = rover.guard
+local schema = g:array(g:string()):required()
+"#;
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+
+        let method_node = find_method_call(&tree, &source, "array").expect("method call");
+        let arguments_node = analyzer
+            .find_arguments_node(method_node)
+            .expect("arguments node");
+
+        assert_eq!(arguments_node.kind(), "arguments");
+        let args_text = node_text(&source, arguments_node);
+        assert!(args_text.contains("g:string"));
+    }
+
+    #[test]
+    fn test_find_method_call_in_chain_array() {
+        let code = r#"
+local g = rover.guard
+local schema = g:array(g:string()):required()
+"#;
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+
+        let method_node = find_method_call(&tree, &source, "required").expect("method call");
+        let array_call = analyzer
+            .find_method_call_in_chain(method_node, "array")
+            .expect("array method call");
+
+        if let Some((_obj, _args, method_name)) = analyzer.get_method_call_info(array_call) {
+            assert_eq!(method_name, "array");
+        } else {
+            panic!("Expected array call info");
+        }
+    }
+
+    #[test]
+    fn test_find_method_call_in_chain_object_inside_array() {
+        let code = r#"
+local g = rover.guard
+local schema = g:array(g:object({
+    name = g:string()
+}))
+"#;
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+
+        let array_call = find_method_call(&tree, &source, "array").expect("array method call");
+        let object_call = analyzer
+            .find_method_call_in_chain(array_call, "object")
+            .expect("object method call");
+
+        if let Some((_obj, _args, method_name)) = analyzer.get_method_call_info(object_call) {
+            assert_eq!(method_name, "object");
+        } else {
+            panic!("Expected object call info");
+        }
+    }
 }
+
