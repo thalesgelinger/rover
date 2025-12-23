@@ -3,8 +3,9 @@ use tree_sitter::Parser;
 
 use crate::analyzer::Analyzer;
 pub use analyzer::{
-    BodySchema, GuardSchema, GuardType, HeaderParam, ParsingError, PathParam, QueryParam, Request,
-    Response, Route, RoverServer, SemanticModel, ValidationSource,
+    BodySchema, FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, HeaderParam,
+    ParsingError, PathParam, QueryParam, Request, Response, Route, RoverServer, SemanticModel,
+    SourcePosition, SourceRange, ValidationSource,
 };
 
 pub fn analyze(code: &str) -> SemanticModel {

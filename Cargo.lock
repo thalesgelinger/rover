@@ -958,14 +958,13 @@ name = "rover-lsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rover-parser",
  "rover_core",
  "serde_json",
  "tokio",
  "tower-lsp",
  "tracing",
  "tracing-subscriber",
- "tree-sitter 0.20.10",
- "tree-sitter-lua",
 ]
 
 [[package]]
@@ -981,7 +980,7 @@ name = "rover-parser"
 version = "0.1.0"
 dependencies = [
  "serde_json",
- "tree-sitter 0.26.3",
+ "tree-sitter",
  "tree-sitter-lua",
 ]
 
@@ -1407,16 +1406,6 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
-]
-
-[[package]]
-name = "tree-sitter"
-version = "0.20.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e747b1f9b7b931ed39a548c1fae149101497de3c1fc8d9e18c62c1a66c683d3d"
-dependencies = [
- "cc",
- "regex",
 ]
 
 [[package]]

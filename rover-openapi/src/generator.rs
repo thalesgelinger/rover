@@ -29,7 +29,8 @@ pub fn generate_spec(model: &SemanticModel, title: &str, version: &str) -> Value
                 }
 
                 // Add requestBody for POST/PUT/PATCH routes
-                let has_body = route.method == "POST" || route.method == "PUT" || route.method == "PATCH";
+                let has_body =
+                    route.method == "POST" || route.method == "PUT" || route.method == "PATCH";
                 if has_body && route.request.body_used {
                     if let Some(body_schema) = &route.request.body_schema {
                         operation.insert(
@@ -132,7 +133,13 @@ fn add_header_parameters(parameters: &mut Vec<Value>, route: &rover_parser::Rout
     }
 }
 
-fn push_parameter(parameters: &mut Vec<Value>, name: String, location: &str, required: bool, schema: Value) {
+fn push_parameter(
+    parameters: &mut Vec<Value>,
+    name: String,
+    location: &str,
+    required: bool,
+    schema: Value,
+) {
     parameters.push(json!({
         "name": name,
         "in": location,
@@ -180,7 +187,12 @@ fn guard_schema_to_openapi_schema(schema: &GuardSchema) -> Value {
         if let Some(enum_values) = &schema.enum_values {
             map.insert(
                 "enum".into(),
-                Value::Array(enum_values.iter().map(|v| Value::String(v.clone())).collect()),
+                Value::Array(
+                    enum_values
+                        .iter()
+                        .map(|v| Value::String(v.clone()))
+                        .collect(),
+                ),
             );
         }
     }
@@ -335,7 +347,9 @@ return api
         let model = rover_parser::analyze(code);
         let spec = generate_spec(&model, "Test", "1.0.0");
 
-        let get_params = spec["paths"]["/users/{id}"]["get"]["parameters"].as_array().unwrap();
+        let get_params = spec["paths"]["/users/{id}"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
         assert!(get_params
             .iter()
             .any(|p| p["name"] == "id" && p["in"] == "path"));
@@ -352,7 +366,8 @@ return api
             request_body["content"]["application/json"]["schema"]["type"],
             "object"
         );
-        let role_enum = &request_body["content"]["application/json"]["schema"]["properties"]["role"]["enum"];
+        let role_enum =
+            &request_body["content"]["application/json"]["schema"]["properties"]["role"]["enum"];
         assert_eq!(role_enum.as_array().unwrap().len(), 2);
     }
 }

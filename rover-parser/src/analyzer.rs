@@ -6,6 +6,7 @@ use tree_sitter::Node;
 pub struct SemanticModel {
     pub server: Option<RoverServer>,
     pub errors: Vec<ParsingError>,
+    pub functions: Vec<FunctionMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +25,8 @@ pub struct Route {
     pub handler: FunctionId,
     pub request: Request,
     pub responses: Vec<Response>,
+    pub context_param: Option<String>,
+    pub guard_bindings: Vec<GuardBinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,13 +94,65 @@ pub struct Response {
     pub schema: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourcePosition {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceRange {
+    pub start: SourcePosition,
+    pub end: SourcePosition,
+}
+
+impl SourceRange {
+    pub fn from_node(node: Node) -> Self {
+        let start = node.start_position();
+        let end = node.end_position();
+        SourceRange {
+            start: SourcePosition {
+                line: start.row as usize,
+                column: start.column as usize,
+            },
+            end: SourcePosition {
+                line: end.row as usize,
+                column: end.column as usize,
+            },
+        }
+    }
+
+    pub fn contains(&self, line: usize, column: usize) -> bool {
+        let after_start =
+            (line > self.start.line) || (line == self.start.line && column >= self.start.column);
+        let before_end =
+            (line < self.end.line) || (line == self.end.line && column <= self.end.column);
+        after_start && before_end
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsingError {
     pub message: String,
     pub function_name: Option<String>,
+    pub range: Option<SourceRange>,
 }
 
-    pub struct Analyzer {
+#[derive(Debug, Clone)]
+pub struct FunctionMetadata {
+    pub id: FunctionId,
+    pub name: String,
+    pub range: SourceRange,
+    pub context_param: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GuardBinding {
+    pub name: String,
+    pub schema: HashMap<String, GuardSchema>,
+}
+
+pub struct Analyzer {
     pub model: SemanticModel,
     pub symbol_table: HashMap<String, FunctionId>,
     pub function_counter: FunctionId,
@@ -108,14 +163,13 @@ pub struct ParsingError {
     pub current_route: usize,
 }
 
-
-
 impl Analyzer {
     pub fn new(source: String) -> Self {
         Analyzer {
             model: SemanticModel {
                 server: None,
                 errors: Vec::new(),
+                functions: Vec::new(),
             },
             symbol_table: HashMap::new(),
             function_counter: 0,
@@ -141,6 +195,10 @@ impl Analyzer {
                 }
             }
             _ => {}
+        }
+
+        if node.kind() == "function_call" {
+            self.inspect_guard_invocation(node);
         }
 
         let mut cursor = node.walk();
@@ -251,10 +309,12 @@ impl Analyzer {
             return;
         }
 
+        let function_range = SourceRange::from_node(node);
+
         let handler_id = self.function_counter;
         self.function_counter += 1;
         self.symbol_table.insert(func_name.clone(), handler_id);
-        self.current_function_name = Some(func_name);
+        self.current_function_name = Some(func_name.clone());
 
         // Extract path params from path
         let path_params = self.extract_path_params_from_path(&path);
@@ -272,6 +332,8 @@ impl Analyzer {
                     body_used: false,
                 },
                 responses: Vec::new(),
+                context_param: None,
+                guard_bindings: Vec::new(),
             });
             self.current_route = server.routes.len() - 1;
         }
@@ -289,6 +351,17 @@ impl Analyzer {
                 }
             }
         }
+
+        let context_param_name = self.current_context_param.clone();
+        if let Some(route) = self.current_route_mut() {
+            route.context_param = context_param_name.clone();
+        }
+        self.model.functions.push(FunctionMetadata {
+            id: handler_id,
+            name: func_name.clone(),
+            range: function_range,
+            context_param: context_param_name,
+        });
 
         // Track context usage in the function body
         self.track_context_usage(node);
@@ -337,6 +410,7 @@ impl Analyzer {
             self.model.errors.push(ParsingError {
                 message: "Failed to parse response".to_string(),
                 function_name: Some(func_name),
+                range: Some(SourceRange::from_node(node)),
             });
         }
     }
@@ -439,7 +513,7 @@ impl Analyzer {
 
     fn handle_params_access(&mut self, call_node: Node) {
         if let Some(field_name) = self.extract_field_name_from_call(call_node) {
-            self.mark_path_param_as_used(&field_name);
+            self.mark_path_param_as_used(&field_name, call_node);
         }
     }
 
@@ -458,6 +532,7 @@ impl Analyzer {
     fn handle_body_access(&mut self, call_node: Node) {
         if let Some(expect_call) = self.find_method_call_in_chain(call_node, "expect") {
             if let Some(body_schema) = self.parse_body_expect(expect_call) {
+                self.register_guard_binding_from_call(expect_call, &body_schema.guard_defs);
                 self.set_body_schema(body_schema);
             }
             self.set_body_used(true);
@@ -525,7 +600,7 @@ impl Analyzer {
         None
     }
 
-    fn mark_path_param_as_used(&mut self, param_name: &str) {
+    fn mark_path_param_as_used(&mut self, param_name: &str, call_node: Node) {
         if let Some(ref mut server) = self.model.server {
             if let Some(route) = server.routes.last_mut() {
                 for path_param in &mut route.request.path_params {
@@ -547,6 +622,7 @@ impl Analyzer {
                             .collect::<Vec<_>>()
                     ),
                     function_name: self.current_function_name.clone(),
+                    range: Some(SourceRange::from_node(call_node)),
                 });
             }
         }
@@ -721,6 +797,126 @@ impl Analyzer {
                 route.request.body_used = used;
             }
         }
+    }
+
+    fn current_route_mut(&mut self) -> Option<&mut Route> {
+        self.model
+            .server
+            .as_mut()
+            .and_then(|server| server.routes.get_mut(self.current_route))
+    }
+
+    fn add_guard_binding_to_current_route(&mut self, binding: GuardBinding) {
+        if let Some(route) = self.current_route_mut() {
+            if let Some(existing) = route
+                .guard_bindings
+                .iter_mut()
+                .find(|b| b.name == binding.name)
+            {
+                *existing = binding;
+            } else {
+                route.guard_bindings.push(binding);
+            }
+        }
+    }
+
+    fn register_guard_binding_from_call(
+        &mut self,
+        call_node: Node,
+        guard_defs: &HashMap<String, GuardSchema>,
+    ) {
+        if guard_defs.is_empty() {
+            return;
+        }
+        if let Some(var_name) = self.extract_assignment_identifier(call_node) {
+            self.add_guard_binding_to_current_route(GuardBinding {
+                name: var_name,
+                schema: guard_defs.clone(),
+            });
+        }
+    }
+
+    fn extract_assignment_identifier(&mut self, node: Node) -> Option<String> {
+        let assignment = Self::find_enclosing_assignment(node)?;
+        self.extract_identifier_from_assignment(assignment)
+    }
+
+    fn find_enclosing_assignment(node: Node) -> Option<Node> {
+        let mut current = Some(node);
+        while let Some(curr) = current {
+            match curr.kind() {
+                "assignment_statement" | "local_variable_declaration" => {
+                    return Some(curr);
+                }
+                _ => {
+                    current = curr.parent();
+                }
+            }
+        }
+        None
+    }
+
+    fn extract_identifier_from_assignment(&mut self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "variable_list" | "name_list" => {
+                    return self.find_first_identifier(child);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn find_first_identifier(&mut self, node: Node) -> Option<String> {
+        if node.kind() == "identifier" {
+            return Some(self.source[node.start_byte()..node.end_byte()].to_string());
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(name) = self.find_first_identifier(child) {
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    fn inspect_guard_invocation(&mut self, node: Node) {
+        if self.current_function_name.is_none() {
+            return;
+        }
+        if let Some(guard_defs) = self.parse_rover_guard_call(node) {
+            self.register_guard_binding_from_call(node, &guard_defs);
+        }
+    }
+
+    fn parse_rover_guard_call(&mut self, node: Node) -> Option<HashMap<String, GuardSchema>> {
+        let text = &self.source[node.start_byte()..node.end_byte()];
+        if !text.contains("rover.guard") {
+            return None;
+        }
+        let arguments = self.find_arguments_node(node)?;
+        let table = self.find_table_constructor_in_arguments(arguments)?;
+        let guard_defs = self.collect_guard_defs_from_table(table);
+        if guard_defs.is_empty() {
+            None
+        } else {
+            Some(guard_defs)
+        }
+    }
+
+    fn collect_guard_defs_from_table(&mut self, table_node: Node) -> HashMap<String, GuardSchema> {
+        let mut guard_defs = HashMap::new();
+        let mut cursor = table_node.walk();
+        for field_child in table_node.children(&mut cursor) {
+            if field_child.kind() == "field" {
+                if let Some((key, guard_schema)) = self.parse_object_field(field_child) {
+                    guard_defs.insert(key, guard_schema);
+                }
+            }
+        }
+        guard_defs
     }
 
     fn extract_status_code(&mut self, node: Node) -> u16 {
@@ -1068,7 +1264,9 @@ impl Analyzer {
                             if let Some((_object, arguments, _method_name)) =
                                 self.get_method_call_info(node)
                             {
-                                if let Some(table_node) = self.find_table_constructor_in_arguments(arguments) {
+                                if let Some(table_node) =
+                                    self.find_table_constructor_in_arguments(arguments)
+                                {
                                     let values = self.collect_string_values_from_table(table_node);
                                     *enum_values = Some(values);
                                 }
@@ -1219,7 +1417,10 @@ impl Analyzer {
     fn find_expression_root<'a>(&self, mut node: Node<'a>) -> Node<'a> {
         while let Some(parent) = node.parent() {
             match parent.kind() {
-                "function_call" | "method_index_expression" | "arguments" | "parenthesized_expression" => {
+                "function_call"
+                | "method_index_expression"
+                | "arguments"
+                | "parenthesized_expression" => {
                     node = parent;
                 }
                 _ => break,
