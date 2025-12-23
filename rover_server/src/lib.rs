@@ -1,15 +1,15 @@
 mod event_loop;
-pub mod to_json;
 mod fast_router;
 mod response;
+pub mod to_json;
 
-pub use response::RoverResponse;
 use http_body_util::Full;
 pub use hyper::body::Bytes;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
+pub use response::RoverResponse;
 use smallvec::SmallVec;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -166,7 +166,12 @@ struct LuaResponse {
     content_type: Option<String>,
 }
 
-async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
+async fn server(
+    lua: Lua,
+    routes: RouteTable,
+    config: ServerConfig,
+    openapi_spec: Option<serde_json::Value>,
+) -> Result<()> {
     let (tx, rx) = mpsc::channel(1024);
 
     let addr = format!("{}:{}", config.host, config.port);
@@ -239,12 +244,7 @@ async fn handler(
 
     let query: SmallVec<[(Bytes, Bytes); 8]> = match parts.uri.query() {
         Some(q) => form_urlencoded::parse(q.as_bytes())
-            .map(|(k, v)| {
-                (
-                    Bytes::from(k.into_owned()),
-                    Bytes::from(v.into_owned()),
-                )
-            })
+            .map(|(k, v)| (Bytes::from(k.into_owned()), Bytes::from(v.into_owned())))
             .collect(),
         None => SmallVec::new(),
     };
@@ -277,19 +277,26 @@ async fn handler(
 
     let mut response = Response::new(Full::new(resp.body));
     *response.status_mut() = resp.status.into();
-    
+
     // Set Content-Type header if provided
     if let Some(content_type) = resp.content_type {
         response.headers_mut().insert(
             hyper::header::CONTENT_TYPE,
-            content_type.parse().unwrap_or_else(|_| hyper::header::HeaderValue::from_static("text/plain")),
+            content_type
+                .parse()
+                .unwrap_or_else(|_| hyper::header::HeaderValue::from_static("text/plain")),
         );
     }
-    
+
     Ok(response)
 }
 
-pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) {
+pub fn run(
+    lua: Lua,
+    routes: RouteTable,
+    config: ServerConfig,
+    openapi_spec: Option<serde_json::Value>,
+) {
     if config.log_level != "nope" {
         tracing_subscriber::fmt()
             .with_env_filter(

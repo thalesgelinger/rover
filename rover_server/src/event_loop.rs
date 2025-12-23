@@ -1,16 +1,22 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use hyper::{body::Bytes, StatusCode};
+use hyper::{StatusCode, body::Bytes};
 use mlua::{Lua, Table, Value};
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
 
-use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig, RoverResponse};
+use crate::{HttpMethod, LuaRequest, LuaResponse, Route, RoverResponse, ServerConfig};
 use crate::{fast_router::FastRouter, to_json::ToJson};
 use rover_openapi;
 
-pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: ServerConfig, openapi_spec: Option<serde_json::Value>) {
+pub fn run(
+    lua: Lua,
+    routes: Vec<Route>,
+    mut rx: Receiver<LuaRequest>,
+    config: ServerConfig,
+    openapi_spec: Option<serde_json::Value>,
+) {
     std::thread::spawn(move || -> Result<()> {
         let fast_router = FastRouter::from_routes(routes)?;
 
@@ -51,7 +57,10 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
             if config.docs && path_str == "/docs" && openapi_spec.is_some() {
                 let html = rover_openapi::scalar_html(openapi_spec.as_ref().unwrap());
                 let elapsed = req.started_at.elapsed();
-                debug!("GET /docs - 200 OK in {:.2}ms", elapsed.as_secs_f64() * 1000.0);
+                debug!(
+                    "GET /docs - 200 OK in {:.2}ms",
+                    elapsed.as_secs_f64() * 1000.0
+                );
                 let _ = req.respond_to.send(LuaResponse {
                     status: StatusCode::OK,
                     body: Bytes::from(html),
@@ -136,17 +145,33 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                     let json = lua_table_to_json(&table).unwrap_or_else(|e| {
                         format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
                     });
-                    (StatusCode::OK, Bytes::from(json), Some("application/json".to_string()))
+                    (
+                        StatusCode::OK,
+                        Bytes::from(json),
+                        Some("application/json".to_string()),
+                    )
                 }
 
                 // Fast path: integers
-                Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string()), Some("text/plain".to_string())),
+                Value::Integer(i) => (
+                    StatusCode::OK,
+                    Bytes::from(i.to_string()),
+                    Some("text/plain".to_string()),
+                ),
 
                 // Fast path: numbers
-                Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string()), Some("text/plain".to_string())),
+                Value::Number(n) => (
+                    StatusCode::OK,
+                    Bytes::from(n.to_string()),
+                    Some("text/plain".to_string()),
+                ),
 
                 // Fast path: booleans
-                Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string()), Some("text/plain".to_string())),
+                Value::Boolean(b) => (
+                    StatusCode::OK,
+                    Bytes::from(b.to_string()),
+                    Some("text/plain".to_string()),
+                ),
 
                 // Fast path: nil -> 204 No Content
                 Value::Nil => (StatusCode::NO_CONTENT, Bytes::new(), None),
@@ -168,7 +193,11 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
 
             if tracing::event_enabled!(tracing::Level::DEBUG) {
                 let body_preview = if body.len() > 200 {
-                    format!("{}... ({} bytes)", String::from_utf8_lossy(&body[..200]), body.len())
+                    format!(
+                        "{}... ({} bytes)",
+                        String::from_utf8_lossy(&body[..200]),
+                        body.len()
+                    )
                 } else {
                     String::from_utf8_lossy(&body).to_string()
                 };
@@ -200,7 +229,11 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                 }
             }
 
-            let _ = req.respond_to.send(LuaResponse { status, body, content_type });
+            let _ = req.respond_to.send(LuaResponse {
+                status,
+                body,
+                content_type,
+            });
         }
         Ok(())
     });
@@ -281,20 +314,18 @@ fn build_lua_context(
                     "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
                 )
             })?;
-            
+
             let globals = lua.globals();
             let rover: Table = globals.get("rover")?;
             let guard: Table = rover.get("guard")?;
-            
+
             if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
                 constructor.call(body_str.to_string())
             } else {
                 Ok(Value::String(lua.create_string(body_str)?))
             }
         } else {
-            Err(mlua::Error::RuntimeError(
-                "Request has no body".to_string(),
-            ))
+            Err(mlua::Error::RuntimeError("Request has no body".to_string()))
         }
     })?;
     ctx.set("body", body_fn)?;

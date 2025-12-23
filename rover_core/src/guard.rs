@@ -1,4 +1,4 @@
-use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value, MetaMethod};
+use mlua::{Error as LuaError, Lua, MetaMethod, Table, UserData, UserDataMethods, Value};
 use serde_json;
 use std::fmt;
 
@@ -41,7 +41,7 @@ impl ValidationErrors {
 impl fmt::Display for ValidationErrors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Validation failed for request body:\n")?;
-        
+
         for (i, err) in self.errors.iter().enumerate() {
             writeln!(f, "  {}. Field '{}'", i + 1, err.path)?;
             writeln!(f, "     Error: {}", err.message)?;
@@ -50,7 +50,7 @@ impl fmt::Display for ValidationErrors {
                 writeln!(f)?;
             }
         }
-        
+
         Ok(())
     }
 }
@@ -59,10 +59,8 @@ impl std::error::Error for ValidationErrors {}
 
 impl UserData for ValidationErrors {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
-            Ok(format!("{}", this))
-        });
-        
+        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| Ok(format!("{}", this)));
+
         methods.add_method("errors", |lua, this, ()| {
             let errors_table = lua.create_table_with_capacity(this.errors.len(), 0)?;
             for (i, err) in this.errors.iter().enumerate() {
@@ -86,18 +84,33 @@ pub fn validate_field(
 ) -> Result<Value, Vec<ValidationError>> {
     let validator_type: String = match config.get("type") {
         Ok(t) => t,
-        Err(_) => return Err(vec![ValidationError::new(field_name, "Invalid validator configuration", "config")]),
+        Err(_) => {
+            return Err(vec![ValidationError::new(
+                field_name,
+                "Invalid validator configuration",
+                "config",
+            )]);
+        }
     };
     let required: bool = config.get("required").unwrap_or(false);
     let required_msg: Option<String> = match config.raw_get("required_msg") {
         Ok(Value::String(s)) => match s.to_str() {
             Ok(s) => Some(s.to_string()),
-            Err(_) => return Err(vec![ValidationError::new(field_name, "Invalid required message", "config")]),
+            Err(_) => {
+                return Err(vec![ValidationError::new(
+                    field_name,
+                    "Invalid required message",
+                    "config",
+                )]);
+            }
         },
         _ => None,
     };
     let default_value: Option<Value> = match config.raw_get("default") {
-        Ok(v@Value::String(_)) | Ok(v@Value::Number(_)) | Ok(v@Value::Integer(_)) | Ok(v@Value::Boolean(_)) => Some(v),
+        Ok(v @ Value::String(_))
+        | Ok(v @ Value::Number(_))
+        | Ok(v @ Value::Integer(_))
+        | Ok(v @ Value::Boolean(_)) => Some(v),
         _ => None,
     };
     let enum_values: Option<Vec<String>> = match config.raw_get("enum") {
@@ -105,13 +118,25 @@ pub fn validate_field(
             let mut values = Vec::new();
             let len = match t.len() {
                 Ok(l) => l,
-                Err(_) => return Err(vec![ValidationError::new(field_name, "Invalid enum configuration", "config")]),
+                Err(_) => {
+                    return Err(vec![ValidationError::new(
+                        field_name,
+                        "Invalid enum configuration",
+                        "config",
+                    )]);
+                }
             };
             for i in 1..=len {
                 if let Ok(Value::String(s)) = t.get(i) {
                     match s.to_str() {
                         Ok(s) => values.push(s.to_string()),
-                        Err(_) => return Err(vec![ValidationError::new(field_name, "Invalid enum value", "config")]),
+                        Err(_) => {
+                            return Err(vec![ValidationError::new(
+                                field_name,
+                                "Invalid enum value",
+                                "config",
+                            )]);
+                        }
                     }
                 }
             }
@@ -142,14 +167,20 @@ pub fn validate_field(
                 // Enum validation
                 if let Some(allowed) = enum_values {
                     let str_val = match &value {
-                        Value::String(s) => s.to_str().map_err(|_| vec![ValidationError::new(field_name, "Invalid string value", "type")])?,
+                        Value::String(s) => s.to_str().map_err(|_| {
+                            vec![ValidationError::new(
+                                field_name,
+                                "Invalid string value",
+                                "type",
+                            )]
+                        })?,
                         _ => unreachable!(),
                     };
                     if !allowed.contains(&str_val.to_string()) {
                         return Err(vec![ValidationError::new(
                             field_name,
                             &format!("Must be one of: {}. Got: '{}'", allowed.join(", "), str_val),
-                            "enum"
+                            "enum",
                         )]);
                     }
                 }
@@ -158,7 +189,7 @@ pub fn validate_field(
                 Err(vec![ValidationError::new(
                     field_name,
                     &format!("Must be a string, got {}", value.type_name()),
-                    "type"
+                    "type",
                 )])
             }
         }
@@ -171,7 +202,7 @@ pub fn validate_field(
                 Err(vec![ValidationError::new(
                     field_name,
                     &format!("Must be a number, got {}", value.type_name()),
-                    "type"
+                    "type",
                 )])
             }
         }
@@ -185,14 +216,14 @@ pub fn validate_field(
                     Err(vec![ValidationError::new(
                         field_name,
                         &format!("Must be an integer, got float {}", n),
-                        "type"
+                        "type",
                     )])
                 }
             } else {
                 Err(vec![ValidationError::new(
                     field_name,
                     &format!("Must be an integer, got {}", value.type_name()),
-                    "type"
+                    "type",
                 )])
             }
         }
@@ -203,7 +234,7 @@ pub fn validate_field(
                 Err(vec![ValidationError::new(
                     field_name,
                     &format!("Must be a boolean, got {}", value.type_name()),
-                    "type"
+                    "type",
                 )])
             }
         }
@@ -211,15 +242,33 @@ pub fn validate_field(
             if let Value::Table(ref table) = value {
                 let result = match lua.create_table() {
                     Ok(t) => t,
-                    Err(_) => return Err(vec![ValidationError::new(field_name, "Failed to create result table", "internal")]),
+                    Err(_) => {
+                        return Err(vec![ValidationError::new(
+                            field_name,
+                            "Failed to create result table",
+                            "internal",
+                        )]);
+                    }
                 };
                 let len = match table.len() {
                     Ok(l) => l,
-                    Err(_) => return Err(vec![ValidationError::new(field_name, "Invalid array structure", "type")]),
+                    Err(_) => {
+                        return Err(vec![ValidationError::new(
+                            field_name,
+                            "Invalid array structure",
+                            "type",
+                        )]);
+                    }
                 };
                 let element_config: Table = match config.get("element") {
                     Ok(t) => t,
-                    Err(_) => return Err(vec![ValidationError::new(field_name, "Invalid array element configuration", "config")]),
+                    Err(_) => {
+                        return Err(vec![ValidationError::new(
+                            field_name,
+                            "Invalid array element configuration",
+                            "config",
+                        )]);
+                    }
                 };
 
                 let mut all_errors = Vec::new();
@@ -227,7 +276,11 @@ pub fn validate_field(
                 for i in 1..=len {
                     let elem_result = table.get(i);
                     if let Err(_) = elem_result {
-                        all_errors.push(ValidationError::new(field_name, "Invalid array element access", "type"));
+                        all_errors.push(ValidationError::new(
+                            field_name,
+                            "Invalid array element access",
+                            "type",
+                        ));
                         continue;
                     }
                     let elem = elem_result.unwrap();
@@ -236,13 +289,17 @@ pub fn validate_field(
                         lua,
                         &format!("{}[{}]", field_name, i),
                         elem,
-                        &element_config
+                        &element_config,
                     ) {
                         Ok(validated) => {
                             if let Err(_) = result.set(i, validated) {
-                                all_errors.push(ValidationError::new(field_name, "Failed to set validated element", "internal"));
+                                all_errors.push(ValidationError::new(
+                                    field_name,
+                                    "Failed to set validated element",
+                                    "internal",
+                                ));
                             }
-        }
+                        }
                         Err(errors) => {
                             all_errors.extend(errors);
                         }
@@ -258,26 +315,32 @@ pub fn validate_field(
                 Err(vec![ValidationError::new(
                     field_name,
                     &format!("Must be an array, got {}", value.type_name()),
-                    "type"
+                    "type",
                 )])
             }
         }
         "object" => {
             if let Value::Table(ref data_table) = value {
-                let schema: Table = config.get("schema").map_err(|_| vec![ValidationError::new(field_name, "Invalid object schema configuration", "config")])?;
+                let schema: Table = config.get("schema").map_err(|_| {
+                    vec![ValidationError::new(
+                        field_name,
+                        "Invalid object schema configuration",
+                        "config",
+                    )]
+                })?;
                 validate_table_internal(lua, data_table, &schema, field_name)
             } else {
                 Err(vec![ValidationError::new(
                     field_name,
                     &format!("Must be an object, got {}", value.type_name()),
-                    "type"
+                    "type",
                 )])
             }
         }
         _ => Err(vec![ValidationError::new(
             field_name,
             &format!("Unknown validator type: {}", validator_type),
-            "config"
+            "config",
         )]),
     }
 }
@@ -289,12 +352,22 @@ fn validate_table_internal(
     schema: &Table,
     context: &str,
 ) -> Result<Value, Vec<ValidationError>> {
-    let result = lua.create_table().map_err(|_| vec![ValidationError::new(context, "Failed to create result table", "internal")])?;
+    let result = lua.create_table().map_err(|_| {
+        vec![ValidationError::new(
+            context,
+            "Failed to create result table",
+            "internal",
+        )]
+    })?;
 
-    let pairs_vec: Vec<(String, Table)> = schema
-        .pairs()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| vec![ValidationError::new(context, "Failed to read schema pairs", "config")])?;
+    let pairs_vec: Vec<(String, Table)> =
+        schema.pairs().collect::<Result<Vec<_>, _>>().map_err(|_| {
+            vec![ValidationError::new(
+                context,
+                "Failed to read schema pairs",
+                "config",
+            )]
+        })?;
 
     let mut all_errors = Vec::new();
 
@@ -308,7 +381,13 @@ fn validate_table_internal(
         let lua_value: Value = data.get(&field_name as &str).unwrap_or(Value::Nil);
         match validate_field(lua, &full_field_name, lua_value, &validator_config) {
             Ok(validated_value) => {
-                result.set(field_name, validated_value).map_err(|_| vec![ValidationError::new(&full_field_name, "Failed to set validated value", "internal")])?;
+                result.set(field_name, validated_value).map_err(|_| {
+                    vec![ValidationError::new(
+                        &full_field_name,
+                        "Failed to set validated value",
+                        "internal",
+                    )]
+                })?;
             }
             Err(errors) => {
                 all_errors.extend(errors);
@@ -324,7 +403,12 @@ fn validate_table_internal(
 }
 
 /// Validate a Lua table against a schema (public API)
-pub fn validate_table(lua: &Lua, data: &Table, schema: &Table, context: &str) -> Result<Value, Vec<ValidationError>> {
+pub fn validate_table(
+    lua: &Lua,
+    data: &Table,
+    schema: &Table,
+    context: &str,
+) -> Result<Value, Vec<ValidationError>> {
     validate_table_internal(lua, data, schema, context)
 }
 
@@ -351,10 +435,7 @@ fn format_lua_error(error: &LuaError) -> String {
             }
         }
         LuaError::CallbackError { cause, .. } => format_lua_error(cause),
-        LuaError::BadArgument { 
-            cause, 
-            .. 
-        } => format!("Bad argument: {}", format_lua_error(cause)),
+        LuaError::BadArgument { cause, .. } => format!("Bad argument: {}", format_lua_error(cause)),
         _ => format!("Validation error: {}", error),
     }
 }
@@ -364,27 +445,39 @@ impl UserData for BodyValue {
         methods.add_method("expect", |lua, this, schema: Table| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let parsed_json: serde_json::Value = serde_json::from_str(&this.json_string)
-                    .map_err(|e| LuaError::RuntimeError(format!("Invalid JSON in request body: {}", e)))?;
+                    .map_err(|e| {
+                        LuaError::RuntimeError(format!("Invalid JSON in request body: {}", e))
+                    })?;
 
                 let body_object = match parsed_json {
                     serde_json::Value::Object(obj) => obj,
                     _ => {
                         return Err(LuaError::RuntimeError(
                             "Request body must be a JSON object".to_string(),
-                        ))
+                        ));
                     }
                 };
 
                 let data_table = lua.create_table().map_err(|e| {
                     eprintln!("INTERNAL ERROR: Failed to create data table: {}", e);
-                    LuaError::RuntimeError("Internal server error while processing request".to_string())
+                    LuaError::RuntimeError(
+                        "Internal server error while processing request".to_string(),
+                    )
                 })?;
-                
+
                 for (k, v) in body_object {
-                    data_table.set(k.as_str(), json_to_lua(lua, &v).map_err(|e| {
-                        eprintln!("INTERNAL ERROR: Failed to convert JSON value for key '{}': {}", k, e);
-                        LuaError::RuntimeError("Internal server error while processing request".to_string())
-                    })?)?;
+                    data_table.set(
+                        k.as_str(),
+                        json_to_lua(lua, &v).map_err(|e| {
+                            eprintln!(
+                                "INTERNAL ERROR: Failed to convert JSON value for key '{}': {}",
+                                k, e
+                            );
+                            LuaError::RuntimeError(
+                                "Internal server error while processing request".to_string(),
+                            )
+                        })?,
+                    )?;
                 }
 
                 match validate_table(lua, &data_table, &schema, "") {
@@ -401,7 +494,9 @@ impl UserData for BodyValue {
                 Ok(inner_result) => inner_result,
                 Err(panic_err) => {
                     eprintln!("PANIC in validation: {:?}", panic_err);
-                    Err(LuaError::RuntimeError("Internal server error occurred during validation".to_string()))
+                    Err(LuaError::RuntimeError(
+                        "Internal server error occurred during validation".to_string(),
+                    ))
                 }
             }
         });
