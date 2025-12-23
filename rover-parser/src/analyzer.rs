@@ -32,6 +32,7 @@ pub struct Request {
     pub query_params: Vec<QueryParam>,
     pub headers: Vec<HeaderParam>,
     pub body_schema: Option<BodySchema>,
+    pub body_used: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -96,15 +97,18 @@ pub struct ParsingError {
     pub function_name: Option<String>,
 }
 
-pub struct Analyzer {
+    pub struct Analyzer {
     pub model: SemanticModel,
-    symbol_table: HashMap<String, FunctionId>,
-    function_counter: FunctionId,
-    app_var_name: Option<String>,
-    current_function_name: Option<String>,
-    current_context_param: Option<String>,
-    source: String,
+    pub symbol_table: HashMap<String, FunctionId>,
+    pub function_counter: FunctionId,
+    pub app_var_name: Option<String>,
+    pub current_function_name: Option<String>,
+    pub current_context_param: Option<String>,
+    pub source: String,
+    pub current_route: usize,
 }
+
+
 
 impl Analyzer {
     pub fn new(source: String) -> Self {
@@ -119,6 +123,7 @@ impl Analyzer {
             current_function_name: None,
             current_context_param: None,
             source,
+            current_route: 0,
         }
     }
 
@@ -193,7 +198,7 @@ impl Analyzer {
 
         let mut func_name_node: Option<Node> = None;
         let mut parameters_node: Option<Node> = None;
-        
+
         for child in &children {
             if child.kind() == "dot_index_expression" {
                 func_name_node = Some(*child);
@@ -246,11 +251,12 @@ impl Analyzer {
             return;
         }
 
-let handler_id = self.function_counter;
+        let handler_id = self.function_counter;
         self.function_counter += 1;
         self.symbol_table.insert(func_name.clone(), handler_id);
+        self.current_function_name = Some(func_name);
 
-        // Extract path params from the path
+        // Extract path params from path
         let path_params = self.extract_path_params_from_path(&path);
 
         if let Some(ref mut server) = self.model.server {
@@ -263,9 +269,11 @@ let handler_id = self.function_counter;
                     query_params: Vec::new(),
                     headers: Vec::new(),
                     body_schema: None,
+                    body_used: false,
                 },
                 responses: Vec::new(),
             });
+            self.current_route = server.routes.len() - 1;
         }
 
         // Extract context parameter name from parameters
@@ -282,11 +290,9 @@ let handler_id = self.function_counter;
             }
         }
 
-        self.current_function_name = Some(func_name);
-        
         // Track context usage in the function body
         self.track_context_usage(node);
-        
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.walk(child);
@@ -352,7 +358,7 @@ let handler_id = self.function_counter;
         None
     }
 
-fn parse_response_call(&mut self, node: Node) -> Option<Response> {
+    fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         let source = self.source[node.start_byte()..node.end_byte()].to_string();
 
         // Check for :status() modifier first
@@ -454,6 +460,9 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
             if let Some(body_schema) = self.parse_body_expect(expect_call) {
                 self.set_body_schema(body_schema);
             }
+            self.set_body_used(true);
+        } else {
+            self.set_body_used(true);
         }
     }
 
@@ -465,9 +474,13 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                 None => return None,
             };
 
-            if parent.kind() == "dot_index_expression" && Self::is_first_named_child(parent, current) {
+            if parent.kind() == "dot_index_expression"
+                && Self::is_first_named_child(parent, current)
+            {
                 return self.extract_field_name(parent);
-            } else if parent.kind() == "bracket_index_expression" && Self::is_first_named_child(parent, current) {
+            } else if parent.kind() == "bracket_index_expression"
+                && Self::is_first_named_child(parent, current)
+            {
                 return self.extract_bracket_field_name(parent);
             } else if parent.kind() == "parenthesized_expression" {
                 current = parent;
@@ -523,9 +536,16 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                 }
                 // Warn if accessing non-existent param
                 self.model.errors.push(ParsingError {
-                    message: format!("Accessing non-existent path param '{}'. Available params: {:?}", 
-                        param_name, 
-                        route.request.path_params.iter().map(|p| &p.name).collect::<Vec<_>>()),
+                    message: format!(
+                        "Accessing non-existent path param '{}'. Available params: {:?}",
+                        param_name,
+                        route
+                            .request
+                            .path_params
+                            .iter()
+                            .map(|p| &p.name)
+                            .collect::<Vec<_>>()
+                    ),
                     function_name: self.current_function_name.clone(),
                 });
             }
@@ -541,7 +561,7 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                         return;
                     }
                 }
-                
+
                 // Add new query param with default string schema
                 route.request.query_params.push(QueryParam {
                     name: param_name,
@@ -565,7 +585,7 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                         return;
                     }
                 }
-                
+
                 // Add new header param with default string schema
                 route.request.headers.push(HeaderParam {
                     name: param_name,
@@ -584,7 +604,7 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         // Parse ctx:body():expect{...}
         let mut guard_defs = HashMap::new();
         let mut cursor = node.walk();
-        
+
         // Find the table_constructor argument to expect
         for child in node.children(&mut cursor) {
             if child.kind() == "arguments" {
@@ -595,15 +615,17 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                         let mut cursor = subchild.walk();
                         for field_child in subchild.children(&mut cursor) {
                             if field_child.kind() == "field" {
-                                if let Some((key, guard_schema)) = self.parse_object_field(field_child) {
+                                if let Some((key, guard_schema)) =
+                                    self.parse_object_field(field_child)
+                                {
                                     guard_defs.insert(key, guard_schema);
                                 }
                             }
                         }
-                        
+
                         // Convert guard definitions to JSON schema
                         let schema = self.guard_defs_to_json_schema(&guard_defs);
-                        
+
                         return Some(BodySchema {
                             schema,
                             guard_defs,
@@ -613,21 +635,24 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                 }
             }
         }
-        
+
         None
     }
 
     fn guard_defs_to_json_schema(&mut self, guard_defs: &HashMap<String, GuardSchema>) -> Value {
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
-        
+
         for (field_name, guard_schema) in guard_defs {
-            properties.insert(field_name.clone(), self.guard_schema_to_json_schema(guard_schema));
+            properties.insert(
+                field_name.clone(),
+                self.guard_schema_to_json_schema(guard_schema),
+            );
             if guard_schema.required {
                 required.push(field_name.clone());
             }
         }
-        
+
         json!({
             "type": "object",
             "properties": properties,
@@ -650,14 +675,17 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
             GuardType::Object(properties) => {
                 let mut props = serde_json::Map::new();
                 let mut required = Vec::new();
-                
+
                 for (field_name, field_schema) in properties {
-                    props.insert(field_name.clone(), self.guard_schema_to_json_schema(field_schema));
+                    props.insert(
+                        field_name.clone(),
+                        self.guard_schema_to_json_schema(field_schema),
+                    );
                     if field_schema.required {
                         required.push(field_name.clone());
                     }
                 }
-                
+
                 json!({
                     "type": "object",
                     "properties": props,
@@ -665,17 +693,17 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                 })
             }
         };
-        
+
         // Add enum values if present
         if let Some(ref enum_values) = guard_schema.enum_values {
             schema["enum"] = json!(enum_values);
         }
-        
+
         // Add default value if present
         if let Some(ref default_value) = guard_schema.default {
             schema["default"] = default_value.clone();
         }
-        
+
         schema
     }
 
@@ -683,6 +711,14 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         if let Some(ref mut server) = self.model.server {
             if let Some(route) = server.routes.last_mut() {
                 route.request.body_schema = Some(body_schema);
+            }
+        }
+    }
+
+    fn set_body_used(&mut self, used: bool) {
+        if let Some(ref mut server) = self.model.server {
+            if let Some(route) = server.routes.last_mut() {
+                route.request.body_used = used;
             }
         }
     }
@@ -705,7 +741,7 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                 }
             }
         }
-        
+
         200 // Default status code
     }
 
@@ -769,9 +805,11 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
             if child.kind() == "field" {
                 let mut cursor = child.walk();
                 let field_children: Vec<Node> = child.children(&mut cursor).collect();
-                
+
                 // Check if field has an identifier (key = value) or is just a value
-                let has_key = field_children.iter().any(|c| c.kind() == "identifier" || c.kind() == "=");
+                let has_key = field_children
+                    .iter()
+                    .any(|c| c.kind() == "identifier" || c.kind() == "=");
                 if has_key {
                     has_named_fields = true;
                 } else {
@@ -783,7 +821,7 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         // If we have unnamed fields, treat as array
         if has_unnamed_fields && !has_named_fields {
             let mut result = Vec::new();
-            
+
             for child in children {
                 if child.kind() == "field" {
                     let mut cursor = child.walk();
@@ -796,7 +834,7 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                     }
                 }
             }
-            
+
             return json!(result);
         }
 
@@ -893,7 +931,12 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                     enum_values: None,
                 };
 
-                self.parse_guard_modifiers(node, &mut guard_schema.required, &mut guard_schema.default, &mut guard_schema.enum_values);
+                self.parse_guard_modifiers(
+                    node,
+                    &mut guard_schema.required,
+                    &mut guard_schema.default,
+                    &mut guard_schema.enum_values,
+                );
 
                 return Some(guard_schema);
             }
@@ -911,7 +954,6 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
 
         None
     }
-
 
     fn parse_array_guard_type(&mut self, node: Node) -> Option<GuardType> {
         let array_call = self.find_method_call_in_chain(node, "array")?;
@@ -964,8 +1006,12 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
 
         for i in 0..children.len() {
             if children[i].kind() == "identifier" && key.is_none() {
-                key = Some(self.source[children[i].start_byte()..children[i].end_byte()].to_string());
-            } else if children[i].kind() != "=" && children[i].kind() != "identifier" && guard_node.is_none() {
+                key =
+                    Some(self.source[children[i].start_byte()..children[i].end_byte()].to_string());
+            } else if children[i].kind() != "="
+                && children[i].kind() != "identifier"
+                && guard_node.is_none()
+            {
                 guard_node = Some(children[i]);
             }
         }
@@ -979,29 +1025,66 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         None
     }
 
-    fn parse_guard_modifiers(&mut self, node: Node, required: &mut bool, default: &mut Option<Value>, enum_values: &mut Option<Vec<String>>) {
-        if self.find_method_call_in_chain(node, "required").is_some() {
-            *required = true;
-        }
+    fn parse_guard_modifiers(
+        &mut self,
+        node: Node,
+        required: &mut bool,
+        default: &mut Option<Value>,
+        enum_values: &mut Option<Vec<String>>,
+    ) {
+        // Only search within the immediate chain, not the entire expression tree
+        self.parse_modifiers_in_node(node, required, default, enum_values);
+    }
 
-        if default.is_none() {
-            if let Some(default_call) = self.find_method_call_in_chain(node, "default") {
-                if let Some((_object, arguments, _method_name)) = self.get_method_call_info(default_call) {
-                    if let Some(arg_node) = self.extract_first_argument(arguments) {
-                        *default = Some(self.extract_value(arg_node));
+    fn parse_modifiers_in_node(
+        &mut self,
+        node: Node,
+        required: &mut bool,
+        default: &mut Option<Value>,
+        enum_values: &mut Option<Vec<String>>,
+    ) {
+        // Check if this node is a method call with modifiers
+        if node.kind() == "function_call" {
+            if let Some((_object, _arguments, method_name)) = self.get_method_call_info(node) {
+                match method_name.as_str() {
+                    "required" => {
+                        *required = true;
+                        return;
                     }
+                    "default" => {
+                        if default.is_none() {
+                            if let Some((_object, arguments, _method_name)) =
+                                self.get_method_call_info(node)
+                            {
+                                if let Some(arg_node) = self.extract_first_argument(arguments) {
+                                    *default = Some(self.extract_value(arg_node));
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    "enum" => {
+                        if enum_values.is_none() {
+                            if let Some((_object, arguments, _method_name)) =
+                                self.get_method_call_info(node)
+                            {
+                                if let Some(table_node) = self.find_table_constructor_in_arguments(arguments) {
+                                    let values = self.collect_string_values_from_table(table_node);
+                                    *enum_values = Some(values);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    _ => {}
                 }
             }
         }
 
-        if enum_values.is_none() {
-            if let Some(enum_call) = self.find_method_call_in_chain(node, "enum") {
-                if let Some((_object, arguments, _method_name)) = self.get_method_call_info(enum_call) {
-                    if let Some(table_node) = self.find_table_constructor_in_arguments(arguments) {
-                        let values = self.collect_string_values_from_table(table_node);
-                        *enum_values = Some(values);
-                    }
-                }
+        // Recursively check parent if it's part of the same chain
+        if let Some(parent) = node.parent() {
+            if parent.kind() == "function_call" || parent.kind() == "method_index_expression" {
+                self.parse_modifiers_in_node(parent, required, default, enum_values);
             }
         }
     }
@@ -1018,13 +1101,13 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                 // Check if this is rover.guard
                 let mut cursor = node.walk();
                 let mut parts = Vec::new();
-                
+
                 for child in node.children(&mut cursor) {
                     if child.kind() == "identifier" {
                         parts.push(&self.source[child.start_byte()..child.end_byte()]);
                     }
                 }
-                
+
                 parts.len() == 2 && parts[0] == "rover" && parts[1] == "guard"
             }
             _ => false,
@@ -1129,20 +1212,20 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
     }
 
     fn find_method_call_in_chain<'a>(&self, node: Node<'a>, method: &str) -> Option<Node<'a>> {
-        // Expand search to the node, its descendants, and its ancestors
-        if let Some(found) = self.find_method_call_in_node(node, method) {
-            return Some(found);
-        }
+        let expression_root = self.find_expression_root(node);
+        self.find_method_call_in_node(expression_root, method)
+    }
 
-        let mut current = node.parent();
-        while let Some(parent) = current {
-            if let Some(found) = self.find_method_call_in_node(parent, method) {
-                return Some(found);
+    fn find_expression_root<'a>(&self, mut node: Node<'a>) -> Node<'a> {
+        while let Some(parent) = node.parent() {
+            match parent.kind() {
+                "function_call" | "method_index_expression" | "arguments" | "parenthesized_expression" => {
+                    node = parent;
+                }
+                _ => break,
             }
-            current = parent.parent();
         }
-
-        None
+        node
     }
 
     fn find_method_call_in_node<'a>(&self, node: Node<'a>, method: &str) -> Option<Node<'a>> {
@@ -1295,7 +1378,9 @@ mod guard_ast_tests {
     fn parse_lua_code(code: &str) -> (tree_sitter::Tree, String) {
         let mut parser = Parser::new();
         let language = tree_sitter_lua::LANGUAGE;
-        parser.set_language(&language.into()).expect("Error loading Lua parser");
+        parser
+            .set_language(&language.into())
+            .expect("Error loading Lua parser");
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
     }
@@ -1637,9 +1722,11 @@ local schema = g:string():enum({"a", "b"})
             .parse_guard_definition(guard_call)
             .expect("guard schema");
 
-        assert_eq!(schema.enum_values, Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(
+            schema.enum_values,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
     }
-
 
     #[test]
     fn test_parse_guard_definition_array_schema() {
@@ -1684,4 +1771,3 @@ local schema = g:object({
         }
     }
 }
-
