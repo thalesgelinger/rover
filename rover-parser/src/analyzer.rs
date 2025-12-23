@@ -1141,12 +1141,29 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
     }
 
 
-    fn parse_array_guard_type(&mut self, _node: Node) -> Option<GuardType> {
-        None
+    fn parse_array_guard_type(&mut self, node: Node) -> Option<GuardType> {
+        let array_call = self.find_method_call_in_chain(node, "array")?;
+        let arguments = self.find_arguments_node(array_call)?;
+        let inner_schema = self.find_guard_in_arguments(arguments)?;
+        Some(GuardType::Array(Box::new(inner_schema)))
     }
 
-    fn parse_object_guard_type(&mut self, _node: Node) -> Option<GuardType> {
-        None
+    fn parse_object_guard_type(&mut self, node: Node) -> Option<GuardType> {
+        let object_call = self.find_method_call_in_chain(node, "object")?;
+        let arguments = self.find_arguments_node(object_call)?;
+        let table_node = self.find_table_constructor_in_arguments(arguments)?;
+
+        let mut properties = HashMap::new();
+        let mut cursor = table_node.walk();
+        for field in table_node.children(&mut cursor) {
+            if field.kind() == "field" {
+                if let Some((key, guard_schema)) = self.parse_object_field(field) {
+                    properties.insert(key, guard_schema);
+                }
+            }
+        }
+
+        Some(GuardType::Object(properties))
     }
 
     fn find_guard_in_subtree(&mut self, node: Node) -> Option<GuardSchema> {
@@ -1802,6 +1819,49 @@ local schema = g:object({
 
         let table_text = node_text(&source, table_node);
         assert!(table_text.contains("name = g:string"));
+    }
+
+    #[test]
+    fn test_parse_guard_definition_array_schema() {
+        let code = r#"
+local g = rover.guard
+local schema = g:array(g:integer())
+"#;
+        let (mut analyzer, tree, source) = analyzer_fixture(code);
+
+        let array_call = find_method_call(&tree, &source, "array").expect("array call");
+        let guard_schema = analyzer
+            .parse_guard_definition(array_call)
+            .expect("guard schema");
+
+        match guard_schema.guard_type {
+            GuardType::Array(inner) => assert_eq!(inner.guard_type, GuardType::Integer),
+            other => panic!("expected array guard, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_guard_definition_object_schema() {
+        let code = r#"
+local g = rover.guard
+local schema = g:object({
+    name = g:string():required()
+})
+"#;
+        let (mut analyzer, tree, source) = analyzer_fixture(code);
+
+        let object_call = find_method_call(&tree, &source, "object").expect("object call");
+        let guard_schema = analyzer
+            .parse_guard_definition(object_call)
+            .expect("guard schema");
+
+        match guard_schema.guard_type {
+            GuardType::Object(props) => {
+                let name_field = props.get("name").expect("name field");
+                assert_eq!(name_field.guard_type, GuardType::String);
+            }
+            other => panic!("expected object guard, got {:?}", other),
+        }
     }
 }
 
