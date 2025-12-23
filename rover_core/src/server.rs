@@ -2,6 +2,8 @@ use anyhow::{Result, anyhow};
 use mlua::{Lua, Table, Value};
 use rover_server::{Bytes, HttpMethod, Route, RouteTable, ServerConfig, RoverResponse};
 use rover_server::to_json::ToJson;
+use rover_parser::analyze;
+use rover_openapi::generate_spec;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
@@ -110,15 +112,24 @@ impl AppServer for Lua {
 }
 
 pub trait Server {
-    fn run_server(&self, lua: &Lua) -> Result<()>;
+    fn run_server(&self, lua: &Lua, source: &str) -> Result<()>;
     fn get_routes(&self) -> Result<RouteTable>;
 }
 
 impl Server for Table {
-    fn run_server(&self, lua: &Lua) -> Result<()> {
+    fn run_server(&self, lua: &Lua, source: &str) -> Result<()> {
         let routes = self.get_routes()?;
         let config: ServerConfig = self.get("config")?;
-        rover_server::run(lua.clone(), routes, config);
+        
+        // Generate OpenAPI spec if docs enabled
+        let openapi_spec = if config.docs {
+            let model = analyze(source);
+            Some(generate_spec(&model, "API", "1.0.0"))
+        } else {
+            None
+        };
+        
+        rover_server::run(lua.clone(), routes, config, openapi_spec);
         Ok(())
     }
 
