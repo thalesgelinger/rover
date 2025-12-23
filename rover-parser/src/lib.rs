@@ -1,7 +1,39 @@
+use std::{any::Any, collections::HashMap};
+
+use serde_json::Value;
 use tree_sitter::{Node, Parser};
 
+#[derive(Debug)]
 pub struct SemanticModel {
-    node_count: u8,
+    server: Option<RoverServer>,
+}
+
+#[derive(Debug)]
+struct RoverServer {
+    id: u8,
+    exported: bool,
+    routes: Vec<Route>,
+}
+
+type FunctionId = u16;
+
+#[derive(Debug)]
+struct Route {
+    method: String,
+    path: String,
+    handler: FunctionId,
+    request: Request,
+    responses: Vec<Response>,
+}
+
+#[derive(Debug)]
+struct Request {}
+
+#[derive(Debug)]
+struct Response {
+    status: u16,
+    content_type: String,
+    schema: Value,
 }
 
 struct Analyzer {
@@ -11,14 +43,11 @@ struct Analyzer {
 impl Analyzer {
     pub fn new() -> Self {
         Analyzer {
-            model: SemanticModel { node_count: 0 },
+            model: SemanticModel { server: None },
         }
     }
 
     pub fn walk(&mut self, node: Node) {
-        println!("{:?}", node);
-        self.model.node_count += 1;
-
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.walk(child)
@@ -44,11 +73,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
+    fn should_parse_routes() {
         let code = r#"
             return 42
         "#;
         let model = analyze(code);
-        assert_eq!(model.node_count, 5);
+        assert_eq!(model.server, None);
     }
 }
