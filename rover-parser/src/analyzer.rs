@@ -1449,11 +1449,52 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         None
     }
 
-    fn find_guard_in_arguments(&mut self, _arguments: Node) -> Option<GuardSchema> {
+    fn find_guard_in_arguments(&mut self, arguments: Node) -> Option<GuardSchema> {
+        let mut cursor = arguments.walk();
+        for child in arguments.children(&mut cursor) {
+            if !child.is_named() {
+                continue;
+            }
+
+            if let Some(schema) = self.parse_guard_definition(child) {
+                return Some(schema);
+            }
+
+            if let Some(schema) = self.find_guard_in_subtree(child) {
+                return Some(schema);
+            }
+        }
         None
     }
 
-    fn find_table_constructor_in_arguments(&self, _arguments: Node) -> Option<Node> {
+    fn find_table_constructor_in_arguments<'a>(&self, arguments: Node<'a>) -> Option<Node<'a>> {
+        let mut cursor = arguments.walk();
+        for child in arguments.children(&mut cursor) {
+            if child.kind() == "table_constructor" {
+                return Some(child);
+            }
+
+            if child.is_named() {
+                if let Some(found) = self.find_table_constructor_in_node(child) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    fn find_table_constructor_in_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+        if node.kind() == "table_constructor" {
+            return Some(node);
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = self.find_table_constructor_in_node(child) {
+                return Some(found);
+            }
+        }
+
         None
     }
 }
@@ -1471,11 +1512,21 @@ mod guard_ast_tests {
         (tree, code.to_string())
     }
 
+    fn analyzer_fixture(code: &str) -> (Analyzer, tree_sitter::Tree, String) {
+        let (tree, source) = parse_lua_code(code);
+        let analyzer = Analyzer::new(source.clone());
+        (analyzer, tree, source)
+    }
+
     fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
         &source[node.start_byte()..node.end_byte()]
     }
 
-    fn find_method_call<'a>(tree: &'a tree_sitter::Tree, source: &'a str, method_name: &'a str) -> Option<Node<'a>> {
+    fn find_method_call<'a>(
+        tree: &'a tree_sitter::Tree,
+        source: &'a str,
+        method_name: &'a str,
+    ) -> Option<Node<'a>> {
         let mut cursor = tree.walk();
         for child in tree.root_node().children(&mut cursor) {
             if let Some(node) = find_method_call_recursive(child, source, method_name) {
@@ -1485,7 +1536,11 @@ mod guard_ast_tests {
         None
     }
 
-    fn find_method_call_recursive<'a>(node: Node<'a>, source: &'a str, target_method: &'a str) -> Option<Node<'a>> {
+    fn find_method_call_recursive<'a>(
+        node: Node<'a>,
+        source: &'a str,
+        target_method: &'a str,
+    ) -> Option<Node<'a>> {
         if node.kind() == "method_index_expression" {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -1513,16 +1568,16 @@ mod guard_ast_tests {
 local g = rover.guard
 local schema = g:string()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
-        
-        // Find the g:string() call and get the object node (g)
+        let (analyzer, tree, source) = analyzer_fixture(code);
+
         if let Some(method_call) = find_method_call(&tree, &source, "string") {
             let mut cursor = method_call.walk();
             for child in method_call.children(&mut cursor) {
                 if child.kind() == "identifier" {
-                    // This should be the object (g)
-                    assert!(analyzer.is_guard_namespace(child), "Should identify 'g' as guard namespace");
+                    assert!(
+                        analyzer.is_guard_namespace(child),
+                        "Should identify 'g' as guard namespace"
+                    );
                     return;
                 }
             }
@@ -1535,16 +1590,16 @@ local schema = g:string()
         let code = r#"
 local schema = rover.guard:string()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
-        
-        // Find the rover.guard:string() call and get the object node (rover.guard)
+        let (analyzer, tree, source) = analyzer_fixture(code);
+
         if let Some(method_call) = find_method_call(&tree, &source, "string") {
             let mut cursor = method_call.walk();
             for child in method_call.children(&mut cursor) {
                 if child.kind() == "dot_index_expression" {
-                    // This should be rover.guard
-                    assert!(analyzer.is_guard_namespace(child), "Should identify 'rover.guard' as guard namespace");
+                    assert!(
+                        analyzer.is_guard_namespace(child),
+                        "Should identify 'rover.guard' as guard namespace"
+                    );
                     return;
                 }
             }
@@ -1558,16 +1613,16 @@ local schema = rover.guard:string()
 local someVar = {}
 local schema = someVar:string()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
-        
-        // Find the someVar:string() call and get the object node (someVar)
+        let (analyzer, tree, source) = analyzer_fixture(code);
+
         if let Some(method_call) = find_method_call(&tree, &source, "string") {
             let mut cursor = method_call.walk();
             for child in method_call.children(&mut cursor) {
                 if child.kind() == "identifier" {
-                    // This should be someVar (not a guard namespace)
-                    assert!(!analyzer.is_guard_namespace(child), "Should NOT identify 'someVar' as guard namespace");
+                    assert!(
+                        !analyzer.is_guard_namespace(child),
+                        "Should NOT identify 'someVar' as guard namespace"
+                    );
                     return;
                 }
             }
@@ -1581,8 +1636,7 @@ local schema = someVar:string()
 local g = rover.guard
 local schema = g:string()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
+        let (analyzer, tree, source) = analyzer_fixture(code);
 
         let method_node = find_method_call(&tree, &source, "string").expect("method call");
         let (object_node, arguments_node, method_name) = analyzer
@@ -1599,8 +1653,7 @@ local schema = g:string()
         let code = r#"
 local schema = rover.guard:string()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
+        let (analyzer, tree, source) = analyzer_fixture(code);
 
         let method_node = find_method_call(&tree, &source, "string").expect("method call");
         let (object_node, _arguments_node, method_name) = analyzer
@@ -1617,8 +1670,7 @@ local schema = rover.guard:string()
 local g = rover.guard
 local schema = g:array(g:string())
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
+        let (analyzer, tree, source) = analyzer_fixture(code);
 
         let method_node = find_method_call(&tree, &source, "array").expect("method call");
         let (object_node, arguments_node, method_name) = analyzer
@@ -1628,7 +1680,7 @@ local schema = g:array(g:string())
         assert_eq!(method_name, "array");
         assert_eq!(node_text(&source, object_node), "g");
         let args_text = node_text(&source, arguments_node);
-        assert!(args_text.contains("g:string"), "arguments should include nested guard call");
+        assert!(args_text.contains("g:string"));
     }
 
     #[test]
@@ -1637,8 +1689,7 @@ local schema = g:array(g:string())
 local g = rover.guard
 local schema = g:string()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
+        let (analyzer, tree, source) = analyzer_fixture(code);
 
         let method_node = find_method_call(&tree, &source, "string").expect("method call");
         let arguments_node = analyzer
@@ -1656,8 +1707,7 @@ local schema = g:string()
 local g = rover.guard
 local schema = g:array(g:string()):required()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
+        let (analyzer, tree, source) = analyzer_fixture(code);
 
         let method_node = find_method_call(&tree, &source, "array").expect("method call");
         let arguments_node = analyzer
@@ -1675,8 +1725,7 @@ local schema = g:array(g:string()):required()
 local g = rover.guard
 local schema = g:array(g:string()):required()
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
+        let (analyzer, tree, source) = analyzer_fixture(code);
 
         let method_node = find_method_call(&tree, &source, "required").expect("method call");
         let array_call = analyzer
@@ -1698,8 +1747,7 @@ local schema = g:array(g:object({
     name = g:string()
 }))
 "#;
-        let (tree, source) = parse_lua_code(code);
-        let analyzer = Analyzer::new(source.clone());
+        let (analyzer, tree, source) = analyzer_fixture(code);
 
         let array_call = find_method_call(&tree, &source, "array").expect("array method call");
         let object_call = analyzer
@@ -1711,6 +1759,49 @@ local schema = g:array(g:object({
         } else {
             panic!("Expected object call info");
         }
+    }
+
+    #[test]
+    fn test_find_guard_in_arguments_string_schema() {
+        let code = r#"
+local g = rover.guard
+local schema = g:array(g:string())
+"#;
+        let (mut analyzer, tree, source) = analyzer_fixture(code);
+
+        let array_call = find_method_call(&tree, &source, "array").expect("array method call");
+        let arguments = analyzer
+            .find_arguments_node(array_call)
+            .expect("arguments node");
+
+        let guard_schema = analyzer
+            .find_guard_in_arguments(arguments)
+            .expect("guard schema");
+
+        assert_eq!(guard_schema.guard_type, GuardType::String);
+    }
+
+    #[test]
+    fn test_find_table_constructor_in_arguments_extracts_table() {
+        let code = r#"
+local g = rover.guard
+local schema = g:object({
+    name = g:string()
+})
+"#;
+        let (analyzer, tree, source) = analyzer_fixture(code);
+
+        let object_call = find_method_call(&tree, &source, "object").expect("object method call");
+        let arguments = analyzer
+            .find_arguments_node(object_call)
+            .expect("arguments node");
+
+        let table_node = analyzer
+            .find_table_constructor_in_arguments(arguments)
+            .expect("table constructor");
+
+        let table_text = node_text(&source, table_node);
+        assert!(table_text.contains("name = g:string"));
     }
 }
 
