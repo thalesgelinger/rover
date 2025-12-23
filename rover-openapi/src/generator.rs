@@ -49,10 +49,15 @@ pub fn generate_spec(model: &SemanticModel, title: &str, version: &str) -> Value
                     for response in &route.responses {
                         let status_str = response.status.to_string();
                         let mut content_map = serde_json::Map::new();
+                        
+                        // Convert example values to OpenAPI schema with examples
+                        let schema = value_to_openapi_schema(&response.schema);
+                        
                         content_map.insert(
                             response.content_type.clone(),
                             json!({
-                                "schema": response.schema
+                                "schema": schema,
+                                "example": response.schema
                             }),
                         );
                         responses.insert(
@@ -115,6 +120,49 @@ fn extract_path_params(path: &str) -> Vec<String> {
     }
 
     params
+}
+
+fn value_to_openapi_schema(value: &Value) -> Value {
+    match value {
+        Value::Null => json!({ "type": "null" }),
+        Value::Bool(_) => json!({ "type": "boolean" }),
+        Value::Number(n) => {
+            if n.is_i64() || n.is_u64() {
+                json!({ "type": "integer" })
+            } else {
+                json!({ "type": "number" })
+            }
+        }
+        Value::String(_) => json!({ "type": "string" }),
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                json!({
+                    "type": "array",
+                    "items": {}
+                })
+            } else {
+                json!({
+                    "type": "array",
+                    "items": value_to_openapi_schema(&arr[0])
+                })
+            }
+        }
+        Value::Object(obj) => {
+            let mut properties = serde_json::Map::new();
+            let mut required = Vec::new();
+            
+            for (key, val) in obj {
+                properties.insert(key.clone(), value_to_openapi_schema(val));
+                required.push(key.clone());
+            }
+            
+            json!({
+                "type": "object",
+                "properties": properties,
+                "required": required
+            })
+        }
+    }
 }
 
 #[cfg(test)]

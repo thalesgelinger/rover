@@ -331,10 +331,50 @@ impl Analyzer {
     }
 
     fn table_to_json_value(&mut self, node: Node) -> Value {
-        let mut result = json!({});
-
         let mut cursor = node.walk();
         let children: Vec<Node> = node.children(&mut cursor).collect();
+
+        // Check if this is an array-like table (has unnamed fields)
+        let mut has_named_fields = false;
+        let mut has_unnamed_fields = false;
+
+        for child in &children {
+            if child.kind() == "field" {
+                let mut cursor = child.walk();
+                let field_children: Vec<Node> = child.children(&mut cursor).collect();
+                
+                // Check if field has an identifier (key = value) or is just a value
+                let has_key = field_children.iter().any(|c| c.kind() == "identifier" || c.kind() == "=");
+                if has_key {
+                    has_named_fields = true;
+                } else {
+                    has_unnamed_fields = true;
+                }
+            }
+        }
+
+        // If we have unnamed fields, treat as array
+        if has_unnamed_fields && !has_named_fields {
+            let mut result = Vec::new();
+            
+            for child in children {
+                if child.kind() == "field" {
+                    let mut cursor = child.walk();
+                    for field_child in child.children(&mut cursor) {
+                        if field_child.kind() != "," {
+                            let value = self.extract_value(field_child);
+                            result.push(value);
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            return json!(result);
+        }
+
+        // Otherwise treat as object with named fields
+        let mut result = json!({});
 
         for child in children {
             if child.kind() == "field" {
