@@ -1208,73 +1208,30 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
     }
 
     fn parse_guard_modifiers(&mut self, node: Node, required: &mut bool, default: &mut Option<Value>, enum_values: &mut Option<Vec<String>>) {
-        // Look for method calls like :required(), :default(value), :enum({...})
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "method_index_expression" {
-                let source = &self.source[child.start_byte()..child.end_byte()];
-                
-                if source.contains("required") {
-                    *required = true;
-                } else if source.contains("default") {
-                    // Extract default value
-                    *default = self.extract_default_value(child);
-                } else if source.contains("enum") {
-                    // Extract enum values
-                    *enum_values = self.extract_enum_values(child);
-                }
-            }
+        if self.find_method_call_in_chain(node, "required").is_some() {
+            *required = true;
         }
-    }
 
-    fn extract_default_value(&mut self, node: Node) -> Option<Value> {
-        // Find the argument to :default()
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "arguments" {
-                let mut cursor = child.walk();
-                for subchild in child.children(&mut cursor) {
-                    if subchild.kind() != "," {
-                        return Some(self.extract_value(subchild));
+        if default.is_none() {
+            if let Some(default_call) = self.find_method_call_in_chain(node, "default") {
+                if let Some((_object, arguments, _method_name)) = self.get_method_call_info(default_call) {
+                    if let Some(arg_node) = self.extract_first_argument(arguments) {
+                        *default = Some(self.extract_value(arg_node));
                     }
                 }
             }
         }
-        None
-    }
 
-    fn extract_enum_values(&mut self, node: Node) -> Option<Vec<String>> {
-        // Find the array argument to :enum()
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "arguments" {
-                let mut cursor = child.walk();
-                for subchild in child.children(&mut cursor) {
-                    if subchild.kind() == "table_constructor" {
-                        let mut values = Vec::new();
-                        
-                        // Parse each string in the enum array
-                        let mut cursor = subchild.walk();
-                        for field_child in subchild.children(&mut cursor) {
-                            if field_child.kind() == "field" {
-                                let mut cursor = field_child.walk();
-                                for value_child in field_child.children(&mut cursor) {
-                                    if value_child.kind() == "string" {
-                                        let value = self.extract_value(value_child);
-                                        if let Value::String(s) = value {
-                                            values.push(s);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        return Some(values);
+        if enum_values.is_none() {
+            if let Some(enum_call) = self.find_method_call_in_chain(node, "enum") {
+                if let Some((_object, arguments, _method_name)) = self.get_method_call_info(enum_call) {
+                    if let Some(table_node) = self.find_table_constructor_in_arguments(arguments) {
+                        let values = self.collect_string_values_from_table(table_node);
+                        *enum_values = Some(values);
                     }
                 }
             }
         }
-        None
     }
 
     // AST Helper Functions for Guard Parsing
@@ -1513,6 +1470,36 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
         }
 
         None
+    }
+
+    fn extract_first_argument<'a>(&self, arguments: Node<'a>) -> Option<Node<'a>> {
+        let mut cursor = arguments.walk();
+        for child in arguments.children(&mut cursor) {
+            if child.is_named() {
+                return Some(child);
+            }
+        }
+        None
+    }
+
+    fn collect_string_values_from_table(&mut self, table_node: Node) -> Vec<String> {
+        let mut values = Vec::new();
+        let mut cursor = table_node.walk();
+        for field_child in table_node.children(&mut cursor) {
+            if field_child.kind() == "field" {
+                let mut field_cursor = field_child.walk();
+                for value_child in field_child.children(&mut field_cursor) {
+                    if value_child.kind() == "string" {
+                        if let Value::String(s) = self.extract_value(value_child) {
+                            values.push(s);
+                        }
+                    } else if value_child.kind() == "field" {
+                        values.extend(self.collect_string_values_from_table(value_child));
+                    }
+                }
+            }
+        }
+        values
     }
 }
 
@@ -1820,6 +1807,55 @@ local schema = g:object({
         let table_text = node_text(&source, table_node);
         assert!(table_text.contains("name = g:string"));
     }
+
+    #[test]
+    fn test_guard_modifier_required() {
+        let code = r#"
+local g = rover.guard
+local schema = g:string():required()
+"#;
+        let (mut analyzer, tree, source) = analyzer_fixture(code);
+
+        let guard_call = find_method_call(&tree, &source, "string").expect("string call");
+        let schema = analyzer
+            .parse_guard_definition(guard_call)
+            .expect("guard schema");
+
+        assert!(schema.required);
+    }
+
+    #[test]
+    fn test_guard_modifier_default_value() {
+        let code = r#"
+local g = rover.guard
+local schema = g:string():default("light")
+"#;
+        let (mut analyzer, tree, source) = analyzer_fixture(code);
+
+        let guard_call = find_method_call(&tree, &source, "string").expect("string call");
+        let schema = analyzer
+            .parse_guard_definition(guard_call)
+            .expect("guard schema");
+
+        assert_eq!(schema.default, Some(json!("light")));
+    }
+
+    #[test]
+    fn test_guard_modifier_enum_values() {
+        let code = r#"
+local g = rover.guard
+local schema = g:string():enum({"a", "b"})
+"#;
+        let (mut analyzer, tree, source) = analyzer_fixture(code);
+
+        let guard_call = find_method_call(&tree, &source, "string").expect("string call");
+        let schema = analyzer
+            .parse_guard_definition(guard_call)
+            .expect("guard schema");
+
+        assert_eq!(schema.enum_values, Some(vec!["a".to_string(), "b".to_string()]));
+    }
+
 
     #[test]
     fn test_parse_guard_definition_array_schema() {
