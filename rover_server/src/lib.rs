@@ -163,6 +163,7 @@ struct LuaRequest {
 struct LuaResponse {
     status: StatusCode,
     body: Bytes,
+    content_type: Option<String>,
 }
 
 async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
@@ -276,6 +277,15 @@ async fn handler(
 
     let mut response = Response::new(Full::new(resp.body));
     *response.status_mut() = resp.status.into();
+    
+    // Set Content-Type header if provided
+    if let Some(content_type) = resp.content_type {
+        response.headers_mut().insert(
+            hyper::header::CONTENT_TYPE,
+            content_type.parse().unwrap_or_else(|_| hyper::header::HeaderValue::from_static("text/plain")),
+        );
+    }
+    
     Ok(response)
 }
 

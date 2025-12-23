@@ -28,6 +28,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                             method_str,
                             HttpMethod::valid_methods().join(", ")
                         )),
+                        content_type: Some("text/plain".to_string()),
                     });
                     continue;
                 }
@@ -54,6 +55,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                 let _ = req.respond_to.send(LuaResponse {
                     status: StatusCode::OK,
                     body: Bytes::from(html),
+                    content_type: Some("text/html".to_string()),
                 });
                 continue;
             }
@@ -71,6 +73,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::NOT_FOUND,
                         body: Bytes::from("Route not found"),
+                        content_type: Some("text/plain".to_string()),
                     });
                     continue;
                 }
@@ -88,6 +91,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                     let _ = req.respond_to.send(LuaResponse {
                         status,
                         body: Bytes::from(error_msg),
+                        content_type: Some("text/plain".to_string()),
                     });
                     continue;
                 }
@@ -99,60 +103,66 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::INTERNAL_SERVER_ERROR,
                         body: Bytes::from(format!("Lua error: {}", e)),
+                        content_type: Some("text/plain".to_string()),
                     });
                     continue;
                 }
             };
 
-            let (status, body) = match result {
+            let (status, body, content_type) = match result {
                 Value::UserData(ref ud) => {
                     if let Ok(response) = ud.borrow::<RoverResponse>() {
                         (
                             StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK),
                             response.body.clone(),
+                            Some(response.content_type.clone()),
                         )
                     } else {
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             Bytes::from("Invalid userdata type"),
+                            Some("text/plain".to_string()),
                         )
                     }
                 }
 
                 Value::String(ref s) => (
                     StatusCode::OK,
-                    Bytes::from(s.to_str().unwrap().to_string())
+                    Bytes::from(s.to_str().unwrap().to_string()),
+                    Some("text/plain".to_string()),
                 ),
 
                 Value::Table(table) => {
                     let json = lua_table_to_json(&table).unwrap_or_else(|e| {
                         format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
                     });
-                    (StatusCode::OK, Bytes::from(json))
+                    (StatusCode::OK, Bytes::from(json), Some("application/json".to_string()))
                 }
 
                 // Fast path: integers
-                Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string())),
+                Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string()), Some("text/plain".to_string())),
 
                 // Fast path: numbers
-                Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string())),
+                Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string()), Some("text/plain".to_string())),
 
                 // Fast path: booleans
-                Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string())),
+                Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string()), Some("text/plain".to_string())),
 
                 // Fast path: nil -> 204 No Content
-                Value::Nil => (StatusCode::NO_CONTENT, Bytes::new()),
+                Value::Nil => (StatusCode::NO_CONTENT, Bytes::new(), None),
 
                 // Lua errors
                 Value::Error(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Bytes::from(e.to_string())
+                    Bytes::from(e.to_string()),
+                    Some("text/plain".to_string()),
                 ),
 
                 // Unsupported types
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Bytes::from("Unsupported return type"),
+                    Some("text/plain".to_string()),
                 ),
             };
 
@@ -190,7 +200,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, config: S
                 }
             }
 
-            let _ = req.respond_to.send(LuaResponse { status, body });
+            let _ = req.respond_to.send(LuaResponse { status, body, content_type });
         }
         Ok(())
     });
