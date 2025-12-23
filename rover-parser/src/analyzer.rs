@@ -403,316 +403,88 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
 
     // Context tracking methods
     fn track_context_usage(&mut self, node: Node) {
-        // Track context:params(), context:query(), context:headers(), context:body() usage
-        let source = &self.source[node.start_byte()..node.end_byte()];
-        
-        // Get the current context parameter name, or skip if not in a function
-        let context_param = match &self.current_context_param {
-            Some(param) => param.clone(),
+        let context_param = match self.current_context_param.clone() {
+            Some(param) => param,
             None => return,
         };
-        
-        match node.kind() {
-            "function_call" | "method_index_expression" => {
-                if source.contains(&format!("{}:params", context_param)) {
-                    self.track_ctx_params_usage(node);
-                } else if source.contains(&format!("{}:query", context_param)) {
-                    self.track_ctx_query_usage(node);
-                } else if source.contains(&format!("{}:headers", context_param)) {
-                    self.track_ctx_headers_usage(node);
-                } else if source.contains(&format!("{}:body", context_param)) {
-                    self.track_ctx_body_usage(node);
-                } else if source.contains("rover.guard") {
-                    self.track_rover_guard_usage(node);
-                }
-            }
-            "binary_expression" => {
-                // Look for context usage in binary expressions (like string concatenation)
-                if source.contains(&format!("{}:params", context_param)) {
-                    self.track_ctx_params_in_binary(node);
-                } else if source.contains(&format!("{}:query", context_param)) {
-                    self.track_ctx_query_in_binary(node);
-                } else if source.contains(&format!("{}:headers", context_param)) {
-                    self.track_ctx_headers_in_binary(node);
-                }
-            }
-            _ => {}
-        }
-        
-        // Recursively check all children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.track_context_usage(child);
-        }
+        self.track_context_usage_with_param(node, &context_param);
     }
 
-    fn track_ctx_params_usage(&mut self, node: Node) {
-        // Pattern: context_name:params().field_name
-        let source = &self.source[node.start_byte()..node.end_byte()];
-        
-        let context_param = match &self.current_context_param {
-            Some(param) => param.clone(),
-            None => return,
-        };
-        
-        if source.contains(&format!("{}:params", context_param)) && !source.contains(&format!("{}:params()", context_param)) {
-            // This is context_name:params, look for the field access in the parent chain
-            // We need to find the dot_index_expression that follows this
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "dot_index_expression" {
-                    if let Some(field_name) = self.extract_field_name(child) {
-                        self.mark_path_param_as_used(&field_name);
+    fn track_context_usage_with_param(&mut self, node: Node, context_param: &str) {
+        if node.kind() == "function_call" {
+            if let Some((object_node, _arguments, method_name)) = self.get_method_call_info(node) {
+                if self.node_matches_context(object_node, context_param) {
+                    match method_name.as_str() {
+                        "params" => self.handle_params_access(node),
+                        "query" => self.handle_query_access(node),
+                        "headers" => self.handle_headers_access(node),
+                        "body" => self.handle_body_access(node),
+                        _ => {}
                     }
                 }
             }
         }
-    }
 
-    fn track_ctx_params_in_binary(&mut self, node: Node) {
-        // Look for context_name:params().field_name in binary expressions
-        let context_param = match &self.current_context_param {
-            Some(param) => param.clone(),
-            None => return,
-        };
-        
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "dot_index_expression" {
-                let child_source = &self.source[child.start_byte()..child.end_byte()];
-                if child_source.contains(&format!("{}:params", context_param)) && child_source.contains(").") {
-                    // This is context_name:params().field_name pattern
-                    // Extract the field name after the closing parenthesis
-                    if let Some(field_name) = self.extract_field_name_from_ctx_params(child) {
-                        self.mark_path_param_as_used(&field_name);
-                    }
-                }
-            }
+            self.track_context_usage_with_param(child, context_param);
         }
     }
 
-    fn extract_field_name_from_ctx_query(&self, node: Node) -> Option<String> {
-        // Extract field name from context_name:query().field_name pattern
-        let source = &self.source[node.start_byte()..node.end_byte()];
-        
-        // Look for the pattern context_name:query().field_name
-        if let Some(after_paren) = source.split("query().").nth(1) {
-            // Extract the field name (everything up to the next space, operator, or end)
-            let field_name = after_paren.split_whitespace().next().unwrap_or(after_paren);
-            let field_name = field_name.split(|c| matches!(c, ' ' | '\n' | '\t' | '=' | '+' | '-' | '*' | '/' | '(' | ')' | '[' | ']' | ',' | ';' | ':')).next().unwrap_or(field_name);
-            return Some(field_name.to_string());
-        }
-        
-        None
-    }
-
-    fn extract_field_name_from_ctx_headers(&self, node: Node) -> Option<String> {
-        // Extract field name from context_name:headers().field_name pattern
-        let source = &self.source[node.start_byte()..node.end_byte()];
-        
-        // Look for the pattern context_name:headers().field_name
-        if let Some(after_paren) = source.split("headers().").nth(1) {
-            // Extract the field name (everything up to the next space, operator, or end)
-            let field_name = after_paren.split_whitespace().next().unwrap_or(after_paren);
-            let field_name = field_name.split(|c| matches!(c, ' ' | '\n' | '\t' | '=' | '+' | '-' | '*' | '/' | '(' | ')' | '[' | ']' | ',' | ';' | ':')).next().unwrap_or(field_name);
-            return Some(field_name.to_string());
-        }
-        
-        None
-    }
-
-    fn extract_bracket_field_name_from_ctx_headers(&self, node: Node) -> Option<String> {
-        // Extract field name from context_name:headers()["field-name"] pattern
-        let source = &self.source[node.start_byte()..node.end_byte()];
-        
-        // Look for the pattern context_name:headers()["field-name"]
-        if let Some(after_paren) = source.split("headers()[").nth(1) {
-            // Extract the field name between brackets
-            if let Some(before_bracket) = after_paren.split(']').next() {
-                let field_name = before_bracket.trim_matches('"').trim_matches('\'');
-                return Some(field_name.to_string());
-            }
-        }
-        
-        None
-    }
-
-    fn extract_field_name_from_ctx_params(&mut self, node: Node) -> Option<String> {
-        // Extract field name from ctx:params().field_name pattern
-        let mut cursor = node.walk();
-        let mut found_paren = false;
-        
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "." => {
-                    found_paren = true;
-                }
-                "identifier" if found_paren => {
-                    return Some(self.source[child.start_byte()..child.end_byte()].to_string());
-                }
-                _ => {}
-            }
-        }
-        
-        None
-    }
-
-    fn track_ctx_query_in_binary(&mut self, node: Node) {
-        // Look for context_name:query().field_name in binary expressions
-        let context_param = match &self.current_context_param {
-            Some(param) => param.clone(),
-            None => return,
-        };
-        
-        let source = self.source[node.start_byte()..node.end_byte()].to_string();
-        
-        if source.contains(&format!("{}:query", context_param)) && source.contains(").") {
-            if let Some(field_name) = self.extract_field_name_from_ctx_query(node) {
-                self.add_query_param(field_name);
-            }
+    fn handle_params_access(&mut self, call_node: Node) {
+        if let Some(field_name) = self.extract_field_name_from_call(call_node) {
+            self.mark_path_param_as_used(&field_name);
         }
     }
 
-    fn track_ctx_headers_in_binary(&mut self, node: Node) {
-        // Look for context_name:headers().field_name or context_name:headers()["field"] in binary expressions
-        let context_param = match &self.current_context_param {
-            Some(param) => param.clone(),
-            None => return,
-        };
-        
-        let source = self.source[node.start_byte()..node.end_byte()].to_string();
-        
-        // Collect field names to add, then add them after the borrow
-        let mut fields_to_add = Vec::new();
-        
-        // Check for dot access
-        if source.contains(&format!("{}:headers", context_param)) && source.contains(").") {
-            if let Some(field_name) = self.extract_field_name_from_ctx_headers(node) {
-                fields_to_add.push(field_name);
-            }
+    fn handle_query_access(&mut self, call_node: Node) {
+        if let Some(field_name) = self.extract_field_name_from_call(call_node) {
+            self.add_query_param(field_name);
         }
-        
-        // Check for bracket access
-        if source.contains(&format!("{}:headers", context_param)) && source.contains(")[") {
-            if let Some(field_name) = self.extract_bracket_field_name_from_ctx_headers(node) {
-                fields_to_add.push(field_name);
-            }
-        }
-        
-        // Add the collected fields
-        for field_name in fields_to_add {
+    }
+
+    fn handle_headers_access(&mut self, call_node: Node) {
+        if let Some(field_name) = self.extract_field_name_from_call(call_node) {
             self.add_header_param(field_name);
         }
     }
 
-    fn track_ctx_query_usage(&mut self, node: Node) {
-        // Pattern: context_name:query().field_name
-        
-        let context_param = match &self.current_context_param {
-            Some(param) => param.clone(),
-            None => return,
-        };
-        
-        // Look for field access in the parent chain
-        if let Some(parent) = node.parent() {
-            let parent_source = self.source[parent.start_byte()..parent.end_byte()].to_string();
-            
-            // Check if parent contains dot access after context_name:query()
-            if parent_source.contains(&format!("{}:query", context_param)) && parent_source.contains(").") {
-                // Extract field name from the parent
-                if let Some(field_name) = self.extract_field_name_from_ctx_query(parent) {
-                    self.add_query_param(field_name);
-                }
-            }
-        }
-        
-        // Also check children for method_index_expression
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "method_index_expression" {
-                let mut cursor = child.walk();
-                for subchild in child.children(&mut cursor) {
-                    if subchild.kind() == "dot_index_expression" {
-                        if let Some(field_name) = self.extract_field_name(subchild) {
-                            self.add_query_param(field_name);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn track_ctx_headers_usage(&mut self, node: Node) {
-        // Patterns: context_name:headers().Authorization or context_name:headers()["user-agent"]
-        
-        let context_param = match &self.current_context_param {
-            Some(param) => param.clone(),
-            None => return,
-        };
-        
-        // Look for field access in the parent chain
-        if let Some(parent) = node.parent() {
-            let parent_source = self.source[parent.start_byte()..parent.end_byte()].to_string();
-            
-            // Collect field names to add, then add them after the borrow
-            let mut fields_to_add = Vec::new();
-            
-            // Check for dot access: context_name:headers().Authorization
-            if parent_source.contains(&format!("{}:headers", context_param)) && parent_source.contains(").") {
-                if let Some(field_name) = self.extract_field_name_from_ctx_headers(parent) {
-                    fields_to_add.push(field_name);
-                }
-            }
-            
-            // Check for bracket access: context_name:headers()["user-agent"]
-            if parent_source.contains(&format!("{}:headers", context_param)) && parent_source.contains(")[") {
-                if let Some(field_name) = self.extract_bracket_field_name_from_ctx_headers(parent) {
-                    fields_to_add.push(field_name);
-                }
-            }
-            
-            // Add the collected fields
-            for field_name in fields_to_add {
-                self.add_header_param(field_name);
-            }
-        }
-        
-        // Also check children for method_index_expression
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "method_index_expression" {
-                let mut cursor = child.walk();
-                for subchild in child.children(&mut cursor) {
-                    if subchild.kind() == "dot_index_expression" {
-                        // ctx:headers().Authorization
-                        if let Some(field_name) = self.extract_field_name(subchild) {
-                            self.add_header_param(field_name);
-                        }
-                    } else if subchild.kind() == "bracket_index_expression" {
-                        // ctx:headers()["user-agent"]
-                        if let Some(field_name) = self.extract_bracket_field_name(subchild) {
-                            self.add_header_param(field_name);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn track_ctx_body_usage(&mut self, node: Node) {
-        // Pattern: context_name:body():expect{...}
-        let source = &self.source[node.start_byte()..node.end_byte()];
-        if source.contains("expect") {
-            if let Some(body_schema) = self.parse_body_expect(node) {
+    fn handle_body_access(&mut self, call_node: Node) {
+        if let Some(expect_call) = self.find_method_call_in_chain(call_node, "expect") {
+            if let Some(body_schema) = self.parse_body_expect(expect_call) {
                 self.set_body_schema(body_schema);
             }
         }
     }
 
-    fn track_rover_guard_usage(&mut self, _node: Node) {
-        // Pattern: rover.guard(data, {...})
-        // Track for potential future use, but don't add to request schema
-        // This is for direct guard usage, not request validation
+    fn extract_field_name_from_call(&mut self, call_node: Node) -> Option<String> {
+        let mut current = call_node;
+        loop {
+            let parent = match current.parent() {
+                Some(parent) => parent,
+                None => return None,
+            };
+
+            if parent.kind() == "dot_index_expression" && Self::is_first_named_child(parent, current) {
+                return self.extract_field_name(parent);
+            } else if parent.kind() == "bracket_index_expression" && Self::is_first_named_child(parent, current) {
+                return self.extract_bracket_field_name(parent);
+            } else if parent.kind() == "parenthesized_expression" {
+                current = parent;
+                continue;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    fn node_matches_context(&self, node: Node, context_param: &str) -> bool {
+        if node.kind() == "identifier" {
+            let name = &self.source[node.start_byte()..node.end_byte()];
+            name == context_param
+        } else {
+            false
+        }
     }
 
     fn extract_field_name(&mut self, node: Node) -> Option<String> {
@@ -1493,13 +1265,25 @@ fn parse_response_call(&mut self, node: Node) -> Option<Response> {
                         if let Value::String(s) = self.extract_value(value_child) {
                             values.push(s);
                         }
-                    } else if value_child.kind() == "field" {
-                        values.extend(self.collect_string_values_from_table(value_child));
                     }
                 }
             }
         }
         values
+    }
+
+    fn is_first_named_child(parent: Node, child: Node) -> bool {
+        let mut cursor = parent.walk();
+        for candidate in parent.children(&mut cursor) {
+            if candidate.is_named() {
+                return Self::nodes_equal(candidate, child);
+            }
+        }
+        false
+    }
+
+    fn nodes_equal(a: Node, b: Node) -> bool {
+        a.start_byte() == b.start_byte() && a.end_byte() == b.end_byte()
     }
 }
 
