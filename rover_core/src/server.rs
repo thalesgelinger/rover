@@ -91,24 +91,34 @@ impl AppServer for Lua {
         server.set("redirect", redirect_helper)?;
 
         let error_fn = self.create_function(|lua, (_self, (status, message)): (Table, (u16, Value))| {
-            // Convert message to string - handles ValidationErrors and other types
+            // Try to get structured JSON from ValidationErrors
+            if let Value::UserData(ref ud) = message {
+                // Call the to_json Lua function on the userdata
+                let get_method = lua.load("function(obj) if obj.to_json then return obj:to_json() end end").eval::<mlua::Function>()?;
+                if let Ok(Value::Table(error_data)) = get_method.call::<Value>(Value::UserData(ud.clone())) {
+                    // This is ValidationErrors with structured data
+                    let json = error_data.to_json_string().map_err(|e| {
+                        mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                    })?;
+                    return Ok(RoverResponse::json(status, Bytes::from(json), None));
+                }
+            }
+
+            // For other errors, return simple error message
             let mut message_str = match message {
                 Value::String(s) => s.to_str()?.to_string(),
                 Value::UserData(ud) => {
-                    // ValidationErrors - use clean __tostring output
                     let tostring: mlua::Function = lua.globals().get("tostring")?;
                     let result: String = tostring.call(Value::UserData(ud))?;
                     result
                 }
                 other => {
-                    // Other types - use tostring
                     let tostring: mlua::Function = lua.globals().get("tostring")?;
                     tostring.call(other)?
                 }
             };
 
-            // Clean up error message - remove "runtime error: " and stack traces
-            // This makes ValidationErrors clean and production-ready
+            // Clean up - remove "runtime error: " and stack traces
             message_str = message_str.trim_start_matches("runtime error: ").to_string();
             if let Some(stack_pos) = message_str.find("\nstack traceback:") {
                 message_str = message_str[..stack_pos].to_string();
