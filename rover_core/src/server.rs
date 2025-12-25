@@ -90,9 +90,25 @@ impl AppServer for Lua {
         let _ = redirect_helper.set_metatable(Some(redirect_meta));
         server.set("redirect", redirect_helper)?;
 
-        let error_fn = self.create_function(|lua, (_self, (status, message)): (Table, (u16, String))| {
+        let error_fn = self.create_function(|lua, (_self, (status, message)): (Table, (u16, Value))| {
+            // Convert message to string - handles ValidationErrors and other types
+            let message_str = match message {
+                Value::String(s) => s.to_str()?.to_string(),
+                Value::UserData(ud) => {
+                    // Try to get string representation via __tostring metamethod
+                    let tostring: mlua::Function = lua.globals().get("tostring")?;
+                    let result: String = tostring.call(Value::UserData(ud))?;
+                    result
+                }
+                other => {
+                    // Use Lua's built-in tostring for other types
+                    let tostring: mlua::Function = lua.globals().get("tostring")?;
+                    tostring.call(other)?
+                }
+            };
+
             let table = lua.create_table()?;
-            table.set("error", message)?;
+            table.set("error", message_str)?;
             let json = table.to_json_string().map_err(|e| {
                 mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
             })?;
