@@ -1,10 +1,10 @@
-use hyper::{body::Bytes, StatusCode};
+use hyper::{StatusCode, body::Bytes};
 use mlua::Lua;
 use smallvec::SmallVec;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, warn};
 
-use crate::{fast_router::FastRouter, http_task::HttpTask, HttpMethod, Route, ServerConfig};
+use crate::{HttpMethod, Route, ServerConfig, fast_router::FastRouter, http_task::HttpTask};
 
 /// HTTP-specific request wrapper
 pub struct LuaRequest {
@@ -62,7 +62,6 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                 }
             };
 
-            // Create HTTP task and execute it directly
             let task = HttpTask {
                 method: req.method,
                 path: req.path,
@@ -75,7 +74,6 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                 started_at: req.started_at,
             };
 
-            // Execute the task
             if let Err(e) = task.execute(&lua).await {
                 debug!("Task execution failed: {}", e);
             }
