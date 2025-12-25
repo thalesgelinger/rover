@@ -286,5 +286,18 @@ pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
     }
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let _ = runtime.block_on(server(lua, routes, config));
+    if let Err(e) = runtime.block_on(server(lua, routes, config.clone())) {
+        // Check if the error is due to the port being already in use
+        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::AddrInUse {
+                eprintln!("\n❌ Error: Unable to start server");
+                eprintln!("   Port {} is already in use on {}", config.port, config.host);
+                eprintln!("   Please choose a different port or stop the process using port {}\n", config.port);
+                std::process::exit(1);
+            }
+        }
+        // For other errors, print the generic error message
+        eprintln!("\n❌ Error starting server: {}\n", e);
+        std::process::exit(1);
+    }
 }
