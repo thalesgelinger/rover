@@ -2,6 +2,7 @@ mod app_type;
 mod auto_table;
 mod guard;
 mod inspect;
+mod io;
 mod server;
 use guard::BodyValue;
 use server::{AppServer, Server};
@@ -84,6 +85,10 @@ pub fn run(path: &str) -> Result<()> {
     )?;
     
     rover.set("guard", guard)?;
+
+    // Override global io module with async version
+    let io_module = io::create_io_module(&lua)?;
+    lua.globals().set("io", io_module)?;
 
     let _ = lua.globals().set("rover", rover);
 
