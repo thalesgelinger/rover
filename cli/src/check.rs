@@ -1,43 +1,32 @@
 use anyhow::{Context, Result};
-use clap::Parser;
 use colored::Colorize;
 use rover_parser::{analyze, ParsingError, SemanticModel};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(
-    name = "rover-check",
-    about = "Rover code analyzer and linter for Lua files"
-)]
-struct Cli {
-    /// Path to the Lua file to analyze
-    #[arg(value_name = "FILE")]
-    file: PathBuf,
-
-    /// Show verbose output
-    #[arg(short, long)]
-    verbose: bool,
-
-    /// Output format: pretty (default), json
-    #[arg(short, long, default_value = "pretty")]
-    format: String,
+pub struct CheckOptions {
+    pub file: PathBuf,
+    pub verbose: bool,
+    pub format: OutputFormat,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+pub enum OutputFormat {
+    Pretty,
+    Json,
+}
 
+pub fn run_check(options: CheckOptions) -> Result<()> {
     // Read the file
-    let code = fs::read_to_string(&cli.file)
-        .with_context(|| format!("Failed to read file: {}", cli.file.display()))?;
+    let code = fs::read_to_string(&options.file)
+        .with_context(|| format!("Failed to read file: {}", options.file.display()))?;
 
     // Analyze the code
     let model = analyze(&code);
 
     // Display results
-    match cli.format.as_str() {
-        "json" => display_json(&model, &cli.file)?,
-        _ => display_pretty(&model, &cli.file, cli.verbose)?,
+    match options.format {
+        OutputFormat::Json => display_json(&model, &options.file)?,
+        OutputFormat::Pretty => display_pretty(&model, &options.file, options.verbose)?,
     }
 
     // Exit with error code if there are errors
@@ -46,6 +35,65 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Run a quick pre-execution check (used before running Lua files)
+pub fn pre_run_check(file: &PathBuf) -> Result<bool> {
+    // Read the file
+    let code = fs::read_to_string(file)
+        .with_context(|| format!("Failed to read file: {}", file.display()))?;
+
+    // Analyze the code
+    let model = analyze(&code);
+
+    let file_display = file.display().to_string();
+
+    // If there are errors or warnings, display them
+    if !model.errors.is_empty() {
+        println!("{}", "─".repeat(60).dimmed());
+        println!(
+            "{} {}",
+            "Rover Check:".bold().cyan(),
+            format!("found {} issue(s)", model.errors.len()).yellow()
+        );
+        println!("{}", "─".repeat(60).dimmed());
+
+        for error in &model.errors {
+            display_error_compact(error, &file_display);
+        }
+
+        println!("{}", "─".repeat(60).dimmed());
+        println!();
+
+        // Return false to indicate there are issues, but don't exit
+        return Ok(false);
+    }
+
+    // Show brief success message
+    println!("{} {}", "✓".green(), "Code analysis passed".dimmed());
+    println!();
+
+    Ok(true)
+}
+
+fn display_error_compact(error: &ParsingError, file: &str) {
+    if let Some(range) = &error.range {
+        println!(
+            "  {} {}:{}:{} - {}",
+            "✗".red(),
+            file.bright_white(),
+            format!("{}", range.start.line + 1).yellow(),
+            format!("{}", range.start.column + 1).yellow(),
+            error.message.white()
+        );
+    } else {
+        println!("  {} {} - {}", "✗".red(), file.bright_white(), error.message.white());
+    }
+
+    // Add suggestion if available
+    if let Some(suggestion) = get_suggestion(error) {
+        println!("    {} {}", "→".cyan(), suggestion.dimmed());
+    }
 }
 
 fn display_pretty(model: &SemanticModel, file: &PathBuf, verbose: bool) -> Result<()> {
@@ -134,13 +182,22 @@ fn print_model_summary(model: &SemanticModel) {
     println!("{}", "-".repeat(60).cyan());
 
     if let Some(server) = &model.server {
-        println!("  {} {}", "Server:".bold(), if server.exported { "exported ✓".green() } else { "not exported".yellow() });
+        println!(
+            "  {} {}",
+            "Server:".bold(),
+            if server.exported {
+                "exported ✓".green()
+            } else {
+                "not exported".yellow()
+            }
+        );
         println!("  {} {}", "Routes:".bold(), server.routes.len());
 
         if !server.routes.is_empty() {
             println!("\n  {}", "Route Details:".bold());
             for route in &server.routes {
-                println!("    {} {} {}",
+                println!(
+                    "    {} {} {}",
                     route.method.bright_green(),
                     route.path.bright_white(),
                     if !route.responses.is_empty() {
@@ -153,8 +210,17 @@ fn print_model_summary(model: &SemanticModel) {
                 // Show params info
                 if !route.request.path_params.is_empty() {
                     for param in &route.request.path_params {
-                        let status = if param.used { "✓".green() } else { "✗ unused".yellow() };
-                        println!("      {} param: {} {}", "→".dimmed(), param.name.cyan(), status);
+                        let status = if param.used {
+                            "✓".green()
+                        } else {
+                            "✗ unused".yellow()
+                        };
+                        println!(
+                            "      {} param: {} {}",
+                            "→".dimmed(),
+                            param.name.cyan(),
+                            status
+                        );
                     }
                 }
 
@@ -181,30 +247,34 @@ fn print_model_summary(model: &SemanticModel) {
 fn display_json(model: &SemanticModel, file: &PathBuf) -> Result<()> {
     use serde_json::json;
 
-    let errors: Vec<_> = model.errors.iter().map(|e| {
-        let mut err = json!({
-            "message": e.message,
-        });
-
-        if let Some(range) = &e.range {
-            err["range"] = json!({
-                "start": {
-                    "line": range.start.line,
-                    "column": range.start.column,
-                },
-                "end": {
-                    "line": range.end.line,
-                    "column": range.end.column,
-                }
+    let errors: Vec<_> = model
+        .errors
+        .iter()
+        .map(|e| {
+            let mut err = json!({
+                "message": e.message,
             });
-        }
 
-        if let Some(func) = &e.function_name {
-            err["function"] = json!(func);
-        }
+            if let Some(range) = &e.range {
+                err["range"] = json!({
+                    "start": {
+                        "line": range.start.line,
+                        "column": range.start.column,
+                    },
+                    "end": {
+                        "line": range.end.line,
+                        "column": range.end.column,
+                    }
+                });
+            }
 
-        err
-    }).collect();
+            if let Some(func) = &e.function_name {
+                err["function"] = json!(func);
+            }
+
+            err
+        })
+        .collect();
 
     let result = json!({
         "file": file.display().to_string(),
