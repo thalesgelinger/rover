@@ -10,10 +10,10 @@ use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig, RoverRespo
 use crate::{fast_router::FastRouter, to_json::ToJson};
 
 pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: ServerConfig) {
-    std::thread::spawn(move || -> Result<()> {
-        let fast_router = FastRouter::from_routes(routes)?;
+    tokio::spawn(async move {
+        let fast_router = FastRouter::from_routes(routes).expect("Failed to build router");
 
-        while let Some(req) = rx.blocking_recv() {
+        while let Some(req) = rx.recv().await {
             // Methods should be only lua functions, so lua function is utf8 safe
             let method_str = unsafe { std::str::from_utf8_unchecked(&req.method) };
 
@@ -80,7 +80,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                 }
             };
 
-            let result: Value = match handler.call(ctx) {
+            let result: Value = match handler.call_async(ctx).await {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = req.respond_to.send(LuaResponse {
@@ -179,7 +179,6 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
 
             let _ = req.respond_to.send(LuaResponse { status, body });
         }
-        Ok(())
     });
 }
 
