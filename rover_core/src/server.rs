@@ -92,20 +92,27 @@ impl AppServer for Lua {
 
         let error_fn = self.create_function(|lua, (_self, (status, message)): (Table, (u16, Value))| {
             // Convert message to string - handles ValidationErrors and other types
-            let message_str = match message {
+            let mut message_str = match message {
                 Value::String(s) => s.to_str()?.to_string(),
                 Value::UserData(ud) => {
-                    // Try to get string representation via __tostring metamethod
+                    // ValidationErrors - use clean __tostring output
                     let tostring: mlua::Function = lua.globals().get("tostring")?;
                     let result: String = tostring.call(Value::UserData(ud))?;
                     result
                 }
                 other => {
-                    // Use Lua's built-in tostring for other types
+                    // Other types - use tostring
                     let tostring: mlua::Function = lua.globals().get("tostring")?;
                     tostring.call(other)?
                 }
             };
+
+            // Clean up error message - remove "runtime error: " and stack traces
+            // This makes ValidationErrors clean and production-ready
+            message_str = message_str.trim_start_matches("runtime error: ").to_string();
+            if let Some(stack_pos) = message_str.find("\nstack traceback:") {
+                message_str = message_str[..stack_pos].to_string();
+            }
 
             let table = lua.create_table()?;
             table.set("error", message_str)?;
