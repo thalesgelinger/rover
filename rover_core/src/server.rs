@@ -4,6 +4,7 @@ use rover_openapi::generate_spec;
 use rover_parser::analyze;
 use rover_server::to_json::ToJson;
 use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerConfig};
+use rover_types::ValidationErrors;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
@@ -100,15 +101,84 @@ impl AppServer for Lua {
         let _ = redirect_helper.set_metatable(Some(redirect_meta));
         server.set("redirect", redirect_helper)?;
 
-        let error_fn =
-            self.create_function(|lua, (_self, (status, message)): (Table, (u16, String))| {
-                let table = lua.create_table()?;
-                table.set("error", message)?;
-                let json = table.to_json_string().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
-                })?;
-                Ok(RoverResponse::json(status, Bytes::from(json), None))
+        let error_fn = self.create_function(|lua, (_self, (status, message)): (Table, (u16, Value))| {
+            // Try ValidationErrors userdata (when passed directly without pcall stringification)
+            if let Value::UserData(ref ud) = message {
+                if let Ok(verr) = ud.borrow::<ValidationErrors>() {
+                    return Ok(RoverResponse::json(status, Bytes::from(verr.to_json_string()), None));
+                }
+            }
+
+            // Convert to string
+            let message_str = match message {
+                Value::String(s) => s.to_str()?.to_string(),
+                Value::UserData(ud) => {
+                    let tostring: mlua::Function = lua.globals().get("tostring")?;
+                    tostring.call(Value::UserData(ud))?
+                }
+                other => {
+                    let tostring: mlua::Function = lua.globals().get("tostring")?;
+                    tostring.call(other)?
+                }
+            };
+
+            let mut message_str = message_str.trim_start_matches("runtime error: ").to_string();
+            if let Some(stack_pos) = message_str.find("\nstack traceback:") {
+                message_str = message_str[..stack_pos].to_string();
+            }
+
+            // Check if this is a stringified ValidationErrors (from pcall)
+            if message_str.contains("Validation failed for request body:") {
+                // Parse the formatted string back to structured JSON
+                use rover_types::ValidationError;
+                let mut errors = Vec::new();
+                let lines: Vec<&str> = message_str.lines().collect();
+                let mut i = 0;
+
+                while i < lines.len() {
+                    let line = lines[i];
+                    if let Some(start) = line.find("Field '") {
+                        if let Some(end) = line[start + 7..].find('\'') {
+                            let field = &line[start + 7..start + 7 + end];
+                            let mut error_msg = String::new();
+                            let mut error_type = String::new();
+                            
+                            if i + 1 < lines.len() {
+                                let next_line = lines[i + 1].trim();
+                                if next_line.starts_with("Error:") {
+                                    error_msg = next_line.strip_prefix("Error:").unwrap_or("").trim().to_string();
+                                }
+                            }
+                            
+                            if i + 2 < lines.len() {
+                                let type_line = lines[i + 2].trim();
+                                if type_line.starts_with("Type:") {
+                                    error_type = type_line.strip_prefix("Type:").unwrap_or("").trim().to_string();
+                                }
+                            }
+                            
+                            errors.push(ValidationError::new(field, &error_msg, &error_type));
+                            i += 3;
+                            continue;
+                        }
+                    }
+                    i += 1;
+                }
+
+                if !errors.is_empty() {
+                    let validation_errors = ValidationErrors::new(errors);
+                    return Ok(RoverResponse::json(status, Bytes::from(validation_errors.to_json_string()), None));
+                }
+            }
+
+            // Generic error
+            let table = lua.create_table()?;
+            table.set("error", message_str)?;
+            let json = table.to_json_string().map_err(|e| {
+                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
             })?;
+            Ok(RoverResponse::json(status, Bytes::from(json), None))
+        })?;
         server.set("error", error_fn)?;
 
         let no_content_fn = self.create_function(|_lua, _: Table| Ok(RoverResponse::empty(204)))?;

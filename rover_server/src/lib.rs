@@ -1,15 +1,17 @@
-mod event_loop;
+pub mod to_json;
 mod fast_router;
 mod response;
-pub mod to_json;
+pub mod http_task;
+mod event_loop;
 
+pub use http_task::{HttpTask, HttpResponse};
+pub use response::RoverResponse;
 use http_body_util::Full;
 pub use hyper::body::Bytes;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
-pub use response::RoverResponse;
 use smallvec::SmallVec;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -150,29 +152,10 @@ impl FromLua for ServerConfig {
     }
 }
 
-struct LuaRequest {
-    method: Bytes,
-    path: Bytes,
-    headers: SmallVec<[(Bytes, Bytes); 8]>,
-    query: SmallVec<[(Bytes, Bytes); 8]>,
-    body: Option<Bytes>,
-    respond_to: oneshot::Sender<LuaResponse>,
-    started_at: Instant,
-}
+use event_loop::LuaRequest;
 
-struct LuaResponse {
-    status: StatusCode,
-    body: Bytes,
-    content_type: Option<String>,
-}
-
-async fn server(
-    lua: Lua,
-    routes: RouteTable,
-    config: ServerConfig,
-    openapi_spec: Option<serde_json::Value>,
-) -> Result<()> {
-    let (tx, rx) = mpsc::channel(1024);
+async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
+    let (tx, rx) = mpsc::channel::<event_loop::LuaRequest>(1024);
 
     let addr = format!("{}:{}", config.host, config.port);
     if config.log_level != "nope" {
@@ -221,7 +204,7 @@ async fn server(
 
 async fn handler(
     req: Request<hyper::body::Incoming>,
-    tx: mpsc::Sender<LuaRequest>,
+    tx: mpsc::Sender<event_loop::LuaRequest>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (parts, body_stream) = req.into_parts();
 
@@ -312,5 +295,18 @@ pub fn run(
     }
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let _ = runtime.block_on(server(lua, routes, config, openapi_spec));
+if let Err(e) = runtime.block_on(server(lua, routes, config.clone(), openapi_spec)) {
+        // Check if the error is due to the port being already in use
+        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::AddrInUse {
+                eprintln!("\n❌ Error: Unable to start server");
+                eprintln!("   Port {} is already in use on {}", config.port, config.host);
+                eprintln!("   Please choose a different port or stop the process using port {}\n", config.port);
+                std::process::exit(1);
+            }
+        }
+        // For other errors, print the generic error message
+        eprintln!("\n❌ Error starting server: {}\n", e);
+        std::process::exit(1);
+    }
 }
