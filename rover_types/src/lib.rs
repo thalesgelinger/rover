@@ -1,6 +1,9 @@
 use mlua::{UserData, UserDataMethods, MetaMethod};
 use std::fmt;
 
+mod task;
+pub use task::*;
+
 /// Represents a validation error with path and message
 #[derive(Debug, Clone)]
 pub struct ValidationError {

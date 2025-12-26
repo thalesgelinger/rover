@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 mlua = { version="0.11.5", features = ["anyhow", "vendored", "luajit", "send", "serialize", "async"] }
+anyhow = "1.0.100"

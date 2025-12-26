@@ -705,6 +705,9 @@ dependencies = [
  "rover_server",
  "rover_types",
  "serde_json",
+ "smallvec",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -733,6 +736,7 @@ dependencies = [
 name = "rover_types"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "mlua",
 ]
 

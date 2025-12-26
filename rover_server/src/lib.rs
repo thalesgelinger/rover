@@ -1,13 +1,15 @@
-mod event_loop;
 pub mod to_json;
 mod fast_router;
 mod response;
+pub mod http_task;
+mod event_loop;
 
 pub use response::RoverResponse;
+pub use http_task::{HttpTask, HttpResponse};
 use http_body_util::Full;
 pub use hyper::body::Bytes;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use smallvec::SmallVec;
@@ -144,23 +146,10 @@ impl FromLua for ServerConfig {
     }
 }
 
-struct LuaRequest {
-    method: Bytes,
-    path: Bytes,
-    headers: SmallVec<[(Bytes, Bytes); 8]>,
-    query: SmallVec<[(Bytes, Bytes); 8]>,
-    body: Option<Bytes>,
-    respond_to: oneshot::Sender<LuaResponse>,
-    started_at: Instant,
-}
-
-struct LuaResponse {
-    status: StatusCode,
-    body: Bytes,
-}
+use event_loop::LuaRequest;
 
 async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()> {
-    let (tx, rx) = mpsc::channel(1024);
+    let (tx, rx) = mpsc::channel::<event_loop::LuaRequest>(1024);
 
     let addr = format!("{}:{}", config.host, config.port);
     if config.log_level != "nope" {
@@ -206,7 +195,7 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()
 
 async fn handler(
     req: Request<hyper::body::Incoming>,
-    tx: mpsc::Sender<LuaRequest>,
+    tx: mpsc::Sender<event_loop::LuaRequest>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (parts, body_stream) = req.into_parts();
 

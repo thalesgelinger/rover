@@ -3,6 +3,8 @@ mod auto_table;
 mod guard;
 mod inspect;
 mod server;
+pub mod event_loop;
+
 use guard::BodyValue;
 use server::{AppServer, Server};
 
