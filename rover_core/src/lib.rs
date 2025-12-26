@@ -47,25 +47,33 @@ pub fn run(path: &str) -> Result<()> {
         .load(include_str!("guard.lua"))
         .set_name("guard.lua")
         .eval()?;
-    
+
     // Add __call metamethod for rover.guard(data, schema)
     let guard_meta = lua.create_table()?;
     guard_meta.set("__index", guard.clone())?;
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{validate_table, ValidationErrors};
+            use crate::guard::{ValidationErrors, validate_table};
 
             // Extract the table from data
             let data_table = match data {
                 Value::Table(ref t) => t.clone(),
-                _ => return Err(mlua::Error::RuntimeError("First argument must be a table".to_string())),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "First argument must be a table".to_string(),
+                    ));
+                }
             };
 
             // Extract the table from schema
             let schema_table = match schema {
                 Value::Table(ref t) => t.clone(),
-                _ => return Err(mlua::Error::RuntimeError("Second argument must be a table".to_string())),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "Second argument must be a table".to_string(),
+                    ));
+                }
             };
 
             match validate_table(lua, &data_table, &schema_table, "") {
@@ -73,20 +81,22 @@ pub fn run(path: &str) -> Result<()> {
                 Err(errors) => {
                     // Return ValidationErrors that formats nicely when converted to string
                     let validation_errors = ValidationErrors::new(errors);
-                    Err(mlua::Error::ExternalError(std::sync::Arc::new(validation_errors)))
+                    Err(mlua::Error::ExternalError(std::sync::Arc::new(
+                        validation_errors,
+                    )))
                 }
             }
         })?,
     )?;
-    
+
     let _ = guard.set_metatable(Some(guard_meta));
-    
+
     // Add hidden __body_value for BodyValue constructor
     guard.set(
         "__body_value",
         lua.create_function(|_lua, json_string: String| Ok(BodyValue::new(json_string)))?,
     )?;
-    
+
     rover.set("guard", guard)?;
 
     // Override global io module with async version
@@ -109,7 +119,7 @@ pub fn run(path: &str) -> Result<()> {
         Value::Table(table) => {
             if let Some(app_type) = table.app_type() {
                 match app_type {
-                    AppType::Server => table.run_server(&lua)?,
+                    AppType::Server => table.run_server(&lua, &content)?,
                 }
             }
             Ok(())
@@ -151,7 +161,7 @@ mod tests {
 
     #[test]
     fn should_read_and_print_lua_file() {
-        let result = run("examples/hello.lua");
+        let result = run("../examples/starter.lua");
         assert_eq!(result.unwrap(), ());
     }
 

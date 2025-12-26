@@ -1,0 +1,18 @@
+[package]
+name = "rover-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rover_lsp"
+crate-type = ["lib"]
+
+[dependencies]
+anyhow = "1.0.100"
+rover_core = { path = "../rover_core" }
+serde_json = "1.0"
+tokio = { version = "1.48.0", features = ["full"] }
+tower-lsp = "0.20"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rover-parser = { path = "../rover-parser" }

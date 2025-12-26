@@ -1,5 +1,5 @@
-use mlua::UserData;
 use crate::Bytes;
+use mlua::UserData;
 use std::collections::HashMap;
 
 /// Pre-serialized HTTP response - zero-cost abstraction for Lua
@@ -42,7 +42,7 @@ impl RoverResponse {
     pub fn redirect(status: u16, location: String) -> Self {
         let mut headers = HashMap::new();
         headers.insert("Location".to_string(), location);
-        
+
         Self {
             status,
             body: Bytes::new(),

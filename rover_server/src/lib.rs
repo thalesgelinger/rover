@@ -4,8 +4,8 @@ mod response;
 pub mod http_task;
 mod event_loop;
 
-pub use response::RoverResponse;
 pub use http_task::{HttpTask, HttpResponse};
+pub use response::RoverResponse;
 use http_body_util::Full;
 pub use hyper::body::Bytes;
 use hyper::service::service_fn;
@@ -111,9 +111,10 @@ pub struct RouteTable {
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    port: u16,
-    host: String,
-    log_level: String,
+    pub port: u16,
+    pub host: String,
+    pub log_level: String,
+    pub docs: bool,
 }
 
 impl FromLua for ServerConfig {
@@ -139,6 +140,11 @@ impl FromLua for ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host: config.get::<String>("host").unwrap_or("localhost".into()),
                     log_level,
+                    docs: match config.get::<Value>("docs")? {
+                        Value::Nil => true,
+                        Value::Boolean(b) => b,
+                        _ => true,
+                    },
                 })
             }
             _ => Err(anyhow!("Server config must be a table"))?,
@@ -148,12 +154,15 @@ impl FromLua for ServerConfig {
 
 use event_loop::LuaRequest;
 
-async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()> {
+async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
     let (tx, rx) = mpsc::channel::<event_loop::LuaRequest>(1024);
 
     let addr = format!("{}:{}", config.host, config.port);
     if config.log_level != "nope" {
         info!("🚀 Rover server running at http://{}", addr);
+        if config.docs && openapi_spec.is_some() {
+            info!("📚 API docs available at http://{}/docs", addr);
+        }
         if config.log_level == "debug" {
             info!("🐛 Debug mode enabled");
         }
@@ -175,7 +184,7 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig) -> Result<()
 
     let listener = TcpListener::bind(addr).await?;
 
-    event_loop::run(lua, routes.routes, rx, config.clone());
+    event_loop::run(lua, routes.routes, rx, config.clone(), openapi_spec);
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -218,12 +227,7 @@ async fn handler(
 
     let query: SmallVec<[(Bytes, Bytes); 8]> = match parts.uri.query() {
         Some(q) => form_urlencoded::parse(q.as_bytes())
-            .map(|(k, v)| {
-                (
-                    Bytes::from(k.into_owned()),
-                    Bytes::from(v.into_owned()),
-                )
-            })
+            .map(|(k, v)| (Bytes::from(k.into_owned()), Bytes::from(v.into_owned())))
             .collect(),
         None => SmallVec::new(),
     };
@@ -256,10 +260,26 @@ async fn handler(
 
     let mut response = Response::new(Full::new(resp.body));
     *response.status_mut() = resp.status.into();
+
+    // Set Content-Type header if provided
+    if let Some(content_type) = resp.content_type {
+        response.headers_mut().insert(
+            hyper::header::CONTENT_TYPE,
+            content_type
+                .parse()
+                .unwrap_or_else(|_| hyper::header::HeaderValue::from_static("text/plain")),
+        );
+    }
+
     Ok(response)
 }
 
-pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
+pub fn run(
+    lua: Lua,
+    routes: RouteTable,
+    config: ServerConfig,
+    openapi_spec: Option<serde_json::Value>,
+) {
     if config.log_level != "nope" {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -275,7 +295,7 @@ pub fn run(lua: Lua, routes: RouteTable, config: ServerConfig) {
     }
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    if let Err(e) = runtime.block_on(server(lua, routes, config.clone())) {
+if let Err(e) = runtime.block_on(server(lua, routes, config.clone(), openapi_spec)) {
         // Check if the error is due to the port being already in use
         if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
             if io_err.kind() == std::io::ErrorKind::AddrInUse {

@@ -1,7 +1,9 @@
 use anyhow::{Result, anyhow};
 use mlua::{Lua, Table, Value};
-use rover_server::{Bytes, HttpMethod, Route, RouteTable, ServerConfig, RoverResponse};
+use rover_openapi::generate_spec;
+use rover_parser::analyze;
 use rover_server::to_json::ToJson;
+use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerConfig};
 use rover_types::ValidationErrors;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
@@ -25,12 +27,13 @@ impl AppServer for Lua {
             Ok(RoverResponse::json(200, Bytes::from(json), None))
         })?;
 
-        let json_status_fn = self.create_function(|_lua, (_self, status_code, data): (Table, u16, Table)| {
-            let json = data.to_json_string().map_err(|e| {
-                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+        let json_status_fn =
+            self.create_function(|_lua, (_self, status_code, data): (Table, u16, Table)| {
+                let json = data.to_json_string().map_err(|e| {
+                    mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                })?;
+                Ok(RoverResponse::json(status_code, Bytes::from(json), None))
             })?;
-            Ok(RoverResponse::json(status_code, Bytes::from(json), None))
-        })?;
         json_helper.set("status", json_status_fn)?;
 
         let meta = self.create_table()?;
@@ -44,9 +47,11 @@ impl AppServer for Lua {
             Ok(RoverResponse::text(200, Bytes::from(content), None))
         })?;
 
-        let text_status_fn = self.create_function(|_lua, (_self, status_code, content): (Table, u16, String)| {
-            Ok(RoverResponse::text(status_code, Bytes::from(content), None))
-        })?;
+        let text_status_fn = self.create_function(
+            |_lua, (_self, status_code, content): (Table, u16, String)| {
+                Ok(RoverResponse::text(status_code, Bytes::from(content), None))
+            },
+        )?;
         text_helper.set("status", text_status_fn)?;
 
         let text_meta = self.create_table()?;
@@ -60,9 +65,11 @@ impl AppServer for Lua {
             Ok(RoverResponse::html(200, Bytes::from(content), None))
         })?;
 
-        let html_status_fn = self.create_function(|_lua, (_self, status_code, content): (Table, u16, String)| {
-            Ok(RoverResponse::html(status_code, Bytes::from(content), None))
-        })?;
+        let html_status_fn = self.create_function(
+            |_lua, (_self, status_code, content): (Table, u16, String)| {
+                Ok(RoverResponse::html(status_code, Bytes::from(content), None))
+            },
+        )?;
         html_helper.set("status", html_status_fn)?;
 
         let html_meta = self.create_table()?;
@@ -76,14 +83,17 @@ impl AppServer for Lua {
             Ok(RoverResponse::redirect(302, location))
         })?;
 
-        let redirect_permanent = self.create_function(|_lua, (_self, location): (Table, String)| {
-            Ok(RoverResponse::redirect(301, location))
-        })?;
+        let redirect_permanent =
+            self.create_function(|_lua, (_self, location): (Table, String)| {
+                Ok(RoverResponse::redirect(301, location))
+            })?;
         redirect_helper.set("permanent", redirect_permanent)?;
 
-        let redirect_status_fn = self.create_function(|_lua, (_self, status_code, location): (Table, u16, String)| {
-            Ok(RoverResponse::redirect(status_code, location))
-        })?;
+        let redirect_status_fn = self.create_function(
+            |_lua, (_self, status_code, location): (Table, u16, String)| {
+                Ok(RoverResponse::redirect(status_code, location))
+            },
+        )?;
         redirect_helper.set("status", redirect_status_fn)?;
 
         let redirect_meta = self.create_table()?;
@@ -171,9 +181,7 @@ impl AppServer for Lua {
         })?;
         server.set("error", error_fn)?;
 
-        let no_content_fn = self.create_function(|_lua, _: Table| {
-            Ok(RoverResponse::empty(204))
-        })?;
+        let no_content_fn = self.create_function(|_lua, _: Table| Ok(RoverResponse::empty(204)))?;
         server.set("no_content", no_content_fn)?;
 
         Ok(server)
@@ -181,15 +189,24 @@ impl AppServer for Lua {
 }
 
 pub trait Server {
-    fn run_server(&self, lua: &Lua) -> Result<()>;
+    fn run_server(&self, lua: &Lua, source: &str) -> Result<()>;
     fn get_routes(&self) -> Result<RouteTable>;
 }
 
 impl Server for Table {
-    fn run_server(&self, lua: &Lua) -> Result<()> {
+    fn run_server(&self, lua: &Lua, source: &str) -> Result<()> {
         let routes = self.get_routes()?;
         let config: ServerConfig = self.get("config")?;
-        rover_server::run(lua.clone(), routes, config);
+
+        // Generate OpenAPI spec if docs enabled
+        let openapi_spec = if config.docs {
+            let model = analyze(source);
+            Some(generate_spec(&model, "API", "1.0.0"))
+        } else {
+            None
+        };
+
+        rover_server::run(lua.clone(), routes, config, openapi_spec);
         Ok(())
     }
 

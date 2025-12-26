@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
-use crate::{to_json::ToJson, RoverResponse};
+use crate::{to_json::ToJson, response::RoverResponse};
 
 /// Shared request data - wrapped in Arc for zero-cost sharing across closures
 struct RequestData {
@@ -36,6 +36,7 @@ pub struct HttpTask {
 pub struct HttpResponse {
     pub status: StatusCode,
     pub body: Bytes,
+    pub content_type: Option<String>,
 }
 
 impl HttpTask {
@@ -66,6 +67,7 @@ impl HttpTask {
                 let _ = self.respond_to.send(HttpResponse {
                     status,
                     body: Bytes::from(error_msg),
+                    content_type: None,
                 });
                 return Ok(());
             }
@@ -103,12 +105,13 @@ impl HttpTask {
                 let _ = self.respond_to.send(HttpResponse {
                     status,
                     body,
+                    content_type: None,
                 });
                 return Ok(());
             }
         };
 
-        let (status, body) = convert_lua_response(lua, result);
+        let (status, body, content_type) = convert_lua_response(lua, result);
 
         if tracing::event_enabled!(tracing::Level::DEBUG) {
             let body_preview = if body.len() > 200 {
@@ -148,7 +151,7 @@ impl HttpTask {
             }
         }
 
-        let _ = self.respond_to.send(HttpResponse { status, body });
+        let _ = self.respond_to.send(HttpResponse { status, body, content_type });
         Ok(())
     }
 }
@@ -252,18 +255,20 @@ fn build_lua_context(lua: &Lua, task: &HttpTask) -> Result<Table> {
     Ok(ctx)
 }
 
-fn convert_lua_response(_lua: &Lua, result: Value) -> (StatusCode, Bytes) {
+fn convert_lua_response(_lua: &Lua, result: Value) -> (StatusCode, Bytes, Option<String>) {
     match result {
         Value::UserData(ref ud) => {
             if let Ok(response) = ud.borrow::<RoverResponse>() {
                 (
                     StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK),
                     response.body.clone(),
+                    Some(response.content_type.clone()),
                 )
             } else {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Bytes::from("Invalid userdata type"),
+                    Some("text/plain".to_string()),
                 )
             }
         }
@@ -271,28 +276,31 @@ fn convert_lua_response(_lua: &Lua, result: Value) -> (StatusCode, Bytes) {
         Value::String(ref s) => (
             StatusCode::OK,
             Bytes::from(s.to_str().unwrap().to_string()),
+            Some("text/plain".to_string()),
         ),
 
         Value::Table(table) => {
             let json = lua_table_to_json(&table).unwrap_or_else(|e| {
                 format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
             });
-            (StatusCode::OK, Bytes::from(json))
+            (StatusCode::OK, Bytes::from(json), Some("application/json".to_string()))
         }
 
-        Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string())),
-        Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string())),
-        Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string())),
-        Value::Nil => (StatusCode::NO_CONTENT, Bytes::new()),
+        Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string()), Some("text/plain".to_string())),
+        Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string()), Some("text/plain".to_string())),
+        Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string()), Some("text/plain".to_string())),
+        Value::Nil => (StatusCode::NO_CONTENT, Bytes::new(), None),
 
         Value::Error(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Bytes::from(e.to_string()),
+            Some("text/plain".to_string()),
         ),
 
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Bytes::from("Unsupported return type"),
+            Some("text/plain".to_string()),
         ),
     }
 }
