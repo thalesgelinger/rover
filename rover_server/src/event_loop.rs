@@ -1,14 +1,23 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use hyper::{body::Bytes, StatusCode};
 use mlua::{Lua, Table, Value};
+use smallvec::SmallVec;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
-use rover_types::ValidationErrors;
 
 use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig, RoverResponse};
 use crate::{fast_router::FastRouter, to_json::ToJson};
+
+// Shared request data - wrapped in Arc for zero-cost sharing across closures
+struct RequestData {
+    headers: SmallVec<[(Bytes, Bytes); 8]>,
+    query: SmallVec<[(Bytes, Bytes); 8]>,
+    params: HashMap<String, String>,
+    body: Option<Bytes>,
+}
 
 pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: ServerConfig) {
     tokio::spawn(async move {
@@ -84,47 +93,6 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
             let result: Value = match handler.call_async(ctx).await {
                 Ok(r) => r,
                 Err(e) => {
-                    // Check if this is a ValidationErrors (application error)
-                    // Extract the ExternalError from CallbackError or use directly
-                    let ext_err_opt = match &e {
-                        mlua::Error::ExternalError(ext_err) => Some(ext_err),
-                        mlua::Error::CallbackError { cause, .. } => {
-                            if let mlua::Error::ExternalError(ext_err) = cause.as_ref() {
-                                Some(ext_err)
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
-
-                    if let Some(ext_err) = ext_err_opt {
-                        if let Some(validation_errors) = ext_err.downcast_ref::<ValidationErrors>() {
-                            // This is a ValidationErrors - return structured JSON at 400
-                            // Build the JSON response directly
-                            let mut errors_json = String::from(r#"{"errors":["#);
-                            for (i, err) in validation_errors.errors.iter().enumerate() {
-                                if i > 0 {
-                                    errors_json.push(',');
-                                }
-                                errors_json.push_str(&format!(
-                                    r#"{{"field":"{}","message":"{}","type":"{}"}}"#,
-                                    err.path.replace('"', "\\\""),
-                                    err.message.replace('"', "\\\""),
-                                    err.error_type.replace('"', "\\\"")
-                                ));
-                            }
-                            errors_json.push_str("]}");
-
-                            let _ = req.respond_to.send(LuaResponse {
-                                status: StatusCode::BAD_REQUEST,
-                                body: Bytes::from(errors_json),
-                            });
-                            continue;
-                        }
-                    }
-
-                    // For other errors (runtime errors), return 500
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::INTERNAL_SERVER_ERROR,
                         body: Bytes::from(format!("Lua error: {}", e)),
@@ -239,17 +207,21 @@ fn build_lua_context(
         .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in request path".to_string()))?;
     ctx.set("path", path_str)?;
 
-    let headers_clone = req.headers.clone();
-    let query_clone = req.query.clone();
-    let params_clone = params.clone();
-    let body_clone = req.body.clone();
+    // Arc-based shared ownership - single clone (ref-count bump) instead of 4x data clones
+    let req_data = Arc::new(RequestData {
+        headers: req.headers.clone(),
+        query: req.query.clone(),
+        params: params.clone(),
+        body: req.body.clone(),
+    });
 
+    let req_data_headers = req_data.clone();
     let headers_fn = lua.create_function(move |lua, ()| {
-        if headers_clone.is_empty() {
+        if req_data_headers.headers.is_empty() {
             return lua.create_table();
         }
-        let headers = lua.create_table_with_capacity(0, headers_clone.len())?;
-        for (k, v) in &headers_clone {
+        let headers = lua.create_table_with_capacity(0, req_data_headers.headers.len())?;
+        for (k, v) in &req_data_headers.headers {
             let k_str = std::str::from_utf8(k).map_err(|_| {
                 mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string())
             })?;
@@ -262,12 +234,13 @@ fn build_lua_context(
     })?;
     ctx.set("headers", headers_fn)?;
 
+    let req_data_query = req_data.clone();
     let query_fn = lua.create_function(move |lua, ()| {
-        if query_clone.is_empty() {
+        if req_data_query.query.is_empty() {
             return lua.create_table();
         }
-        let query = lua.create_table_with_capacity(0, query_clone.len())?;
-        for (k, v) in &query_clone {
+        let query = lua.create_table_with_capacity(0, req_data_query.query.len())?;
+        for (k, v) in &req_data_query.query {
             let k_str = std::str::from_utf8(k).map_err(|_| {
                 mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string())
             })?;
@@ -280,30 +253,32 @@ fn build_lua_context(
     })?;
     ctx.set("query", query_fn)?;
 
+    let req_data_params = req_data.clone();
     let params_fn = lua.create_function(move |lua, ()| {
-        if params_clone.is_empty() {
+        if req_data_params.params.is_empty() {
             return lua.create_table();
         }
-        let params_table = lua.create_table_with_capacity(0, params_clone.len())?;
-        for (k, v) in &params_clone {
+        let params_table = lua.create_table_with_capacity(0, req_data_params.params.len())?;
+        for (k, v) in &req_data_params.params {
             params_table.set(k.as_str(), v.as_str())?;
         }
         Ok(params_table)
     })?;
     ctx.set("params", params_fn)?;
 
+    let req_data_body = req_data.clone();
     let body_fn = lua.create_function(move |lua, ()| {
-        if let Some(body) = &body_clone {
+        if let Some(body) = &req_data_body.body {
             let body_str = std::str::from_utf8(body).map_err(|_| {
                 mlua::Error::RuntimeError(
                     "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
                 )
             })?;
-            
+
             let globals = lua.globals();
             let rover: Table = globals.get("rover")?;
             let guard: Table = rover.get("guard")?;
-            
+
             if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
                 constructor.call(body_str.to_string())
             } else {
