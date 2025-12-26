@@ -1,3 +1,5 @@
+mod rule_runtime;
+mod rules;
 mod analyzer;
 use tree_sitter::Parser;
 
@@ -5,7 +7,7 @@ use crate::analyzer::Analyzer;
 pub use analyzer::{
     BodySchema, FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, HeaderParam,
     ParsingError, PathParam, QueryParam, Request, Response, Route, RoverServer, SemanticModel,
-    SourcePosition, SourceRange, ValidationSource,
+    SourcePosition, SourceRange, SymbolSpecMetadata, ValidationSource,
 };
 
 pub fn analyze(code: &str) -> SemanticModel {

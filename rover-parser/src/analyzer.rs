@@ -1,12 +1,17 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tree_sitter::Node;
+
+use crate::rule_runtime::{RuleContext, RuleEngine};
+use crate::rules;
 
 #[derive(Debug, Clone)]
 pub struct SemanticModel {
     pub server: Option<RoverServer>,
     pub errors: Vec<ParsingError>,
     pub functions: Vec<FunctionMetadata>,
+    pub symbol_specs: HashMap<String, SymbolSpecMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +149,13 @@ pub struct FunctionMetadata {
     pub name: String,
     pub range: SourceRange,
     pub context_param: Option<String>,
+    pub param_types: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolSpecMetadata {
+    pub spec_id: String,
+    pub doc: String,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +171,8 @@ pub struct Analyzer {
     pub app_var_name: Option<String>,
     pub current_function_name: Option<String>,
     pub current_context_param: Option<String>,
+    pub current_function_index: Option<usize>,
+    pub current_param_types: HashMap<String, String>,
     pub source: String,
     pub current_route: usize,
 }
@@ -170,44 +184,49 @@ impl Analyzer {
                 server: None,
                 errors: Vec::new(),
                 functions: Vec::new(),
+                symbol_specs: HashMap::new(),
             },
             symbol_table: HashMap::new(),
             function_counter: 0,
             app_var_name: None,
             current_function_name: None,
             current_context_param: None,
+            current_function_index: None,
+            current_param_types: HashMap::new(),
             source,
             current_route: 0,
         }
     }
 
-    pub fn walk(&mut self, node: Node) {
-        match node.kind() {
-            "assignment_statement" => {
-                self.handle_assignment(node);
-            }
-            "function_declaration" => {
-                self.handle_function_statement(node);
-            }
-            "return_statement" => {
-                if let Some(ref func_name) = self.current_function_name {
-                    self.handle_return_statement(node, func_name.clone());
-                }
-            }
-            _ => {}
+    fn register_symbol_spec<S: Into<String>>(&mut self, name: S, spec_id: &str) {
+        if let Some(spec) = rules::lookup_spec(spec_id) {
+            self.model.symbol_specs.insert(
+                name.into(),
+                SymbolSpecMetadata {
+                    spec_id: spec.id.to_string(),
+                    doc: spec.doc.to_string(),
+                },
+            );
         }
+    }
 
-        if node.kind() == "function_call" {
-            self.inspect_guard_invocation(node);
-        }
+    fn rule_engine() -> &'static RuleEngine<Analyzer> {
+        static RULE_ENGINE: OnceLock<RuleEngine<Analyzer>> = OnceLock::new();
+        RULE_ENGINE.get_or_init(|| rules::build_rule_engine())
+    }
+
+    pub fn walk(&mut self, node: Node) {
+        let matches = Self::rule_engine().apply(self, node);
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.walk(child);
         }
+
+        Self::rule_engine().finish(self, node, matches);
     }
 
-    fn handle_assignment(&mut self, node: Node) {
+    pub fn process_assignment(&mut self, node: Node) {
         let mut cursor = node.walk();
         let children: Vec<Node> = node.children(&mut cursor).collect();
 
@@ -239,17 +258,20 @@ impl Analyzer {
         if let (Some(name), Some(call_node)) = (var_name, func_call_node) {
             let call_source = &self.source[call_node.start_byte()..call_node.end_byte()];
             if call_source.contains("rover.server") {
-                self.app_var_name = Some(name);
+                self.app_var_name = Some(name.clone());
                 self.model.server = Some(RoverServer {
                     id: 0,
                     exported: false,
                     routes: Vec::new(),
                 });
+                self.register_symbol_spec(name, "rover_server");
+            } else if call_source.contains("rover.guard") {
+                self.register_symbol_spec(name, "rover_guard");
             }
         }
     }
 
-    fn handle_function_statement(&mut self, node: Node) {
+    pub fn enter_handler_function(&mut self, node: Node) {
         // Extract function name from dot_index_expression
         let mut cursor = node.walk();
         let children: Vec<Node> = node.children(&mut cursor).collect();
@@ -356,31 +378,51 @@ impl Analyzer {
         if let Some(route) = self.current_route_mut() {
             route.context_param = context_param_name.clone();
         }
+        if let Some(ref ctx_name) = self.current_context_param {
+            self.register_symbol_spec(ctx_name.clone(), "ctx");
+        }
+        let function_index = self.model.functions.len();
+        self.current_function_index = Some(function_index);
+        self.current_param_types.clear();
         self.model.functions.push(FunctionMetadata {
             id: handler_id,
             name: func_name.clone(),
             range: function_range,
             context_param: context_param_name,
+            param_types: HashMap::new(),
         });
 
         // Track context usage in the function body
-        self.track_context_usage(node);
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.walk(child);
-        }
-        self.current_function_name = None;
-        self.current_context_param = None;
     }
 
-    fn extract_dotted_name(&mut self, node: Node) -> String {
+    pub fn exit_handler_function(&mut self) {
+        self.current_function_name = None;
+        self.current_context_param = None;
+        self.current_function_index = None;
+        self.current_param_types.clear();
+    }
+
+    pub fn handle_return(&mut self, node: Node) {
+        if let Some(ref func_name) = self.current_function_name.clone() {
+            self.handle_return_statement(node, func_name.clone());
+        }
+    }
+
+    pub fn process_function_call(&mut self, node: Node) {
+        if let Some(ref ctx_name) = self.current_context_param.clone() {
+            self.handle_context_method_call(node, ctx_name);
+        }
+        self.inspect_guard_invocation(node);
+        self.handle_assert_type(node);
+    }
+
+    fn extract_dotted_name(&self, node: Node) -> String {
         let mut parts = Vec::new();
         self.collect_dotted_parts(node, &mut parts);
         parts.join(".")
     }
 
-    fn collect_dotted_parts(&mut self, node: Node, parts: &mut Vec<String>) {
+    fn collect_dotted_parts(&self, node: Node, parts: &mut Vec<String>) {
         match node.kind() {
             "dot_index_expression" => {
                 let mut cursor = node.walk();
@@ -482,32 +524,135 @@ impl Analyzer {
     }
 
     // Context tracking methods
-    fn track_context_usage(&mut self, node: Node) {
-        let context_param = match self.current_context_param.clone() {
-            Some(param) => param,
-            None => return,
-        };
-        self.track_context_usage_with_param(node, &context_param);
-    }
-
-    fn track_context_usage_with_param(&mut self, node: Node, context_param: &str) {
-        if node.kind() == "function_call" {
-            if let Some((object_node, _arguments, method_name)) = self.get_method_call_info(node) {
-                if self.node_matches_context(object_node, context_param) {
-                    match method_name.as_str() {
-                        "params" => self.handle_params_access(node),
-                        "query" => self.handle_query_access(node),
-                        "headers" => self.handle_headers_access(node),
-                        "body" => self.handle_body_access(node),
-                        _ => {}
-                    }
+    fn handle_context_method_call(&mut self, node: Node, context_param: &str) {
+        if node.kind() != "function_call" {
+            return;
+        }
+        if let Some((object_node, _arguments, method_name)) = self.get_method_call_info(node) {
+            if self.node_matches_context(object_node, context_param) {
+                match method_name.as_str() {
+                    "params" => self.handle_params_access(node),
+                    "query" => self.handle_query_access(node),
+                    "headers" => self.handle_headers_access(node),
+                    "body" => self.handle_body_access(node),
+                    _ => {}
                 }
             }
         }
+    }
 
+    fn handle_assert_type(&mut self, node: Node) {
+        if self.current_function_index.is_none() {
+            return;
+        }
+        if node.kind() != "function_call" {
+            return;
+        }
+        if !self.is_assert_invocation(node) {
+            return;
+        }
+        let arguments = match self.find_arguments_node(node) {
+            Some(args) => args,
+            None => return,
+        };
+        let first_argument = match self.extract_first_argument(arguments) {
+            Some(arg) => arg,
+            None => return,
+        };
+        if let Some((param, ty)) = self.extract_assert_comparison(first_argument) {
+            self.record_param_type(param, ty);
+        }
+    }
+
+    fn is_assert_invocation(&mut self, node: Node) -> bool {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            self.track_context_usage_with_param(child, context_param);
+            if child.kind() == "identifier" {
+                let name = &self.source[child.start_byte()..child.end_byte()];
+                if name == "assert" {
+                    return true;
+                }
+            }
+            if child.kind() == "arguments" {
+                break;
+            }
+        }
+        false
+    }
+
+    fn extract_assert_comparison(&mut self, node: Node) -> Option<(String, String)> {
+        if node.kind() != "binary_expression" {
+            return None;
+        }
+        let mut left: Option<Node> = None;
+        let mut right: Option<Node> = None;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                if left.is_none() {
+                    left = Some(child);
+                } else if right.is_none() {
+                    right = Some(child);
+                }
+            }
+        }
+        let left_node = left?;
+        let right_node = right?;
+
+        if let Some((param, ty)) = self.match_type_equals_string(left_node, right_node) {
+            return Some((param, ty));
+        }
+        if let Some((param, ty)) = self.match_type_equals_string(right_node, left_node) {
+            return Some((param, ty));
+        }
+        None
+    }
+
+    fn match_type_equals_string(
+        &mut self,
+        type_node: Node,
+        string_node: Node,
+    ) -> Option<(String, String)> {
+        let param = self.parse_type_call_identifier(type_node)?;
+        let ty = match self.extract_value(string_node) {
+            Value::String(s) => s,
+            _ => return None,
+        };
+        Some((param, ty))
+    }
+
+    fn parse_type_call_identifier(&mut self, node: Node) -> Option<String> {
+        if node.kind() != "function_call" {
+            return None;
+        }
+        let mut cursor = node.walk();
+        let mut saw_type = false;
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                let name = &self.source[child.start_byte()..child.end_byte()];
+                if name == "type" {
+                    saw_type = true;
+                }
+            } else if child.kind() == "arguments" {
+                if !saw_type {
+                    return None;
+                }
+                let arg = self.extract_first_argument(child)?;
+                if arg.kind() == "identifier" {
+                    return Some(self.source[arg.start_byte()..arg.end_byte()].to_string());
+                }
+                return None;
+            }
+        }
+        None
+    }
+
+    fn record_param_type(&mut self, param: String, ty: String) {
+        self.current_param_types.insert(param.clone(), ty.clone());
+        if let Some(index) = self.current_function_index {
+            if let Some(metadata) = self.model.functions.get_mut(index) {
+                metadata.param_types.insert(param, ty);
+            }
         }
     }
 
@@ -1568,6 +1713,36 @@ impl Analyzer {
 
     fn nodes_equal(a: Node, b: Node) -> bool {
         a.start_byte() == b.start_byte() && a.end_byte() == b.end_byte()
+    }
+}
+
+impl RuleContext for Analyzer {
+    fn source(&self) -> &str {
+        &self.source
+    }
+
+    fn method_name(&self, node: Node) -> Option<String> {
+        self.get_method_call_info(node)
+            .map(|(_, _, method)| method)
+    }
+
+    fn callee_path(&self, node: Node) -> Option<String> {
+        if node.kind() != "function_call" {
+            return None;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    return Some(self.source[child.start_byte()..child.end_byte()].to_string());
+                }
+                "dot_index_expression" => {
+                    return Some(self.extract_dotted_name(child));
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }
 
