@@ -1,0 +1,355 @@
+[0;36m╔════════════════════════════════════════════════════════════╗[0m
+[0;36m║         Rover Server Benchmark Suite                      ║[0m
+[0;36m╚════════════════════════════════════════════════════════════╝[0m
+
+[0;34mConfiguration:[0m
+  Type:        json
+  Profile:     release
+  Duration:    30s
+  Threads:     4
+  Connections: 100
+
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m  JSON Serialization Benchmarks[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+
+   Compiling rover_server v0.1.0 (/home/user/rover/rover_server)
+    Finished `bench` profile [optimized] target(s) in 36.87s
+     Running benches/json_serialization.rs (/home/user/rover/target/release/deps/json_serialization-1357004545001da0)
+Gnuplot not found, using plotters backend
+Benchmarking json_simple_object
+Benchmarking json_simple_object: Warming up for 3.0000 s
+Benchmarking json_simple_object: Collecting 100 samples in estimated 5.0039 s (2.8M iterations)
+Benchmarking json_simple_object: Analyzing
+json_simple_object      time:   [1.8208 µs 1.8304 µs 1.8403 µs]
+                        change: [-16.854% -14.864% -13.187%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 6 outliers among 100 measurements (6.00%)
+  1 (1.00%) low mild
+  4 (4.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking json_complex_object
+Benchmarking json_complex_object: Warming up for 3.0000 s
+Benchmarking json_complex_object: Collecting 100 samples in estimated 5.0109 s (540k iterations)
+Benchmarking json_complex_object: Analyzing
+json_complex_object     time:   [9.1907 µs 9.2778 µs 9.3789 µs]
+                        change: [-25.486% -25.043% -24.563%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 7 outliers among 100 measurements (7.00%)
+  5 (5.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking json_large_objects/10
+Benchmarking json_large_objects/10: Warming up for 3.0000 s
+Benchmarking json_large_objects/10: Collecting 100 samples in estimated 5.0073 s (1.2M iterations)
+Benchmarking json_large_objects/10: Analyzing
+json_large_objects/10   time:   [4.2761 µs 4.3008 µs 4.3248 µs]
+                        thrpt:  [2.3123 Melem/s 2.3252 Melem/s 2.3386 Melem/s]
+                 change:
+                        time:   [-21.662% -21.219% -20.781%] (p = 0.00 < 0.05)
+                        thrpt:  [+26.232% +26.935% +27.652%]
+                        Performance has improved.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+Benchmarking json_large_objects/50
+Benchmarking json_large_objects/50: Warming up for 3.0000 s
+Benchmarking json_large_objects/50: Collecting 100 samples in estimated 5.0352 s (252k iterations)
+Benchmarking json_large_objects/50: Analyzing
+json_large_objects/50   time:   [19.789 µs 19.922 µs 20.082 µs]
+                        thrpt:  [2.4898 Melem/s 2.5098 Melem/s 2.5266 Melem/s]
+                 change:
+                        time:   [-25.440% -24.794% -24.081%] (p = 0.00 < 0.05)
+                        thrpt:  [+31.720% +32.968% +34.120%]
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  1 (1.00%) low mild
+  3 (3.00%) high mild
+  5 (5.00%) high severe
+Benchmarking json_large_objects/100
+Benchmarking json_large_objects/100: Warming up for 3.0000 s
+Benchmarking json_large_objects/100: Collecting 100 samples in estimated 5.0935 s (126k iterations)
+Benchmarking json_large_objects/100: Analyzing
+json_large_objects/100  time:   [39.702 µs 40.154 µs 40.678 µs]
+                        thrpt:  [2.4583 Melem/s 2.4904 Melem/s 2.5187 Melem/s]
+                 change:
+                        time:   [-27.276% -26.287% -25.244%] (p = 0.00 < 0.05)
+                        thrpt:  [+33.769% +35.662% +37.506%]
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+Benchmarking json_large_objects/200
+Benchmarking json_large_objects/200: Warming up for 3.0000 s
+Benchmarking json_large_objects/200: Collecting 100 samples in estimated 5.2665 s (66k iterations)
+Benchmarking json_large_objects/200: Analyzing
+json_large_objects/200  time:   [79.877 µs 80.368 µs 80.991 µs]
+                        thrpt:  [2.4694 Melem/s 2.4885 Melem/s 2.5039 Melem/s]
+                 change:
+                        time:   [-33.243% -32.486% -31.474%] (p = 0.00 < 0.05)
+                        thrpt:  [+45.930% +48.118% +49.798%]
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+Benchmarking json_large_objects/500
+Benchmarking json_large_objects/500: Warming up for 3.0000 s
+Benchmarking json_large_objects/500: Collecting 100 samples in estimated 5.0647 s (25k iterations)
+Benchmarking json_large_objects/500: Analyzing
+json_large_objects/500  time:   [199.85 µs 203.12 µs 207.84 µs]
+                        thrpt:  [2.4057 Melem/s 2.4616 Melem/s 2.5019 Melem/s]
+                 change:
+                        time:   [-36.320% -35.198% -33.959%] (p = 0.00 < 0.05)
+                        thrpt:  [+51.420% +54.315% +57.036%]
+                        Performance has improved.
+Found 14 outliers among 100 measurements (14.00%)
+  1 (1.00%) low mild
+  6 (6.00%) high mild
+  7 (7.00%) high severe
+
+Benchmarking json_arrays/10
+Benchmarking json_arrays/10: Warming up for 3.0000 s
+Benchmarking json_arrays/10: Collecting 100 samples in estimated 5.0106 s (1.3M iterations)
+Benchmarking json_arrays/10: Analyzing
+json_arrays/10          time:   [3.9108 µs 3.9260 µs 3.9411 µs]
+                        thrpt:  [2.5374 Melem/s 2.5471 Melem/s 2.5570 Melem/s]
+                 change:
+                        time:   [-12.341% -11.765% -11.195%] (p = 0.00 < 0.05)
+                        thrpt:  [+12.607% +13.334% +14.078%]
+                        Performance has improved.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) low mild
+Benchmarking json_arrays/50
+Benchmarking json_arrays/50: Warming up for 3.0000 s
+Benchmarking json_arrays/50: Collecting 100 samples in estimated 5.0092 s (258k iterations)
+Benchmarking json_arrays/50: Analyzing
+json_arrays/50          time:   [19.565 µs 19.820 µs 20.151 µs]
+                        thrpt:  [2.4813 Melem/s 2.5228 Melem/s 2.5556 Melem/s]
+                 change:
+                        time:   [-12.726% -11.586% -10.242%] (p = 0.00 < 0.05)
+                        thrpt:  [+11.411% +13.104% +14.581%]
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+Benchmarking json_arrays/100
+Benchmarking json_arrays/100: Warming up for 3.0000 s
+Benchmarking json_arrays/100: Collecting 100 samples in estimated 5.0228 s (131k iterations)
+Benchmarking json_arrays/100: Analyzing
+json_arrays/100         time:   [38.392 µs 38.640 µs 38.925 µs]
+                        thrpt:  [2.5690 Melem/s 2.5880 Melem/s 2.6047 Melem/s]
+                 change:
+                        time:   [-17.530% -16.543% -15.613%] (p = 0.00 < 0.05)
+                        thrpt:  [+18.501% +19.823% +21.256%]
+                        Performance has improved.
+Found 5 outliers among 100 measurements (5.00%)
+  1 (1.00%) low mild
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+Benchmarking json_arrays/500
+Benchmarking json_arrays/500: Warming up for 3.0000 s
+Benchmarking json_arrays/500: Collecting 100 samples in estimated 5.9938 s (30k iterations)
+Benchmarking json_arrays/500: Analyzing
+json_arrays/500         time:   [194.07 µs 194.75 µs 195.47 µs]
+                        thrpt:  [2.5579 Melem/s 2.5674 Melem/s 2.5764 Melem/s]
+                 change:
+                        time:   [-13.979% -13.248% -12.492%] (p = 0.00 < 0.05)
+                        thrpt:  [+14.275% +15.271% +16.251%]
+                        Performance has improved.
+Found 11 outliers among 100 measurements (11.00%)
+  5 (5.00%) low mild
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+Benchmarking json_arrays/1000
+Benchmarking json_arrays/1000: Warming up for 3.0000 s
+Benchmarking json_arrays/1000: Collecting 100 samples in estimated 5.9730 s (15k iterations)
+Benchmarking json_arrays/1000: Analyzing
+json_arrays/1000        time:   [389.83 µs 391.75 µs 393.80 µs]
+                        thrpt:  [2.5394 Melem/s 2.5527 Melem/s 2.5652 Melem/s]
+                 change:
+                        time:   [-15.103% -14.008% -13.026%] (p = 0.00 < 0.05)
+                        thrpt:  [+14.977% +16.289% +17.790%]
+                        Performance has improved.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking json_array_of_objects/10
+Benchmarking json_array_of_objects/10: Warming up for 3.0000 s
+Benchmarking json_array_of_objects/10: Collecting 100 samples in estimated 5.0812 s (268k iterations)
+Benchmarking json_array_of_objects/10: Analyzing
+json_array_of_objects/10
+                        time:   [18.938 µs 19.028 µs 19.132 µs]
+                        thrpt:  [522.69 Kelem/s 525.55 Kelem/s 528.03 Kelem/s]
+                 change:
+                        time:   [-16.297% -15.475% -14.708%] (p = 0.00 < 0.05)
+                        thrpt:  [+17.244% +18.308% +19.470%]
+                        Performance has improved.
+Found 7 outliers among 100 measurements (7.00%)
+  7 (7.00%) high mild
+Benchmarking json_array_of_objects/50
+Benchmarking json_array_of_objects/50: Warming up for 3.0000 s
+Benchmarking json_array_of_objects/50: Collecting 100 samples in estimated 5.2486 s (56k iterations)
+Benchmarking json_array_of_objects/50: Analyzing
+json_array_of_objects/50
+                        time:   [92.906 µs 93.609 µs 94.427 µs]
+                        thrpt:  [529.51 Kelem/s 534.13 Kelem/s 538.18 Kelem/s]
+                 change:
+                        time:   [-17.954% -16.862% -15.826%] (p = 0.00 < 0.05)
+                        thrpt:  [+18.802% +20.282% +21.882%]
+                        Performance has improved.
+Found 12 outliers among 100 measurements (12.00%)
+  3 (3.00%) low mild
+  3 (3.00%) high mild
+  6 (6.00%) high severe
+Benchmarking json_array_of_objects/100
+Benchmarking json_array_of_objects/100: Warming up for 3.0000 s
+Benchmarking json_array_of_objects/100: Collecting 100 samples in estimated 5.5175 s (30k iterations)
+Benchmarking json_array_of_objects/100: Analyzing
+json_array_of_objects/100
+                        time:   [177.01 µs 177.70 µs 178.48 µs]
+                        thrpt:  [560.30 Kelem/s 562.75 Kelem/s 564.94 Kelem/s]
+                 change:
+                        time:   [-20.977% -20.193% -19.462%] (p = 0.00 < 0.05)
+                        thrpt:  [+24.164% +25.302% +26.545%]
+                        Performance has improved.
+Found 17 outliers among 100 measurements (17.00%)
+  2 (2.00%) low mild
+  6 (6.00%) high mild
+  9 (9.00%) high severe
+Benchmarking json_array_of_objects/200
+Benchmarking json_array_of_objects/200: Warming up for 3.0000 s
+Benchmarking json_array_of_objects/200: Collecting 100 samples in estimated 5.4529 s (15k iterations)
+Benchmarking json_array_of_objects/200: Analyzing
+json_array_of_objects/200
+                        time:   [353.38 µs 354.99 µs 356.72 µs]
+                        thrpt:  [560.67 Kelem/s 563.40 Kelem/s 565.97 Kelem/s]
+                 change:
+                        time:   [-21.301% -20.398% -19.552%] (p = 0.00 < 0.05)
+                        thrpt:  [+24.304% +25.624% +27.067%]
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  3 (3.00%) low mild
+  4 (4.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking json_nested_depth/5
+Benchmarking json_nested_depth/5: Warming up for 3.0000 s
+Benchmarking json_nested_depth/5: Collecting 100 samples in estimated 5.0163 s (995k iterations)
+Benchmarking json_nested_depth/5: Analyzing
+json_nested_depth/5     time:   [4.9806 µs 5.0052 µs 5.0302 µs]
+                        thrpt:  [993.99 Kelem/s 998.95 Kelem/s 1.0039 Melem/s]
+                 change:
+                        time:   [-15.165% -14.373% -13.617%] (p = 0.00 < 0.05)
+                        thrpt:  [+15.764% +16.785% +17.876%]
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  3 (3.00%) low mild
+  2 (2.00%) high mild
+  4 (4.00%) high severe
+Benchmarking json_nested_depth/10
+Benchmarking json_nested_depth/10: Warming up for 3.0000 s
+Benchmarking json_nested_depth/10: Collecting 100 samples in estimated 5.0142 s (561k iterations)
+Benchmarking json_nested_depth/10: Analyzing
+json_nested_depth/10    time:   [8.8794 µs 8.9121 µs 8.9420 µs]
+                        thrpt:  [1.1183 Melem/s 1.1221 Melem/s 1.1262 Melem/s]
+                 change:
+                        time:   [-17.690% -17.153% -16.579%] (p = 0.00 < 0.05)
+                        thrpt:  [+19.874% +20.705% +21.492%]
+                        Performance has improved.
+Found 13 outliers among 100 measurements (13.00%)
+  1 (1.00%) low severe
+  6 (6.00%) low mild
+  1 (1.00%) high mild
+  5 (5.00%) high severe
+Benchmarking json_nested_depth/20
+Benchmarking json_nested_depth/20: Warming up for 3.0000 s
+Benchmarking json_nested_depth/20: Collecting 100 samples in estimated 5.0443 s (258k iterations)
+Benchmarking json_nested_depth/20: Analyzing
+json_nested_depth/20    time:   [19.268 µs 19.408 µs 19.568 µs]
+                        thrpt:  [1.0221 Melem/s 1.0305 Melem/s 1.0380 Melem/s]
+                 change:
+                        time:   [-21.730% -18.486% -15.263%] (p = 0.00 < 0.05)
+                        thrpt:  [+18.012% +22.678% +27.763%]
+                        Performance has improved.
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) low mild
+  4 (4.00%) high mild
+  1 (1.00%) high severe
+Benchmarking json_nested_depth/32
+Benchmarking json_nested_depth/32: Warming up for 3.0000 s
+Benchmarking json_nested_depth/32: Collecting 100 samples in estimated 5.0205 s (162k iterations)
+Benchmarking json_nested_depth/32: Analyzing
+json_nested_depth/32    time:   [30.471 µs 30.580 µs 30.693 µs]
+                        thrpt:  [1.0426 Melem/s 1.0464 Melem/s 1.0502 Melem/s]
+                 change:
+                        time:   [-14.695% -14.028% -13.386%] (p = 0.00 < 0.05)
+                        thrpt:  [+15.455% +16.317% +17.227%]
+                        Performance has improved.
+Found 14 outliers among 100 measurements (14.00%)
+  3 (3.00%) low mild
+  7 (7.00%) high mild
+  4 (4.00%) high severe
+Benchmarking json_nested_depth/50
+Benchmarking json_nested_depth/50: Warming up for 3.0000 s
+Benchmarking json_nested_depth/50: Collecting 100 samples in estimated 5.1858 s (106k iterations)
+Benchmarking json_nested_depth/50: Analyzing
+json_nested_depth/50    time:   [47.821 µs 48.062 µs 48.330 µs]
+                        thrpt:  [1.0345 Melem/s 1.0403 Melem/s 1.0456 Melem/s]
+                 change:
+                        time:   [-15.760% -14.969% -14.208%] (p = 0.00 < 0.05)
+                        thrpt:  [+16.561% +17.604% +18.708%]
+                        Performance has improved.
+Found 6 outliers among 100 measurements (6.00%)
+  2 (2.00%) low mild
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking json_string_escaping
+Benchmarking json_string_escaping: Warming up for 3.0000 s
+Benchmarking json_string_escaping: Collecting 100 samples in estimated 5.0116 s (1.8M iterations)
+Benchmarking json_string_escaping: Analyzing
+json_string_escaping    time:   [2.7105 µs 2.7311 µs 2.7567 µs]
+                        change: [-21.588% -19.342% -17.326%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 13 outliers among 100 measurements (13.00%)
+  2 (2.00%) low mild
+  6 (6.00%) high mild
+  5 (5.00%) high severe
+
+Benchmarking json_comparison/custom_serializer
+Benchmarking json_comparison/custom_serializer: Warming up for 3.0000 s
+Benchmarking json_comparison/custom_serializer: Collecting 100 samples in estimated 5.0043 s (530k iterations)
+Benchmarking json_comparison/custom_serializer: Analyzing
+json_comparison/custom_serializer
+                        time:   [9.1061 µs 9.1427 µs 9.1821 µs]
+                        change: [-24.885% -22.738% -20.227%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 19 outliers among 100 measurements (19.00%)
+  5 (5.00%) low mild
+  3 (3.00%) high mild
+  11 (11.00%) high severe
+Benchmarking json_comparison/serde_json
+Benchmarking json_comparison/serde_json: Warming up for 3.0000 s
+Benchmarking json_comparison/serde_json: Collecting 100 samples in estimated 5.0024 s (7.9M iterations)
+Benchmarking json_comparison/serde_json: Analyzing
+json_comparison/serde_json
+                        time:   [638.07 ns 641.04 ns 644.21 ns]
+                        change: [-3.0419% -2.1886% -1.3982%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 5 outliers among 100 measurements (5.00%)
+  4 (4.00%) high mild
+  1 (1.00%) high severe
+
+[0;32m✓ JSON Serialization Benchmarks complete[0m
+
+
+[0;36m╔════════════════════════════════════════════════════════════╗[0m
+[0;36m║              Benchmarks Complete!                         ║[0m
+[0;36m╚════════════════════════════════════════════════════════════╝[0m
+
+[0;32mResults:[0m
+  • Criterion reports: [0;34mrover_server/target/criterion/[0m
+  • HTML reports:      [0;34mrover_server/target/criterion/*/report/index.html[0m
+
+[0;32mDone![0m
