@@ -703,6 +703,7 @@ dependencies = [
  "anyhow",
  "mlua",
  "rover_server",
+ "rover_types",
  "serde_json",
 ]
 
@@ -718,6 +719,7 @@ dependencies = [
  "itoa",
  "matchit",
  "mlua",
+ "rover_types",
  "ryu",
  "serde_json",
  "smallvec",
@@ -725,6 +727,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+]
+
+[[package]]
+name = "rover_types"
+version = "0.1.0"
+dependencies = [
+ "mlua",
 ]
 
 [[package]]

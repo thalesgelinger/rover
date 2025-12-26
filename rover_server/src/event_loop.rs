@@ -5,6 +5,7 @@ use hyper::{body::Bytes, StatusCode};
 use mlua::{Lua, Table, Value};
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, warn};
+use rover_types::ValidationErrors;
 
 use crate::{HttpMethod, LuaRequest, LuaResponse, Route, ServerConfig, RoverResponse};
 use crate::{fast_router::FastRouter, to_json::ToJson};
@@ -83,6 +84,47 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
             let result: Value = match handler.call_async(ctx).await {
                 Ok(r) => r,
                 Err(e) => {
+                    // Check if this is a ValidationErrors (application error)
+                    // Extract the ExternalError from CallbackError or use directly
+                    let ext_err_opt = match &e {
+                        mlua::Error::ExternalError(ext_err) => Some(ext_err),
+                        mlua::Error::CallbackError { cause, .. } => {
+                            if let mlua::Error::ExternalError(ext_err) = cause.as_ref() {
+                                Some(ext_err)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(ext_err) = ext_err_opt {
+                        if let Some(validation_errors) = ext_err.downcast_ref::<ValidationErrors>() {
+                            // This is a ValidationErrors - return structured JSON at 400
+                            // Build the JSON response directly
+                            let mut errors_json = String::from(r#"{"errors":["#);
+                            for (i, err) in validation_errors.errors.iter().enumerate() {
+                                if i > 0 {
+                                    errors_json.push(',');
+                                }
+                                errors_json.push_str(&format!(
+                                    r#"{{"field":"{}","message":"{}","type":"{}"}}"#,
+                                    err.path.replace('"', "\\\""),
+                                    err.message.replace('"', "\\\""),
+                                    err.error_type.replace('"', "\\\"")
+                                ));
+                            }
+                            errors_json.push_str("]}");
+
+                            let _ = req.respond_to.send(LuaResponse {
+                                status: StatusCode::BAD_REQUEST,
+                                body: Bytes::from(errors_json),
+                            });
+                            continue;
+                        }
+                    }
+
+                    // For other errors (runtime errors), return 500
                     let _ = req.respond_to.send(LuaResponse {
                         status: StatusCode::INTERNAL_SERVER_ERROR,
                         body: Bytes::from(format!("Lua error: {}", e)),
