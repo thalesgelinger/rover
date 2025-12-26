@@ -1,6 +1,9 @@
+mod check;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use rover_core::run;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "rover")]
@@ -15,6 +18,17 @@ enum Commands {
     Sample,
     /// Start the Rover LSP server
     Lsp,
+    /// Analyze and check Rover Lua code for errors and warnings
+    Check {
+        /// Path to the Lua file to analyze
+        file: PathBuf,
+        /// Show verbose output with detailed analysis
+        #[arg(short, long)]
+        verbose: bool,
+        /// Output format: pretty (default), json
+        #[arg(short, long, default_value = "pretty")]
+        format: String,
+    },
     #[command(external_subcommand)]
     External(Vec<String>),
 }
@@ -31,8 +45,29 @@ fn main() -> Result<()> {
             rover_lsp::start_server();
             Ok(())
         }
+        Commands::Check {
+            file,
+            verbose,
+            format,
+        } => {
+            let output_format = match format.as_str() {
+                "json" => check::OutputFormat::Json,
+                _ => check::OutputFormat::Pretty,
+            };
+            check::run_check(check::CheckOptions {
+                file,
+                verbose,
+                format: output_format,
+            })
+        }
         Commands::External(args) => {
             let path = args.first().unwrap();
+            let file_path = PathBuf::from(path);
+
+            // Run pre-execution check
+            check::pre_run_check(&file_path)?;
+
+            // Execute the file
             run(path)
         }
     }
