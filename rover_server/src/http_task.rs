@@ -74,9 +74,35 @@ impl HttpTask {
         let result: Value = match self.handler.call_async(ctx).await {
             Ok(r) => r,
             Err(e) => {
+                // Try to extract ValidationErrors from error (handles both direct ExternalError and CallbackError wrapping)
+                let validation_err = match &e {
+                    mlua::Error::ExternalError(arc_err) => arc_err.downcast_ref::<rover_types::ValidationErrors>(),
+                    mlua::Error::CallbackError { cause, .. } => {
+                        if let mlua::Error::ExternalError(arc_err) = cause.as_ref() {
+                            arc_err.downcast_ref::<rover_types::ValidationErrors>()
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                let (status, body) = if let Some(validation_errors) = validation_err {
+                    // Direct struct→JSON conversion (zero string parsing)
+                    (StatusCode::BAD_REQUEST, Bytes::from(validation_errors.to_json_string()))
+                } else {
+                    // Generic Lua error
+                    let mut error_str = e.to_string();
+                    if let Some(stack_pos) = error_str.find("\nstack traceback:") {
+                        error_str = error_str[..stack_pos].to_string();
+                    }
+                    error_str = error_str.trim_start_matches("runtime error: ").to_string();
+                    (StatusCode::INTERNAL_SERVER_ERROR, Bytes::from(format!("{{\"error\": \"{}\"}}", error_str.replace("\"", "\\\"").replace("\n", "\\n"))))
+                };
+                
                 let _ = self.respond_to.send(HttpResponse {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    body: Bytes::from(format!("Lua error: {}", e)),
+                    status,
+                    body,
                 });
                 return Ok(());
             }

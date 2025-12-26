@@ -1,6 +1,6 @@
 use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value};
-use serde_json;
 use std::sync::Arc;
+use serde_json;
 pub use rover_types::{ValidationError, ValidationErrors};
 
 /// Validate a single field value based on config passed from Lua
@@ -262,26 +262,6 @@ pub struct BodyValue {
 impl BodyValue {
     pub fn new(json_string: String) -> Self {
         Self { json_string }
-    }
-}
-
-/// Convert a mlua::Error to a user-friendly error message
-fn format_lua_error(error: &LuaError) -> String {
-    match error {
-        LuaError::RuntimeError(msg) => {
-            // Extract the main error message, removing stack trace if present
-            if let Some(pos) = msg.find('\n') {
-                msg[..pos].to_string()
-            } else {
-                msg.clone()
-            }
-        }
-        LuaError::CallbackError { cause, .. } => format_lua_error(cause),
-        LuaError::BadArgument { 
-            cause, 
-            .. 
-        } => format!("Bad argument: {}", format_lua_error(cause)),
-        _ => format!("Validation error: {}", error),
     }
 }
 
