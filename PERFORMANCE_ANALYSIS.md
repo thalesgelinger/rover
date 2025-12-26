@@ -5,7 +5,7 @@
 
 ## Executive Summary
 
-Automated benchmark suite created and baseline performance measured. **Critical finding**: Custom JSON serialization is **17x slower** than serde_json. Multiple optimization opportunities identified in request handling and data cloning patterns.
+Automated benchmark suite created and baseline performance measured. **Critical finding**: Custom JSON serializer is **already well-optimized** - serde_json replacement showed 10% regression. Main optimization opportunity is the 4x request data cloning pattern in event_loop.rs.
 
 ## Benchmark Infrastructure
 
@@ -67,12 +67,24 @@ Automated benchmark suite created and baseline performance measured. **Critical 
 
 ### Critical Finding: Serialization Comparison
 
-| Serializer | Time | Relative Performance |
-|------------|------|---------------------|
-| **serde_json** | **652 ns** | **1.0x (baseline)** |
-| **Custom (Rover)** | **11.08 µs** | **17.0x slower** ⚠️ |
+| Serializer | Time | Analysis |
+|------------|------|----------|
+| **Custom (Rover)** | **11.08 µs** | **Optimized for Lua→JSON** ✅ |
+| **serde_json (direct)** | **652 ns** | Pre-built Value only (misleading) |
+| **serde_json (Lua→JSON)** | **12.28 µs** | **11% SLOWER** ⚠️ |
 
-**Analysis**: The custom Lua Table → JSON serializer is significantly slower than serde_json. This is the **primary performance bottleneck** for JSON responses.
+**Analysis**: Attempted optimization with serde_json showed **10% performance regression**. The custom serializer is already well-optimized because:
+- Direct buffer writing (no intermediate allocations)
+- Specialized for Lua Table iteration patterns
+- Optimized number formatting with `itoa` and `ryu` crates
+- Zero-copy string handling where possible
+
+The serde_json approach requires:
+1. Lua table iteration
+2. Building intermediate `serde_json::Value` tree (heap allocations)
+3. Then serialization
+
+**Conclusion**: Custom serializer is **NOT a bottleneck** and should be kept. The 652ns serde_json benchmark is misleading - it only measures serialization of a pre-built Value structure, not the Lua→JSON conversion overhead.
 
 ### Observations
 
@@ -138,41 +150,7 @@ Current threshold: **8 items** (inline before heap allocation)
 
 ### Priority 1: Critical (High Impact)
 
-#### 1.1 Replace Custom JSON Serializer with serde_json
-
-**Impact**: **17x performance improvement** for JSON responses
-
-**Location**: `rover_server/src/to_json.rs`
-
-**Current Approach**:
-- Custom trait `ToJson` for Lua `Table`
-- Manual buffer-based serialization
-- Two-phase detection (array vs object)
-
-**Proposed Approach**:
-```rust
-// Option A: Convert Lua Table → serde_json::Value → serialize
-use serde_json::{Value, to_string};
-
-impl ToJson for Table {
-    fn to_json_string(&self) -> Result<String> {
-        let value: Value = self.to_serde_value()?;  // mlua provides this
-        serde_json::to_string(&value)
-    }
-}
-```
-
-**Trade-offs**:
-- ✅ 17x faster serialization
-- ✅ Battle-tested, widely used
-- ⚠️  Adds dependency on `serde_json` (already in tree)
-- ⚠️  Extra allocation for `Value` intermediate (likely offset by speed gain)
-
-**Estimated Gain**: ~10 µs → ~0.65 µs per JSON response
-
----
-
-#### 1.2 Eliminate Unnecessary Request Data Cloning
+#### 1.1 Eliminate Unnecessary Request Data Cloning
 
 **Impact**: ~0.5-1.0 µs per request + reduced memory allocations
 
@@ -326,17 +304,17 @@ Reuse serialization buffers instead of allocating fresh `Vec<u8>` each time.
 
 ### Expected Improvements
 
-Based on current bottlenecks:
+Based on actual bottlenecks:
 
 | Optimization | Current | Optimized | Improvement |
 |--------------|---------|-----------|-------------|
-| JSON serialization (complex) | 11.08 µs | ~0.65 µs | **17x faster** |
-| Request cloning (4x) | ~1.0 µs | ~0.05 µs | **20x faster** |
-| **Total per request** | **~12 µs** | **~0.7 µs** | **~17x faster** |
+| JSON serialization | 11.08 µs | N/A | **Already optimal** ✅ |
+| Request cloning (4x) | ~1.0 µs | ~0.05 µs | **20x faster** 🎯 |
+| HashMap pre-alloc | ~180 ns | ~120 ns | **33% faster** |
 
 **Projected Server Throughput**:
 - Current: ~182k req/s (from existing benchmarks)
-- Optimized: **~300-500k req/s** (conservative estimate)
+- With cloning optimization: **~200-220k req/s** (modest but real gain)
 
 ---
 
@@ -366,6 +344,12 @@ All benchmarks are automated and reproducible:
 
 ## Conclusion
 
-Comprehensive automated benchmark infrastructure is now in place. Initial results reveal JSON serialization as the primary bottleneck (**17x slower** than industry standard). Addressing this single issue could dramatically improve server throughput. Request cloning patterns also present optimization opportunities with minimal risk.
+Comprehensive automated benchmark infrastructure is now in place. Key findings:
 
-**Recommended approach**: Implement Priority 1 optimizations first, re-benchmark, then evaluate if Priority 2/3 optimizations are necessary.
+1. **JSON Serialization**: Custom implementation is **already well-optimized**. Attempted serde_json replacement showed 10% regression. The serializer uses direct buffer writing and specialized number formatting (itoa/ryu) which outperforms generic approaches.
+
+2. **Main Bottleneck**: The 4x request data cloning pattern in event_loop.rs:200-203 is the clear optimization target, adding ~1µs overhead per request.
+
+3. **Quick Wins**: HashMap pre-allocation can provide 33% speedup in parameter handling with minimal risk.
+
+**Recommended approach**: Focus on cloning optimization with Arc-based shared ownership. The JSON serializer should remain as-is - it's a well-tuned component of the system.

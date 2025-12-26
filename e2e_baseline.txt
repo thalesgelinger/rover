@@ -1,0 +1,62 @@
+[0;36m╔════════════════════════════════════════════════════════════╗[0m
+[0;36m║         Rover Server Benchmark Suite                      ║[0m
+[0;36m╚════════════════════════════════════════════════════════════╝[0m
+
+[0;34mConfiguration:[0m
+  Type:        server
+  Profile:     release
+  Duration:    10s
+  Threads:     4
+  Connections: 100
+
+[1;33mBuilding project in release mode...[0m
+warning: field `name` is never read
+   --> rover_core/src/lib.rs:111:5
+    |
+110 | pub struct Config {
+    |            ------ field in this struct
+111 |     name: String,
+    |     ^^^^
+    |
+    = note: `Config` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `format_lua_error` is never used
+   --> rover_core/src/guard.rs:343:4
+    |
+343 | fn format_lua_error(error: &LuaError) -> String {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: trait `Inpesct` is never used
+ --> rover_core/src/inspect.rs:3:11
+  |
+3 | pub trait Inpesct {
+  |           ^^^^^^^
+
+warning: function `print_table` is never used
+  --> rover_core/src/inspect.rs:13:4
+   |
+13 | fn print_table(table: &Table, indent: usize) {
+   |    ^^^^^^^^^^^
+
+warning: function `format_value` is never used
+  --> rover_core/src/inspect.rs:34:4
+   |
+34 | fn format_value(value: &Value) -> String {
+   |    ^^^^^^^^^^^^
+
+warning: `rover_core` (lib) generated 5 warnings
+    Finished `release` profile [optimized] target(s) in 0.45s
+[0;32m✓ Build complete[0m
+
+[0;34mStarting server benchmarks...[0m
+
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+[0;36m  Simple JSON Response[0m
+[0;36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m
+
+[1;33mStarting Rover server...[0m
+[0;32m✓ Server started (PID: 17935)[0m
+
+[1;33mRunning benchmark...[0m
+./bench.sh: line 174: wrk: command not found
