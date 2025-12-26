@@ -18,20 +18,14 @@ impl ToJson for Table {
     }
 }
 
-#[derive(Debug)]
-enum TableType {
-    Array { len: usize },
-    Object,
-}
-
-fn detect_and_collect(table: &Table) -> mlua::Result<(TableType, Vec<(Value, Value)>)> {
-    let mut pairs = Vec::new();
+// Lightweight type detection - only counts, doesn't collect values
+fn detect_table_type(table: &Table) -> mlua::Result<(bool, usize)> {
     let mut max_index = 0;
     let mut has_sequential = true;
     let mut count = 0;
 
     for pair in table.pairs::<Value, Value>() {
-        let (key, value) = pair?;
+        let (key, _) = pair?;
         count += 1;
 
         match key {
@@ -40,24 +34,15 @@ fn detect_and_collect(table: &Table) -> mlua::Result<(TableType, Vec<(Value, Val
                     max_index = i as usize;
                 }
             }
-            Value::Integer(_) => {
-                has_sequential = false;
-            }
             _ => {
                 has_sequential = false;
+                break; // Early exit for non-arrays
             }
         }
-
-        pairs.push((key, value));
     }
 
-    let table_type = if has_sequential && max_index > 0 && max_index == count {
-        TableType::Array { len: max_index }
-    } else {
-        TableType::Object
-    };
-
-    Ok((table_type, pairs))
+    let is_array = has_sequential && max_index > 0 && max_index == count;
+    Ok((is_array, max_index))
 }
 
 #[inline]
@@ -68,11 +53,12 @@ fn serialize_table(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Resu
         ));
     }
 
-    let (table_type, pairs) = detect_and_collect(table)?;
+    let (is_array, max_index) = detect_table_type(table)?;
 
-    match table_type {
-        TableType::Array { len } => serialize_array_from_table(table, buf, len, depth),
-        TableType::Object => serialize_object_from_pairs(pairs, buf, depth),
+    if is_array {
+        serialize_array_from_table(table, buf, max_index, depth)
+    } else {
+        serialize_object_direct(table, buf, depth)
     }
 }
 
@@ -97,15 +83,18 @@ fn serialize_array_from_table(
     Ok(())
 }
 
-fn serialize_object_from_pairs(
-    pairs: Vec<(Value, Value)>,
+// Direct serialization - no Vec allocation, single pass through table
+fn serialize_object_direct(
+    table: &Table,
     buf: &mut Vec<u8>,
     depth: usize,
 ) -> mlua::Result<()> {
     buf.push(b'{');
 
     let mut first = true;
-    for (key, value) in pairs {
+    for pair in table.pairs::<Value, Value>() {
+        let (key, value) = pair?;
+
         // Skip internal rover markers (performance optimization - no serialization)
         if let Value::String(ref s) = key {
             if let Ok(key_str) = s.to_str() {
