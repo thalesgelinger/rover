@@ -74,6 +74,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, mut rx: Receiver<LuaRequest>, _config: 
                 started_at: req.started_at,
             };
 
+            // Execute the task
             if let Err(e) = task.execute(&lua).await {
                 debug!("Task execution failed: {}", e);
             }
