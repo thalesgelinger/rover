@@ -1,5 +1,6 @@
 use mlua::{UserData, UserDataMethods, MetaMethod};
 use std::fmt;
+use serde_json::json;
 
 mod task;
 pub use task::*;
@@ -37,6 +38,18 @@ pub struct ValidationErrors {
 impl ValidationErrors {
     pub fn new(errors: Vec<ValidationError>) -> Self {
         Self { errors }
+    }
+
+    /// Convert ValidationErrors directly to JSON string (no Lua, no string parsing)
+    pub fn to_json_string(&self) -> String {
+        let errors: Vec<_> = self.errors.iter().map(|err| {
+            json!({
+                "field": err.path,
+                "message": err.message,
+                "type": err.error_type
+            })
+        }).collect();
+        json!({ "errors": errors }).to_string()
     }
 }
 

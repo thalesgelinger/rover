@@ -1,7 +1,9 @@
 mod app_type;
 mod auto_table;
 mod guard;
+mod http;
 mod inspect;
+mod io;
 mod server;
 pub mod event_loop;
 
@@ -86,6 +88,14 @@ pub fn run(path: &str) -> Result<()> {
     )?;
     
     rover.set("guard", guard)?;
+
+    // Override global io module with async version
+    let io_module = io::create_io_module(&lua)?;
+    lua.globals().set("io", io_module)?;
+
+    // Add HTTP client module
+    let http_module = http::create_http_module(&lua)?;
+    rover.set("http", http_module)?;
 
     let _ = lua.globals().set("rover", rover);
 
