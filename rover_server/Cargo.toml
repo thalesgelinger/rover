@@ -23,4 +23,15 @@ matchit = "0.8"
 
 [lib]
 crate-type = ["cdylib", "lib"]
-bench = false
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+bytes = "1.5"
+
+[[bench]]
+name = "json_serialization"
+harness = false
+
+[[bench]]
+name = "request_handling"
+harness = false
