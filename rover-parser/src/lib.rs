@@ -7,8 +7,11 @@ use crate::analyzer::Analyzer;
 pub use analyzer::{
     BodySchema, FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, HeaderParam,
     ParsingError, PathParam, QueryParam, Request, Response, Route, RoverServer, SemanticModel,
-    SourcePosition, SourceRange, SymbolSpecMetadata, ValidationSource,
+    SourcePosition, SourceRange, SymbolSpecMember, SymbolSpecMetadata, ValidationSource,
 };
+pub use rule_runtime::MemberKind;
+pub use rules::lookup_spec;
+pub use rule_runtime::{SpecDoc, SpecDocMember};
 
 pub fn analyze(code: &str) -> SemanticModel {
     let mut parser = Parser::new();
@@ -266,5 +269,46 @@ return api
             .find(|e| e.message.contains("nonexistent"))
             .unwrap();
         assert!(param_error.message.contains("nonexistent"));
+    }
+
+    #[test]
+    fn should_register_symbol_specs() {
+        let code = r#"
+local api = rover.server {}
+
+function api.hello.get(ctx)
+    return api.json { message = "hello" }
+end
+
+return api
+        "#;
+
+        let model = analyze(code);
+
+        // rover global should be registered
+        assert!(
+            model.symbol_specs.contains_key("rover"),
+            "rover should be in symbol_specs"
+        );
+        let rover_spec = model.symbol_specs.get("rover").unwrap();
+        assert_eq!(rover_spec.spec_id, "rover");
+        assert!(!rover_spec.members.is_empty(), "rover should have members");
+
+        // api (server) should be registered
+        assert!(
+            model.symbol_specs.contains_key("api"),
+            "api should be in symbol_specs"
+        );
+        let api_spec = model.symbol_specs.get("api").unwrap();
+        assert_eq!(api_spec.spec_id, "rover_server");
+
+        // ctx should be registered
+        assert!(
+            model.symbol_specs.contains_key("ctx"),
+            "ctx should be in symbol_specs"
+        );
+        let ctx_spec = model.symbol_specs.get("ctx").unwrap();
+        assert_eq!(ctx_spec.spec_id, "ctx");
+        assert!(!ctx_spec.members.is_empty(), "ctx should have members");
     }
 }

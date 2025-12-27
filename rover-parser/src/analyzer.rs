@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use tree_sitter::Node;
 
-use crate::rule_runtime::{RuleContext, RuleEngine};
+use crate::rule_runtime::{MemberKind, RuleContext, RuleEngine};
 use crate::rules;
 
 #[derive(Debug, Clone)]
@@ -12,6 +12,7 @@ pub struct SemanticModel {
     pub errors: Vec<ParsingError>,
     pub functions: Vec<FunctionMetadata>,
     pub symbol_specs: HashMap<String, SymbolSpecMetadata>,
+    pub dynamic_members: HashMap<String, Vec<String>>, // table_name -> [member_names]
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +157,15 @@ pub struct FunctionMetadata {
 pub struct SymbolSpecMetadata {
     pub spec_id: String,
     pub doc: String,
+    pub members: Vec<SymbolSpecMember>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolSpecMember {
+    pub name: String,
+    pub doc: String,
+    pub target_spec_id: String,
+    pub kind: MemberKind,
 }
 
 #[derive(Debug, Clone)]
@@ -179,12 +189,13 @@ pub struct Analyzer {
 
 impl Analyzer {
     pub fn new(source: String) -> Self {
-        Analyzer {
+        let mut analyzer = Analyzer {
             model: SemanticModel {
                 server: None,
                 errors: Vec::new(),
                 functions: Vec::new(),
                 symbol_specs: HashMap::new(),
+                dynamic_members: HashMap::new(),
             },
             symbol_table: HashMap::new(),
             function_counter: 0,
@@ -195,16 +206,31 @@ impl Analyzer {
             current_param_types: HashMap::new(),
             source,
             current_route: 0,
-        }
+        };
+
+        analyzer.register_symbol_spec("rover", "rover");
+        analyzer
     }
 
     fn register_symbol_spec<S: Into<String>>(&mut self, name: S, spec_id: &str) {
         if let Some(spec) = rules::lookup_spec(spec_id) {
+            let members = spec
+                .members
+                .iter()
+                .map(|member| SymbolSpecMember {
+                    name: member.name.to_string(),
+                    doc: member.doc.to_string(),
+                    target_spec_id: member.target.to_string(),
+                    kind: member.kind,
+                })
+                .collect();
+
             self.model.symbol_specs.insert(
                 name.into(),
                 SymbolSpecMetadata {
                     spec_id: spec.id.to_string(),
                     doc: spec.doc.to_string(),
+                    members,
                 },
             );
         }
@@ -226,49 +252,245 @@ impl Analyzer {
         Self::rule_engine().finish(self, node, matches);
     }
 
-    pub fn process_assignment(&mut self, node: Node) {
-        let mut cursor = node.walk();
-        let children: Vec<Node> = node.children(&mut cursor).collect();
-
-        // Look for pattern: identifier = function_call
-        let mut var_name: Option<String> = None;
-        let mut func_call_node: Option<Node> = None;
-
-        for i in 0..children.len() {
-            if children[i].kind() == "variable_list" {
-                // Extract identifier from variable_list
-                let mut cursor = children[i].walk();
-                for child in children[i].children(&mut cursor) {
-                    if child.kind() == "identifier" {
-                        var_name =
-                            Some(self.source[child.start_byte()..child.end_byte()].to_string());
-                    }
-                }
-            } else if children[i].kind() == "expression_list" {
-                // Look for function_call in expression_list
-                let mut cursor = children[i].walk();
-                for child in children[i].children(&mut cursor) {
-                    if child.kind() == "function_call" {
-                        func_call_node = Some(child);
-                    }
-                }
-            }
+    pub fn handle_rover_server_assignment(&mut self, node: Node) {
+        if let Some(name) = self.extract_var_name_from_assignment(node) {
+            self.app_var_name = Some(name.clone());
+            self.model.server = Some(RoverServer {
+                id: 0,
+                exported: false,
+                routes: Vec::new(),
+            });
+            self.register_symbol_spec(name, "rover_server");
         }
+    }
 
-        if let (Some(name), Some(call_node)) = (var_name, func_call_node) {
-            let call_source = &self.source[call_node.start_byte()..call_node.end_byte()];
-            if call_source.contains("rover.server") {
-                self.app_var_name = Some(name.clone());
-                self.model.server = Some(RoverServer {
-                    id: 0,
-                    exported: false,
-                    routes: Vec::new(),
-                });
-                self.register_symbol_spec(name, "rover_server");
-            } else if call_source.contains("rover.guard") {
+    pub fn handle_rover_guard_assignment(&mut self, node: Node) {
+        if let Some(name) = self.extract_var_name_from_assignment(node) {
+            self.register_symbol_spec(name, "rover_guard");
+        }
+    }
+
+    pub fn handle_potential_guard_assignment(&mut self, node: Node) {
+        // Check if this assignment contains rover.guard (direct reference)
+        if self.contains_rover_guard_reference(node) {
+            if let Some(name) = self.extract_var_name_from_assignment(node) {
                 self.register_symbol_spec(name, "rover_guard");
             }
         }
+    }
+
+    fn contains_rover_guard_reference(&self, node: Node) -> bool {
+        let source = &self.source[node.start_byte()..node.end_byte()];
+        source.contains("rover.guard") && !source.contains("rover.guard(")
+    }
+
+    fn extract_var_name_from_assignment(&self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "variable_list" || child.kind() == "name_list" {
+                let mut inner = child.walk();
+                for c in child.children(&mut inner) {
+                    if c.kind() == "identifier" {
+                        return Some(self.source[c.start_byte()..c.end_byte()].to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn validate_member_access(&mut self, node: Node) {
+        // Skip validation if this is a function assignment/declaration (declaring new member)
+        if self.is_function_declaration_context(node) {
+            return;
+        }
+        
+        // Check for dot_index_expression (e.g., rover.something)
+        if node.kind() == "dot_index_expression" {
+            let access_info = self.extract_dot_access(node);
+            if let Some((base, member, range)) = access_info {
+                self.check_member_exists(&base, &member, range);
+            }
+        }
+        // Check for method_index_expression (e.g., g:something())
+        else if node.kind() == "method_index_expression" {
+            let access_info = self.extract_method_access(node);
+            if let Some((base, member, range)) = access_info {
+                self.check_member_exists(&base, &member, range);
+            }
+        }
+    }
+    
+    fn is_function_declaration_context(&self, node: Node) -> bool {
+        // Check if we're inside a function_declaration node
+        let mut current = Some(node);
+        while let Some(curr) = current {
+            if curr.kind() == "function_declaration" {
+                // This dot_index_expression is the function name, not a member access
+                return true;
+            }
+            // Also check assignment with function value
+            if curr.kind() == "assignment_statement" {
+                return self.assignment_has_function_value(curr);
+            }
+            current = curr.parent();
+        }
+        false
+    }
+    
+    fn assignment_has_function_value(&self, assignment: Node) -> bool {
+        let mut cursor = assignment.walk();
+        for child in assignment.children(&mut cursor) {
+            if child.kind() == "expression_list" {
+                let mut expr_cursor = child.walk();
+                for expr in child.children(&mut expr_cursor) {
+                    if expr.kind() == "function_definition" {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+    
+    pub fn track_function_assignment(&mut self, node: Node) {
+        // Called from rule when we detect function_declaration
+        // Extract the dotted path (e.g., "api.users.get")
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "dot_index_expression" {
+                let full_path = self.extract_dotted_name(child);
+                let parts: Vec<&str> = full_path.split('.').collect();
+                
+                if parts.len() >= 2 {
+                    let base = parts[0].to_string();
+                    let member_path = parts[1..].join(".");
+                    
+                    self.model
+                        .dynamic_members
+                        .entry(base)
+                        .or_insert_with(Vec::new)
+                        .push(member_path);
+                }
+                break;
+            }
+        }
+    }
+
+    fn extract_dot_access(&self, node: Node) -> Option<(String, String, SourceRange)> {
+        let mut cursor = node.walk();
+        let mut base_node: Option<Node> = None;
+        let mut member_node: Option<Node> = None;
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" if base_node.is_none() => {
+                    base_node = Some(child);
+                }
+                "identifier" | "field" => {
+                    member_node = Some(child);
+                }
+                _ => {}
+            }
+        }
+
+        let base_n = base_node?;
+        let member_n = member_node?;
+        
+        let base = self.source[base_n.start_byte()..base_n.end_byte()].to_string();
+        let member = self.source[member_n.start_byte()..member_n.end_byte()].to_string();
+        let range = SourceRange {
+            start: SourcePosition {
+                line: member_n.start_position().row,
+                column: member_n.start_position().column,
+            },
+            end: SourcePosition {
+                line: member_n.end_position().row,
+                column: member_n.end_position().column,
+            },
+        };
+        
+        Some((base, member, range))
+    }
+
+    fn extract_method_access(&self, node: Node) -> Option<(String, String, SourceRange)> {
+        let mut cursor = node.walk();
+        let mut base_node: Option<Node> = None;
+        let mut method_node: Option<Node> = None;
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" if base_node.is_none() => {
+                    base_node = Some(child);
+                }
+                "identifier" | "method" => {
+                    method_node = Some(child);
+                }
+                _ => {}
+            }
+        }
+
+        let base_n = base_node?;
+        let method_n = method_node?;
+        
+        let base = self.source[base_n.start_byte()..base_n.end_byte()].to_string();
+        let method = self.source[method_n.start_byte()..method_n.end_byte()].to_string();
+        let range = SourceRange {
+            start: SourcePosition {
+                line: method_n.start_position().row,
+                column: method_n.start_position().column,
+            },
+            end: SourcePosition {
+                line: method_n.end_position().row,
+                column: method_n.end_position().column,
+            },
+        };
+        
+        Some((base, method, range))
+    }
+
+    fn check_member_exists(&mut self, base: &str, member: &str, range: SourceRange) {
+        // Check if base is a known symbol
+        if let Some(spec) = self.model.symbol_specs.get(base) {
+            // Check if member exists in spec
+            let member_exists = spec.members.iter().any(|m| m.name == member);
+            
+            if !member_exists {
+                let valid_members: Vec<_> = spec.members.iter().map(|m| m.name.as_str()).collect();
+                let suggestion = if !valid_members.is_empty() {
+                    format!(" Valid members: {}", valid_members.join(", "))
+                } else {
+                    String::new()
+                };
+                
+                self.model.errors.push(ParsingError {
+                    message: format!(
+                        "Unknown member '{}' on '{}' ({}). {}",
+                        member, base, spec.spec_id, suggestion
+                    ),
+                    function_name: self.current_function_name.clone(),
+                    range: Some(range),
+                });
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn get_callee_path(&self, call_node: Node) -> Option<String> {
+        let mut cursor = call_node.walk();
+        for child in call_node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    return Some(self.source[child.start_byte()..child.end_byte()].to_string());
+                }
+                "dot_index_expression" => {
+                    return Some(self.extract_dotted_name(child));
+                }
+                "arguments" => break,
+                _ => {}
+            }
+        }
+        None
     }
 
     pub fn enter_handler_function(&mut self, node: Node) {
@@ -486,7 +708,7 @@ impl Analyzer {
             self.parse_text_response(status)
         } else if source.contains("api.html") {
             self.parse_html_response(status)
-        } else if source.contains("api.error") {
+        } else if source.contains("api.error") || source.contains("api:error") {
             self.parse_error_response(status)
         } else {
             None

@@ -242,6 +242,38 @@ fn print_model_summary(model: &SemanticModel) {
     }
 
     println!("  {} {}", "Functions:".bold(), model.functions.len());
+
+    if !model.symbol_specs.is_empty() {
+        println!("\n  {}", "Known Symbols:".bold());
+        let mut entries: Vec<_> = model.symbol_specs.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        let limit = 8usize;
+        for (name, spec) in entries.iter().take(limit) {
+            let doc_line = spec
+                .doc
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim();
+            let detail = if doc_line.is_empty() {
+                "".to_string()
+            } else {
+                format!(" — {}", doc_line)
+            };
+            println!(
+                "    {} → {}{}",
+                name.cyan(),
+                spec.spec_id.bright_white(),
+                detail.dimmed()
+            );
+        }
+        if entries.len() > limit {
+            println!(
+                "    {}",
+                format!("… {} more symbols", entries.len() - limit).dimmed()
+            );
+        }
+    }
 }
 
 fn display_json(model: &SemanticModel, file: &PathBuf) -> Result<()> {
@@ -276,6 +308,34 @@ fn display_json(model: &SemanticModel, file: &PathBuf) -> Result<()> {
         })
         .collect();
 
+    let symbols: Vec<_> = model
+        .symbol_specs
+        .iter()
+        .map(|(name, spec)| {
+            json!({
+                "name": name,
+                "spec": spec.spec_id,
+                "doc": spec.doc,
+                "members": spec
+                    .members
+                    .iter()
+                    .map(|member| {
+                        use rover_parser::MemberKind;
+                        json!({
+                            "name": member.name,
+                            "doc": member.doc,
+                            "target": member.target_spec_id,
+                            "kind": match member.kind {
+                                MemberKind::Field => "Field",
+                                MemberKind::Method => "Method",
+                            },
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
     let result = json!({
         "file": file.display().to_string(),
         "errors": errors,
@@ -283,6 +343,9 @@ fn display_json(model: &SemanticModel, file: &PathBuf) -> Result<()> {
         "server_found": model.server.is_some(),
         "routes_count": model.server.as_ref().map_or(0, |s| s.routes.len()),
         "functions_count": model.functions.len(),
+        "symbols_count": model.symbol_specs.len(),
+        "symbols": symbols,
+        "dynamic_members": model.dynamic_members,
     });
 
     println!("{}", serde_json::to_string_pretty(&result)?);

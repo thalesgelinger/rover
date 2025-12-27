@@ -1,10 +1,10 @@
 -- Example demonstrating async file I/O using overridden io module
 -- The io module now uses Tokio async operations under the hood!
 
-local api = rover.server {}
+local api = rover.server { }
 
 -- Example 1: Write to file
-function api.write.get(ctx)
+function api.write.p_name.get(ctx)
     local file = io.open("/tmp/rover_test.txt", "w")
     file:write("Hello from Rover async I/O!\n")
     file:write("This is line 2\n")

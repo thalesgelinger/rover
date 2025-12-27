@@ -2,12 +2,14 @@ use std::collections::HashMap;
 
 use tree_sitter::Node;
 
+#[allow(dead_code)]
 pub trait RuleContext {
     fn source(&self) -> &str;
     fn method_name(&self, node: Node) -> Option<String>;
     fn callee_path(&self, node: Node) -> Option<String>;
 }
 
+#[allow(dead_code)]
 pub struct Rule<C> {
     pub name: &'static str,
     pub selector: Selector,
@@ -33,6 +35,7 @@ impl<C> Rule<C> {
 
 pub type RuleAction<C> = for<'tree> fn(&mut C, Node<'tree>, &CaptureMap<'tree>);
 
+#[allow(dead_code)]
 pub struct RuleEngine<C> {
     aliases: HashMap<&'static str, Selector>,
     rules: Vec<Rule<C>>,
@@ -52,6 +55,7 @@ impl<C> RuleEngine<C> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn specs(&self) -> &ApiSpecRegistry {
         &self.specs
     }
@@ -102,6 +106,7 @@ pub struct CaptureMap<'tree> {
     entries: HashMap<&'static str, Node<'tree>>,
 }
 
+#[allow(dead_code)]
 impl<'tree> CaptureMap<'tree> {
     pub fn insert(&mut self, name: &'static str, node: Node<'tree>) {
         self.entries.insert(name, node);
@@ -125,6 +130,7 @@ pub struct Selector {
     filters: Vec<SelectorFilter>,
 }
 
+#[allow(dead_code)]
 impl Selector {
     pub fn node(kind: &'static str) -> Self {
         Self {
@@ -232,6 +238,7 @@ enum SelectorTarget {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 enum SelectorFilter {
     Child(Box<Selector>),
     Descendant(Box<Selector>),
@@ -320,6 +327,7 @@ pub struct RuleEngineBuilder<C> {
     specs: Vec<ApiSpec>,
 }
 
+#[allow(dead_code)]
 impl<C> RuleEngineBuilder<C> {
     pub fn new() -> Self {
         Self {
@@ -373,6 +381,10 @@ impl ApiSpecRegistry {
             .and_then(|idx| self.specs.get(*idx))
     }
 
+    pub fn doc(&self, id: &str) -> Option<SpecDoc> {
+        self.get(id).map(SpecDoc::from)
+    }
+
     pub fn all(&self) -> &Vec<ApiSpec> {
         &self.specs
     }
@@ -395,11 +407,18 @@ pub enum SpecKind {
     Function,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberKind {
+    Field,
+    Method,
+}
+
 #[derive(Clone)]
 pub struct ApiMember {
     pub name: &'static str,
     pub target: &'static str,
     pub doc: &'static str,
+    pub kind: MemberKind,
 }
 
 #[derive(Clone)]
@@ -407,4 +426,44 @@ pub struct ApiParam {
     pub name: &'static str,
     pub type_name: &'static str,
     pub doc: &'static str,
+}
+
+#[derive(Clone)]
+pub struct SpecDoc {
+    pub id: &'static str,
+    pub doc: &'static str,
+    pub members: Vec<SpecDocMember>,
+}
+
+#[derive(Clone)]
+pub struct SpecDocMember {
+    pub name: &'static str,
+    pub doc: &'static str,
+    pub target: &'static str,
+    pub kind: MemberKind,
+}
+
+impl From<&ApiSpec> for SpecDoc {
+    fn from(spec: &ApiSpec) -> Self {
+        SpecDoc {
+            id: spec.id,
+            doc: spec.doc,
+            members: spec
+                .members
+                .iter()
+                .map(SpecDocMember::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<&ApiMember> for SpecDocMember {
+    fn from(member: &ApiMember) -> Self {
+        SpecDocMember {
+            name: member.name,
+            doc: member.doc,
+            target: member.target,
+            kind: member.kind,
+        }
+    }
 }

@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use crate::analyzer::Analyzer;
 use crate::rule_runtime::{
-    ApiMember, ApiParam, ApiSpec, Rule, RuleEngine, RuleEngineBuilder, Selector, SpecKind,
+    ApiMember, ApiParam, ApiSpec, MemberKind, Rule, RuleEngine, RuleEngineBuilder, Selector, SpecDoc, SpecKind,
 };
 
 macro_rules! selector {
@@ -22,29 +22,37 @@ macro_rules! selector {
     (alias $name:literal) => {
         Selector::alias($name)
     };
-    (@body $sel:ident { $( $stmt:tt; )* }) => {
-        $( selector!(@stmt $sel $stmt); )*
-    };
-    (@stmt $sel:ident capture $name:ident) => {
+    // Empty body - base case
+    (@body $sel:ident { }) => {};
+    // capture statement
+    (@body $sel:ident { capture $name:ident ; $($rest:tt)* }) => {
         $sel = $sel.capture(stringify!($name));
+        selector!(@body $sel { $($rest)* });
     };
-    (@stmt $sel:ident has { $($inner:tt)* }) => {
-        let inner = selector! { $($inner)* };
-        $sel = $sel.has(inner);
+    // has statement with nested selector
+    (@body $sel:ident { has { $($inner:tt)* } ; $($rest:tt)* }) => {
+        $sel = $sel.has(selector!{ $($inner)* });
+        selector!(@body $sel { $($rest)* });
     };
-    (@stmt $sel:ident descendant { $($inner:tt)* }) => {
-        let inner = selector! { $($inner)* };
-        $sel = $sel.descendant(inner);
+    // descendant statement with nested selector
+    (@body $sel:ident { descendant { $($inner:tt)* } ; $($rest:tt)* }) => {
+        $sel = $sel.descendant(selector!{ $($inner)* });
+        selector!(@body $sel { $($rest)* });
     };
-    (@stmt $sel:ident ancestor { $($inner:tt)* }) => {
-        let inner = selector! { $($inner)* };
-        $sel = $sel.ancestor(inner);
+    // ancestor statement with nested selector
+    (@body $sel:ident { ancestor { $($inner:tt)* } ; $($rest:tt)* }) => {
+        $sel = $sel.ancestor(selector!{ $($inner)* });
+        selector!(@body $sel { $($rest)* });
     };
-    (@stmt $sel:ident method $name:literal) => {
+    // method statement
+    (@body $sel:ident { method $name:literal ; $($rest:tt)* }) => {
         $sel = $sel.method($name);
+        selector!(@body $sel { $($rest)* });
     };
-    (@stmt $sel:ident callee $path:literal) => {
+    // callee statement
+    (@body $sel:ident { callee $path:literal ; $($rest:tt)* }) => {
         $sel = $sel.callee($path);
+        selector!(@body $sel { $($rest)* });
     };
 }
 
@@ -71,11 +79,29 @@ macro_rules! rule {
 }
 
 macro_rules! api_member {
+    ($name:literal => $target:literal, $doc:literal, field) => {
+        ApiMember {
+            name: $name,
+            target: $target,
+            doc: $doc,
+            kind: MemberKind::Field,
+        }
+    };
+    ($name:literal => $target:literal, $doc:literal, method) => {
+        ApiMember {
+            name: $name,
+            target: $target,
+            doc: $doc,
+            kind: MemberKind::Method,
+        }
+    };
+    // Default to method for backward compatibility
     ($name:literal => $target:literal, $doc:literal) => {
         ApiMember {
             name: $name,
             target: $target,
             doc: $doc,
+            kind: MemberKind::Method,
         }
     };
 }
@@ -118,14 +144,14 @@ macro_rules! api_function {
     };
 }
 
-static SPEC_STORE: OnceLock<Vec<ApiSpec>> = OnceLock::new();
+static SPEC_REGISTRY: OnceLock<crate::rule_runtime::ApiSpecRegistry> = OnceLock::new();
 
-fn spec_catalog() -> &'static Vec<ApiSpec> {
-    SPEC_STORE.get_or_init(build_specs)
+fn spec_registry() -> &'static crate::rule_runtime::ApiSpecRegistry {
+    SPEC_REGISTRY.get_or_init(|| crate::rule_runtime::ApiSpecRegistry::new(build_specs()))
 }
 
-pub fn lookup_spec(id: &str) -> Option<&'static ApiSpec> {
-    spec_catalog().iter().find(|spec| spec.id == id)
+pub fn lookup_spec(id: &str) -> Option<SpecDoc> {
+    spec_registry().doc(id)
 }
 
 fn build_specs() -> Vec<ApiSpec> {
@@ -134,25 +160,47 @@ fn build_specs() -> Vec<ApiSpec> {
             "rover",
             "Global Rover namespace.",
             [
-                api_member!("server" => "rover_server", "Create a Rover server."),
-                api_member!("guard" => "rover_guard", "Guard builder namespace."),
-                api_member!("json" => "rover_response_json", "Return JSON response."),
-                api_member!("text" => "rover_response_text", "Return text response."),
-                api_member!("html" => "rover_response_html", "Return HTML response."),
-                api_member!("error" => "rover_response_error", "Return error response.")
+                api_member!("server" => "rover_server_constructor", "Create a Rover server.", method),
+                api_member!("guard" => "rover_guard", "Guard builder namespace.", field)
             ]
         ),
-        api_object!("rover_server", "Rover server instance with route definitions.", []),
+        api_function!(
+            "rover_server_constructor", 
+            "Create a Rover server instance. Pass config table with host, port, log_level.", 
+            [api_param!("config", "ServerConfig", "Server configuration table")], 
+            Some("RoverServer")
+        ),
+        api_object!(
+            "rover_server_config",
+            "Server configuration table.",
+            [
+                api_member!("host" => "string", "Server host (default: 127.0.0.1)", field),
+                api_member!("port" => "number", "Server port (default: 4242)", field),
+                api_member!("log_level" => "string", "Log level: debug, info, warn, error, nope", field)
+            ]
+        ),
+        api_object!(
+            "rover_server", 
+            "Rover server instance with route definitions and response builders.", 
+            [
+                api_member!("json" => "rover_response_json", "Return JSON response.", method),
+                api_member!("text" => "rover_response_text", "Return text response.", method),
+                api_member!("html" => "rover_response_html", "Return HTML response.", method),
+                api_member!("error" => "rover_response_error", "Return error response.", method),
+                api_member!("redirect" => "rover_response_redirect", "Return redirect response.", method),
+                api_member!("no_content" => "rover_response_no_content", "Return 204 No Content response.", method)
+            ]
+        ),
         api_object!(
             "rover_guard",
             "Guard helper namespace.",
             [
-                api_member!("string" => "rover_guard_string", "String guard."),
-                api_member!("integer" => "rover_guard_integer", "Integer guard."),
-                api_member!("number" => "rover_guard_number", "Number guard."),
-                api_member!("boolean" => "rover_guard_boolean", "Boolean guard."),
-                api_member!("array" => "rover_guard_array", "Array guard."),
-                api_member!("object" => "rover_guard_object", "Object guard.")
+                api_member!("string" => "rover_guard_string", "String guard.", method),
+                api_member!("integer" => "rover_guard_integer", "Integer guard.", method),
+                api_member!("number" => "rover_guard_number", "Number guard.", method),
+                api_member!("boolean" => "rover_guard_boolean", "Boolean guard.", method),
+                api_member!("array" => "rover_guard_array", "Array guard.", method),
+                api_member!("object" => "rover_guard_object", "Object guard.", method)
             ]
         ),
         api_function!("rover_guard_string", "Create string guard.", [], Some("Guard<String>")),
@@ -171,18 +219,22 @@ fn build_specs() -> Vec<ApiSpec> {
             [api_param!("shape", "GuardShape", "Object shape")],
             Some("Guard<Object>")
         ),
-        api_function!("rover_response_json", "Build JSON response.", [], Some("RoverResponse")),
-        api_function!("rover_response_text", "Build text response.", [], Some("RoverResponse")),
-        api_function!("rover_response_html", "Build HTML response.", [], Some("RoverResponse")),
-        api_function!("rover_response_error", "Build error response.", [], Some("RoverResponse")),
+        api_function!("rover_response_json", "Build JSON response. Can chain :status(code, data).", [], Some("RoverResponse")),
+        api_function!("rover_response_text", "Build text response. Can chain :status(code, text).", [], Some("RoverResponse")),
+        api_function!("rover_response_html", "Build HTML response. Can chain :status(code, html).", [], Some("RoverResponse")),
+        api_function!("rover_response_error", "Build error response with status code and message.", [], Some("RoverResponse")),
+        api_function!("rover_response_redirect", "Build redirect response. Can chain :permanent() or :status().", [], Some("RoverResponse")),
+        api_function!("rover_response_no_content", "Build 204 No Content response.", [], Some("RoverResponse")),
         api_object!(
             "ctx",
             "Handler context parameter.",
             [
-                api_member!("params" => "ctx_params", "Access path params."),
-                api_member!("query" => "ctx_query", "Access query params."),
-                api_member!("headers" => "ctx_headers", "Access headers."),
-                api_member!("body" => "ctx_body", "Access body handle.")
+                api_member!("method" => "string", "HTTP method (GET, POST, etc.)", field),
+                api_member!("path" => "string", "Request path", field),
+                api_member!("params" => "ctx_params", "Access path params.", method),
+                api_member!("query" => "ctx_query", "Access query params.", method),
+                api_member!("headers" => "ctx_headers", "Access headers.", method),
+                api_member!("body" => "ctx_body", "Access body handle.", method)
             ]
         ),
         api_object!("ctx_params", "Path params accessor.", []),
@@ -191,7 +243,7 @@ fn build_specs() -> Vec<ApiSpec> {
         api_object!(
             "ctx_body",
             "Body accessor with expect().",
-            [api_member!("expect" => "ctx_body_expect", "Validate body with guards.")]
+            [api_member!("expect" => "ctx_body_expect", "Validate body with guards.", method)]
         ),
         api_function!(
             "ctx_body_expect",
@@ -204,25 +256,97 @@ fn build_specs() -> Vec<ApiSpec> {
 }
 
 pub fn build_rule_engine() -> RuleEngine<Analyzer> {
-    let specs = spec_catalog().clone();
+    let specs = spec_registry().all().clone();
 
     let mut builder: RuleEngineBuilder<Analyzer> = RuleEngineBuilder::new().with_specs(specs);
 
-
+    // Aliases for common patterns
     builder.push_alias("handler_fn", selector! { node "function_declaration" });
+    builder.push_alias(
+        "rover_server_call",
+        selector! { node "function_call" { callee "rover.server"; } },
+    );
+    builder.push_alias(
+        "rover_guard_call",
+        selector! { node "function_call" { callee "rover.guard"; } },
+    );
+    builder.push_alias(
+        "rover_guard_ref",
+        selector! { node "dot_index_expression" { callee "rover.guard"; } },
+    );
 
+    // Rule: detect `local x = rover.server{}` (local declaration)
     builder.push_rule(rule! {
-        name: server_assignment,
-        selector: selector! { node "assignment_statement" },
+        name: rover_server_local,
+        selector: selector! { node "variable_declaration" {
+            descendant { alias "rover_server_call" };
+        } },
         enter: |ctx: &mut Analyzer, node, _| {
-            ctx.process_assignment(node);
+            ctx.handle_rover_server_assignment(node);
         },
     });
 
+    // Rule: detect `x = rover.server{}` (assignment)
+    builder.push_rule(rule! {
+        name: rover_server_assignment,
+        selector: selector! { node "assignment_statement" {
+            descendant { alias "rover_server_call" };
+        } },
+        enter: |ctx: &mut Analyzer, node, _| {
+            ctx.handle_rover_server_assignment(node);
+        },
+    });
+
+    // Rule: detect `local g = rover.guard` (direct reference)
+    builder.push_rule(rule! {
+        name: rover_guard_local_direct,
+        selector: selector! { node "variable_declaration" {
+            descendant { node "dot_index_expression" };
+        } },
+        enter: |ctx: &mut Analyzer, node, _| {
+            ctx.handle_potential_guard_assignment(node);
+        },
+    });
+
+    // Rule: detect `g = rover.guard` (direct reference assignment)
+    builder.push_rule(rule! {
+        name: rover_guard_assignment_direct,
+        selector: selector! { node "assignment_statement" {
+            descendant { node "dot_index_expression" };
+        } },
+        enter: |ctx: &mut Analyzer, node, _| {
+            ctx.handle_potential_guard_assignment(node);
+        },
+    });
+
+    // Rule: detect `local g = rover.guard()` (function call)
+    builder.push_rule(rule! {
+        name: rover_guard_local,
+        selector: selector! { node "variable_declaration" {
+            descendant { alias "rover_guard_call" };
+        } },
+        enter: |ctx: &mut Analyzer, node, _| {
+            ctx.handle_rover_guard_assignment(node);
+        },
+    });
+
+    // Rule: detect `g = rover.guard()` (function call assignment)
+    builder.push_rule(rule! {
+        name: rover_guard_assignment,
+        selector: selector! { node "assignment_statement" {
+            descendant { alias "rover_guard_call" };
+        } },
+        enter: |ctx: &mut Analyzer, node, _| {
+            ctx.handle_rover_guard_assignment(node);
+        },
+    });
+
+    // Rule: handler function (first param gets ctx spec)
     builder.push_rule(rule! {
         name: handler_function,
         selector: selector! { alias "handler_fn" },
         enter: |ctx: &mut Analyzer, node, _| {
+            ctx.track_function_assignment(node);
             ctx.enter_handler_function(node);
         },
         exit: |ctx: &mut Analyzer, _node, _| {
@@ -230,6 +354,7 @@ pub fn build_rule_engine() -> RuleEngine<Analyzer> {
         },
     });
 
+    // Rule: return statements in handlers
     builder.push_rule(rule! {
         name: return_statement,
         selector: selector! { node "return_statement" },
@@ -238,11 +363,30 @@ pub fn build_rule_engine() -> RuleEngine<Analyzer> {
         },
     });
 
+    // Rule: function calls (for ctx method tracking, guards, etc.)
     builder.push_rule(rule! {
         name: function_call,
         selector: selector! { node "function_call" },
         enter: |ctx: &mut Analyzer, node, _| {
             ctx.process_function_call(node);
+        },
+    });
+
+    // Rule: validate dot access (rover.something)
+    builder.push_rule(rule! {
+        name: validate_dot_access,
+        selector: selector! { node "dot_index_expression" },
+        enter: |ctx: &mut Analyzer, node, _| {
+            ctx.validate_member_access(node);
+        },
+    });
+
+    // Rule: validate method access (g:something())
+    builder.push_rule(rule! {
+        name: validate_method_access,
+        selector: selector! { node "method_index_expression" },
+        enter: |ctx: &mut Analyzer, node, _| {
+            ctx.validate_member_access(node);
         },
     });
 
