@@ -3,10 +3,20 @@ local api = rover.server {
     log_level = "nope"
 }
 
-function api.yabadabadoo.get()
-    return api.json:status(200, {
-        message = "We are all good champs"
-    })
+-- GET endpoint - simple response
+function api.echo.get(ctx)
+    return api.json {
+        message = "Echo GET",
+        method = ctx.method
+    }
+end
+
+-- POST endpoint - echo back the request body
+function api.echo.post(ctx)
+    return api.json {
+        message = "Echo POST",
+        received_body = ctx:body() or "no body"
+    }
 end
 
 return api
