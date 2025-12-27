@@ -3,23 +3,20 @@ local api = rover.server {
     log_level = "nope"
 }
 
--- GET endpoint - echo query parameters and request info
-function api.echo.get()
-    return api.json:status(200, {
-        method = "GET",
-        path = "/echo",
-        message = "Echo server GET endpoint"
-    })
+-- GET endpoint - simple response
+function api.echo.get(ctx)
+    return api.json {
+        message = "Echo GET",
+        method = ctx.method
+    }
 end
 
 -- POST endpoint - echo back the request body
-function api.echo.post()
-    return api.json:status(200, {
-        method = "POST",
-        path = "/echo",
-        message = "Echo server POST endpoint",
-        timestamp = os.time()
-    })
+function api.echo.post(ctx)
+    return api.json {
+        message = "Echo POST",
+        received_body = ctx:body() or "no body"
+    }
 end
 
 return api
