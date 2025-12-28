@@ -220,6 +220,7 @@ pub fn handle_component_event(
     instance_id: &str,
     event_name: &str,
     current_state: Value,
+    event_data: Option<Value>,
 ) -> mlua::Result<(Value, String)> {
     // Get component definition
     let definition = get_component(instance_id)
@@ -233,8 +234,12 @@ pub fn handle_component_event(
             format!("Event '{}' not found in component", event_name)
         ))?;
 
-    // Call event handler with current state
-    let new_state: Value = event_handler.call(current_state)?;
+    // Call event handler with current state and optional data
+    let new_state: Value = if let Some(data) = event_data {
+        event_handler.call((current_state, data))?
+    } else {
+        event_handler.call(current_state)?
+    };
 
     // Call render with new state
     let html: String = definition.render.call(new_state.clone())?;
@@ -253,7 +258,7 @@ pub fn generate_rover_client_script() -> String {
     r#"<script>
 window.__roverComponents = window.__roverComponents || {};
 
-async function roverEvent(event, componentId, eventName) {
+async function roverEvent(event, componentId, eventName, eventData) {
   event.preventDefault();
 
   const container = document.getElementById('rover-' + componentId);
@@ -268,6 +273,17 @@ async function roverEvent(event, componentId, eventName) {
     return;
   }
 
+  // Auto-extract value from form inputs if no eventData provided
+  let data = eventData;
+  if (data === undefined && event.target) {
+    const target = event.target;
+    if (target.type === 'checkbox') {
+      data = target.checked;
+    } else if (target.value !== undefined) {
+      data = target.value;
+    }
+  }
+
   try {
     const response = await fetch('/__rover/component-event', {
       method: 'POST',
@@ -277,7 +293,8 @@ async function roverEvent(event, componentId, eventName) {
       body: JSON.stringify({
         instanceId: componentId,
         eventName: eventName,
-        state: component.state
+        state: component.state,
+        data: data
       })
     });
 

@@ -310,9 +310,10 @@ impl Server for Table {
             let instance_id: String = body_table.get("instanceId")?;
             let event_name: String = body_table.get("eventName")?;
             let state: Value = body_table.get("state")?;
+            let data: Option<Value> = body_table.get("data").ok();
 
             // Handle the event
-            match handle_component_event(lua, &instance_id, &event_name, state) {
+            match handle_component_event(lua, &instance_id, &event_name, state, data) {
                 Ok((new_state, html)) => {
                     // Return JSON response with new state and HTML
                     let response = lua.create_table()?;
