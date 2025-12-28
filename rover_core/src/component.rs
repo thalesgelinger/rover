@@ -325,6 +325,19 @@ async function roverEvent(event, componentId, eventName, eventData) {
     }
   }
 
+  // Add loading state
+  const target = event.target;
+  const originalDisabled = target.disabled;
+  const originalCursor = container.style.cursor;
+  const originalOpacity = container.style.opacity;
+
+  container.classList.add('rover-loading');
+  container.style.cursor = 'wait';
+  container.style.opacity = '0.7';
+  if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') {
+    target.disabled = true;
+  }
+
   try {
     const response = await fetch('/__rover/component-event', {
       method: 'POST',
@@ -356,6 +369,17 @@ async function roverEvent(event, componentId, eventName, eventData) {
 
   } catch (error) {
     console.error('[Rover] Component event error:', error);
+    // Show error state visually
+    container.style.border = '2px solid #f44336';
+    setTimeout(() => {
+      container.style.border = '';
+    }, 2000);
+  } finally {
+    // Remove loading state
+    container.classList.remove('rover-loading');
+    container.style.cursor = originalCursor;
+    container.style.opacity = originalOpacity;
+    // Note: We don't re-enable the target because it may have been replaced by new HTML
   }
 }
 </script>"#.to_string()
