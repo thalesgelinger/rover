@@ -5,6 +5,7 @@ mod http;
 mod inspect;
 mod io;
 mod server;
+pub mod template;
 pub mod event_loop;
 
 use guard::BodyValue;
@@ -14,6 +15,126 @@ use anyhow::{Context, Result};
 use mlua::{Error, FromLua, Lua, Table, Value};
 
 use crate::app_type::AppType;
+
+/// Create the rover.html module with templating support and component system
+fn create_html_module(lua: &Lua) -> mlua::Result<Table> {
+    let html_module = lua.create_table()?;
+
+    // Create metatable with __call for rover.html(data) [=[ template ]=]
+    let html_meta = lua.create_table()?;
+
+    // rover.html(data) returns a template builder
+    html_meta.set(
+        "__call",
+        lua.create_function(|lua, (html_table, data): (Table, Value)| {
+            // Create a template builder that stores data and html_table reference
+            let builder = lua.create_table()?;
+            builder.set("__data", data)?;
+            builder.set("__html", html_table)?;
+
+            // Create metatable with __call for: builder [=[ template ]=]
+            let builder_meta = lua.create_table()?;
+            builder_meta.set(
+                "__call",
+                lua.create_function(|lua, (builder, template): (Table, String)| {
+                    let data: Value = builder.get("__data")?;
+                    let html_table: Table = builder.get("__html")?;
+
+                    // Create environment with data and component functions
+                    let data_table = match data {
+                        Value::Table(t) => t,
+                        Value::Nil => lua.create_table()?,
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(
+                                "rover.html() data must be a table or nil".to_string(),
+                            ));
+                        }
+                    };
+
+                    // Render template with component functions available
+                    render_template_with_components(lua, &template, &data_table, &html_table)
+                })?,
+            )?;
+            let _ = builder.set_metatable(Some(builder_meta));
+
+            Ok(builder)
+        })?,
+    )?;
+
+    // __index allows reading component functions from html_module
+    html_meta.set("__index", html_module.clone())?;
+
+    // __newindex allows adding component functions to html_module
+    html_meta.set(
+        "__newindex",
+        lua.create_function(|_lua, (table, key, value): (Table, Value, Value)| {
+            table.raw_set(key, value)?;
+            Ok(())
+        })?,
+    )?;
+
+    let _ = html_module.set_metatable(Some(html_meta));
+
+    Ok(html_module)
+}
+
+/// Render template with component functions available in the environment
+fn render_template_with_components(
+    lua: &Lua,
+    template: &str,
+    data: &Table,
+    html_table: &Table,
+) -> mlua::Result<String> {
+    // Parse and generate Lua code
+    let segments = crate::template::parse_template(template);
+    let lua_code = crate::template::generate_lua_code(&segments);
+
+    // Create environment with data as base
+    let env = lua.create_table()?;
+
+    // Copy standard library functions
+    let globals = lua.globals();
+    for name in &[
+        "tostring", "tonumber", "ipairs", "pairs", "table", "string", "math", "type", "next",
+        "select", "unpack", "pcall", "error", "rawget", "rawset", "setmetatable", "getmetatable",
+    ] {
+        if let Ok(val) = globals.get::<Value>(*name) {
+            env.set(*name, val)?;
+        }
+    }
+
+    // Copy all data fields into environment
+    for pair in data.pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        env.set(key, value)?;
+    }
+
+    // Add rover.html reference for nested component calls
+    if let Ok(rover) = globals.get::<Table>("rover") {
+        env.set("rover", rover)?;
+    }
+
+    // Add component functions directly to environment
+    for pair in html_table.pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        // Skip internal fields
+        if let Value::String(ref s) = key {
+            if s.to_str().map(|s| s.starts_with("__")).unwrap_or(false) {
+                continue;
+            }
+        }
+        env.set(key, value)?;
+    }
+
+    // Execute the generated code
+    let chunk = lua.load(&lua_code).set_environment(env);
+    chunk.eval().map_err(|e| {
+        mlua::Error::RuntimeError(format!(
+            "Template rendering failed: {}\nGenerated code:\n{}",
+            e, lua_code
+        ))
+    })
+}
 
 trait RoverApp {
     fn app_type(&self) -> Option<AppType>;
@@ -106,6 +227,10 @@ pub fn run(path: &str) -> Result<()> {
     // Add HTTP client module
     let http_module = http::create_http_module(&lua)?;
     rover.set("http", http_module)?;
+
+    // Add rover.html global templating function
+    let html_module = create_html_module(&lua)?;
+    rover.set("html", html_module)?;
 
     let _ = lua.globals().set("rover", rover);
 

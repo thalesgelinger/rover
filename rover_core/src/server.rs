@@ -8,6 +8,71 @@ use rover_types::ValidationErrors;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 
+/// Get rover.html table from globals
+fn get_rover_html(lua: &Lua) -> mlua::Result<Table> {
+    let globals = lua.globals();
+    let rover: Table = globals.get("rover")?;
+    rover.get("html")
+}
+
+/// Render template with component functions available in the environment
+fn render_template_with_components(
+    lua: &Lua,
+    template: &str,
+    data: &Table,
+    html_table: &Table,
+) -> mlua::Result<String> {
+    // Parse and generate Lua code
+    let segments = crate::template::parse_template(template);
+    let lua_code = crate::template::generate_lua_code(&segments);
+
+    // Create environment with data as base
+    let env = lua.create_table()?;
+
+    // Copy standard library functions
+    let globals = lua.globals();
+    for name in &[
+        "tostring", "tonumber", "ipairs", "pairs", "table", "string", "math", "type", "next",
+        "select", "unpack", "pcall", "error", "rawget", "rawset", "setmetatable", "getmetatable",
+    ] {
+        if let Ok(val) = globals.get::<Value>(*name) {
+            env.set(*name, val)?;
+        }
+    }
+
+    // Copy all data fields into environment
+    for pair in data.pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        env.set(key, value)?;
+    }
+
+    // Add rover.html reference for nested component calls
+    if let Ok(rover) = globals.get::<Table>("rover") {
+        env.set("rover", rover)?;
+    }
+
+    // Add component functions directly to environment
+    for pair in html_table.pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        // Skip internal fields
+        if let Value::String(ref s) = key {
+            if s.to_str().map(|s| s.starts_with("__")).unwrap_or(false) {
+                continue;
+            }
+        }
+        env.set(key, value)?;
+    }
+
+    // Execute the generated code
+    let chunk = lua.load(&lua_code).set_environment(env);
+    chunk.eval().map_err(|e| {
+        mlua::Error::RuntimeError(format!(
+            "Template rendering failed: {}\nGenerated code:\n{}",
+            e, lua_code
+        ))
+    })
+}
+
 pub trait AppServer {
     fn create_server(&self, config: Table) -> Result<Table>;
 }
@@ -61,15 +126,88 @@ impl AppServer for Lua {
 
         let html_helper = self.create_table()?;
 
-        let html_call = self.create_function(|_lua, (_self, content): (Table, String)| {
-            Ok(RoverResponse::html(200, Bytes::from(content), None))
+        // api.html(data) returns a template builder
+        // The builder is called with the template string to render
+        let html_call = self.create_function(|lua, (_self, data): (Table, Value)| {
+            // Create a template builder table that stores the data
+            let builder = lua.create_table()?;
+
+            // Store data and status in the builder
+            builder.set("__data", data)?;
+            builder.set("__status", 200u16)?;
+
+            // Create metatable with __call for: builder [[ template ]]
+            let builder_meta = lua.create_table()?;
+            builder_meta.set(
+                "__call",
+                lua.create_function(|lua, (builder, template): (Table, String)| {
+                    let data: Value = builder.get("__data")?;
+                    let status: u16 = builder.get("__status")?;
+
+                    // Get rover.html for component functions
+                    let html_table = get_rover_html(lua)?;
+
+                    // If data is a table, render the template
+                    match data {
+                        Value::Table(ref data_table) => {
+                            let rendered = render_template_with_components(lua, &template, data_table, &html_table)?;
+                            Ok(RoverResponse::html(status, Bytes::from(rendered), None))
+                        }
+                        Value::Nil => {
+                            // No data provided, use empty context
+                            let empty = lua.create_table()?;
+                            let rendered = render_template_with_components(lua, &template, &empty, &html_table)?;
+                            Ok(RoverResponse::html(status, Bytes::from(rendered), None))
+                        }
+                        _ => Err(mlua::Error::RuntimeError(
+                            "html() data must be a table or nil".to_string(),
+                        )),
+                    }
+                })?,
+            )?;
+            let _ = builder.set_metatable(Some(builder_meta));
+
+            Ok(builder)
         })?;
 
-        let html_status_fn = self.create_function(
-            |_lua, (_self, status_code, content): (Table, u16, String)| {
-                Ok(RoverResponse::html(status_code, Bytes::from(content), None))
-            },
-        )?;
+        // api.html:status(code, data) returns a builder with custom status
+        let html_status_fn = self.create_function(|lua, (_self, status_code, data): (Table, u16, Value)| {
+            // Create a template builder with custom status
+            let builder = lua.create_table()?;
+
+            builder.set("__data", data)?;
+            builder.set("__status", status_code)?;
+
+            let builder_meta = lua.create_table()?;
+            builder_meta.set(
+                "__call",
+                lua.create_function(|lua, (builder, template): (Table, String)| {
+                    let data: Value = builder.get("__data")?;
+                    let status: u16 = builder.get("__status")?;
+
+                    // Get rover.html for component functions
+                    let html_table = get_rover_html(lua)?;
+
+                    match data {
+                        Value::Table(ref data_table) => {
+                            let rendered = render_template_with_components(lua, &template, data_table, &html_table)?;
+                            Ok(RoverResponse::html(status, Bytes::from(rendered), None))
+                        }
+                        Value::Nil => {
+                            let empty = lua.create_table()?;
+                            let rendered = render_template_with_components(lua, &template, &empty, &html_table)?;
+                            Ok(RoverResponse::html(status, Bytes::from(rendered), None))
+                        }
+                        _ => Err(mlua::Error::RuntimeError(
+                            "html() data must be a table or nil".to_string(),
+                        )),
+                    }
+                })?,
+            )?;
+            let _ = builder.set_metatable(Some(builder_meta));
+
+            Ok(builder)
+        })?;
         html_helper.set("status", html_status_fn)?;
 
         let html_meta = self.create_table()?;
