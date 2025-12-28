@@ -249,52 +249,106 @@ pub fn handle_component_event(
 pub fn generate_rover_client_script() -> String {
     r#"<script>
 window.__roverComponents = window.__roverComponents || {};
+window.__roverWS = null;
+window.__roverWsPending = [];
+
+// Initialize WebSocket connection
+function initRoverWebSocket() {
+  if (window.__roverWS && window.__roverWS.readyState === WebSocket.OPEN) {
+    return;
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(protocol + '//' + window.location.host + '/__rover/ws');
+
+  ws.onopen = function() {
+    console.log('[Rover] WebSocket connected');
+    window.__roverWS = ws;
+
+    // Send any pending events
+    while (window.__roverWsPending.length > 0) {
+      const msg = window.__roverWsPending.shift();
+      ws.send(msg);
+    }
+  };
+
+  ws.onmessage = function(event) {
+    try {
+      const result = JSON.parse(event.data);
+
+      if (result.error) {
+        console.error('[Rover] Component event error:', result.error);
+        return;
+      }
+
+      // Find which component this update is for by state matching
+      // (In a real implementation, server should send component ID)
+      for (const componentId in window.__roverComponents) {
+        const component = window.__roverComponents[componentId];
+        const container = document.getElementById('rover-' + componentId);
+
+        if (container) {
+          // Update state
+          component.state = result.state;
+          container.dataset.roverState = JSON.stringify(result.state);
+
+          // Update HTML (preserve the container)
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = result.html;
+          container.innerHTML = tempDiv.innerHTML;
+          break;
+        }
+      }
+    } catch (error) {
+      console.error('[Rover] Failed to process WebSocket message:', error);
+    }
+  };
+
+  ws.onerror = function(error) {
+    console.error('[Rover] WebSocket error:', error);
+  };
+
+  ws.onclose = function() {
+    console.log('[Rover] WebSocket closed, reconnecting in 1s...');
+    window.__roverWS = null;
+    setTimeout(initRoverWebSocket, 1000);
+  };
+}
+
+// Start WebSocket connection when page loads
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initRoverWebSocket);
+} else {
+  initRoverWebSocket();
+}
 
 async function roverEvent(event, componentId, eventName) {
   event.preventDefault();
 
   const container = document.getElementById('rover-' + componentId);
   if (!container) {
-    console.error('Component container not found:', componentId);
+    console.error('[Rover] Component container not found:', componentId);
     return;
   }
 
   const component = window.__roverComponents[componentId];
   if (!component) {
-    console.error('Component not found:', componentId);
+    console.error('[Rover] Component not found:', componentId);
     return;
   }
 
-  try {
-    const response = await fetch('/__rover/component-event', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        instanceId: componentId,
-        eventName: eventName,
-        state: component.state
-      })
-    });
+  const message = JSON.stringify({
+    instance_id: componentId,
+    event_name: eventName,
+    state: component.state
+  });
 
-    if (!response.ok) {
-      throw new Error('Component event failed: ' + response.statusText);
-    }
-
-    const result = await response.json();
-
-    // Update state
-    component.state = result.state;
-    container.dataset.roverState = JSON.stringify(result.state);
-
-    // Update HTML (preserve the container)
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = result.html;
-    container.innerHTML = tempDiv.innerHTML;
-
-  } catch (error) {
-    console.error('Component event error:', error);
+  // Send via WebSocket if connected, otherwise queue it
+  if (window.__roverWS && window.__roverWS.readyState === WebSocket.OPEN) {
+    window.__roverWS.send(message);
+  } else {
+    window.__roverWsPending.push(message);
+    initRoverWebSocket();
   }
 }
 </script>"#.to_string()
