@@ -195,19 +195,60 @@ fn lua_value_to_json(_lua: &Lua, value: &Value) -> mlua::Result<String> {
 
 /// Process HTML to wire up event handlers
 /// Converts onclick="increase" to onclick="roverEvent(event, 'instance-id', 'increase')"
+/// Also handles onclick="remove(123)" to onclick="roverEvent(event, 'instance-id', 'remove', 123)"
 fn process_html_events(html: &str, instance_id: &str, event_names: &[String]) -> mlua::Result<String> {
+    use regex::Regex;
+
     let mut result = html.to_string();
 
     // Process each event name
     for event_name in event_names {
-        // Match onclick="eventName" and similar patterns
         for event_attr in &["onclick", "onchange", "onsubmit", "oninput", "onkeyup", "onkeydown"] {
-            let pattern = format!("{}=\"{}\"", event_attr, event_name);
-            let replacement = format!(
+            // Pattern 1: Simple event without parameters - onclick="eventName"
+            let simple_pattern = format!("{}=\"{}\"", event_attr, event_name);
+            let simple_replacement = format!(
                 "{}=\"roverEvent(event, '{}', '{}')\"; return false;\"",
                 event_attr, instance_id, event_name
             );
-            result = result.replace(&pattern, &replacement);
+            result = result.replace(&simple_pattern, &simple_replacement);
+
+            // Pattern 2: Event with parameters - onclick="eventName(arg1, arg2, ...)"
+            // Match: onclick="eventName(...)"
+            let pattern_with_args = format!(r#"{}="{}(\([^)]*\))""#, event_attr, event_name);
+            if let Ok(re) = Regex::new(&pattern_with_args) {
+                // Find all matches and replace them
+                let mut replacements = Vec::new();
+                for cap in re.captures_iter(&result.clone()) {
+                    if let Some(args_match) = cap.get(1) {
+                        let args = args_match.as_str(); // e.g., "(123)" or "('red', 456)"
+                        let full_match = cap.get(0).unwrap().as_str();
+
+                        // Convert (arg1, arg2) to just the args without outer parens
+                        let args_without_parens = args.trim_start_matches('(').trim_end_matches(')');
+
+                        let replacement = if args_without_parens.is_empty() {
+                            // Empty args: onclick="eventName()"
+                            format!(
+                                "{}=\"roverEvent(event, '{}', '{}')\"; return false;\"",
+                                event_attr, instance_id, event_name
+                            )
+                        } else {
+                            // Has args: onclick="eventName(123, 'test')"
+                            format!(
+                                "{}=\"roverEvent(event, '{}', '{}', {})\"; return false;\"",
+                                event_attr, instance_id, event_name, args_without_parens
+                            )
+                        };
+
+                        replacements.push((full_match.to_string(), replacement));
+                    }
+                }
+
+                // Apply replacements
+                for (from, to) in replacements {
+                    result = result.replace(&from, &to);
+                }
+            }
         }
     }
 
