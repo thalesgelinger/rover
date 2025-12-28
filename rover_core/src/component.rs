@@ -236,7 +236,13 @@ pub fn handle_component_event(
     // Call render with new state
     let html: String = definition.render.call(new_state.clone())?;
 
-    Ok((new_state, html))
+    // Extract event names for JavaScript wiring
+    let event_names: Vec<String> = definition.events.keys().cloned().collect();
+
+    // Process HTML to wire up event handlers (same as initial render)
+    let processed_html = process_html_events(&html, instance_id, &event_names)?;
+
+    Ok((new_state, processed_html))
 }
 
 /// Generate the global rover event handler JavaScript
