@@ -349,6 +349,10 @@ impl BodyValue {
     pub fn new(json_string: String) -> Self {
         Self { json_string }
     }
+
+    pub fn json_string(&self) -> &str {
+        &self.json_string
+    }
 }
 
 

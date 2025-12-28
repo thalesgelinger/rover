@@ -8,6 +8,40 @@ use rover_types::ValidationErrors;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
 use crate::html::{get_rover_html, render_template_with_components};
+use crate::component::{handle_component_event, generate_rover_client_script};
+use crate::guard;
+
+/// Convert a serde_json::Value to a Lua Value
+fn json_to_lua(lua: &Lua, json: &serde_json::Value) -> mlua::Result<Value> {
+    match json {
+        serde_json::Value::Null => Ok(Value::Nil),
+        serde_json::Value::Bool(b) => Ok(Value::Boolean(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Value::Integer(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(Value::Number(f))
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+        serde_json::Value::String(s) => Ok(Value::String(lua.create_string(s)?)),
+        serde_json::Value::Array(arr) => {
+            let table = lua.create_table()?;
+            for (i, v) in arr.iter().enumerate() {
+                table.set(i + 1, json_to_lua(lua, v)?)?;
+            }
+            Ok(Value::Table(table))
+        }
+        serde_json::Value::Object(obj) => {
+            let table = lua.create_table()?;
+            for (k, v) in obj {
+                table.set(k.as_str(), json_to_lua(lua, v)?)?;
+            }
+            Ok(Value::Table(table))
+        }
+    }
+}
 
 pub trait AppServer {
     fn create_server(&self, config: Table) -> Result<Table>;
@@ -84,7 +118,19 @@ impl AppServer for Lua {
                         )),
                     };
 
-                    let rendered = render_template_with_components(lua, &template, &data_table, &html_table)?;
+                    let mut rendered = render_template_with_components(lua, &template, &data_table, &html_table)?;
+
+                    // Inject Rover component client script if components are present
+                    if rendered.contains("data-rover-component") {
+                        let client_script = generate_rover_client_script();
+                        // Try to inject before </body>, otherwise append
+                        if rendered.contains("</body>") {
+                            rendered = rendered.replace("</body>", &format!("{}</body>", client_script));
+                        } else {
+                            rendered.push_str(&client_script);
+                        }
+                    }
+
                     Ok(RoverResponse::html(status, Bytes::from(rendered), None))
                 })?,
             )?;
@@ -224,8 +270,83 @@ pub trait Server {
 
 impl Server for Table {
     fn run_server(&self, lua: &Lua, source: &str) -> Result<()> {
-        let routes = self.get_routes()?;
+        let mut routes = self.get_routes()?;
         let config: ServerConfig = self.get("config")?;
+
+        // Add component event handler route
+        let component_handler = lua.create_function(|lua, ctx: Table| {
+            // Call the body function to get the body
+            let body_fn: mlua::Function = ctx.get("body")?;
+            let body_value: Value = body_fn.call(())?;
+
+            // Parse JSON body - BodyValue contains the raw JSON string
+            let body_str = match body_value {
+                Value::UserData(ref ud) => {
+                    // This is a BodyValue, extract the json_string field using borrow
+                    let body_val = ud.borrow::<guard::BodyValue>()?;
+                    body_val.json_string().to_string()
+                }
+                Value::String(s) => s.to_str()?.to_string(),
+                _ => return Err(mlua::Error::RuntimeError(
+                    "Component event request body must be a string or BodyValue".to_string()
+                )),
+            };
+
+            // Parse JSON to Lua table
+            let json_value: serde_json::Value = serde_json::from_str(&body_str).map_err(|e| {
+                mlua::Error::RuntimeError(format!("Failed to parse JSON body: {}", e))
+            })?;
+
+            // Convert JSON to Lua table
+            let body_value = json_to_lua(lua, &json_value)?;
+            let body_table = match body_value {
+                Value::Table(t) => t,
+                _ => return Err(mlua::Error::RuntimeError(
+                    "Expected JSON object in request body".to_string()
+                )),
+            };
+
+            // Extract parameters from body
+            let instance_id: String = body_table.get("instanceId")?;
+            let event_name: String = body_table.get("eventName")?;
+            let state: Value = body_table.get("state")?;
+
+            // Handle the event
+            match handle_component_event(lua, &instance_id, &event_name, state) {
+                Ok((new_state, html)) => {
+                    // Return JSON response with new state and HTML
+                    let response = lua.create_table()?;
+                    response.set("state", new_state)?;
+                    response.set("html", html)?;
+
+                    use rover_server::to_json::ToJson;
+                    let json = response.to_json_string().map_err(|e| {
+                        mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                    })?;
+
+                    Ok(RoverResponse::json(200, Bytes::from(json), None))
+                }
+                Err(e) => {
+                    let error_table = lua.create_table()?;
+                    error_table.set("error", format!("{}", e))?;
+
+                    use rover_server::to_json::ToJson;
+                    let json = error_table.to_json_string().map_err(|e| {
+                        mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                    })?;
+
+                    Ok(RoverResponse::json(500, Bytes::from(json), None))
+                }
+            }
+        })?;
+
+        routes.routes.push(Route {
+            method: HttpMethod::Post,
+            pattern: Bytes::from("/__rover/component-event"),
+            param_names: Vec::new(),
+            handler: component_handler,
+            is_static: true,
+        });
 
         // Generate OpenAPI spec if docs enabled
         let openapi_spec = if config.docs {

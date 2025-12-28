@@ -8,10 +8,12 @@ mod io;
 mod server;
 pub mod template;
 pub mod event_loop;
+pub mod component;
 
 use guard::BodyValue;
 use html::create_html_module;
 use server::{AppServer, Server};
+use component::create_component_module;
 
 use anyhow::{Context, Result};
 use mlua::{Error, FromLua, Lua, Table, Value};
@@ -113,6 +115,10 @@ pub fn run(path: &str) -> Result<()> {
     // Add rover.html global templating function
     let html_module = create_html_module(&lua)?;
     rover.set("html", html_module)?;
+
+    // Add rover.component for stateful components
+    let component_module = create_component_module(&lua)?;
+    rover.set("component", component_module)?;
 
     let _ = lua.globals().set("rover", rover);
 
