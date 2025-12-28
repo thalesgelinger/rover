@@ -7,6 +7,7 @@ use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerCo
 use rover_types::ValidationErrors;
 
 use crate::{app_type::AppType, auto_table::AutoTable};
+use crate::html::{get_rover_html, render_template_with_components};
 
 pub trait AppServer {
     fn create_server(&self, config: Table) -> Result<Table>;
@@ -61,15 +62,43 @@ impl AppServer for Lua {
 
         let html_helper = self.create_table()?;
 
-        let html_call = self.create_function(|_lua, (_self, content): (Table, String)| {
-            Ok(RoverResponse::html(200, Bytes::from(content), None))
+        // Shared function to create HTML response builder
+        fn create_html_response_builder(lua: &Lua, data: Value, status: u16) -> mlua::Result<Table> {
+            let builder = lua.create_table()?;
+            builder.set("__data", data)?;
+            builder.set("__status", status)?;
+
+            let builder_meta = lua.create_table()?;
+            builder_meta.set(
+                "__call",
+                lua.create_function(|lua, (builder, template): (Table, String)| {
+                    let data: Value = builder.get("__data")?;
+                    let status: u16 = builder.get("__status")?;
+                    let html_table = get_rover_html(lua)?;
+
+                    let data_table = match data {
+                        Value::Table(t) => t,
+                        Value::Nil => lua.create_table()?,
+                        _ => return Err(mlua::Error::RuntimeError(
+                            "html() data must be a table or nil".to_string(),
+                        )),
+                    };
+
+                    let rendered = render_template_with_components(lua, &template, &data_table, &html_table)?;
+                    Ok(RoverResponse::html(status, Bytes::from(rendered), None))
+                })?,
+            )?;
+            let _ = builder.set_metatable(Some(builder_meta));
+            Ok(builder)
+        }
+
+        let html_call = self.create_function(|lua, (_self, data): (Table, Value)| {
+            create_html_response_builder(lua, data, 200)
         })?;
 
-        let html_status_fn = self.create_function(
-            |_lua, (_self, status_code, content): (Table, u16, String)| {
-                Ok(RoverResponse::html(status_code, Bytes::from(content), None))
-            },
-        )?;
+        let html_status_fn = self.create_function(|lua, (_self, status_code, data): (Table, u16, Value)| {
+            create_html_response_builder(lua, data, status_code)
+        })?;
         html_helper.set("status", html_status_fn)?;
 
         let html_meta = self.create_table()?;

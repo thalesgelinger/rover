@@ -1,13 +1,16 @@
 mod app_type;
 mod auto_table;
 mod guard;
+pub mod html;
 mod http;
 mod inspect;
 mod io;
 mod server;
+pub mod template;
 pub mod event_loop;
 
 use guard::BodyValue;
+use html::create_html_module;
 use server::{AppServer, Server};
 
 use anyhow::{Context, Result};
@@ -106,6 +109,10 @@ pub fn run(path: &str) -> Result<()> {
     // Add HTTP client module
     let http_module = http::create_http_module(&lua)?;
     rover.set("http", http_module)?;
+
+    // Add rover.html global templating function
+    let html_module = create_html_module(&lua)?;
+    rover.set("html", html_module)?;
 
     let _ = lua.globals().set("rover", rover);
 
