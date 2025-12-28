@@ -99,7 +99,7 @@ fn create_component_builder(lua: &Lua, _opts: Option<Table>) -> mlua::Result<Tab
 }
 
 /// Render a component instance
-fn render_component_instance(lua: &Lua, builder: Table, _props: Option<Table>) -> mlua::Result<String> {
+fn render_component_instance(lua: &Lua, builder: Table, props: Option<Table>) -> mlua::Result<String> {
     let methods: Table = builder.get("__component_methods")?;
 
     // Get required methods
@@ -107,6 +107,9 @@ fn render_component_instance(lua: &Lua, builder: Table, _props: Option<Table>) -
         .map_err(|_| mlua::Error::RuntimeError("Component must have an init() method".to_string()))?;
     let render: Function = methods.get("render")
         .map_err(|_| mlua::Error::RuntimeError("Component must have a render() method".to_string()))?;
+
+    // Get props or create empty table
+    let component_props = props.unwrap_or_else(|| lua.create_table().unwrap());
 
     // Collect event methods (everything except init and render)
     let mut events = HashMap::new();
@@ -130,8 +133,8 @@ fn render_component_instance(lua: &Lua, builder: Table, _props: Option<Table>) -
         events: events.clone(),
     });
 
-    // Call init() to get initial state
-    let initial_state: Value = init.call(())?;
+    // Call init(props) to get initial state
+    let initial_state: Value = init.call(component_props)?;
 
     // Call render(state) to get HTML
     let html: String = render.call(initial_state.clone())?;
