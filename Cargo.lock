@@ -1248,6 +1248,7 @@ dependencies = [
  "rover-parser",
  "rover_server",
  "rover_types",
+ "serde",
  "serde_json",
  "smallvec",
  "tempfile",
