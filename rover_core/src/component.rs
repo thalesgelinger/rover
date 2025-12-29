@@ -299,6 +299,65 @@ pub fn generate_rover_client_script() -> String {
     r#"<script>
 window.__roverComponents = window.__roverComponents || {};
 
+// DOM morphing - only update what changed (like morphdom/Phoenix LiveView)
+function morphNode(fromNode, toNode) {
+  // Skip morphing if nodes are identical
+  if (fromNode.isEqualNode(toNode)) {
+    return;
+  }
+
+  // Text nodes - just update if different
+  if (fromNode.nodeType === Node.TEXT_NODE) {
+    if (fromNode.nodeValue !== toNode.nodeValue) {
+      fromNode.nodeValue = toNode.nodeValue;
+    }
+    return;
+  }
+
+  // Element nodes
+  if (fromNode.nodeType === Node.ELEMENT_NODE && toNode.nodeType === Node.ELEMENT_NODE) {
+    // Update attributes
+    const fromAttrs = fromNode.attributes;
+    const toAttrs = toNode.attributes;
+
+    // Remove old attributes
+    for (let i = fromAttrs.length - 1; i >= 0; i--) {
+      const attr = fromAttrs[i];
+      if (!toNode.hasAttribute(attr.name)) {
+        fromNode.removeAttribute(attr.name);
+      }
+    }
+
+    // Add/update attributes
+    for (let i = 0; i < toAttrs.length; i++) {
+      const attr = toAttrs[i];
+      if (fromNode.getAttribute(attr.name) !== attr.value) {
+        fromNode.setAttribute(attr.name, attr.value);
+      }
+    }
+
+    // Morph children
+    const fromChildren = Array.from(fromNode.childNodes);
+    const toChildren = Array.from(toNode.childNodes);
+
+    // Remove extra children
+    for (let i = fromChildren.length - 1; i >= toChildren.length; i--) {
+      fromNode.removeChild(fromChildren[i]);
+    }
+
+    // Update/add children
+    for (let i = 0; i < toChildren.length; i++) {
+      if (i >= fromChildren.length) {
+        // Add new child
+        fromNode.appendChild(toChildren[i].cloneNode(true));
+      } else {
+        // Morph existing child
+        morphNode(fromChildren[i], toChildren[i]);
+      }
+    }
+  }
+}
+
 async function roverEvent(event, componentId, eventName, eventData) {
   event.preventDefault();
 
@@ -361,10 +420,27 @@ async function roverEvent(event, componentId, eventName, eventData) {
     component.state = result.state;
     container.dataset.roverState = JSON.stringify(result.state);
 
-    // Update HTML (preserve the container)
+    // Morph DOM - only update what changed
     const tempDiv = document.createElement('div');
     tempDiv.innerHTML = result.html;
-    container.innerHTML = tempDiv.innerHTML;
+
+    // Morph each child
+    const newChildren = Array.from(tempDiv.childNodes);
+    const oldChildren = Array.from(container.childNodes);
+
+    // Remove extra children
+    for (let i = oldChildren.length - 1; i >= newChildren.length; i--) {
+      container.removeChild(oldChildren[i]);
+    }
+
+    // Update/add children
+    for (let i = 0; i < newChildren.length; i++) {
+      if (i >= oldChildren.length) {
+        container.appendChild(newChildren[i].cloneNode(true));
+      } else {
+        morphNode(oldChildren[i], newChildren[i]);
+      }
+    }
 
   } catch (error) {
     console.error('[Rover] Component event error:', error);
