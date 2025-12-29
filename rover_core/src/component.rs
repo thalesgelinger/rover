@@ -2,10 +2,14 @@ use mlua::{Lua, Table, Value, Function};
 use std::sync::Mutex;
 use std::collections::HashMap;
 use uuid::Uuid;
+use serde::{Serialize, Deserialize};
 
 /// Global registry of component definitions
 /// Maps component type names to their definition tables
 static COMPONENT_REGISTRY: Mutex<Option<HashMap<String, ComponentDefinition>>> = Mutex::new(None);
+
+/// Global registry of component instances (tracks last rendered HTML)
+static INSTANCE_REGISTRY: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 #[derive(Clone)]
 pub struct ComponentDefinition {
@@ -14,17 +18,43 @@ pub struct ComponentDefinition {
     pub events: HashMap<String, Function>,
 }
 
-/// Initialize the component registry
-fn init_registry() {
-    let mut registry = COMPONENT_REGISTRY.lock().unwrap();
-    if registry.is_none() {
-        *registry = Some(HashMap::new());
+#[derive(Serialize, Deserialize)]
+pub struct ComponentPatch {
+    pub state: serde_json::Value,
+    pub html: Option<String>,  // Full HTML if first render or major change
+    pub patches: Option<Vec<HtmlPatch>>,  // Minimal patches if small changes
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum HtmlPatch {
+    #[serde(rename = "replace")]
+    ReplaceText { selector: String, text: String },
+    #[serde(rename = "set_attr")]
+    SetAttribute { selector: String, attr: String, value: String },
+    #[serde(rename = "remove_attr")]
+    RemoveAttribute { selector: String, attr: String },
+    #[serde(rename = "replace_html")]
+    ReplaceInnerHTML { selector: String, html: String },
+}
+
+/// Initialize the registries
+fn init_registries() {
+    let mut comp_registry = COMPONENT_REGISTRY.lock().unwrap();
+    if comp_registry.is_none() {
+        *comp_registry = Some(HashMap::new());
+    }
+    drop(comp_registry);
+
+    let mut inst_registry = INSTANCE_REGISTRY.lock().unwrap();
+    if inst_registry.is_none() {
+        *inst_registry = Some(HashMap::new());
     }
 }
 
 /// Register a component definition
 pub fn register_component(name: String, definition: ComponentDefinition) {
-    init_registry();
+    init_registries();
     let mut registry = COMPONENT_REGISTRY.lock().unwrap();
     if let Some(ref mut map) = *registry {
         map.insert(name, definition);
@@ -33,9 +63,25 @@ pub fn register_component(name: String, definition: ComponentDefinition) {
 
 /// Get a component definition by name
 pub fn get_component(name: &str) -> Option<ComponentDefinition> {
-    init_registry();
+    init_registries();
     let registry = COMPONENT_REGISTRY.lock().unwrap();
     registry.as_ref().and_then(|map| map.get(name).cloned())
+}
+
+/// Store rendered HTML for an instance
+fn store_instance_html(instance_id: &str, html: &str) {
+    init_registries();
+    let mut registry = INSTANCE_REGISTRY.lock().unwrap();
+    if let Some(ref mut map) = *registry {
+        map.insert(instance_id.to_string(), html.to_string());
+    }
+}
+
+/// Get last rendered HTML for an instance
+fn get_instance_html(instance_id: &str) -> Option<String> {
+    init_registries();
+    let registry = INSTANCE_REGISTRY.lock().unwrap();
+    registry.as_ref().and_then(|map| map.get(instance_id).cloned())
 }
 
 /// Create the rover.component() function
@@ -147,6 +193,9 @@ fn render_component_instance(lua: &Lua, builder: Table, props: Option<Table>) ->
 
     // Process HTML to wire up event handlers
     let processed_html = process_html_events(&html, &instance_id, &event_names)?;
+
+    // Store the rendered HTML for this instance (for future diffing)
+    store_instance_html(&instance_id, &processed_html);
 
     // Generate the component wrapper with state and JavaScript
     let output = format!(
@@ -291,7 +340,21 @@ pub fn handle_component_event(
     // Process HTML to wire up event handlers (same as initial render)
     let processed_html = process_html_events(&html, instance_id, &event_names)?;
 
-    Ok((new_state, processed_html))
+    // Compare with previous HTML to avoid sending unchanged HTML
+    let old_html = get_instance_html(instance_id);
+    let html_changed = old_html.as_ref().map_or(true, |old| old != &processed_html);
+
+    // Store new HTML for future comparisons
+    store_instance_html(instance_id, &processed_html);
+
+    // Only return HTML if it actually changed
+    let html_to_send = if html_changed {
+        processed_html
+    } else {
+        String::new()  // Empty string indicates no HTML change
+    };
+
+    Ok((new_state, html_to_send))
 }
 
 /// Generate the global rover event handler JavaScript
@@ -420,27 +483,31 @@ async function roverEvent(event, componentId, eventName, eventData) {
     component.state = result.state;
     container.dataset.roverState = JSON.stringify(result.state);
 
-    // Morph DOM - only update what changed
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = result.html;
+    // Only morph DOM if HTML actually changed (server sends empty string if unchanged)
+    if (result.html && result.html.length > 0) {
+      // Morph DOM - only update what changed
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = result.html;
 
-    // Morph each child
-    const newChildren = Array.from(tempDiv.childNodes);
-    const oldChildren = Array.from(container.childNodes);
+      // Morph each child
+      const newChildren = Array.from(tempDiv.childNodes);
+      const oldChildren = Array.from(container.childNodes);
 
-    // Remove extra children
-    for (let i = oldChildren.length - 1; i >= newChildren.length; i--) {
-      container.removeChild(oldChildren[i]);
-    }
+      // Remove extra children
+      for (let i = oldChildren.length - 1; i >= newChildren.length; i--) {
+        container.removeChild(oldChildren[i]);
+      }
 
-    // Update/add children
-    for (let i = 0; i < newChildren.length; i++) {
-      if (i >= oldChildren.length) {
-        container.appendChild(newChildren[i].cloneNode(true));
-      } else {
-        morphNode(oldChildren[i], newChildren[i]);
+      // Update/add children
+      for (let i = 0; i < newChildren.length; i++) {
+        if (i >= oldChildren.length) {
+          container.appendChild(newChildren[i].cloneNode(true));
+        } else {
+          morphNode(oldChildren[i], newChildren[i]);
+        }
       }
     }
+    // If HTML unchanged, DOM stays as-is (massive bandwidth savings!)
 
   } catch (error) {
     console.error('[Rover] Component event error:', error);
