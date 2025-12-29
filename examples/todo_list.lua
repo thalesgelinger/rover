@@ -7,30 +7,21 @@ local TodoList = rover.component()
 function TodoList.init()
     return {
         todos = {},
-        nextId = 1,
-        input = ""
+        nextId = 1
     }
 end
 
--- Update input field
-function TodoList.updateInput(state, value)
-    return {
-        todos = state.todos,
-        nextId = state.nextId,
-        input = value
-    }
-end
-
--- Add a new todo
-function TodoList.addTodo(state)
-    if state.input == "" then
+-- Add a new todo with the provided text
+function TodoList.addTodo(state, todoText)
+    -- Don't add empty todos
+    if todoText == "" or todoText == nil then
         return state
     end
 
     -- Create new todo
     local newTodo = {
         id = state.nextId,
-        text = state.input,
+        text = todoText,
         completed = false
     }
 
@@ -43,8 +34,7 @@ function TodoList.addTodo(state)
 
     return {
         todos = newTodos,
-        nextId = state.nextId + 1,
-        input = ""
+        nextId = state.nextId + 1
     }
 end
 
@@ -59,8 +49,7 @@ function TodoList.removeTodo(state, todoId)
 
     return {
         todos = newTodos,
-        nextId = state.nextId,
-        input = state.input
+        nextId = state.nextId
     }
 end
 
@@ -81,8 +70,7 @@ function TodoList.toggleTodo(state, todoId)
 
     return {
         todos = newTodos,
-        nextId = state.nextId,
-        input = state.input
+        nextId = state.nextId
     }
 end
 
@@ -97,8 +85,7 @@ function TodoList.clearCompleted(state)
 
     return {
         todos = newTodos,
-        nextId = state.nextId,
-        input = state.input
+        nextId = state.nextId
     }
 end
 
@@ -112,7 +99,6 @@ function TodoList.render(state)
     end
 
     local data = {
-        input = state.input,
         todos = state.todos,
         hasTodos = #state.todos > 0,
         activeCount = activeCount
@@ -126,13 +112,13 @@ function TodoList.render(state)
             <div style="display: flex; gap: 10px; margin-bottom: 20px;">
                 <input
                     type="text"
-                    oninput="updateInput"
-                    value="{{ input }}"
+                    id="todoInput"
                     placeholder="What needs to be done?"
                     style="flex: 1; padding: 12px; border: 2px solid #ddd; border-radius: 4px; font-size: 16px;"
+                    onkeypress="if(event.key === 'Enter') handleAddTodo(event, this)"
                 />
                 <button
-                    onclick="addTodo"
+                    onclick="handleAddTodo(event, this)"
                     style="padding: 12px 24px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold;"
                 >
                     Add
@@ -146,7 +132,7 @@ function TodoList.render(state)
                         <li style="display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 8px; {{ if todo.completed then }}background: #f0f0f0;{{ end }}">
                             <input
                                 type="checkbox"
-                                onchange="toggleTodo({{ todo.id }})"
+                                onchange="handleToggle(event, this, {{ todo.id }})"
                                 {{ if todo.completed then }}checked{{ end }}
                                 style="width: 20px; height: 20px; cursor: pointer;"
                             />
@@ -181,6 +167,38 @@ function TodoList.render(state)
                 </p>
             {{ end }}
         </div>
+
+        <script>
+        function handleAddTodo(event, element) {
+            // Get the input element
+            const input = document.getElementById('todoInput');
+            const todoText = input.value.trim();
+
+            // Don't add empty todos
+            if (!todoText) {
+                return;
+            }
+
+            // Get component ID
+            const container = element.closest('[data-rover-component]');
+            const componentId = container.getAttribute('data-rover-component');
+
+            // Call server with todo text
+            roverEvent(event, componentId, 'addTodo', todoText);
+
+            // Clear input immediately for better UX
+            input.value = '';
+        }
+
+        function handleToggle(event, checkbox, todoId) {
+            // Get component ID
+            const container = checkbox.closest('[data-rover-component]');
+            const componentId = container.getAttribute('data-rover-component');
+
+            // Call server with todo ID
+            roverEvent(event, componentId, 'toggleTodo', todoId);
+        }
+        </script>
     ]=]
 end
 
