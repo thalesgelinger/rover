@@ -298,10 +298,9 @@ pub fn handle_component_event(
 pub fn generate_rover_client_script() -> String {
     r#"<script>
 window.__roverComponents = window.__roverComponents || {};
+window.__roverDebounceTimers = window.__roverDebounceTimers || {};
 
-async function roverEvent(event, componentId, eventName, eventData) {
-  event.preventDefault();
-
+async function roverEventImmediate(event, componentId, eventName, eventData) {
   const container = document.getElementById('rover-' + componentId);
   if (!container) {
     console.error('[Rover] Component container not found:', componentId);
@@ -327,14 +326,13 @@ async function roverEvent(event, componentId, eventName, eventData) {
 
   // Add loading state
   const target = event.target;
-  const originalDisabled = target.disabled;
   const originalCursor = container.style.cursor;
   const originalOpacity = container.style.opacity;
 
   container.classList.add('rover-loading');
   container.style.cursor = 'wait';
   container.style.opacity = '0.7';
-  if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') {
+  if (target.tagName === 'BUTTON') {
     target.disabled = true;
   }
 
@@ -379,8 +377,40 @@ async function roverEvent(event, componentId, eventName, eventData) {
     container.classList.remove('rover-loading');
     container.style.cursor = originalCursor;
     container.style.opacity = originalOpacity;
-    // Note: We don't re-enable the target because it may have been replaced by new HTML
   }
+}
+
+async function roverEvent(event, componentId, eventName, eventData) {
+  event.preventDefault();
+
+  // Determine if this is an input event that should be debounced
+  const shouldDebounce = event.type === 'input';
+
+  if (!shouldDebounce) {
+    // Execute immediately for click, change, submit events
+    return roverEventImmediate(event, componentId, eventName, eventData);
+  }
+
+  // Debounce input events (300ms delay)
+  const debounceKey = componentId + '-' + eventName;
+
+  // Update component state immediately for responsive UI
+  const component = window.__roverComponents[componentId];
+  if (component && event.target && event.target.value !== undefined) {
+    // Store the pending value locally (don't update DOM yet)
+    component.pendingInput = event.target.value;
+  }
+
+  // Clear existing timer
+  if (window.__roverDebounceTimers[debounceKey]) {
+    clearTimeout(window.__roverDebounceTimers[debounceKey]);
+  }
+
+  // Set new timer
+  window.__roverDebounceTimers[debounceKey] = setTimeout(() => {
+    delete window.__roverDebounceTimers[debounceKey];
+    roverEventImmediate(event, componentId, eventName, eventData);
+  }, 300);
 }
 </script>"#.to_string()
 }
