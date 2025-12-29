@@ -22,9 +22,6 @@ hyper-util = { version = "0.1", features = ["full"] }
 smallvec = "1.15.1"
 matchit = "0.8"
 rover-openapi = {path = "../rover-openapi"}
-hyper-tungstenite = "0.15"
-tokio-tungstenite = "0.24"
-futures-util = "0.3"
 
 
 [lib]

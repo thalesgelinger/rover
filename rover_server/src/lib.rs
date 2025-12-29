@@ -3,7 +3,6 @@ mod fast_router;
 mod response;
 pub mod http_task;
 mod event_loop;
-pub mod websocket;
 
 pub use http_task::{HttpTask, HttpResponse};
 pub use response::RoverResponse;
@@ -207,21 +206,6 @@ async fn handler(
     req: Request<hyper::body::Incoming>,
     tx: mpsc::Sender<event_loop::LuaRequest>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Check if this is a WebSocket upgrade request for /__rover/ws
-    if req.uri().path() == "/__rover/ws" && hyper_tungstenite::is_upgrade_request(&req) {
-        // Handle WebSocket upgrade
-        match websocket::handle_websocket_upgrade(req).await {
-            Ok(ws_response) => {
-                return Ok(ws_response);
-            }
-            Err(status) => {
-                let mut response = Response::new(Full::new(Bytes::from("WebSocket upgrade failed")));
-                *response.status_mut() = status;
-                return Ok(response);
-            }
-        }
-    }
-
     let (parts, body_stream) = req.into_parts();
 
     let headers: SmallVec<[(Bytes, Bytes); 8]> = if parts.headers.is_empty() {
