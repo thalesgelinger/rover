@@ -18,6 +18,7 @@ smallvec = "1.15.1"
 reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1.11", features = ["v4"] }
 regex = "1.11"
+similar = "2.6"
 
 [dev-dependencies]
 tempfile = "3.8"

@@ -314,17 +314,50 @@ impl Server for Table {
 
             // Handle the event
             match handle_component_event(lua, &instance_id, &event_name, state, data) {
-                Ok((new_state, html)) => {
-                    // Return JSON response with new state and HTML
+                Ok((new_state, patch)) => {
+                    // Return JSON response with new state and patch (html + optional patches)
                     let response = lua.create_table()?;
                     response.set("state", new_state)?;
-                    response.set("html", html)?;
-
+                    response.set("html", patch.html)?;
+                    
+                    // Convert patches to Lua table
+                    if let Some(patches) = patch.patches {
+                        let patches_table = lua.create_table()?;
+                        for (i, p) in patches.iter().enumerate() {
+                            let patch_table = lua.create_table()?;
+                            match p {
+                                crate::component::HtmlPatch::ReplaceText { selector, text } => {
+                                    patch_table.set("type", "replace")?;
+                                    patch_table.set("selector", selector.as_str())?;
+                                    patch_table.set("text", text.as_str())?;
+                                }
+                                crate::component::HtmlPatch::SetAttribute { selector, attr, value } => {
+                                    patch_table.set("type", "set_attr")?;
+                                    patch_table.set("selector", selector.as_str())?;
+                                    patch_table.set("attr", attr.as_str())?;
+                                    patch_table.set("value", value.as_str())?;
+                                }
+                                crate::component::HtmlPatch::RemoveAttribute { selector, attr } => {
+                                    patch_table.set("type", "remove_attr")?;
+                                    patch_table.set("selector", selector.as_str())?;
+                                    patch_table.set("attr", attr.as_str())?;
+                                }
+                                crate::component::HtmlPatch::ReplaceInnerHTML { selector, html } => {
+                                    patch_table.set("type", "replace_html")?;
+                                    patch_table.set("selector", selector.as_str())?;
+                                    patch_table.set("html", html.as_str())?;
+                                }
+                            }
+                            patches_table.set(i + 1, patch_table)?;
+                        }
+                        response.set("patches", patches_table)?;
+                    }
+                    
                     use rover_server::to_json::ToJson;
                     let json = response.to_json_string().map_err(|e| {
                         mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
                     })?;
-
+                    
                     Ok(RoverResponse::json(200, Bytes::from(json), None))
                 }
                 Err(e) => {

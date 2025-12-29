@@ -2,6 +2,7 @@ mod app_type;
 mod auto_table;
 mod guard;
 pub mod html;
+mod html_diff;
 mod http;
 mod inspect;
 mod io;

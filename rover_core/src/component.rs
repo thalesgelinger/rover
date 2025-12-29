@@ -3,7 +3,10 @@ use std::sync::Mutex;
 use std::collections::HashMap;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
+use crate::html_diff;
 
+
+const ALPINE_JS_MINIFIED: &str = include_str!("alpine.bundle.js");
 /// Global registry of component definitions
 /// Maps component type names to their definition tables
 static COMPONENT_REGISTRY: Mutex<Option<HashMap<String, ComponentDefinition>>> = Mutex::new(None);
@@ -23,6 +26,23 @@ pub struct ComponentPatch {
     pub state: serde_json::Value,
     pub html: Option<String>,  // Full HTML if first render or major change
     pub patches: Option<Vec<HtmlPatch>>,  // Minimal patches if small changes
+}
+
+impl mlua::IntoLua for ComponentPatch {
+    fn into_lua(self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
+        let table = lua.create_table()?;
+        table.set("state", serde_json::to_string(&self.state).unwrap_or_else(|_| "null".to_string()))?;
+        if let Some(html) = self.html {
+            table.set("html", html)?;
+        }
+        if let Some(patches) = self.patches {
+            let patches_json = serde_json::to_string(&patches).map_err(|e| {
+                mlua::Error::RuntimeError(format!("Failed to serialize patches: {}", e))
+            })?;
+            table.set("patches", patches_json)?;
+        }
+        Ok(mlua::Value::Table(table))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -311,7 +331,7 @@ pub fn handle_component_event(
     event_name: &str,
     current_state: Value,
     event_data: Option<Value>,
-) -> mlua::Result<(Value, String)> {
+) -> mlua::Result<(Value, ComponentPatch)> {
     // Get component definition
     let definition = get_component(instance_id)
         .ok_or_else(|| mlua::Error::RuntimeError(
@@ -340,188 +360,66 @@ pub fn handle_component_event(
     // Process HTML to wire up event handlers (same as initial render)
     let processed_html = process_html_events(&html, instance_id, &event_names)?;
 
-    // Compare with previous HTML to avoid sending unchanged HTML
+    // Get previous HTML for diffing
     let old_html = get_instance_html(instance_id);
     let html_changed = old_html.as_ref().map_or(true, |old| old != &processed_html);
 
     // Store new HTML for future comparisons
     store_instance_html(instance_id, &processed_html);
 
-    // Only return HTML if it actually changed
-    let html_to_send = if html_changed {
-        processed_html
+    // Generate patches if HTML changed
+    let patches = if html_changed {
+        if let Some(old) = old_html {
+            html_diff::diff_html(&old, &processed_html)
+        } else {
+            None
+        }
     } else {
-        String::new()  // Empty string indicates no HTML change
+        Some(Vec::new())
     };
 
-    Ok((new_state, html_to_send))
+    // Serialize state to JSON
+    let state_json = lua_value_to_json(_lua, &new_state)?;
+    let state_value: serde_json::Value = serde_json::from_str(&state_json)
+        .map_err(|e| mlua::Error::RuntimeError(format!("Failed to parse state JSON: {}", e)))?;
+
+    // Create patch response
+    let patch = if let Some(patch_list) = patches {
+        // We have patches
+        ComponentPatch {
+            state: state_value,
+            html: Some(processed_html.clone()),
+            patches: Some(patch_list),
+        }
+    } else if html_changed {
+        // No patches but HTML changed - send full HTML
+        ComponentPatch {
+            state: state_value,
+            html: Some(processed_html),
+            patches: None,
+        }
+    } else {
+        // No change at all
+        ComponentPatch {
+            state: state_value,
+            html: None,
+            patches: None,
+        }
+    };
+
+    Ok((new_state, patch))
 }
+
+const ROVER_CLIENT_JS: &str = include_str!("rover.client.js");
 
 /// Generate the global rover event handler JavaScript
 pub fn generate_rover_client_script() -> String {
-    r#"<script>
-window.__roverComponents = window.__roverComponents || {};
-
-// DOM morphing - only update what changed (like morphdom/Phoenix LiveView)
-function morphNode(fromNode, toNode) {
-  // Skip morphing if nodes are identical
-  if (fromNode.isEqualNode(toNode)) {
-    return;
-  }
-
-  // Text nodes - just update if different
-  if (fromNode.nodeType === Node.TEXT_NODE) {
-    if (fromNode.nodeValue !== toNode.nodeValue) {
-      fromNode.nodeValue = toNode.nodeValue;
-    }
-    return;
-  }
-
-  // Element nodes
-  if (fromNode.nodeType === Node.ELEMENT_NODE && toNode.nodeType === Node.ELEMENT_NODE) {
-    // Update attributes
-    const fromAttrs = fromNode.attributes;
-    const toAttrs = toNode.attributes;
-
-    // Remove old attributes
-    for (let i = fromAttrs.length - 1; i >= 0; i--) {
-      const attr = fromAttrs[i];
-      if (!toNode.hasAttribute(attr.name)) {
-        fromNode.removeAttribute(attr.name);
-      }
-    }
-
-    // Add/update attributes
-    for (let i = 0; i < toAttrs.length; i++) {
-      const attr = toAttrs[i];
-      if (fromNode.getAttribute(attr.name) !== attr.value) {
-        fromNode.setAttribute(attr.name, attr.value);
-      }
-    }
-
-    // Morph children
-    const fromChildren = Array.from(fromNode.childNodes);
-    const toChildren = Array.from(toNode.childNodes);
-
-    // Remove extra children
-    for (let i = fromChildren.length - 1; i >= toChildren.length; i--) {
-      fromNode.removeChild(fromChildren[i]);
-    }
-
-    // Update/add children
-    for (let i = 0; i < toChildren.length; i++) {
-      if (i >= fromChildren.length) {
-        // Add new child
-        fromNode.appendChild(toChildren[i].cloneNode(true));
-      } else {
-        // Morph existing child
-        morphNode(fromChildren[i], toChildren[i]);
-      }
-    }
-  }
-}
-
-async function roverEvent(event, componentId, eventName, eventData) {
-  event.preventDefault();
-
-  const container = document.getElementById('rover-' + componentId);
-  if (!container) {
-    console.error('[Rover] Component container not found:', componentId);
-    return;
-  }
-
-  const component = window.__roverComponents[componentId];
-  if (!component) {
-    console.error('[Rover] Component not found:', componentId);
-    return;
-  }
-
-  // Auto-extract value from form inputs if no eventData provided
-  let data = eventData;
-  if (data === undefined && event.target) {
-    const target = event.target;
-    if (target.type === 'checkbox') {
-      data = target.checked;
-    } else if (target.value !== undefined) {
-      data = target.value;
-    }
-  }
-
-  // Add loading state
-  const target = event.target;
-  const originalCursor = container.style.cursor;
-  const originalOpacity = container.style.opacity;
-
-  container.classList.add('rover-loading');
-  container.style.cursor = 'wait';
-  container.style.opacity = '0.7';
-  if (target.tagName === 'BUTTON') {
-    target.disabled = true;
-  }
-
-  try {
-    const response = await fetch('/__rover/component-event', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        instanceId: componentId,
-        eventName: eventName,
-        state: component.state,
-        data: data
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error('[Rover] Component event failed: ' + response.statusText);
-    }
-
-    const result = await response.json();
-
-    // Update state
-    component.state = result.state;
-    container.dataset.roverState = JSON.stringify(result.state);
-
-    // Only morph DOM if HTML actually changed (server sends empty string if unchanged)
-    if (result.html && result.html.length > 0) {
-      // Morph DOM - only update what changed
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = result.html;
-
-      // Morph each child
-      const newChildren = Array.from(tempDiv.childNodes);
-      const oldChildren = Array.from(container.childNodes);
-
-      // Remove extra children
-      for (let i = oldChildren.length - 1; i >= newChildren.length; i--) {
-        container.removeChild(oldChildren[i]);
-      }
-
-      // Update/add children
-      for (let i = 0; i < newChildren.length; i++) {
-        if (i >= oldChildren.length) {
-          container.appendChild(newChildren[i].cloneNode(true));
-        } else {
-          morphNode(oldChildren[i], newChildren[i]);
-        }
-      }
-    }
-    // If HTML unchanged, DOM stays as-is (massive bandwidth savings!)
-
-  } catch (error) {
-    console.error('[Rover] Component event error:', error);
-    // Show error state visually
-    container.style.border = '2px solid #f44336';
-    setTimeout(() => {
-      container.style.border = '';
-    }, 2000);
-  } finally {
-    // Remove loading state
-    container.classList.remove('rover-loading');
-    container.style.cursor = originalCursor;
-    container.style.opacity = originalOpacity;
-  }
-}
-</script>"#.to_string()
+    // Order matters:
+    // 1. First load rover client (sets up alpine:init listener and transforms)
+    // 2. Then load Alpine.js (will fire alpine:init which we're listening for)
+    format!(
+        "<script>{}</script>\n<script>{}</script>",
+        ROVER_CLIENT_JS,
+        ALPINE_JS_MINIFIED
+    )
 }

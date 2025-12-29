@@ -105,20 +105,26 @@ function TodoList.render(state)
     }
 
     return rover.html(data) [=[
-        <div style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">
+        <div rover-data="{ todoText: '' }" style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">
             <h1 style="text-align: center; color: #333;">📝 Rover Todo List</h1>
 
             <!-- Input form -->
             <div style="display: flex; gap: 10px; margin-bottom: 20px;">
                 <input
                     type="text"
-                    id="todoInput"
                     placeholder="What needs to be done?"
                     style="flex: 1; padding: 12px; border: 2px solid #ddd; border-radius: 4px; font-size: 16px;"
-                    onkeypress="if(event.key === 'Enter') handleAddTodo(event, this)"
+                    rover-model="todoText"
+                    @keydown.enter.prevent="
+                        const text = (todoText || '').trim();
+                        if (!text) return;
+                        $rover.call('addTodo', text);
+                        todoText = '';
+                    "
                 />
                 <button
-                    onclick="handleAddTodo(event, this)"
+                    rover-click="addTodo(todoText && todoText.trim())"
+                    @click="todoText = ''"
                     style="padding: 12px 24px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold;"
                 >
                     Add
@@ -132,7 +138,7 @@ function TodoList.render(state)
                         <li style="display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 8px; {{ if todo.completed then }}background: #f0f0f0;{{ end }}">
                             <input
                                 type="checkbox"
-                                onchange="handleToggle(event, this, {{ todo.id }})"
+                                rover-click="toggleTodo({{ todo.id }})"
                                 {{ if todo.completed then }}checked{{ end }}
                                 style="width: 20px; height: 20px; cursor: pointer;"
                             />
@@ -140,7 +146,7 @@ function TodoList.render(state)
                                 {{ todo.text }}
                             </span>
                             <button
-                                onclick="removeTodo({{ todo.id }})"
+                                rover-click="removeTodo({{ todo.id }})"
                                 style="padding: 6px 12px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer;"
                             >
                                 Delete
@@ -155,7 +161,7 @@ function TodoList.render(state)
                         {{ activeCount }} item{{ if activeCount ~= 1 then }}s{{ end }} left
                     </span>
                     <button
-                        onclick="clearCompleted"
+                        rover-click="clearCompleted"
                         style="padding: 8px 16px; background: #ff9800; color: white; border: none; border-radius: 4px; cursor: pointer;"
                     >
                         Clear Completed
@@ -167,38 +173,6 @@ function TodoList.render(state)
                 </p>
             {{ end }}
         </div>
-
-        <script>
-        function handleAddTodo(event, element) {
-            // Get the input element
-            const input = document.getElementById('todoInput');
-            const todoText = input.value.trim();
-
-            // Don't add empty todos
-            if (!todoText) {
-                return;
-            }
-
-            // Get component ID
-            const container = element.closest('[data-rover-component]');
-            const componentId = container.getAttribute('data-rover-component');
-
-            // Call server with todo text
-            roverEvent(event, componentId, 'addTodo', todoText);
-
-            // Clear input immediately for better UX
-            input.value = '';
-        }
-
-        function handleToggle(event, checkbox, todoId) {
-            // Get component ID
-            const container = checkbox.closest('[data-rover-component]');
-            const componentId = container.getAttribute('data-rover-component');
-
-            // Call server with todo ID
-            roverEvent(event, componentId, 'toggleTodo', todoId);
-        }
-        </script>
     ]=]
 end
 
