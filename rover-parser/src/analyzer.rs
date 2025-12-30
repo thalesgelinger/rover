@@ -247,23 +247,23 @@ impl Analyzer {
     }
 
     pub fn walk(&mut self, node: Node) {
-        // Track scopes
+        // Track scopes with range information
         let pushed_scope = match node.kind() {
             "chunk" => {
-                self.push_scope(ScopeType::File);
+                self.push_scope_with_range(ScopeType::File, node);
                 true
             }
             "function_declaration" | "function_definition" => {
-                self.push_scope(ScopeType::Function);
+                self.push_scope_with_range(ScopeType::Function, node);
                 self.register_function_params(node);
                 true
             }
             "do_statement" | "while_statement" | "if_statement" => {
-                self.push_scope(ScopeType::Block);
+                self.push_scope_with_range(ScopeType::Block, node);
                 true
             }
             "for_statement" | "repeat_statement" => {
-                self.push_scope(ScopeType::Repeat);
+                self.push_scope_with_range(ScopeType::Repeat, node);
                 self.register_loop_variables(node);
                 true
             }
@@ -1977,6 +1977,18 @@ impl Analyzer {
 
     pub fn push_scope(&mut self, scope_type: ScopeType) {
         self.symbol_table.push_scope(scope_type);
+    }
+
+    pub fn push_scope_with_range(&mut self, scope_type: ScopeType, node: Node) {
+        let start = node.start_position();
+        let end = node.end_position();
+        let range = crate::symbol::SourceRange::new(
+            start.row,
+            start.column,
+            end.row,
+            end.column,
+        );
+        self.symbol_table.push_scope_with_range(scope_type, range);
     }
 
     pub fn pop_scope(&mut self) {

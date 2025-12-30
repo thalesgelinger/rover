@@ -35,6 +35,7 @@ pub struct Scope {
     pub scope_type: ScopeType,
     pub parent: Option<usize>,
     pub symbols: HashMap<String, Symbol>,
+    pub range: Option<SourceRange>,  // Range of the scope in source code
 }
 
 impl Scope {
@@ -44,6 +45,28 @@ impl Scope {
             scope_type,
             parent,
             symbols: HashMap::new(),
+            range: None,
+        }
+    }
+
+    pub fn new_with_range(id: usize, scope_type: ScopeType, parent: Option<usize>, range: SourceRange) -> Self {
+        Self {
+            id,
+            scope_type,
+            parent,
+            symbols: HashMap::new(),
+            range: Some(range),
+        }
+    }
+
+    pub fn set_range(&mut self, range: SourceRange) {
+        self.range = Some(range);
+    }
+
+    pub fn contains_position(&self, line: usize, column: usize) -> bool {
+        match &self.range {
+            Some(r) => r.contains(line, column),
+            None => true, // Global scope contains everything
         }
     }
 
@@ -82,6 +105,15 @@ impl SymbolTable {
         self.counter += 1;
         let parent = self.current_scope;
         let scope = Scope::new(id, scope_type, parent);
+        self.scopes.push(scope);
+        self.current_scope = Some(id);
+    }
+
+    pub fn push_scope_with_range(&mut self, scope_type: ScopeType, range: SourceRange) {
+        let id = self.counter;
+        self.counter += 1;
+        let parent = self.current_scope;
+        let scope = Scope::new_with_range(id, scope_type, parent, range);
         self.scopes.push(scope);
         self.current_scope = Some(id);
     }
@@ -152,10 +184,44 @@ impl SymbolTable {
         None
     }
 
-    pub fn resolve_symbol_at_position(&self, name: &str, _line: usize, _column: usize) -> Option<&Symbol> {
-        // For now, use global resolution since we don't track scope ranges
-        // TODO: Track scope ranges and find the innermost scope containing the position
-        self.resolve_symbol_global(name)
+    pub fn resolve_symbol_at_position(&self, name: &str, line: usize, column: usize) -> Option<&Symbol> {
+        // Find innermost scope containing the position
+        let scope_id = self.find_innermost_scope_at(line, column)?;
+        self.resolve_symbol_from_scope(name, scope_id)
+    }
+
+    /// Find the innermost scope that contains the given position
+    fn find_innermost_scope_at(&self, line: usize, column: usize) -> Option<usize> {
+        let mut best_scope: Option<usize> = None;
+        let mut best_depth: usize = 0;
+
+        for scope in &self.scopes {
+            if scope.contains_position(line, column) {
+                let depth = self.scope_depth(scope.id);
+                if depth >= best_depth {
+                    best_depth = depth;
+                    best_scope = Some(scope.id);
+                }
+            }
+        }
+
+        // Fall back to global scope if nothing found
+        best_scope.or(Some(0))
+    }
+
+    /// Calculate depth of a scope (distance from global)
+    fn scope_depth(&self, scope_id: usize) -> usize {
+        let mut depth = 0;
+        let mut current = scope_id;
+        while let Some(scope) = self.scopes.get(current) {
+            if let Some(parent) = scope.parent {
+                depth += 1;
+                current = parent;
+            } else {
+                break;
+            }
+        }
+        depth
     }
 
     pub fn get_current_scope(&self) -> Option<&Scope> {
@@ -203,6 +269,23 @@ pub struct SourcePosition {
 pub struct SourceRange {
     pub start: SourcePosition,
     pub end: SourcePosition,
+}
+
+impl SourceRange {
+    pub fn new(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Self {
+        Self {
+            start: SourcePosition { line: start_line, column: start_col },
+            end: SourcePosition { line: end_line, column: end_col },
+        }
+    }
+
+    pub fn contains(&self, line: usize, column: usize) -> bool {
+        let after_start = (line > self.start.line) 
+            || (line == self.start.line && column >= self.start.column);
+        let before_end = (line < self.end.line) 
+            || (line == self.end.line && column <= self.end.column);
+        after_start && before_end
+    }
 }
 
 #[cfg(test)]
@@ -295,5 +378,58 @@ mod tests {
 
         let resolved = table.resolve_symbol("x").unwrap();
         assert_eq!(resolved.range.start.line, 1);
+    }
+
+    #[test]
+    fn test_resolve_symbol_at_position() {
+        let mut table = SymbolTable::new();
+
+        // Global scope (no range = contains everything)
+        let global_x = make_symbol("x", SymbolKind::Global, 0, 0);
+        table.insert_symbol(global_x);
+
+        // Function scope at lines 2-10
+        let func_range = SourceRange::new(2, 0, 10, 3);
+        table.push_scope_with_range(ScopeType::Function, func_range);
+        let func_x = make_symbol("x", SymbolKind::Variable, 3, 4);
+        table.insert_symbol(func_x);
+
+        // Inner block at lines 5-8
+        let block_range = SourceRange::new(5, 0, 8, 3);
+        table.push_scope_with_range(ScopeType::Block, block_range);
+        let block_x = make_symbol("x", SymbolKind::Variable, 6, 8);
+        table.insert_symbol(block_x);
+
+        // Query at line 6 (inside block) - should find block_x
+        let resolved_in_block = table.resolve_symbol_at_position("x", 6, 10).unwrap();
+        assert_eq!(resolved_in_block.range.start.line, 6);
+
+        // Query at line 4 (inside function, outside block) - should find func_x
+        let resolved_in_func = table.resolve_symbol_at_position("x", 4, 0).unwrap();
+        assert_eq!(resolved_in_func.range.start.line, 3);
+
+        // Query at line 15 (outside function) - should find global_x
+        let resolved_global = table.resolve_symbol_at_position("x", 15, 0).unwrap();
+        assert_eq!(resolved_global.range.start.line, 0);
+    }
+
+    #[test]
+    fn test_source_range_contains() {
+        let range = SourceRange::new(5, 10, 10, 20);
+
+        // Inside
+        assert!(range.contains(7, 0));
+        assert!(range.contains(5, 15));
+        assert!(range.contains(10, 10));
+
+        // At boundaries
+        assert!(range.contains(5, 10));
+        assert!(range.contains(10, 20));
+
+        // Outside
+        assert!(!range.contains(4, 0));
+        assert!(!range.contains(11, 0));
+        assert!(!range.contains(5, 5));
+        assert!(!range.contains(10, 25));
     }
 }

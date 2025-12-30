@@ -1204,6 +1204,8 @@ dependencies = [
  "tower-lsp",
  "tracing",
  "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-lua",
 ]
 
 [[package]]

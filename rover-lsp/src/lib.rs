@@ -1,14 +1,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use rover_parser::{
     FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, MemberKind, Route, SemanticModel,
     SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata, analyze, lookup_spec,
 };
+
+// Alias to avoid collision with rover_parser::SymbolKind
+use tower_lsp::lsp_types::SymbolKind as LspSymbolKind;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+const DEBOUNCE_MS: u64 = 75;
 
 #[derive(Clone, Debug)]
 struct DocumentState {
@@ -20,6 +27,10 @@ struct DocumentState {
 struct Backend {
     client: Client,
     documents: Arc<RwLock<HashMap<Url, DocumentState>>>,
+    /// Version counters for debouncing - tracks latest version per document
+    update_versions: Arc<RwLock<HashMap<Url, u64>>>,
+    /// Global counter for generating unique versions
+    version_counter: Arc<AtomicU64>,
 }
 
 impl Backend {
@@ -27,11 +38,66 @@ impl Backend {
         Self {
             client,
             documents: Arc::new(RwLock::new(HashMap::new())),
+            update_versions: Arc::new(RwLock::new(HashMap::new())),
+            version_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 
     async fn update_document(&self, uri: Url, text: String) {
-        // TODO: Add debouncing (75ms) using tokio::time::sleep and channel
+        // Assign a version to this update
+        let version = self.version_counter.fetch_add(1, Ordering::SeqCst);
+        
+        // Store the latest version for this document
+        {
+            let mut versions = self.update_versions.write().await;
+            versions.insert(uri.clone(), version);
+        }
+
+        // Clone what we need for the spawned task
+        let client = self.client.clone();
+        let documents = self.documents.clone();
+        let update_versions = self.update_versions.clone();
+        let uri_clone = uri.clone();
+
+        // Spawn debounced update task
+        tokio::spawn(async move {
+            // Wait for debounce period
+            tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS)).await;
+
+            // Check if this is still the latest version for this document
+            let current_version = {
+                let versions = update_versions.read().await;
+                versions.get(&uri_clone).copied()
+            };
+
+            // If a newer update came in, skip this one
+            if current_version != Some(version) {
+                return;
+            }
+
+            // Perform the actual analysis
+            let model = analyze(&text);
+            {
+                let mut docs = documents.write().await;
+                docs.insert(
+                    uri_clone.clone(),
+                    DocumentState {
+                        text: text.clone(),
+                        model: model.clone(),
+                    },
+                );
+            }
+
+            // Publish diagnostics
+            let diagnostics = diagnostics_from_model(&model);
+            client
+                .publish_diagnostics(uri_clone, diagnostics, None)
+                .await;
+        });
+    }
+
+    /// Update document immediately without debouncing (for did_open)
+    async fn update_document_immediate(&self, uri: Url, text: String) {
         let model = analyze(&text);
         {
             let mut docs = self.documents.write().await;
@@ -78,6 +144,9 @@ impl LanguageServer for Backend {
                     retrigger_characters: None,
                     work_done_progress_options: Default::default(),
                 }),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -95,12 +164,14 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.update_document(params.text_document.uri, params.text_document.text)
+        // Immediate update on open - user expects instant feedback
+        self.update_document_immediate(params.text_document.uri, params.text_document.text)
             .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.into_iter().last() {
+            // Debounced update on change - reduces CPU during typing
             self.update_document(params.text_document.uri, change.text)
                 .await;
         }
@@ -111,6 +182,10 @@ impl LanguageServer for Backend {
         {
             let mut docs = self.documents.write().await;
             docs.remove(&uri);
+        }
+        {
+            let mut versions = self.update_versions.write().await;
+            versions.remove(&uri);
         }
         self.client
             .publish_diagnostics(uri.clone(), Vec::new(), None)
@@ -235,6 +310,95 @@ impl LanguageServer for Backend {
             }
         }
         Ok(None)
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = params.text_document.uri;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            let ranges = compute_folding_ranges(&doc.text);
+            if !ranges.is_empty() {
+                return Ok(Some(ranges));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+        let range = params.range;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            let actions = compute_code_actions(&doc.text, &doc.model, range, uri.clone());
+            if !actions.is_empty() {
+                return Ok(Some(actions));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let query = params.query.to_lowercase();
+        let docs = self.documents.read().await;
+        let mut symbols = vec![];
+
+        for (uri, doc) in docs.iter() {
+            // Get functions from model
+            for func in &doc.model.functions {
+                if query.is_empty() || func.name.to_lowercase().contains(&query) {
+                    #[allow(deprecated)]
+                    symbols.push(SymbolInformation {
+                        name: func.name.clone(),
+                        kind: LspSymbolKind::FUNCTION,
+                        tags: None,
+                        deprecated: None,
+                        location: Location {
+                            uri: uri.clone(),
+                            range: source_range_to_range(Some(&func.range)),
+                        },
+                        container_name: None,
+                    });
+                }
+            }
+
+            // Get symbols from symbol table
+            for symbol in doc.model.symbol_table.all_symbols() {
+                if query.is_empty() || symbol.name.to_lowercase().contains(&query) {
+                    let kind = match symbol.kind {
+                        rover_parser::SymbolKind::Function => LspSymbolKind::FUNCTION,
+                        rover_parser::SymbolKind::Variable => LspSymbolKind::VARIABLE,
+                        rover_parser::SymbolKind::Parameter => LspSymbolKind::VARIABLE,
+                        rover_parser::SymbolKind::Global => LspSymbolKind::VARIABLE,
+                        rover_parser::SymbolKind::RoverServer => LspSymbolKind::CLASS,
+                        rover_parser::SymbolKind::RoverGuard => LspSymbolKind::CLASS,
+                        rover_parser::SymbolKind::ContextParam => LspSymbolKind::VARIABLE,
+                        _ => LspSymbolKind::VARIABLE,
+                    };
+
+                    #[allow(deprecated)]
+                    symbols.push(SymbolInformation {
+                        name: symbol.name.clone(),
+                        kind,
+                        tags: None,
+                        deprecated: None,
+                        location: Location {
+                            uri: uri.clone(),
+                            range: symbol_range_to_lsp_range(&symbol.range),
+                        },
+                        container_name: None,
+                    });
+                }
+            }
+        }
+
+        if symbols.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(symbols))
+        }
     }
 }
 
@@ -1216,6 +1380,19 @@ fn source_range_to_range(range: Option<&SourceRange>) -> Range {
     }
 }
 
+fn symbol_range_to_lsp_range(range: &rover_parser::SymbolSourceRange) -> Range {
+    Range {
+        start: Position {
+            line: range.start.line as u32,
+            character: range.start.column as u32,
+        },
+        end: Position {
+            line: range.end.line as u32,
+            character: range.end.column as u32,
+        },
+    }
+}
+
 fn compute_rename(text: &str, position: Position, new_name: &str, uri: Url) -> Option<WorkspaceEdit> {
     let (_identifier, _) = identifier_at_position(text, position)?;
     
@@ -1489,6 +1666,182 @@ fn get_stdlib_signature(lib: &str, method: &str) -> Option<SignatureInformation>
         ),
         active_parameter: None,
     })
+}
+
+fn compute_code_actions(
+    text: &str,
+    model: &SemanticModel,
+    range: Range,
+    uri: Url,
+) -> CodeActionResponse {
+    let mut actions = vec![];
+
+    // Check for errors that intersect with the selection range
+    for error in &model.errors {
+        let error_range = source_range_to_range(error.range.as_ref());
+
+        // Check if error range intersects with selection
+        if ranges_intersect(&error_range, &range) {
+            // Quick fix: Add missing 'local' declaration
+            if error.message.contains("undeclared") || error.message.contains("undefined") {
+                // Extract the variable name from the error message if possible
+                if let Some(name) = extract_identifier_from_error(&error.message) {
+                    let insert_pos = Position {
+                        line: error_range.start.line,
+                        character: 0,
+                    };
+
+                    // Find proper indentation
+                    let indent = get_line_indent(text, error_range.start.line as usize);
+
+                    let edit = TextEdit {
+                        range: Range {
+                            start: insert_pos,
+                            end: insert_pos,
+                        },
+                        new_text: format!("{}local {}\n", indent, name),
+                    };
+
+                    let mut changes = HashMap::new();
+                    changes.insert(uri.clone(), vec![edit]);
+
+                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: format!("Add 'local {}' declaration", name),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        diagnostics: Some(vec![Diagnostic {
+                            range: error_range,
+                            severity: Some(DiagnosticSeverity::ERROR),
+                            source: Some("rover".into()),
+                            message: error.message.clone(),
+                            ..Default::default()
+                        }]),
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }));
+                }
+            }
+        }
+    }
+
+    // Extract function refactoring (if selection spans multiple statements)
+    if range.start.line != range.end.line {
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Extract to function".to_string(),
+            kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+            disabled: Some(CodeActionDisabled {
+                reason: "Not yet implemented".to_string(),
+            }),
+            ..Default::default()
+        }));
+    }
+
+    actions
+}
+
+fn ranges_intersect(a: &Range, b: &Range) -> bool {
+    !(a.end.line < b.start.line
+        || (a.end.line == b.start.line && a.end.character < b.start.character)
+        || b.end.line < a.start.line
+        || (b.end.line == a.start.line && b.end.character < a.start.character))
+}
+
+fn extract_identifier_from_error(message: &str) -> Option<String> {
+    // Try to extract identifier from messages like:
+    // "undeclared variable 'foo'"
+    // "undefined global 'bar'"
+    if let Some(start) = message.find('\'') {
+        if let Some(end) = message[start + 1..].find('\'') {
+            return Some(message[start + 1..start + 1 + end].to_string());
+        }
+    }
+    None
+}
+
+fn get_line_indent(text: &str, line: usize) -> String {
+    text.lines()
+        .nth(line)
+        .map(|l| {
+            let indent_len = l.len() - l.trim_start().len();
+            l[..indent_len].to_string()
+        })
+        .unwrap_or_default()
+}
+
+fn compute_folding_ranges(text: &str) -> Vec<FoldingRange> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_lua::LANGUAGE.into())
+        .expect("Failed to load Lua grammar");
+
+    let Some(tree) = parser.parse(text, None) else {
+        return vec![];
+    };
+
+    let mut ranges = vec![];
+    collect_folding_ranges(tree.root_node(), &mut ranges);
+    ranges
+}
+
+fn collect_folding_ranges(node: tree_sitter::Node, ranges: &mut Vec<FoldingRange>) {
+    // Foldable constructs in Lua
+    let is_foldable = matches!(
+        node.kind(),
+        "function_declaration"
+            | "function_definition"
+            | "if_statement"
+            | "for_statement"
+            | "while_statement"
+            | "repeat_statement"
+            | "do_statement"
+            | "table_constructor"
+    );
+
+    if is_foldable {
+        let start = node.start_position();
+        let end = node.end_position();
+
+        // Only fold if it spans multiple lines
+        if end.row > start.row {
+            let kind = match node.kind() {
+                "table_constructor" => Some(FoldingRangeKind::Region),
+                _ => None,
+            };
+
+            ranges.push(FoldingRange {
+                start_line: start.row as u32,
+                start_character: Some(start.column as u32),
+                end_line: end.row as u32,
+                end_character: Some(end.column as u32),
+                kind,
+                collapsed_text: None,
+            });
+        }
+    }
+
+    // Also fold multi-line comments
+    if node.kind() == "comment" {
+        let start = node.start_position();
+        let end = node.end_position();
+        if end.row > start.row {
+            ranges.push(FoldingRange {
+                start_line: start.row as u32,
+                start_character: Some(start.column as u32),
+                end_line: end.row as u32,
+                end_character: Some(end.column as u32),
+                kind: Some(FoldingRangeKind::Comment),
+                collapsed_text: None,
+            });
+        }
+    }
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_folding_ranges(child, ranges);
+    }
 }
 
 fn format_document(text: &str) -> Option<String> {

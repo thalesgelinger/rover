@@ -13,7 +13,7 @@ pub use analyzer::{
     ParsingError, PathParam, QueryParam, Request, Response, Route, RoverServer, SemanticModel,
     SourcePosition, SourceRange, SymbolSpecMember, SymbolSpecMetadata, ValidationSource,
 };
-pub use symbol::{Symbol, SymbolKind, ScopeType, SymbolTable};
+pub use symbol::{Symbol, SymbolKind, ScopeType, SymbolTable, SourceRange as SymbolSourceRange, SourcePosition as SymbolSourcePosition};
 pub use rule_runtime::MemberKind;
 pub use rules::lookup_spec;
 pub use rule_runtime::{SpecDoc, SpecDocMember};
