@@ -116,7 +116,7 @@ function TaskManager.render(state)
     }
     
     return rover.html(data) [=[
-        <div rover-data="{ showForm: false, mobileMenuOpen: false }"
+        <div rover-data="{ newTaskTitle: '', search: '', newTaskPriority: 'medium', showForm: false, mobileMenuOpen: false }"
              class="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 p-4 md:p-8">
             
             <div class="max-w-4xl mx-auto">
