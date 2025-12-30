@@ -3,6 +3,8 @@ mod rules;
 mod analyzer;
 mod incremental;
 mod symbol;
+mod formatter;
+
 use tree_sitter::Parser;
 
 use crate::analyzer::Analyzer;
@@ -16,6 +18,7 @@ pub use rule_runtime::MemberKind;
 pub use rules::lookup_spec;
 pub use rule_runtime::{SpecDoc, SpecDocMember};
 pub use incremental::{IncrementalParser, CachedParse};
+pub use formatter::{Formatter, FormatterConfig, format_code, format_code_with_config};
 
 pub fn analyze(code: &str) -> SemanticModel {
     let mut parser = Parser::new();
