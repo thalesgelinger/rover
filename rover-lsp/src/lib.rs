@@ -69,6 +69,7 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -146,6 +147,19 @@ impl LanguageServer for Backend {
         if let Some(doc) = docs.get(&uri) {
             if let Some(location) = find_definition(&doc.model, &doc.text, position, uri.clone()) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            let locations = find_references(&doc.text, position, uri.clone(), params.context.include_declaration);
+            if !locations.is_empty() {
+                return Ok(Some(locations));
             }
         }
         Ok(None)
@@ -430,6 +444,69 @@ fn find_definition(
     }
     
     None
+}
+
+fn find_references(
+    text: &str,
+    position: Position,
+    uri: Url,
+    include_declaration: bool,
+) -> Vec<Location> {
+    // Extract the identifier at the cursor position
+    let (identifier, _) = match identifier_at_position(text, position) {
+        Some(result) => result,
+        None => return Vec::new(),
+    };
+    
+    let mut locations = Vec::new();
+    
+    // Search through all lines for occurrences of the identifier
+    for (line_idx, line) in text.split('\n').enumerate() {
+        let clean_line = line.strip_suffix('\r').unwrap_or(line);
+        let bytes = clean_line.as_bytes();
+        
+        let mut col = 0;
+        while col < clean_line.len() {
+            // Find potential identifier start
+            if col == 0 || !is_ident_byte(bytes[col - 1]) {
+                let remaining = &clean_line[col..];
+                if remaining.starts_with(&identifier) {
+                    // Check that it's a complete identifier (not part of a longer word)
+                    let end_col = col + identifier.len();
+                    let is_complete = end_col >= clean_line.len() 
+                        || !is_ident_byte(bytes[end_col]);
+                    
+                    if is_complete {
+                        locations.push(Location {
+                            uri: uri.clone(),
+                            range: Range {
+                                start: Position {
+                                    line: line_idx as u32,
+                                    character: col as u32,
+                                },
+                                end: Position {
+                                    line: line_idx as u32,
+                                    character: end_col as u32,
+                                },
+                            },
+                        });
+                    }
+                    col = end_col;
+                    continue;
+                }
+            }
+            col += 1;
+        }
+    }
+    
+    // Filter out declaration if requested
+    if !include_declaration && !locations.is_empty() {
+        // The first occurrence is often the declaration, but this is a simplification
+        // In practice, we'd need to check against the symbol table
+        // For now, return all locations
+    }
+    
+    locations
 }
 
 fn find_function<'a>(
