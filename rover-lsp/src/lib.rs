@@ -301,7 +301,37 @@ fn build_symbol_hover(
 ) -> Option<Hover> {
     let (identifier, range) = identifier_at_position(text, position)?;
     
-    // First try local symbol specs from the model
+    // Priority 1: Check symbol table for local variables/parameters
+    if let Some(symbol) = model.symbol_table.resolve_symbol_global(&identifier) {
+        let mut lines = Vec::new();
+        let kind_str = match symbol.kind {
+            rover_parser::SymbolKind::Variable => "local variable",
+            rover_parser::SymbolKind::Function => "function",
+            rover_parser::SymbolKind::Parameter => "parameter",
+            rover_parser::SymbolKind::Global => "global",
+            rover_parser::SymbolKind::Builtin => "builtin",
+            rover_parser::SymbolKind::RoverServer => "rover server",
+            rover_parser::SymbolKind::RoverGuard => "rover guard",
+            rover_parser::SymbolKind::ContextParam => "context parameter",
+        };
+        lines.push(format!("**{}** _{}_", identifier, kind_str));
+        
+        if let Some(type_annotation) = &symbol.type_annotation {
+            lines.push(format!("Type: `{}`", type_annotation));
+        }
+        
+        lines.push(format!("Defined at line {}", symbol.range.start.line + 1));
+
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: lines.join("\n\n"),
+            }),
+            range: Some(range),
+        });
+    }
+    
+    // Priority 2: Rover symbol specs from the model
     if let Some(spec) = model.symbol_specs.get(&identifier) {
         let mut lines = Vec::new();
         lines.push(format!("**{}**", identifier));
@@ -329,7 +359,7 @@ fn build_symbol_hover(
         });
     }
     
-    // Fallback to global spec registry
+    // Priority 3: Lua stdlib from global spec registry
     if let Some(spec_doc) = lookup_spec(&identifier) {
         let mut lines = Vec::new();
         lines.push(format!("**{}**", identifier));
