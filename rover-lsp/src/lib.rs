@@ -71,6 +71,13 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".into(), ",".into()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: Default::default(),
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -176,6 +183,55 @@ impl LanguageServer for Backend {
             let symbols = build_document_symbols(&doc.model);
             if !symbols.is_empty() {
                 return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let new_name = params.new_name;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            if let Some(edit) = compute_rename(&doc.text, position, &new_name, uri.clone()) {
+                return Ok(Some(edit));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            if let Some(help) = compute_signature_help(&doc.text, &doc.model, position) {
+                return Ok(Some(help));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            if let Some(formatted) = format_document(&doc.text) {
+                let lines: Vec<&str> = doc.text.split('\n').collect();
+                let last_line = lines.len().saturating_sub(1);
+                let last_col = lines.last().map(|l| l.len()).unwrap_or(0);
+                
+                return Ok(Some(vec![TextEdit {
+                    range: Range {
+                        start: Position { line: 0, character: 0 },
+                        end: Position {
+                            line: last_line as u32,
+                            character: last_col as u32,
+                        },
+                    },
+                    new_text: formatted,
+                }]));
             }
         }
         Ok(None)
@@ -1158,6 +1214,285 @@ fn source_range_to_range(range: Option<&SourceRange>) -> Range {
     } else {
         Range::default()
     }
+}
+
+fn compute_rename(text: &str, position: Position, new_name: &str, uri: Url) -> Option<WorkspaceEdit> {
+    let (_identifier, _) = identifier_at_position(text, position)?;
+    
+    // Find all references to the identifier
+    let locations = find_references(text, position, uri.clone(), true);
+    if locations.is_empty() {
+        return None;
+    }
+    
+    // Create text edits for each reference
+    let edits: Vec<TextEdit> = locations
+        .into_iter()
+        .map(|loc| TextEdit {
+            range: loc.range,
+            new_text: new_name.to_string(),
+        })
+        .collect();
+    
+    let mut changes = HashMap::new();
+    changes.insert(uri, edits);
+    
+    Some(WorkspaceEdit {
+        changes: Some(changes),
+        document_changes: None,
+        change_annotations: None,
+    })
+}
+
+fn compute_signature_help(text: &str, model: &SemanticModel, position: Position) -> Option<SignatureHelp> {
+    let line_prefix = line_prefix(text, position)?;
+    
+    // Detect function call context: find the function name before the (
+    let (func_name, active_param) = detect_function_call_context(&line_prefix)?;
+    
+    // Look up function signature
+    if let Some(signature) = get_function_signature(&func_name, model) {
+        return Some(SignatureHelp {
+            signatures: vec![signature],
+            active_signature: Some(0),
+            active_parameter: Some(active_param),
+        });
+    }
+    
+    None
+}
+
+fn detect_function_call_context(line: &str) -> Option<(String, u32)> {
+    // Find the opening paren that we're inside
+    let bytes = line.as_bytes();
+    let mut paren_depth: i32 = 0;
+    let mut last_open_paren = None;
+    let mut comma_count: u32 = 0;
+    
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'(' {
+            paren_depth += 1;
+            last_open_paren = Some(i);
+            comma_count = 0;
+        } else if b == b')' {
+            paren_depth = paren_depth.saturating_sub(1);
+            if paren_depth == 0 {
+                last_open_paren = None;
+            }
+        } else if b == b',' && paren_depth > 0 {
+            comma_count += 1;
+        }
+    }
+    
+    // If we found an open paren, extract the function name before it
+    let paren_pos = last_open_paren?;
+    if paren_pos == 0 {
+        return None;
+    }
+    
+    // Walk back to find the function name (handle both "func(" and "obj:method(" and "obj.method(")
+    let end = paren_pos;
+    let mut start = end;
+    
+    while start > 0 {
+        let b = bytes[start - 1];
+        if is_ident_byte(b) || b == b'.' || b == b':' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    
+    if start == end {
+        return None;
+    }
+    
+    let func_name = line[start..end].to_string();
+    Some((func_name, comma_count))
+}
+
+fn get_function_signature(func_name: &str, model: &SemanticModel) -> Option<SignatureInformation> {
+    // Check if it's a method call like "string.format" or "table.insert"
+    if let Some((base, method)) = func_name.rsplit_once('.') {
+        if let Some(sig) = get_stdlib_signature(base, method) {
+            return Some(sig);
+        }
+    }
+    
+    // Check for colon methods like "ctx:json"
+    if let Some((base, method)) = func_name.rsplit_once(':') {
+        // Look in model's symbol specs
+        if let Some(spec) = model.symbol_specs.get(base) {
+            for member in &spec.members {
+                if member.name == method {
+                    return Some(SignatureInformation {
+                        label: format!("{}:{}", base, member.name),
+                        documentation: if member.doc.is_empty() {
+                            None
+                        } else {
+                            Some(Documentation::String(member.doc.clone()))
+                        },
+                        parameters: None,
+                        active_parameter: None,
+                    });
+                }
+            }
+        }
+    }
+    
+    // Check global functions
+    if let Some(sig) = get_global_function_signature(func_name) {
+        return Some(sig);
+    }
+    
+    None
+}
+
+fn get_global_function_signature(name: &str) -> Option<SignatureInformation> {
+    let (label, doc, params) = match name {
+        "print" => ("print(...)", "Print values to stdout", vec!["..."]),
+        "assert" => ("assert(v, message?)", "Raise error if v is false/nil", vec!["v", "message?"]),
+        "error" => ("error(message, level?)", "Raise an error", vec!["message", "level?"]),
+        "type" => ("type(v)", "Return type of value as string", vec!["v"]),
+        "tonumber" => ("tonumber(v, base?)", "Convert to number", vec!["v", "base?"]),
+        "tostring" => ("tostring(v)", "Convert to string", vec!["v"]),
+        "ipairs" => ("ipairs(t)", "Iterator for array indices", vec!["t"]),
+        "pairs" => ("pairs(t)", "Iterator for all table keys", vec!["t"]),
+        "next" => ("next(t, key?)", "Get next key-value pair", vec!["t", "key?"]),
+        "pcall" => ("pcall(f, ...)", "Protected call", vec!["f", "..."]),
+        "xpcall" => ("xpcall(f, err)", "Protected call with error handler", vec!["f", "err"]),
+        "select" => ("select(index, ...)", "Select from varargs", vec!["index", "..."]),
+        "getmetatable" => ("getmetatable(obj)", "Get metatable", vec!["obj"]),
+        "setmetatable" => ("setmetatable(t, mt)", "Set metatable", vec!["t", "mt"]),
+        "rawget" => ("rawget(t, k)", "Get without metamethod", vec!["t", "k"]),
+        "rawset" => ("rawset(t, k, v)", "Set without metamethod", vec!["t", "k", "v"]),
+        "rawequal" => ("rawequal(a, b)", "Equal without metamethod", vec!["a", "b"]),
+        "require" => ("require(modname)", "Load module", vec!["modname"]),
+        "load" => ("load(func, chunkname?)", "Load chunk from function", vec!["func", "chunkname?"]),
+        "loadfile" => ("loadfile(filename?)", "Load chunk from file", vec!["filename?"]),
+        "loadstring" => ("loadstring(s, chunkname?)", "Load chunk from string", vec!["s", "chunkname?"]),
+        "dofile" => ("dofile(filename?)", "Execute file", vec!["filename?"]),
+        "unpack" => ("unpack(t, i?, j?)", "Unpack table to multiple values", vec!["t", "i?", "j?"]),
+        "collectgarbage" => ("collectgarbage(opt?, arg?)", "Control garbage collector", vec!["opt?", "arg?"]),
+        _ => return None,
+    };
+    
+    Some(SignatureInformation {
+        label: label.to_string(),
+        documentation: Some(Documentation::String(doc.to_string())),
+        parameters: Some(
+            params
+                .into_iter()
+                .map(|p| ParameterInformation {
+                    label: ParameterLabel::Simple(p.to_string()),
+                    documentation: None,
+                })
+                .collect(),
+        ),
+        active_parameter: None,
+    })
+}
+
+fn get_stdlib_signature(lib: &str, method: &str) -> Option<SignatureInformation> {
+    let (label, doc, params): (&str, &str, Vec<&str>) = match (lib, method) {
+        // string library
+        ("string", "byte") => ("string.byte(s, i?, j?)", "Get byte values", vec!["s", "i?", "j?"]),
+        ("string", "char") => ("string.char(...)", "Build string from bytes", vec!["..."]),
+        ("string", "find") => ("string.find(s, pattern, init?, plain?)", "Find pattern", vec!["s", "pattern", "init?", "plain?"]),
+        ("string", "format") => ("string.format(fmt, ...)", "Format string", vec!["fmt", "..."]),
+        ("string", "gmatch") => ("string.gmatch(s, pattern)", "Global pattern iterator", vec!["s", "pattern"]),
+        ("string", "gsub") => ("string.gsub(s, pattern, repl, n?)", "Global substitution", vec!["s", "pattern", "repl", "n?"]),
+        ("string", "len") => ("string.len(s)", "String length", vec!["s"]),
+        ("string", "lower") => ("string.lower(s)", "To lowercase", vec!["s"]),
+        ("string", "upper") => ("string.upper(s)", "To uppercase", vec!["s"]),
+        ("string", "match") => ("string.match(s, pattern, init?)", "Pattern match", vec!["s", "pattern", "init?"]),
+        ("string", "rep") => ("string.rep(s, n)", "Repeat string", vec!["s", "n"]),
+        ("string", "reverse") => ("string.reverse(s)", "Reverse string", vec!["s"]),
+        ("string", "sub") => ("string.sub(s, i, j?)", "Substring", vec!["s", "i", "j?"]),
+        
+        // table library
+        ("table", "concat") => ("table.concat(t, sep?, i?, j?)", "Concatenate elements", vec!["t", "sep?", "i?", "j?"]),
+        ("table", "insert") => ("table.insert(t, pos?, value)", "Insert element", vec!["t", "pos?", "value"]),
+        ("table", "remove") => ("table.remove(t, pos?)", "Remove element", vec!["t", "pos?"]),
+        ("table", "sort") => ("table.sort(t, comp?)", "Sort table in-place", vec!["t", "comp?"]),
+        ("table", "maxn") => ("table.maxn(t)", "Max numeric index", vec!["t"]),
+        
+        // math library
+        ("math", "abs") => ("math.abs(x)", "Absolute value", vec!["x"]),
+        ("math", "acos") => ("math.acos(x)", "Arc cosine", vec!["x"]),
+        ("math", "asin") => ("math.asin(x)", "Arc sine", vec!["x"]),
+        ("math", "atan") => ("math.atan(x)", "Arc tangent", vec!["x"]),
+        ("math", "atan2") => ("math.atan2(y, x)", "Arc tangent of y/x", vec!["y", "x"]),
+        ("math", "ceil") => ("math.ceil(x)", "Ceiling", vec!["x"]),
+        ("math", "cos") => ("math.cos(x)", "Cosine", vec!["x"]),
+        ("math", "deg") => ("math.deg(x)", "Radians to degrees", vec!["x"]),
+        ("math", "exp") => ("math.exp(x)", "e^x", vec!["x"]),
+        ("math", "floor") => ("math.floor(x)", "Floor", vec!["x"]),
+        ("math", "fmod") => ("math.fmod(x, y)", "Float modulo", vec!["x", "y"]),
+        ("math", "log") => ("math.log(x)", "Natural log", vec!["x"]),
+        ("math", "log10") => ("math.log10(x)", "Log base 10", vec!["x"]),
+        ("math", "max") => ("math.max(...)", "Maximum value", vec!["..."]),
+        ("math", "min") => ("math.min(...)", "Minimum value", vec!["..."]),
+        ("math", "pow") => ("math.pow(x, y)", "x^y", vec!["x", "y"]),
+        ("math", "rad") => ("math.rad(x)", "Degrees to radians", vec!["x"]),
+        ("math", "random") => ("math.random(m?, n?)", "Random number", vec!["m?", "n?"]),
+        ("math", "randomseed") => ("math.randomseed(x)", "Set random seed", vec!["x"]),
+        ("math", "sin") => ("math.sin(x)", "Sine", vec!["x"]),
+        ("math", "sqrt") => ("math.sqrt(x)", "Square root", vec!["x"]),
+        ("math", "tan") => ("math.tan(x)", "Tangent", vec!["x"]),
+        
+        // io library
+        ("io", "open") => ("io.open(filename, mode?)", "Open file", vec!["filename", "mode?"]),
+        ("io", "close") => ("io.close(file?)", "Close file", vec!["file?"]),
+        ("io", "read") => ("io.read(...)", "Read from stdin", vec!["..."]),
+        ("io", "write") => ("io.write(...)", "Write to stdout", vec!["..."]),
+        ("io", "lines") => ("io.lines(filename?)", "File line iterator", vec!["filename?"]),
+        ("io", "input") => ("io.input(file?)", "Set/get input file", vec!["file?"]),
+        ("io", "output") => ("io.output(file?)", "Set/get output file", vec!["file?"]),
+        ("io", "flush") => ("io.flush()", "Flush output", vec![]),
+        ("io", "type") => ("io.type(obj)", "Check if file handle", vec!["obj"]),
+        
+        // os library
+        ("os", "clock") => ("os.clock()", "CPU time used", vec![]),
+        ("os", "date") => ("os.date(format?, time?)", "Format date/time", vec!["format?", "time?"]),
+        ("os", "difftime") => ("os.difftime(t2, t1)", "Time difference", vec!["t2", "t1"]),
+        ("os", "execute") => ("os.execute(cmd?)", "Execute shell command", vec!["cmd?"]),
+        ("os", "exit") => ("os.exit(code?)", "Exit program", vec!["code?"]),
+        ("os", "getenv") => ("os.getenv(varname)", "Get environment variable", vec!["varname"]),
+        ("os", "remove") => ("os.remove(filename)", "Delete file", vec!["filename"]),
+        ("os", "rename") => ("os.rename(old, new)", "Rename file", vec!["old", "new"]),
+        ("os", "time") => ("os.time(table?)", "Get time", vec!["table?"]),
+        ("os", "tmpname") => ("os.tmpname()", "Temp filename", vec![]),
+        
+        // coroutine library
+        ("coroutine", "create") => ("coroutine.create(f)", "Create coroutine", vec!["f"]),
+        ("coroutine", "resume") => ("coroutine.resume(co, ...)", "Resume coroutine", vec!["co", "..."]),
+        ("coroutine", "yield") => ("coroutine.yield(...)", "Yield from coroutine", vec!["..."]),
+        ("coroutine", "status") => ("coroutine.status(co)", "Get status", vec!["co"]),
+        ("coroutine", "wrap") => ("coroutine.wrap(f)", "Wrap as function", vec!["f"]),
+        ("coroutine", "running") => ("coroutine.running()", "Get running coroutine", vec![]),
+        
+        _ => return None,
+    };
+    
+    Some(SignatureInformation {
+        label: label.to_string(),
+        documentation: Some(Documentation::String(doc.to_string())),
+        parameters: Some(
+            params
+                .into_iter()
+                .map(|p| ParameterInformation {
+                    label: ParameterLabel::Simple(p.to_string()),
+                    documentation: None,
+                })
+                .collect(),
+        ),
+        active_parameter: None,
+    })
+}
+
+fn format_document(text: &str) -> Option<String> {
+    Some(rover_parser::format_code(text))
 }
 
 pub async fn start_lsp() {
