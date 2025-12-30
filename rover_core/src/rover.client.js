@@ -22,7 +22,6 @@ function transformAttributes(root) {
   ROVER_ATTR_TRANSFORMS.forEach(({ from, to }) => {
     forEachWithSelf(root, '[' + from + ']', (el) => {
       const value = el.getAttribute(from);
-      console.log('[Rover] Transforming', from, 'to', to, 'on element:', el.tagName, 'value:', value);
       if (value === null) {
         el.removeAttribute(from);
         return;
@@ -150,18 +149,12 @@ function applyPatches(container, patches) {
       else if (patch.type === 'set_attr') el.setAttribute(patch.attr, patch.value);
       else if (patch.type === 'remove_attr') el.removeAttribute(patch.attr);
       else if (patch.type === 'replace_html') el.innerHTML = patch.html;
-    } catch (error) {
-    console.error('[Rover] Event error:', error);
-    container.style.border = '2px solid #f44336';
-    setTimeout(function() { container.style.border = ''; }, 2000);
-  } finally {
-    container.classList.remove('rover-loading');
-    container.style.cursor = originalCursor;
-    container.style.opacity = originalOpacity;
-    if (isButton && evtTarget) evtTarget.disabled = prevDisabled;
-    dispatchRoverLoading(container, false);
+    }
+    return true;
+  } catch (e) {
+    console.warn('[Rover] Patch failed:', e);
+    return false;
   }
-}
 }
 
 function morphNode(fromNode, toNode) {
@@ -233,6 +226,44 @@ async function roverEvent(event, componentId, eventName, eventData) {
     else if (target.value !== undefined) data = target.value;
   }
 
+  // Read Alpine's current data (includes x-model changes) before sending to server
+  let stateToSend = component.state;
+  const xDataEl = container.querySelector('[x-data]') || (container.hasAttribute('x-data') ? container : null);
+  console.log('[Rover DEBUG] xDataEl:', xDataEl ? 'found' : 'not found');
+  console.log('[Rover DEBUG] _x_dataStack:', xDataEl && xDataEl._x_dataStack);
+  if (xDataEl && xDataEl._x_dataStack && xDataEl._x_dataStack[0]) {
+    const alpineData = xDataEl._x_dataStack[0];
+    console.log('[Rover DEBUG] Alpine data:', JSON.stringify(alpineData, (k,v) => typeof v === 'function' ? '[fn]' : v));
+    
+    // Build stateToSend by starting with server state, then deep merge Alpine changes
+    stateToSend = JSON.parse(JSON.stringify(component.state)); // Deep clone to avoid reference issues
+    for (const key in alpineData) {
+      if (Object.prototype.hasOwnProperty.call(alpineData, key) && typeof alpineData[key] !== 'function') {
+        const alpineValue = alpineData[key];
+        const serverValue = component.state[key];
+        
+        // If both are objects, deep merge. Otherwise, just replace.
+        if (typeof alpineValue === 'object' && alpineValue !== null && 
+            typeof serverValue === 'object' && serverValue !== null &&
+            !Array.isArray(alpineValue) && !Array.isArray(serverValue)) {
+          // Deep merge objects (for formData, etc.)
+          stateToSend[key] = JSON.parse(JSON.stringify(serverValue));
+          for (const subKey in alpineValue) {
+            if (Object.prototype.hasOwnProperty.call(alpineValue, subKey)) {
+              stateToSend[key][subKey] = alpineValue[subKey];
+            }
+          }
+        } else {
+          // Replace non-object values
+          stateToSend[key] = alpineValue;
+        }
+      }
+    }
+    console.log('[Rover DEBUG] stateToSend:', JSON.stringify(stateToSend));
+  } else {
+    console.log('[Rover DEBUG] No Alpine data found, using component.state');
+  }
+
   const evtTarget = event ? event.target : null;
   const originalCursor = container.style.cursor;
   const originalOpacity = container.style.opacity;
@@ -246,24 +277,6 @@ async function roverEvent(event, componentId, eventName, eventData) {
   dispatchRoverLoading(container, true);
 
   try {
-    // Read current Alpine data BEFORE sending to server
-    // This ensures client-side changes (like x-model) are included in the request
-    let stateToSend;
-    if (window.Alpine && container.hasAttribute('x-data')) {
-      const xDataElement = container;
-      if (xDataElement._x_dataStack && xDataElement._x_dataStack.length > 0) {
-        const alpineData = xDataElement._x_dataStack[0];
-        stateToSend = {};
-        for (const [key, value] of Object.entries(alpineData)) {
-          stateToSend[key] = value;
-        }
-      }
-    }
-    // Fall back to server state if Alpine not available
-    if (!stateToSend) {
-      stateToSend = container.dataset.roverState ? JSON.parse(container.dataset.roverState) : component.state;
-    }
-    
     const response = await fetch('/__rover/component-event', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -280,36 +293,12 @@ async function roverEvent(event, componentId, eventName, eventData) {
     const result = await response.json();
     component.state = result.state;
     container.dataset.roverState = JSON.stringify(result.state);
-    
-    // Update Alpine's data scope with new state from server
-    // This ensures that after morphing, Alpine data matches server state
-    if (window.Alpine && container.hasAttribute('x-data')) {
-      const xDataElement = container;
-      // Access Alpine's internal data stack and update it
-      // We merge server state into existing Alpine data to preserve any client-side-only properties
-      if (xDataElement._x_dataStack && xDataElement._x_dataStack.length > 0) {
-        const alpineData = xDataElement._x_dataStack[0];
-        for (const [key, value] of Object.entries(result.state)) {
-          if (alpineData.hasOwnProperty(key)) {
-            alpineData[key] = value;
-          }
-        }
-      }
+
+    // Destroy Alpine on the container before morphing to avoid stale bindings
+    if (window.Alpine && window.Alpine.destroyTree) {
+      window.Alpine.destroyTree(container);
     }
-    
-    if (result.patches && result.patches.length > 0) {
-      const ok = applyPatches(container, result.patches);
-      if (!ok && result.html && result.html.length > 0) morphContainer(container, result.html);
-    } else if (result.html && result.html.length > 0) {
-      morphContainer(container, result.html);
-    }
-        }
-      }
-    }
-        }
-      }
-    }
-    
+
     if (result.patches && result.patches.length > 0) {
       const ok = applyPatches(container, result.patches);
       if (!ok && result.html && result.html.length > 0) morphContainer(container, result.html);
@@ -318,13 +307,13 @@ async function roverEvent(event, componentId, eventName, eventData) {
     }
 
     // Re-apply rover directives on updated DOM
-    // Note: We don't call Alpine.initTree() here because:
-    // 1. The DOM is already initialized with Alpine
-    // 2. morphContainer() updates nodes in-place
-    // 3. Alpine's mutation observer will pick up changes automatically
-    // 4. Re-initializing would cause duplicate event handlers
     if (typeof window.__applyRoverDirectives === 'function') {
       window.__applyRoverDirectives(container);
+    }
+
+    // Re-initialize Alpine on the updated DOM
+    if (window.Alpine && window.Alpine.initTree) {
+      window.Alpine.initTree(container);
     }
   } catch (error) {
     console.error('[Rover] Event error:', error);

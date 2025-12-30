@@ -15,8 +15,21 @@ function ModalApp.init()
     }
 end
 
-function ModalApp.openModal(state)
-    return { showModal = true, selectedOption = state.selectedOption, formData = state.formData, submitted = false }
+function ModalApp.openModal(state, option)
+    local opt = option or state.selectedOption or ""
+    return { showModal = true, selectedOption = opt, formData = state.formData, submitted = false }
+end
+
+function ModalApp.openAlert(state)
+    return { showModal = true, selectedOption = "", formData = state.formData, submitted = false }
+end
+
+function ModalApp.openConfirm(state)
+    return { showModal = true, selectedOption = "confirm", formData = state.formData, submitted = false }
+end
+
+function ModalApp.openForm(state)
+    return { showModal = true, selectedOption = "form", formData = state.formData, submitted = false }
 end
 
 function ModalApp.closeModal(state)
@@ -48,7 +61,7 @@ function ModalApp.render(state)
     }
     
     return rover.html(data) [=[
-        <div rover-data="{ notification: false }"
+        <div rover-data="{ notification: false, showModal: false, selectedOption: '', formData: {}, submitted: false }"
              class="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
             
             <!-- Header -->
@@ -66,7 +79,7 @@ function ModalApp.render(state)
                         <div class="text-4xl mb-4">⚠️</div>
                         <h3 class="text-xl font-bold text-white mb-2">Alert Modal</h3>
                         <p class="text-purple-200 mb-4">Simple notification with dismiss button</p>
-                        <button rover-click="openModal"
+                        <button rover-click="openAlert"
                                 class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
                             Open Alert
                         </button>
@@ -77,7 +90,7 @@ function ModalApp.render(state)
                         <div class="text-4xl mb-4">❓</div>
                         <h3 class="text-xl font-bold text-white mb-2">Confirmation</h3>
                         <p class="text-purple-200 mb-4">Ask user to confirm destructive action</p>
-                        <button rover-click="openModal; selectOption('confirm')"
+                        <button rover-click="openConfirm"
                                 class="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
                             Open Confirmation
                         </button>
@@ -88,7 +101,7 @@ function ModalApp.render(state)
                         <div class="text-4xl mb-4">📝</div>
                         <h3 class="text-xl font-bold text-white mb-2">Form Modal</h3>
                         <p class="text-purple-200 mb-4">Collect user input with validation</p>
-                        <button rover-click="openModal; selectOption('form')"
+                        <button rover-click="openForm"
                                 class="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
                             Open Form
                         </button>

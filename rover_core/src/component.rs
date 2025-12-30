@@ -345,8 +345,28 @@ pub fn handle_component_event(
         ))?;
 
     // Call event handler with current state and optional data
+    // If data is an array, unpack it as separate arguments
     let new_state: Value = if let Some(data) = event_data {
-        event_handler.call((current_state, data))?
+        if let Value::Table(ref tbl) = data {
+            // Check if it's an array-like table (sequential integer keys)
+            let len = tbl.raw_len();
+            if len > 0 {
+                // It's an array - unpack into variadic call
+                let mut args = vec![current_state];
+                for i in 1..=len {
+                    if let Ok(v) = tbl.raw_get::<Value>(i) {
+                        args.push(v);
+                    }
+                }
+                event_handler.call(mlua::MultiValue::from_iter(args))?
+            } else {
+                // Empty table or object-like - pass as single arg
+                event_handler.call((current_state, data))?
+            }
+        } else {
+            // Not a table - pass as single arg
+            event_handler.call((current_state, data))?
+        }
     } else {
         event_handler.call(current_state)?
     };
