@@ -124,6 +124,40 @@ impl SymbolTable {
         }
     }
 
+    pub fn resolve_symbol_from_scope(&self, name: &str, scope_id: usize) -> Option<&Symbol> {
+        let mut current = scope_id;
+        loop {
+            if let Some(scope) = self.scopes.get(current) {
+                if let Some(symbol) = scope.get(name) {
+                    return Some(symbol);
+                }
+                if let Some(parent) = scope.parent {
+                    current = parent;
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+
+    pub fn resolve_symbol_global(&self, name: &str) -> Option<&Symbol> {
+        // Search all scopes starting from global (scope 0)
+        for scope in &self.scopes {
+            if let Some(symbol) = scope.get(name) {
+                return Some(symbol);
+            }
+        }
+        None
+    }
+
+    pub fn resolve_symbol_at_position(&self, name: &str, _line: usize, _column: usize) -> Option<&Symbol> {
+        // For now, use global resolution since we don't track scope ranges
+        // TODO: Track scope ranges and find the innermost scope containing the position
+        self.resolve_symbol_global(name)
+    }
+
     pub fn get_current_scope(&self) -> Option<&Scope> {
         self.current_scope
             .and_then(|id| self.scopes.get(id))

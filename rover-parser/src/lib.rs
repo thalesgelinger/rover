@@ -35,6 +35,9 @@ pub fn analyze(code: &str) -> SemanticModel {
         server.exported = true;
     }
 
+    // Copy symbol table to model
+    analyzer.model.symbol_table = analyzer.symbol_table.clone();
+
     analyzer.model
 }
 
@@ -317,5 +320,40 @@ return api
         let ctx_spec = model.symbol_specs.get("ctx").unwrap();
         assert_eq!(ctx_spec.spec_id, "ctx");
         assert!(!ctx_spec.members.is_empty(), "ctx should have members");
+    }
+
+    #[test]
+    fn should_populate_symbol_table_with_locals() {
+        let code = r#"
+local x = 10
+local y = 20
+
+function foo(a, b)
+    local z = a + b
+    return z
+end
+
+local result = foo(x, y)
+        "#;
+
+        let model = analyze(code);
+
+        // Check that local variables are in symbol table
+        assert!(
+            model.symbol_table.resolve_symbol_global("x").is_some(),
+            "x should be in symbol table"
+        );
+        assert!(
+            model.symbol_table.resolve_symbol_global("y").is_some(),
+            "y should be in symbol table"
+        );
+        assert!(
+            model.symbol_table.resolve_symbol_global("result").is_some(),
+            "result should be in symbol table"
+        );
+
+        let x_symbol = model.symbol_table.resolve_symbol_global("x").unwrap();
+        assert_eq!(x_symbol.name, "x");
+        assert_eq!(x_symbol.kind, SymbolKind::Variable);
     }
 }

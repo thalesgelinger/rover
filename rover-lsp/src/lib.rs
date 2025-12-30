@@ -68,6 +68,7 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec![".".into(), ":".into()]),
                     ..Default::default()
                 }),
+                definition_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -130,6 +131,21 @@ impl LanguageServer for Backend {
         if let Some(doc) = docs.get(&uri) {
             if let Some(hover) = build_hover(&doc.model, &doc.text, position) {
                 return Ok(Some(hover));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            if let Some(location) = find_definition(&doc.model, &doc.text, position, uri.clone()) {
+                return Ok(Some(GotoDefinitionResponse::Scalar(location)));
             }
         }
         Ok(None)
@@ -383,6 +399,37 @@ fn build_route_hover(model: &SemanticModel, position: Position) -> Option<Hover>
         }),
         range: Some(source_range_to_range(Some(&function.range))),
     })
+}
+
+fn find_definition(
+    model: &SemanticModel,
+    text: &str,
+    position: Position,
+    uri: Url,
+) -> Option<Location> {
+    // Extract the identifier at the cursor position
+    let (identifier, _) = identifier_at_position(text, position)?;
+    
+    // Try to resolve the symbol in the symbol table
+    let line = position.line as usize;
+    let column = position.character as usize;
+    if let Some(symbol) = model.symbol_table.resolve_symbol_at_position(&identifier, line, column) {
+        return Some(Location {
+            uri,
+            range: Range {
+                start: Position {
+                    line: symbol.range.start.line as u32,
+                    character: symbol.range.start.column as u32,
+                },
+                end: Position {
+                    line: symbol.range.end.line as u32,
+                    character: symbol.range.end.column as u32,
+                },
+            },
+        });
+    }
+    
+    None
 }
 
 fn find_function<'a>(

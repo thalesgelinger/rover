@@ -14,6 +14,7 @@ pub struct SemanticModel {
     pub functions: Vec<FunctionMetadata>,
     pub symbol_specs: HashMap<String, SymbolSpecMetadata>,
     pub dynamic_members: HashMap<String, Vec<String>>, // table_name -> [member_names]
+    pub symbol_table: SymbolTable,
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +199,7 @@ impl Analyzer {
                 functions: Vec::new(),
                 symbol_specs: HashMap::new(),
                 dynamic_members: HashMap::new(),
+                symbol_table: SymbolTable::new(),
             },
             symbol_table: SymbolTable::new(),
             function_symbol_table: HashMap::new(),
