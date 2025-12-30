@@ -245,6 +245,34 @@ impl Analyzer {
     }
 
     pub fn walk(&mut self, node: Node) {
+        // Track scopes
+        let pushed_scope = match node.kind() {
+            "chunk" => {
+                self.push_scope(ScopeType::File);
+                true
+            }
+            "function_declaration" | "function_definition" => {
+                self.push_scope(ScopeType::Function);
+                self.register_function_params(node);
+                true
+            }
+            "do_statement" | "while_statement" | "if_statement" => {
+                self.push_scope(ScopeType::Block);
+                true
+            }
+            "for_statement" | "repeat_statement" => {
+                self.push_scope(ScopeType::Repeat);
+                self.register_loop_variables(node);
+                true
+            }
+            _ => false,
+        };
+
+        // Register local variables
+        if node.kind() == "variable_declaration" {
+            self.register_local_variables(node);
+        }
+
         let matches = Self::rule_engine().apply(self, node);
 
         let mut cursor = node.walk();
@@ -253,6 +281,11 @@ impl Analyzer {
         }
 
         Self::rule_engine().finish(self, node, matches);
+
+        // Pop scope
+        if pushed_scope {
+            self.pop_scope();
+        }
     }
 
     pub fn handle_rover_server_assignment(&mut self, node: Node) {
@@ -1970,6 +2003,56 @@ impl Analyzer {
 
     pub fn resolve_symbol(&self, name: &str) -> Option<&Symbol> {
         self.symbol_table.resolve_symbol(name)
+    }
+
+    fn register_function_params(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "parameters" {
+                let mut param_cursor = child.walk();
+                for param in child.children(&mut param_cursor) {
+                    if param.kind() == "identifier" {
+                        let name = self.source[param.start_byte()..param.end_byte()].to_string();
+                        self.register_variable(&name, SymbolKind::Parameter, param);
+                    }
+                }
+            }
+        }
+    }
+
+    fn register_loop_variables(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "loop_expression" || child.kind() == "in_clause" {
+                let mut var_cursor = child.walk();
+                for var_node in child.children(&mut var_cursor) {
+                    if var_node.kind() == "identifier" {
+                        let name = self.source[var_node.start_byte()..var_node.end_byte()].to_string();
+                        self.register_variable(&name, SymbolKind::Variable, var_node);
+                    }
+                }
+            }
+        }
+    }
+
+    fn register_local_variables(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "assignment_statement" {
+                let mut assign_cursor = child.walk();
+                for assign_child in child.children(&mut assign_cursor) {
+                    if assign_child.kind() == "variable_list" {
+                        let mut var_cursor = assign_child.walk();
+                        for var_node in assign_child.children(&mut var_cursor) {
+                            if var_node.kind() == "identifier" {
+                                let name = self.source[var_node.start_byte()..var_node.end_byte()].to_string();
+                                self.register_variable(&name, SymbolKind::Variable, var_node);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
