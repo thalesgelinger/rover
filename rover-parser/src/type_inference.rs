@@ -5,8 +5,10 @@
 //! - Tracks structural types from property access patterns
 //! - Narrows types in control flow branches
 //! - Bubbles constraints from asserts to function parameters
+//! - Supports cross-file type flow via require()
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use tree_sitter::Node;
 
 use crate::types::{LuaType, TableType, FunctionType, TypeError};
@@ -82,6 +84,8 @@ pub struct NarrowingContext {
     pub narrowed: HashMap<String, LuaType>,
     /// Inverse narrowings for else branches
     pub excluded: HashMap<String, LuaType>,
+    /// Variables that hold pcall result - maps result_var -> (success_var, error_type)
+    pub pcall_results: HashMap<String, (String, LuaType)>,
 }
 
 impl NarrowingContext {
@@ -89,6 +93,7 @@ impl NarrowingContext {
         Self {
             narrowed: HashMap::new(),
             excluded: HashMap::new(),
+            pcall_results: HashMap::new(),
         }
     }
 
@@ -100,6 +105,24 @@ impl NarrowingContext {
     /// Record a type exclusion (for else branch)
     pub fn exclude(&mut self, var: String, excluded_type: LuaType) {
         self.excluded.insert(var, excluded_type);
+    }
+
+    /// Record pcall result variable mapping
+    pub fn set_pcall_result(&mut self, result_var: String, success_var: String, error_type: LuaType) {
+        self.pcall_results.insert(result_var, (success_var, error_type));
+    }
+
+    /// Get narrowed type for a variable (considering pcall)
+    pub fn get_narrowed_type(&self, var: &str) -> Option<LuaType> {
+        // Check if this is a pcall result variable
+        if let Some((success_var, success_type)) = self.pcall_results.get(var) {
+            // If the success variable is narrowed in this context, use the success type
+            if self.narrowed.contains_key(success_var) {
+                return Some(success_type.clone());
+            }
+        }
+        // Fall back to regular narrowing
+        self.narrowed.get(var).cloned()
     }
 }
 
@@ -118,6 +141,41 @@ pub enum TypeConstraint {
     HasField { field: String, field_type: LuaType },
     /// Must have this method
     HasMethod { method: String, method_type: FunctionType },
+}
+
+/// Module exports from a required file
+#[derive(Debug, Clone)]
+pub struct ModuleExports {
+    /// Public functions exported from the module
+    pub functions: HashMap<String, FunctionType>,
+    /// Public variables exported from the module
+    pub bindings: HashMap<String, LuaType>,
+}
+
+impl ModuleExports {
+    pub fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+            bindings: HashMap::new(),
+        }
+    }
+
+    /// Get the complete module type as a table
+    pub fn to_table_type(&self) -> LuaType {
+        let mut fields = HashMap::new();
+
+        // Add function exports
+        for (name, func) in &self.functions {
+            fields.insert(name.clone(), LuaType::Function(Box::new(func.clone())));
+        }
+
+        // Add variable exports
+        for (name, ty) in &self.bindings {
+            fields.insert(name.clone(), ty.clone());
+        }
+
+        LuaType::Table(TableType::with_fields(fields))
+    }
 }
 
 impl ParamConstraints {
@@ -190,27 +248,42 @@ pub struct TypeInference<'a> {
     pub errors: Vec<TypeError>,
     /// Constraints for function parameters
     param_constraints: ParamConstraints,
-    /// Current function being analyzed (for parameter constraint tracking)
-    current_function: Option<String>,
     /// Narrowing stack for control flow
     narrowing_stack: Vec<NarrowingContext>,
+    /// Cache for module exports (module_path -> exports)
+    module_cache: Arc<HashMap<String, ModuleExports>>,
+    /// Base path for resolving module paths
+    base_path: Option<String>,
 }
 
 impl<'a> TypeInference<'a> {
     pub fn new(source: &'a str) -> Self {
         let mut env = TypeEnv::new();
-        
+
         // Register Lua stdlib types
         Self::register_stdlib(&mut env);
-        
+
         Self {
             source,
             env,
             errors: Vec::new(),
             param_constraints: ParamConstraints::new(),
-            current_function: None,
             narrowing_stack: Vec::new(),
+            module_cache: Arc::new(HashMap::new()),
+            base_path: None,
         }
+    }
+
+    pub fn with_base_path(source: &'a str, base_path: String) -> Self {
+        let mut inf = Self::new(source);
+        inf.base_path = Some(base_path);
+        inf
+    }
+
+    pub fn with_module_cache(source: &'a str, cache: Arc<HashMap<String, ModuleExports>>) -> Self {
+        let mut inf = Self::new(source);
+        inf.module_cache = cache;
+        inf
     }
 
     /// Register standard library types
@@ -277,6 +350,18 @@ impl<'a> TypeInference<'a> {
                     ("level".to_string(), LuaType::Number),
                 ],
                 returns: vec![LuaType::Never],
+                vararg: false,
+                is_method: false,
+            },
+        );
+
+        // require is handled specially for cross-file type flow
+        // Type will be determined based on the required module
+        env.set_function(
+            "require".to_string(),
+            FunctionType {
+                params: vec![("modname".to_string(), LuaType::String)],
+                returns: vec![LuaType::Any],
                 vararg: false,
                 is_method: false,
             },
@@ -811,15 +896,25 @@ impl<'a> TypeInference<'a> {
     /// Infer type of an identifier reference
     fn infer_identifier(&mut self, node: Node) -> LuaType {
         let name = self.node_text(node);
-        
-        // Check for narrowed type in current control flow
+
+        // Check for narrowed type from pcall results first
         for ctx in self.narrowing_stack.iter().rev() {
-            if let Some(ty) = ctx.narrowed.get(&name) {
-                return ty.clone();
+            if let Some(narrowed) = ctx.get_narrowed_type(&name) {
+                return narrowed;
             }
         }
-        
-        self.env.get(&name).unwrap_or(LuaType::Unknown)
+
+        // Fall back to environment
+        if let Some(ty) = self.env.get(&name) {
+            return ty;
+        }
+
+        // Check if it's a function
+        if let Some(func) = self.env.get_function(&name) {
+            return LuaType::Function(Box::new(func));
+        }
+
+        LuaType::Unknown
     }
 
     /// Infer type of binary expression
@@ -1045,7 +1140,20 @@ impl<'a> TypeInference<'a> {
             if name == "type" {
                 return LuaType::String;
             }
-            
+
+            // Check for require() - handle cross-file type flow
+            if name == "require" {
+                if let Some(module_name) = self.extract_string_arg(node) {
+                    return self.handle_require(&module_name);
+                }
+                return LuaType::Any;
+            }
+
+            // Check for pcall/xpcall - returns (success: boolean, result: T | error: any)
+            if name == "pcall" || name == "xpcall" {
+                return self.infer_pcall(node);
+            }
+
             // Check stdlib functions
             if let Some(func_type) = self.env.get_function(&name) {
                 return func_type.return_type().clone();
@@ -1057,6 +1165,54 @@ impl<'a> TypeInference<'a> {
             _ => LuaType::Unknown,
         }
     }
+    
+    /// Infer type of pcall/xpcall call
+    /// Returns union of error type and success type
+    fn infer_pcall(&mut self, node: Node) -> LuaType {
+        let args_node = self.find_arguments(&node);
+        let Some(args_node) = args_node else {
+            return LuaType::Union(vec![LuaType::Boolean, LuaType::Any]);
+        };
+        
+        // Get first argument (the function being called)
+        let Some(first_arg_node) = self.get_first_arg(&args_node) else {
+            return LuaType::Union(vec![LuaType::Boolean, LuaType::Any]);
+        };
+        
+        // Infer type of the called function
+        let func_type = self.infer_expression(first_arg_node);
+        
+        // The result is the function's return type (or Any if unknown)
+        let result_type = match func_type {
+            LuaType::Function(func) => func.return_type().clone(),
+            _ => LuaType::Any,
+        };
+        
+        // Return union of boolean (success) and result type
+        LuaType::union(vec![LuaType::Boolean, result_type])
+    }
+    
+    /// Find arguments node in function call
+    fn find_arguments<'tree>(&self, node: &Node<'tree>) -> Option<Node<'tree>> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "arguments" {
+                return Some(child);
+            }
+        }
+        None
+    }
+    
+    /// Get first argument from arguments node
+    fn get_first_arg<'tree>(&self, node: &Node<'tree>) -> Option<Node<'tree>> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                return Some(child);
+            }
+        }
+        None
+    }
 
     /// Get identifier name from a node
     fn get_identifier_name(&self, node: Node) -> Option<String> {
@@ -1065,6 +1221,24 @@ impl<'a> TypeInference<'a> {
         } else {
             None
         }
+    }
+
+    /// Check if a node is a pcall or xpcall call
+    fn is_pcall_call(&self, node: Node) -> bool {
+        if node.kind() != "function_call" {
+            return false;
+        }
+
+        // Extract callee from function_call
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                let name = self.node_text(child);
+                return name == "pcall" || name == "xpcall";
+            }
+        }
+
+        false
     }
 
     /// Get callee name from function call
@@ -1076,7 +1250,28 @@ impl<'a> TypeInference<'a> {
                 self.collect_dot_parts(node, &mut parts);
                 Some(parts.join("."))
             }
+            "function_call" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "identifier" || child.kind() == "dot_index_expression" {
+                        return self.get_callee_name(child);
+                    }
+                }
+                None
+            }
             _ => None,
+        }
+    }
+
+    /// Extract string argument from function call (for require, etc.)
+    fn extract_string_arg(&self, node: Node) -> Option<String> {
+        let args_node = self.find_arguments(&node)?;
+        let first_arg = self.get_first_arg(&args_node)?;
+
+        if first_arg.kind() == "string" {
+            self.extract_string_value(first_arg)
+        } else {
+            None
         }
     }
 
@@ -1104,28 +1299,84 @@ impl<'a> TypeInference<'a> {
         let mut names: Vec<String> = Vec::new();
         let mut values: Vec<Node> = Vec::new();
 
+        // For variable_declaration, look inside assignment_statement
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            match child.kind() {
-                "name_list" | "variable_list" => {
-                    let mut name_cursor = child.walk();
-                    for name_node in child.children(&mut name_cursor) {
-                        if name_node.kind() == "identifier" {
-                            names.push(self.node_text(name_node));
+            if child.kind() == "assignment_statement" {
+                let mut assign_cursor = child.walk();
+                for assign_child in child.children(&mut assign_cursor) {
+                    match assign_child.kind() {
+                        "name_list" | "variable_list" => {
+                            let mut name_cursor = assign_child.walk();
+                            for name_node in assign_child.children(&mut name_cursor) {
+                                if name_node.kind() == "identifier" {
+                                    names.push(self.node_text(name_node));
+                                }
+                            }
                         }
+                        "expression_list" => {
+                            let mut expr_cursor = assign_child.walk();
+                            for expr in assign_child.children(&mut expr_cursor) {
+                                if expr.is_named() {
+                                    values.push(expr);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                "expression_list" => {
-                    let mut expr_cursor = child.walk();
-                    for expr in child.children(&mut expr_cursor) {
-                        if expr.is_named() {
-                            values.push(expr);
+                break;
+            } else {
+                match child.kind() {
+                    "name_list" | "variable_list" => {
+                        let mut name_cursor = child.walk();
+                        for name_node in child.children(&mut name_cursor) {
+                            if name_node.kind() == "identifier" {
+                                names.push(self.node_text(name_node));
+                            }
                         }
                     }
+                    "expression_list" => {
+                        let mut expr_cursor = child.walk();
+                        for expr in child.children(&mut expr_cursor) {
+                            if expr.is_named() {
+                                values.push(expr);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
+
+        // Check if this is a pcall/xpcall assignment
+        let is_pcall = if let Some(first_value) = values.first() {
+            self.is_pcall_call(*first_value)
+        } else {
+            false
+        };
+
+        // For pcall, get the function's return type for the result variable
+        let pcall_result_type = if is_pcall && names.len() >= 2 {
+            values.first().and_then(|pcall_node| {
+                let args_node = self.find_arguments(pcall_node)?;
+                let first_arg = self.get_first_arg(&args_node)?;
+                let func_type = self.infer_expression(first_arg);
+                match func_type {
+                    LuaType::Function(func) => Some(func.return_type().clone()),
+                    _ => Some(LuaType::Any),
+                }
+            })
+        } else {
+            None
+        };
+
+        // Store names for pcall tracking before consuming
+        let names_for_pcall = if is_pcall && names.len() >= 2 {
+            Some((names[0].clone(), names[1].clone()))
+        } else {
+            None
+        };
 
         // Assign types to variables
         for (i, name) in names.into_iter().enumerate() {
@@ -1134,7 +1385,38 @@ impl<'a> TypeInference<'a> {
             } else {
                 LuaType::Nil
             };
-            self.env.set(name, ty);
+
+            // For pcall: first variable is Boolean, second is function's return type
+            let final_ty = if let Some((success_var, result_var)) = &names_for_pcall {
+                if name == *success_var {
+                    LuaType::Boolean
+                } else if name == *result_var {
+                    pcall_result_type.clone().unwrap_or(LuaType::Any)
+                } else {
+                    ty
+                }
+            } else {
+                ty
+            };
+
+            self.env.set(name.clone(), final_ty);
+
+            // Track pcall result mapping: local ok, result = pcall(...)
+            if let Some((success_var, result_var)) = &names_for_pcall {
+                if name == *result_var {
+                    if let Some(ref result_t) = pcall_result_type {
+                        // Record in current narrowing context
+                        if let Some(ctx) = self.narrowing_stack.last_mut() {
+                            ctx.set_pcall_result(name, success_var.clone(), result_t.clone());
+                        } else {
+                            // Create a new context if none exists
+                            let mut ctx = NarrowingContext::new();
+                            ctx.set_pcall_result(name, success_var.clone(), result_t.clone());
+                            self.narrowing_stack.push(ctx);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1421,6 +1703,9 @@ impl<'a> TypeInference<'a> {
         // Check for type narrowing patterns in condition
         self.extract_narrowing(condition, &mut ctx);
         
+        // Check for pcall success variable being checked
+        self.extract_pcall_narrowing(condition, &mut ctx);
+        
         self.narrowing_stack.push(ctx);
     }
 
@@ -1428,7 +1713,7 @@ impl<'a> TypeInference<'a> {
     pub fn enter_else_branch(&mut self) {
         if let Some(if_ctx) = self.narrowing_stack.last() {
             let mut else_ctx = NarrowingContext::new();
-            
+
             // Apply inverse narrowings
             for (var, excluded_type) in &if_ctx.narrowed {
                 if let Some(original_type) = self.env.get(var) {
@@ -1436,7 +1721,15 @@ impl<'a> TypeInference<'a> {
                     else_ctx.narrow(var.clone(), narrowed);
                 }
             }
-            
+
+            // Handle pcall results in else branch - narrow to error type
+            for (result_var, (success_var, _)) in &if_ctx.pcall_results {
+                if if_ctx.narrowed.contains_key(success_var) {
+                    // In else branch, result is the error (string)
+                    else_ctx.narrow(result_var.clone(), LuaType::String);
+                }
+            }
+
             self.narrowing_stack.push(else_ctx);
         }
     }
@@ -1541,6 +1834,30 @@ impl<'a> TypeInference<'a> {
         }
     }
 
+    /// Extract pcall success-based narrowing
+    fn extract_pcall_narrowing(&mut self, condition: Node, ctx: &mut NarrowingContext) {
+        // Check if condition is just an identifier (e.g., if ok then)
+        if condition.kind() == "identifier" {
+            let var_name = self.node_text(condition);
+
+            // Check if this is a pcall success variable
+            // Clone pcall_results to avoid borrowing issues
+            let pcall_mappings: Vec<(String, String, LuaType)> = self.narrowing_stack
+                .iter()
+                .flat_map(|c| c.pcall_results.iter())
+                .map(|(result, (success, ty))| (result.clone(), success.clone(), ty.clone()))
+                .collect();
+
+            for (result_var, success_var, success_type) in pcall_mappings {
+                if success_var == var_name {
+                    // Narrow the result variable to the success type
+                    ctx.narrow(result_var, success_type);
+                    break;
+                }
+            }
+        }
+    }
+
     /// Get node text
     fn node_text(&self, node: Node) -> String {
         self.source[node.start_byte()..node.end_byte()].to_string()
@@ -1549,6 +1866,107 @@ impl<'a> TypeInference<'a> {
     /// Get resolved type for a parameter after analyzing function body
     pub fn get_param_type(&self, param: &str) -> LuaType {
         self.param_constraints.resolve(param)
+    }
+
+    /// Handle require() call to load and type-check module
+    fn handle_require(&mut self, module_name: &str) -> LuaType {
+        // Check cache first
+        if let Some(exports) = self.module_cache.get(module_name) {
+            return exports.to_table_type();
+        }
+
+        // Try to resolve and load the module
+        if let Some(module_path) = self.resolve_module_path(module_name) {
+            if let Ok(module_source) = std::fs::read_to_string(&module_path) {
+                // Parse and analyze the module
+                if let Some(exports) = self.extract_module_exports(&module_source) {
+                    // Cache the exports
+                    Arc::make_mut(&mut self.module_cache).insert(module_name.to_string(), exports.clone());
+                    return exports.to_table_type();
+                }
+            }
+        }
+
+        // Return unknown type if module can't be loaded
+        LuaType::Any
+    }
+
+    /// Resolve module path from module name
+    fn resolve_module_path(&self, module_name: &str) -> Option<String> {
+        // Convert dots to path separators: "my.module" -> "my/module"
+        let path_str = module_name.replace('.', "/");
+
+        // Try common extensions
+        let extensions = [".lua", "/init.lua", "/init"];
+
+        for ext in &extensions {
+            let path = format!("{}{}", path_str, ext);
+
+            if let Some(base) = &self.base_path {
+                let full_path = format!("{}/{}", base.trim_end_matches('/'), path);
+                if std::path::Path::new(&full_path).exists() {
+                    return Some(full_path);
+                }
+            }
+
+            // Try current directory
+            if std::path::Path::new(&path).exists() {
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
+    /// Extract exports from a module source
+    fn extract_module_exports(&self, source: &str) -> Option<ModuleExports> {
+        use tree_sitter::Parser;
+
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_lua::LANGUAGE.into()).ok()?;
+        let tree = parser.parse(source, None)?;
+
+        let mut exports = ModuleExports::new();
+        let root = tree.root_node();
+
+        // Collect top-level assignments (potential exports)
+        let mut cursor = root.walk();
+        for child in root.children(&mut cursor) {
+            match child.kind() {
+                "function_declaration" => {
+                    // Functions declared at module level are exports
+                    let mut func_cursor = child.walk();
+                    for func_child in child.children(&mut func_cursor) {
+                        if func_child.kind() == "identifier" {
+                            let func_name = source[func_child.start_byte()..func_child.end_byte()].to_string();
+                            // Create function type
+                            let func_type = FunctionType::default();
+                            exports.functions.insert(func_name, func_type);
+                            break;
+                        }
+                    }
+                }
+                "assignment_statement" | "variable_declaration" => {
+                    // Local variables assigned at module level are exports
+                    let mut assign_cursor = child.walk();
+                    for assign_child in child.children(&mut assign_cursor) {
+                        if assign_child.kind() == "variable_list" {
+                            let mut var_cursor = assign_child.walk();
+                            for var in assign_child.children(&mut var_cursor) {
+                                if var.kind() == "identifier" {
+                                    let var_name = source[var.start_byte()..var.end_byte()].to_string();
+                                    // For now, just mark as Any - could infer from expression
+                                    exports.bindings.insert(var_name, LuaType::Any);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Some(exports)
     }
 }
 
@@ -1687,5 +2105,115 @@ local d = nil
         } else {
             panic!("Expected table type for string");
         }
+    }
+
+    #[test]
+    fn test_pcall_return_type() {
+        let code = r#"
+function get_string()
+    return "hello"
+end
+
+local ok, result = pcall(get_string)
+"#;
+        let (tree, source) = parse(code);
+        let mut inf = TypeInference::new(&source);
+
+        let root = tree.root_node();
+
+        // Manually register get_string function for testing
+        let string_func = FunctionType {
+            params: vec![],
+            returns: vec![LuaType::String],
+            vararg: false,
+            is_method: false,
+        };
+        inf.env.set_function("get_string".to_string(), string_func);
+
+        // Process variable declarations
+        for child in root.children(&mut root.walk()) {
+            if child.kind() == "variable_declaration" {
+                inf.process_declaration(child);
+            }
+        }
+
+        // Check that ok is inferred as boolean
+        let ok_type = inf.env.get("ok");
+        assert_eq!(ok_type, Some(LuaType::Boolean));
+
+        // Check that result is inferred as string (function's return type)
+        let result_type = inf.env.get("result");
+        assert_eq!(result_type, Some(LuaType::String));
+    }
+
+    #[test]
+    fn test_require_imports_types() {
+        // This test verifies that require() imports module types
+        // Without actual file loading, we test the structure
+        let code = r#"
+local mymodule = require("mymodule")
+local result = mymodule.process()
+"#;
+        let (tree, source) = parse(code);
+        let mut inf = TypeInference::new(&source);
+
+        let root = tree.root_node();
+
+        // Mock module cache
+        let mut cache = HashMap::new();
+        let mut module_exports = ModuleExports::new();
+        module_exports.functions.insert("process".to_string(), FunctionType {
+            params: vec![],
+            returns: vec![LuaType::String],
+            vararg: false,
+            is_method: false,
+        });
+        cache.insert("mymodule".to_string(), module_exports);
+
+        inf = TypeInference::with_module_cache(&source, Arc::new(cache));
+
+        // Process declarations
+        for child in root.children(&mut root.walk()) {
+            if child.kind() == "variable_declaration" || child.kind() == "assignment_statement" {
+                inf.process_declaration(child);
+            }
+        }
+
+        // Check that mymodule is inferred as a table
+        let module_type = inf.env.get("mymodule");
+        assert!(matches!(module_type, Some(LuaType::Table(_))));
+
+        // Check that mymodule.process is accessible
+        let module_type = inf.env.get("mymodule").unwrap();
+        if let LuaType::Table(table) = module_type {
+            let process_type = table.get_field("process");
+            assert!(process_type.is_some());
+            if let Some(LuaType::Function(func)) = process_type {
+                assert_eq!(func.returns, vec![LuaType::String]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_require_unknown_module() {
+        // Test that unknown modules return Any type
+        let code = r#"
+local unknown = require("nonexistent")
+"#;
+        let (tree, source) = parse(code);
+        let mut inf = TypeInference::new(&source);
+
+        let root = tree.root_node();
+
+        // Process declarations
+        for child in root.children(&mut root.walk()) {
+            if child.kind() == "variable_declaration" || child.kind() == "assignment_statement" {
+                inf.process_declaration(child);
+            }
+        }
+
+        // Check that unknown module is inferred as Any
+        let module_type = inf.env.get("unknown");
+        assert_eq!(module_type, Some(LuaType::Any));
     }
 }
