@@ -163,6 +163,16 @@ impl SymbolTable {
             .and_then(|id| self.scopes.get(id))
     }
 
+    pub fn all_symbols(&self) -> Vec<&Symbol> {
+        let mut symbols = Vec::new();
+        for scope in &self.scopes {
+            for symbol in scope.symbols.values() {
+                symbols.push(symbol);
+            }
+        }
+        symbols
+    }
+
     pub fn current_scope_mut(&mut self) -> Option<&mut Scope> {
         self.current_scope
             .and_then(move |id| self.scopes.get_mut(id))

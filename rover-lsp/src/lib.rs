@@ -837,7 +837,7 @@ fn spec_doc_completions(spec: &SpecDoc, partial: &str) -> Vec<CompletionItem> {
 fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     
-    // Add all known symbols from the model
+    // Priority 1: Rover constructs from symbol_specs
     for (name, spec) in &model.symbol_specs {
         if partial.is_empty() || name.starts_with(partial) {
             items.push(CompletionItem {
@@ -848,12 +848,71 @@ fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<Co
                 } else {
                     Some(spec.doc.clone())
                 },
+                sort_text: Some(format!("0_{}", name)),
                 ..CompletionItem::default()
             });
         }
     }
     
-    items.sort_by(|a, b| a.label.cmp(&b.label));
+    // Priority 2: Local variables from symbol table
+    let mut seen = std::collections::HashSet::new();
+    for symbol in model.symbol_table.all_symbols() {
+        if (partial.is_empty() || symbol.name.starts_with(partial)) && !seen.contains(&symbol.name) {
+            seen.insert(symbol.name.clone());
+            items.push(CompletionItem {
+                label: symbol.name.clone(),
+                kind: Some(match symbol.kind {
+                    rover_parser::SymbolKind::Function => CompletionItemKind::FUNCTION,
+                    rover_parser::SymbolKind::Parameter => CompletionItemKind::VARIABLE,
+                    _ => CompletionItemKind::VARIABLE,
+                }),
+                detail: Some(format!("{:?}", symbol.kind)),
+                sort_text: Some(format!("1_{}", symbol.name)),
+                ..CompletionItem::default()
+            });
+        }
+    }
+    
+    // Priority 3: Lua stdlib globals
+    let lua_globals = [
+        ("print", "Print values to stdout"),
+        ("assert", "Check assertion and raise error if false"),
+        ("error", "Raise an error"),
+        ("type", "Get type of value"),
+        ("tonumber", "Convert to number"),
+        ("tostring", "Convert to string"),
+        ("ipairs", "Iterator for array-like tables"),
+        ("pairs", "Iterator for all table pairs"),
+        ("next", "Get next table key-value pair"),
+        ("pcall", "Protected call"),
+        ("xpcall", "Protected call with error handler"),
+        ("require", "Load module"),
+        ("string", "String manipulation library"),
+        ("table", "Table manipulation library"),
+        ("math", "Mathematical functions library"),
+        ("io", "I/O library"),
+        ("os", "Operating system library"),
+        ("coroutine", "Coroutine library"),
+        ("debug", "Debug library"),
+        ("package", "Package/module system"),
+    ];
+    
+    for (name, doc) in &lua_globals {
+        if (partial.is_empty() || name.starts_with(partial)) && !seen.contains(*name) {
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some(doc.to_string()),
+                sort_text: Some(format!("2_{}", name)),
+                ..CompletionItem::default()
+            });
+        }
+    }
+    
+    items.sort_by(|a, b| {
+        a.sort_text.as_ref().unwrap_or(&a.label)
+            .cmp(b.sort_text.as_ref().unwrap_or(&b.label))
+    });
     items
 }
 
