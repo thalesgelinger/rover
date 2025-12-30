@@ -1,6 +1,8 @@
 mod rule_runtime;
 mod rules;
 mod analyzer;
+mod incremental;
+mod symbol;
 use tree_sitter::Parser;
 
 use crate::analyzer::Analyzer;
@@ -9,9 +11,11 @@ pub use analyzer::{
     ParsingError, PathParam, QueryParam, Request, Response, Route, RoverServer, SemanticModel,
     SourcePosition, SourceRange, SymbolSpecMember, SymbolSpecMetadata, ValidationSource,
 };
+pub use symbol::{Symbol, SymbolKind, ScopeType, SymbolTable};
 pub use rule_runtime::MemberKind;
 pub use rules::lookup_spec;
 pub use rule_runtime::{SpecDoc, SpecDocMember};
+pub use incremental::{IncrementalParser, CachedParse};
 
 pub fn analyze(code: &str) -> SemanticModel {
     let mut parser = Parser::new();
@@ -103,7 +107,7 @@ mod tests {
         assert!(model.server.is_some(), "Server should be parsed");
         let server = model.server.unwrap();
         assert!(server.exported, "Server should be exported");
-        assert_eq!(server.routes.len(), 5, "Should have 5 routes");
+        assert_eq!(server.routes.len(), 8, "Should have 8 routes");
 
         // Check the hello route with headers
         let hello_route = server.routes.iter().find(|r| r.path == "/hello").unwrap();

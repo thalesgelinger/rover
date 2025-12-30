@@ -31,6 +31,7 @@ impl Backend {
     }
 
     async fn update_document(&self, uri: Url, text: String) {
+        // TODO: Add debouncing (75ms) using tokio::time::sleep and channel
         let model = analyze(&text);
         {
             let mut docs = self.documents.write().await;

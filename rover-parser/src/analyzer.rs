@@ -5,6 +5,7 @@ use tree_sitter::Node;
 
 use crate::rule_runtime::{MemberKind, RuleContext, RuleEngine};
 use crate::rules;
+use crate::symbol::{Symbol, SymbolKind, ScopeType, SymbolTable};
 
 #[derive(Debug, Clone)]
 pub struct SemanticModel {
@@ -176,7 +177,8 @@ pub struct GuardBinding {
 
 pub struct Analyzer {
     pub model: SemanticModel,
-    pub symbol_table: HashMap<String, FunctionId>,
+    pub symbol_table: SymbolTable,
+    pub function_symbol_table: HashMap<String, FunctionId>,
     pub function_counter: FunctionId,
     pub app_var_name: Option<String>,
     pub current_function_name: Option<String>,
@@ -197,7 +199,8 @@ impl Analyzer {
                 symbol_specs: HashMap::new(),
                 dynamic_members: HashMap::new(),
             },
-            symbol_table: HashMap::new(),
+            symbol_table: SymbolTable::new(),
+            function_symbol_table: HashMap::new(),
             function_counter: 0,
             app_var_name: None,
             current_function_name: None,
@@ -557,7 +560,7 @@ impl Analyzer {
 
         let handler_id = self.function_counter;
         self.function_counter += 1;
-        self.symbol_table.insert(func_name.clone(), handler_id);
+        self.function_symbol_table.insert(func_name.clone(), handler_id);
         self.current_function_name = Some(func_name.clone());
 
         // Extract path params from path
@@ -1935,6 +1938,38 @@ impl Analyzer {
 
     fn nodes_equal(a: Node, b: Node) -> bool {
         a.start_byte() == b.start_byte() && a.end_byte() == b.end_byte()
+    }
+
+    pub fn push_scope(&mut self, scope_type: ScopeType) {
+        self.symbol_table.push_scope(scope_type);
+    }
+
+    pub fn pop_scope(&mut self) {
+        self.symbol_table.pop_scope();
+    }
+
+    pub fn register_variable(&mut self, name: &str, kind: SymbolKind, node: Node) {
+        let range = SourceRange::from_node(node);
+        let symbol = Symbol {
+            name: name.to_string(),
+            kind,
+            range: crate::symbol::SourceRange {
+                start: crate::symbol::SourcePosition {
+                    line: range.start.line,
+                    column: range.start.column,
+                },
+                end: crate::symbol::SourcePosition {
+                    line: range.end.line,
+                    column: range.end.column,
+                },
+            },
+            type_annotation: None,
+        };
+        self.symbol_table.insert_symbol(symbol);
+    }
+
+    pub fn resolve_symbol(&self, name: &str) -> Option<&Symbol> {
+        self.symbol_table.resolve_symbol(name)
     }
 }
 
