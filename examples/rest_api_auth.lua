@@ -36,11 +36,62 @@ function api.users.get(ctx)
     }
 end
 
--- POST to create user (nested resource)
+-- POST to create user using :json() method
 function api.users.create.post(ctx)
+    local body = ctx:body():json()
+    body.id = 1
+
+    return api.json(body)
+end
+
+-- Echo text endpoint using :text() method
+function api.raw_content.post(ctx)
+    local text = ctx:body():text()
     return api.json {
-        created = true
+        received = text,
+        length = #text
     }
+end
+
+-- Echo bytes endpoint using :bytes() method
+function api.echo.bytes.post(ctx)
+    local bytes = ctx:body():bytes()
+    local sum = 0
+    
+    for i = 1, #bytes do
+        sum = sum + bytes[i]
+    end
+    
+    return api.json {
+        byte_count = #bytes,
+        sum = sum,
+        first_byte = bytes[1] or 0,
+        last_byte = bytes[#bytes] or 0
+    }
+end
+
+-- Validated user creation using :expect()
+function api.users.validated.post(ctx)
+    local user = ctx:body():expect {
+        name = {
+            type = "string",
+            required = true
+        },
+        email = {
+            type = "string",
+            required = true
+        },
+        age = {
+            type = "integer",
+            required = false,
+            default = 18
+        }
+    }
+    
+    user.id = math.floor(math.random() * 1000)
+    user.createdAt = os.date("%Y-%m-%d")
+    
+    return api.json:status(201, user)
 end
 
 return api

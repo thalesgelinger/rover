@@ -97,7 +97,9 @@ pub fn run(path: &str) -> Result<()> {
     // Add hidden __body_value for BodyValue constructor
     guard.set(
         "__body_value",
-        lua.create_function(|_lua, json_string: String| Ok(BodyValue::new(json_string)))?,
+        lua.create_function(|_lua, (json_string, raw_bytes): (String, Vec<u8>)| {
+            Ok(BodyValue::new(json_string, raw_bytes))
+        })?,
     )?;
 
     rover.set("guard", guard)?;

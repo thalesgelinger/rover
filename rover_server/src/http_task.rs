@@ -240,7 +240,7 @@ fn build_lua_context(lua: &Lua, task: &HttpTask) -> Result<Table> {
             let guard: Table = rover.get("guard")?;
 
             if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
-                constructor.call(body_str.to_string())
+                constructor.call((body_str.to_string(), body.to_vec()))
             } else {
                 Ok(Value::String(lua.create_string(body_str)?))
             }

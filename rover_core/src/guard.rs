@@ -343,17 +343,51 @@ pub fn validate_table(
 /// A wrapper around parsed body that can be validated with :expect()
 pub struct BodyValue {
     json_string: String,
+    raw_bytes: Vec<u8>,
 }
 
 impl BodyValue {
-    pub fn new(json_string: String) -> Self {
-        Self { json_string }
+    pub fn new(json_string: String, raw_bytes: Vec<u8>) -> Self {
+        Self { json_string, raw_bytes }
     }
 }
 
 
 impl UserData for BodyValue {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("json", |lua, this, ()| {
+            let parsed_json: serde_json::Value = serde_json::from_str(&this.json_string)
+                .map_err(|e| {
+                    LuaError::RuntimeError(format!("Invalid JSON in request body: {}", e))
+                })?;
+
+            json_to_lua(lua, &parsed_json)
+        });
+
+        methods.add_method("raw", |lua, this, ()| {
+            let parsed_json: serde_json::Value = serde_json::from_str(&this.json_string)
+                .map_err(|e| {
+                    LuaError::RuntimeError(format!("Invalid JSON in request body: {}", e))
+                })?;
+
+            json_to_lua(lua, &parsed_json)
+        });
+
+        methods.add_method("text", |lua, this, ()| {
+            let text_str = std::str::from_utf8(&this.raw_bytes)
+                .map_err(|e| LuaError::RuntimeError(format!("Invalid UTF-8 in body: {}", e)))?;
+
+            Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("bytes", |lua, this, ()| {
+            let table = lua.create_table_with_capacity(this.raw_bytes.len(), 0)?;
+            for (i, byte) in this.raw_bytes.iter().enumerate() {
+                table.set(i + 1, *byte)?;
+            }
+            Ok(Value::Table(table))
+        });
+
         methods.add_method("expect", |lua, this, schema: Table| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let parsed_json: serde_json::Value = serde_json::from_str(&this.json_string)
@@ -443,5 +477,87 @@ fn json_to_lua(lua: &Lua, value: &serde_json::Value) -> mlua::Result<Value> {
             }
             Ok(Value::Table(table))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlua::ObjectLike;
+
+    #[test]
+    fn test_body_value_json_method() {
+        let lua = Lua::new();
+        let body = BodyValue::new(r#"{"name": "John", "age": 30}"#.to_string(), vec![]);
+        
+        let body_value = lua.create_userdata(body).unwrap();
+        
+        let result: mlua::Table = body_value.call_method("json", ()).unwrap();
+        
+        let name: String = result.get("name").unwrap();
+        let age: i64 = result.get("age").unwrap();
+        
+        assert_eq!(name, "John");
+        assert_eq!(age, 30);
+    }
+
+    #[test]
+    fn test_body_value_text_method() {
+        let lua = Lua::new();
+        let text = "Hello, World!";
+        let body = BodyValue::new(text.to_string(), text.as_bytes().to_vec());
+        
+        let body_value = lua.create_userdata(body).unwrap();
+        
+        let result: String = body_value.call_method("text", ()).unwrap();
+        
+        assert_eq!(result, "Hello, World!");
+    }
+
+    #[test]
+    fn test_body_value_bytes_method() {
+        let lua = Lua::new();
+        let bytes: Vec<u8> = vec![72, 101, 108, 108, 111];
+        let body = BodyValue::new("Hello".to_string(), bytes.clone());
+        
+        let body_value = lua.create_userdata(body).unwrap();
+        
+        let result: mlua::Table = body_value.call_method("bytes", ()).unwrap();
+        
+        let len: i64 = result.len().unwrap();
+        assert_eq!(len, 5);
+        
+        let first: u8 = result.get(1).unwrap();
+        assert_eq!(first, 72);
+        
+        let last: u8 = result.get(5).unwrap();
+        assert_eq!(last, 111);
+    }
+
+    #[test]
+    fn test_body_value_expect_method() {
+        let lua = Lua::new();
+        let body = BodyValue::new(r#"{"name": "John", "age": 30}"#.to_string(), vec![]);
+        
+        let body_value = lua.create_userdata(body).unwrap();
+        
+        let schema = lua.create_table().unwrap();
+        schema.set("name", lua.create_table().unwrap()).unwrap();
+        
+        let schema_name: Table = schema.get("name").unwrap();
+        schema_name.set("type", "string").unwrap();
+        schema_name.set("required", true).unwrap();
+        
+        schema.set("age", lua.create_table().unwrap()).unwrap();
+        let schema_age: Table = schema.get("age").unwrap();
+        schema_age.set("type", "integer").unwrap();
+        
+        let result: mlua::Table = body_value.call_method("expect", schema).unwrap();
+        
+        let name: String = result.get("name").unwrap();
+        let age: i64 = result.get("age").unwrap();
+        
+        assert_eq!(name, "John");
+        assert_eq!(age, 30);
     }
 }
