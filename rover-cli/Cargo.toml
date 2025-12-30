@@ -1,12 +1,12 @@
 [package]
-name = "cli"
+name = "rover_cli"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
-rover_core = {path = "../rover_core"}
+rover_core = {path = "../rover-core"}
 rover-lsp = {path = "../rover-lsp"}
 rover-parser = {path = "../rover-parser"}
 colored = "2.2"
