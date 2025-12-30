@@ -70,6 +70,7 @@ impl LanguageServer for Backend {
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -160,6 +161,21 @@ impl LanguageServer for Backend {
             let locations = find_references(&doc.text, position, uri.clone(), params.context.include_declaration);
             if !locations.is_empty() {
                 return Ok(Some(locations));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            let symbols = build_document_symbols(&doc.model);
+            if !symbols.is_empty() {
+                return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
             }
         }
         Ok(None)
@@ -474,6 +490,70 @@ fn find_definition(
     }
     
     None
+}
+
+fn build_document_symbols(model: &SemanticModel) -> Vec<DocumentSymbol> {
+    let mut symbols = Vec::new();
+
+    // Add functions from model
+    for func in &model.functions {
+        #[allow(deprecated)]
+        symbols.push(DocumentSymbol {
+            name: func.name.clone(),
+            detail: func.context_param.as_ref().map(|ctx| format!("({})", ctx)),
+            kind: SymbolKind::FUNCTION,
+            range: source_range_to_range(Some(&func.range)),
+            selection_range: source_range_to_range(Some(&func.range)),
+            children: None,
+            tags: None,
+            deprecated: None,
+        });
+    }
+
+    // Add local variables from symbol table
+    for symbol in model.symbol_table.all_symbols() {
+        let kind = match symbol.kind {
+            rover_parser::SymbolKind::Variable => SymbolKind::VARIABLE,
+            rover_parser::SymbolKind::Function => SymbolKind::FUNCTION,
+            rover_parser::SymbolKind::Parameter => SymbolKind::VARIABLE,
+            rover_parser::SymbolKind::Global => SymbolKind::VARIABLE,
+            rover_parser::SymbolKind::Builtin => continue, // Skip builtins
+            rover_parser::SymbolKind::RoverServer => SymbolKind::OBJECT,
+            rover_parser::SymbolKind::RoverGuard => SymbolKind::OBJECT,
+            rover_parser::SymbolKind::ContextParam => SymbolKind::VARIABLE,
+        };
+
+        let range = Range {
+            start: Position {
+                line: symbol.range.start.line as u32,
+                character: symbol.range.start.column as u32,
+            },
+            end: Position {
+                line: symbol.range.end.line as u32,
+                character: symbol.range.end.column as u32,
+            },
+        };
+
+        #[allow(deprecated)]
+        symbols.push(DocumentSymbol {
+            name: symbol.name.clone(),
+            detail: symbol.type_annotation.clone(),
+            kind,
+            range,
+            selection_range: range,
+            children: None,
+            tags: None,
+            deprecated: None,
+        });
+    }
+
+    // Sort by position
+    symbols.sort_by(|a, b| {
+        a.range.start.line.cmp(&b.range.start.line)
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
+
+    symbols
 }
 
 fn find_references(
