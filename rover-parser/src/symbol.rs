@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::types::LuaType;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
@@ -19,6 +20,8 @@ pub struct Symbol {
     pub range: SourceRange,
     pub type_annotation: Option<String>,
     pub used: bool,
+    /// Inferred type from usage patterns
+    pub inferred_type: LuaType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -240,6 +243,16 @@ impl SymbolTable {
         symbols
     }
 
+    pub fn all_symbols_mut(&mut self) -> Vec<&mut Symbol> {
+        let mut symbols = Vec::new();
+        for scope in &mut self.scopes {
+            for symbol in scope.symbols.values_mut() {
+                symbols.push(symbol);
+            }
+        }
+        symbols
+    }
+
     pub fn current_scope_mut(&mut self) -> Option<&mut Scope> {
         self.current_scope
             .and_then(move |id| self.scopes.get_mut(id))
@@ -361,6 +374,7 @@ mod tests {
             },
             type_annotation: None,
             used: false,
+            inferred_type: LuaType::Unknown,
         }
     }
 

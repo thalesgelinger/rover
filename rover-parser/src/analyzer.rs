@@ -6,6 +6,7 @@ use tree_sitter::Node;
 use crate::rule_runtime::{MemberKind, RuleContext, RuleEngine};
 use crate::rules;
 use crate::symbol::{Symbol, SymbolKind, ScopeType, SymbolTable};
+use crate::types::LuaType;
 
 #[derive(Debug, Clone)]
 pub struct SemanticModel {
@@ -15,6 +16,8 @@ pub struct SemanticModel {
     pub symbol_specs: HashMap<String, SymbolSpecMetadata>,
     pub dynamic_members: HashMap<String, Vec<String>>, // table_name -> [member_names]
     pub symbol_table: SymbolTable,
+    /// Type errors from type inference
+    pub type_errors: Vec<crate::types::TypeError>,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +203,7 @@ impl Analyzer {
                 symbol_specs: HashMap::new(),
                 dynamic_members: HashMap::new(),
                 symbol_table: SymbolTable::new(),
+                type_errors: Vec::new(),
             },
             symbol_table: SymbolTable::new(),
             function_symbol_table: HashMap::new(),
@@ -2017,6 +2021,7 @@ impl Analyzer {
             },
             type_annotation: None,
             used: false,
+            inferred_type: LuaType::Unknown,
         };
         self.symbol_table.insert_symbol(symbol);
     }

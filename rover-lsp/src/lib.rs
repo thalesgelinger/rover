@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use rover_parser::{
     FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, MemberKind, Route, SemanticModel,
-    SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata, analyze, lookup_spec,
+    SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata, analyze, analyze_with_options,
+    lookup_spec, LuaType,
 };
 
 // Alias to avoid collision with rover_parser::SymbolKind
@@ -100,8 +101,9 @@ impl Backend {
                 return;
             }
 
-            // Perform the actual analysis
-            let model = analyze(&text);
+            // Perform the actual analysis with type inference
+            use rover_parser::AnalyzeOptions;
+            let model = analyze_with_options(&text, AnalyzeOptions { type_inference: true });
             {
                 let mut docs = documents.write().await;
                 docs.insert(
@@ -123,7 +125,8 @@ impl Backend {
 
     /// Update document immediately without debouncing (for did_open)
     async fn update_document_immediate(&self, uri: Url, text: String) {
-        let model = analyze(&text);
+        use rover_parser::AnalyzeOptions;
+        let model = analyze_with_options(&text, AnalyzeOptions { type_inference: true });
         {
             let mut docs = self.documents.write().await;
             docs.insert(
@@ -727,8 +730,13 @@ fn build_symbol_hover(
         };
         lines.push(format!("**{}** _{}_", identifier, kind_str));
         
+        // Show inferred type if not Unknown
+        if !matches!(symbol.inferred_type, LuaType::Unknown) {
+            lines.push(format!("Inferred type: `{}`", symbol.inferred_type));
+        }
+        
         if let Some(type_annotation) = &symbol.type_annotation {
-            lines.push(format!("Type: `{}`", type_annotation));
+            lines.push(format!("Type annotation: `{}`", type_annotation));
         }
         
         lines.push(format!("Defined at line {}", symbol.range.start.line + 1));
@@ -1425,14 +1433,35 @@ fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<Co
     for symbol in model.symbol_table.all_symbols() {
         if (partial.is_empty() || symbol.name.starts_with(partial)) && !seen.contains(&symbol.name) {
             seen.insert(symbol.name.clone());
+            
+            let kind = match symbol.kind {
+                rover_parser::SymbolKind::Function => CompletionItemKind::FUNCTION,
+                rover_parser::SymbolKind::Parameter => CompletionItemKind::VARIABLE,
+                _ => CompletionItemKind::VARIABLE,
+            };
+            
+            let kind_name = match symbol.kind {
+                rover_parser::SymbolKind::Variable => "local variable",
+                rover_parser::SymbolKind::Function => "function",
+                rover_parser::SymbolKind::Parameter => "parameter",
+                rover_parser::SymbolKind::Global => "global",
+                rover_parser::SymbolKind::Builtin => "builtin",
+                rover_parser::SymbolKind::RoverServer => "rover server",
+                rover_parser::SymbolKind::RoverGuard => "rover guard",
+                rover_parser::SymbolKind::ContextParam => "context parameter",
+            };
+            
+            // Include inferred type if not Unknown
+            let detail = if !matches!(symbol.inferred_type, LuaType::Unknown) {
+                format!("{}: {}", kind_name, symbol.inferred_type)
+            } else {
+                kind_name.to_string()
+            };
+            
             items.push(CompletionItem {
                 label: symbol.name.clone(),
-                kind: Some(match symbol.kind {
-                    rover_parser::SymbolKind::Function => CompletionItemKind::FUNCTION,
-                    rover_parser::SymbolKind::Parameter => CompletionItemKind::VARIABLE,
-                    _ => CompletionItemKind::VARIABLE,
-                }),
-                detail: Some(format!("{:?}", symbol.kind)),
+                kind: Some(kind),
+                detail: Some(detail),
                 sort_text: Some(format!("1_{}", symbol.name)),
                 ..CompletionItem::default()
             });

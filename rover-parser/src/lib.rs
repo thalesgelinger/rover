@@ -4,6 +4,8 @@ mod analyzer;
 mod incremental;
 mod symbol;
 mod formatter;
+pub mod types;
+pub mod type_inference;
 
 use tree_sitter::Parser;
 
@@ -19,8 +21,22 @@ pub use rules::lookup_spec;
 pub use rule_runtime::{SpecDoc, SpecDocMember};
 pub use incremental::{IncrementalParser, CachedParse};
 pub use formatter::{Formatter, FormatterConfig, format_code, format_code_with_config};
+pub use types::{LuaType, TableType, FunctionType, TypeError};
+pub use type_inference::{TypeInference, TypeEnv};
 
 pub fn analyze(code: &str) -> SemanticModel {
+    analyze_with_options(code, AnalyzeOptions::default())
+}
+
+/// Options for analysis
+#[derive(Default)]
+pub struct AnalyzeOptions {
+    /// Enable type inference
+    pub type_inference: bool,
+}
+
+/// Analyze code with custom options
+pub fn analyze_with_options(code: &str, options: AnalyzeOptions) -> SemanticModel {
     let mut parser = Parser::new();
     let language = tree_sitter_lua::LANGUAGE;
     parser
@@ -38,7 +54,125 @@ pub fn analyze(code: &str) -> SemanticModel {
     // Copy symbol table to model
     analyzer.model.symbol_table = analyzer.symbol_table.clone();
 
+    // Run type inference if enabled
+    if options.type_inference {
+        run_type_inference(code, &tree, &mut analyzer.model);
+    }
+
     analyzer.model
+}
+
+/// Run type inference pass and update symbol types
+fn run_type_inference(code: &str, tree: &tree_sitter::Tree, model: &mut SemanticModel) {
+    let mut type_inf = type_inference::TypeInference::new(code);
+    
+    // Walk AST and infer types
+    infer_types_recursive(&mut type_inf, tree.root_node(), code);
+    
+    // Update symbol table with inferred types
+    for symbol in model.symbol_table.all_symbols_mut() {
+        if let Some(inferred) = type_inf.env.get(&symbol.name) {
+            symbol.inferred_type = inferred;
+        }
+    }
+    
+    // Collect type errors
+    model.type_errors = type_inf.errors;
+}
+
+/// Recursively walk AST and infer types
+fn infer_types_recursive<'a>(
+    type_inf: &mut type_inference::TypeInference<'a>,
+    node: tree_sitter::Node<'a>,
+    _code: &'a str,
+) {
+    match node.kind() {
+        "variable_declaration" | "local_variable_declaration" => {
+            type_inf.process_declaration(node);
+        }
+        "assignment_statement" => {
+            type_inf.process_assignment(node);
+        }
+        "function_declaration" | "function_definition" => {
+            // Infer function type and store by name
+            let func_type = type_inf.infer_expression(node);
+            if let Some(name) = extract_function_name_from_node(node, _code) {
+                type_inf.env.set(name, func_type);
+            }
+        }
+        "function_call" => {
+            // Check for assert() calls
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    let name = &_code[child.start_byte()..child.end_byte()];
+                    if name == "assert" {
+                        type_inf.process_assert(node);
+                    }
+                    break;
+                }
+            }
+        }
+        "if_statement" => {
+            // Handle control flow narrowing
+            let mut cursor = node.walk();
+            let mut in_condition = false;
+            let mut in_consequence = false;
+            let mut in_alternative = false;
+            
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "if" => in_condition = true,
+                    "then" => {
+                        in_condition = false;
+                        in_consequence = true;
+                    }
+                    "else" => {
+                        in_consequence = false;
+                        in_alternative = true;
+                        type_inf.enter_else_branch();
+                    }
+                    "end" => {
+                        if in_consequence || in_alternative {
+                            type_inf.exit_branch();
+                        }
+                    }
+                    _ => {
+                        if in_condition && child.is_named() {
+                            type_inf.enter_if_branch(child);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        infer_types_recursive(type_inf, child, _code);
+    }
+}
+
+/// Extract function name from function declaration or definition
+fn extract_function_name_from_node(node: tree_sitter::Node, code: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "identifier" {
+            return Some(code[child.start_byte()..child.end_byte()].to_string());
+        }
+        // Also handle dot_index_expression for methods like foo.bar = function() ...
+        if child.kind() == "dot_index_expression" {
+            let mut dot_cursor = child.walk();
+            for dot_child in child.children(&mut dot_cursor) {
+                if dot_child.kind() == "identifier" {
+                    return Some(code[dot_child.start_byte()..dot_child.end_byte()].to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -46,6 +180,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn should_infer_types_with_type_inference_enabled() {
+        let code = r#"
+local x = 42
+local name = "hello"
+local person = { name = name, age = 25 }
+"#;
+        let model = analyze_with_options(code, AnalyzeOptions { type_inference: true });
+        
+        // Check inferred types are stored in symbols
+        let x_symbol = model.symbol_table.resolve_symbol_global("x").unwrap();
+        assert_eq!(x_symbol.inferred_type, LuaType::Number);
+        
+        let name_symbol = model.symbol_table.resolve_symbol_global("name").unwrap();
+        assert_eq!(name_symbol.inferred_type, LuaType::String);
+        
+        let person_symbol = model.symbol_table.resolve_symbol_global("person").unwrap();
+        if let LuaType::Table(table) = &person_symbol.inferred_type {
+            assert_eq!(table.get_field("name"), Some(&LuaType::String));
+            assert_eq!(table.get_field("age"), Some(&LuaType::Number));
+        } else {
+            panic!("Expected table type for person");
+        }
+    }
     fn should_parse_rest_api_basic() {
         let code = include_str!("../../examples/rest_api_basic.lua");
         let model = analyze(code);
