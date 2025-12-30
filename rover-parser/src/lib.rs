@@ -356,4 +356,120 @@ local result = foo(x, y)
         assert_eq!(x_symbol.name, "x");
         assert_eq!(x_symbol.kind, SymbolKind::Variable);
     }
+
+    #[test]
+    fn should_track_variable_usage() {
+        let code = r#"
+local x = 10
+local y = 20
+local unused = 30
+
+print(x + y)
+        "#;
+
+        let model = analyze(code);
+
+        // x and y should be marked as used
+        let x_symbol = model.symbol_table.resolve_symbol_global("x").unwrap();
+        assert!(x_symbol.used, "x should be marked as used");
+
+        let y_symbol = model.symbol_table.resolve_symbol_global("y").unwrap();
+        assert!(y_symbol.used, "y should be marked as used");
+
+        // unused should NOT be marked as used
+        let unused_symbol = model.symbol_table.resolve_symbol_global("unused").unwrap();
+        assert!(!unused_symbol.used, "unused should NOT be marked as used");
+    }
+
+    #[test]
+    fn should_track_parameter_usage() {
+        let code = r#"
+function foo(a, b, unused_param)
+    return a + b
+end
+        "#;
+
+        let model = analyze(code);
+
+        // a and b should be marked as used
+        let a_symbol = model.symbol_table.resolve_symbol_global("a").unwrap();
+        assert!(a_symbol.used, "a should be marked as used");
+
+        let b_symbol = model.symbol_table.resolve_symbol_global("b").unwrap();
+        assert!(b_symbol.used, "b should be marked as used");
+
+        // unused_param should NOT be marked as used
+        let unused_param = model.symbol_table.resolve_symbol_global("unused_param").unwrap();
+        assert!(!unused_param.used, "unused_param should NOT be marked as used");
+    }
+
+    #[test]
+    fn should_get_unused_symbols() {
+        let code = r#"
+local x = 10
+local y = 20
+local _ignored = 30
+local unused = 40
+
+print(x + y)
+        "#;
+
+        let model = analyze(code);
+        let unused_symbols = model.symbol_table.get_unused_symbols();
+
+        // Should only include 'unused' (not _ignored which starts with _)
+        let unused_names: Vec<&str> = unused_symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(unused_names.contains(&"unused"), "should include 'unused' variable");
+        assert!(!unused_names.contains(&"_ignored"), "should NOT include '_ignored' (underscore prefix)");
+        assert!(!unused_names.contains(&"x"), "should NOT include 'x' (used)");
+        assert!(!unused_names.contains(&"y"), "should NOT include 'y' (used)");
+    }
+
+    #[test]
+    fn should_track_usage_in_function_calls() {
+        let code = r#"
+local x = 10
+local y = 20
+
+function add(a, b)
+    return a + b
+end
+
+local result = add(x, y)
+print(result)
+        "#;
+
+        let model = analyze(code);
+
+        // All variables should be used
+        let x_symbol = model.symbol_table.resolve_symbol_global("x").unwrap();
+        assert!(x_symbol.used, "x should be marked as used");
+
+        let y_symbol = model.symbol_table.resolve_symbol_global("y").unwrap();
+        assert!(y_symbol.used, "y should be marked as used");
+
+        let result_symbol = model.symbol_table.resolve_symbol_global("result").unwrap();
+        assert!(result_symbol.used, "result should be marked as used");
+    }
+
+    #[test]
+    fn should_track_usage_in_table_access() {
+        let code = r#"
+local t = { a = 1 }
+local key = "a"
+local value = t[key]
+print(value)
+        "#;
+
+        let model = analyze(code);
+
+        let t_symbol = model.symbol_table.resolve_symbol_global("t").unwrap();
+        assert!(t_symbol.used, "t should be marked as used");
+
+        let key_symbol = model.symbol_table.resolve_symbol_global("key").unwrap();
+        assert!(key_symbol.used, "key should be marked as used");
+
+        let value_symbol = model.symbol_table.resolve_symbol_global("value").unwrap();
+        assert!(value_symbol.used, "value should be marked as used");
+    }
 }

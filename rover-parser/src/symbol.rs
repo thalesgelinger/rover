@@ -18,6 +18,7 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub range: SourceRange,
     pub type_annotation: Option<String>,
+    pub used: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -251,6 +252,61 @@ impl SymbolTable {
     pub fn get_scope_mut(&mut self, id: usize) -> Option<&mut Scope> {
         self.scopes.get_mut(id)
     }
+
+    /// Mark a symbol as used, searching from the given position
+    /// Returns true if the symbol was found and marked
+    pub fn mark_symbol_used_at_position(&mut self, name: &str, line: usize, column: usize) -> bool {
+        let scope_id = match self.find_innermost_scope_at(line, column) {
+            Some(id) => id,
+            None => return false,
+        };
+        self.mark_symbol_used_from_scope(name, scope_id)
+    }
+
+    /// Mark a symbol as used, searching from the given scope upward
+    fn mark_symbol_used_from_scope(&mut self, name: &str, scope_id: usize) -> bool {
+        let mut current = scope_id;
+        loop {
+            if let Some(scope) = self.scopes.get_mut(current) {
+                if scope.symbols.contains_key(name) {
+                    if let Some(symbol) = scope.symbols.get_mut(name) {
+                        symbol.used = true;
+                        return true;
+                    }
+                }
+                if let Some(parent) = scope.parent {
+                    current = parent;
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+    }
+
+    /// Get all unused symbols (variables/parameters that were never read)
+    /// Skips symbols with names starting with '_' (intentionally unused)
+    pub fn get_unused_symbols(&self) -> Vec<&Symbol> {
+        let mut unused = Vec::new();
+        for scope in &self.scopes {
+            for symbol in scope.symbols.values() {
+                // Skip globals and builtins - they're expected to be unused in some files
+                if matches!(symbol.kind, SymbolKind::Global | SymbolKind::Builtin) {
+                    continue;
+                }
+                // Skip symbols starting with '_' (intentionally unused)
+                if symbol.name.starts_with('_') {
+                    continue;
+                }
+                // Only report unused variables and parameters
+                if !symbol.used && matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Parameter) {
+                    unused.push(symbol);
+                }
+            }
+        }
+        unused
+    }
 }
 
 impl Default for SymbolTable {
@@ -304,6 +360,7 @@ mod tests {
                 },
             },
             type_annotation: None,
+            used: false,
         }
     }
 

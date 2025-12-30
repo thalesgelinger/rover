@@ -17,6 +17,31 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 const DEBOUNCE_MS: u64 = 75;
 
+// Semantic token types - order matters (index used in token data)
+const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
+    SemanticTokenType::NAMESPACE,    // 0: modules, require
+    SemanticTokenType::TYPE,         // 1: types
+    SemanticTokenType::CLASS,        // 2: rover server/guard
+    SemanticTokenType::FUNCTION,     // 3: functions
+    SemanticTokenType::METHOD,       // 4: methods
+    SemanticTokenType::PROPERTY,     // 5: table fields
+    SemanticTokenType::VARIABLE,     // 6: variables
+    SemanticTokenType::PARAMETER,    // 7: parameters
+    SemanticTokenType::STRING,       // 8: strings
+    SemanticTokenType::NUMBER,       // 9: numbers
+    SemanticTokenType::KEYWORD,      // 10: keywords
+    SemanticTokenType::COMMENT,      // 11: comments
+    SemanticTokenType::OPERATOR,     // 12: operators
+];
+
+const SEMANTIC_TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
+    SemanticTokenModifier::DECLARATION,   // 0: declaration site
+    SemanticTokenModifier::DEFINITION,    // 1: definition site
+    SemanticTokenModifier::READONLY,      // 2: constants
+    SemanticTokenModifier::STATIC,        // 3: static/global
+    SemanticTokenModifier::DEFAULT_LIBRARY, // 4: stdlib
+];
+
 #[derive(Clone, Debug)]
 struct DocumentState {
     text: String,
@@ -137,7 +162,10 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
-                rename_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".into(), ",".into()]),
@@ -147,6 +175,19 @@ impl LanguageServer for Backend {
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                        legend: SemanticTokensLegend {
+                            token_types: SEMANTIC_TOKEN_TYPES.to_vec(),
+                            token_modifiers: SEMANTIC_TOKEN_MODIFIERS.to_vec(),
+                        },
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        range: None,
+                        work_done_progress_options: Default::default(),
+                    }),
+                ),
+                document_highlight_provider: Some(OneOf::Left(true)),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -263,10 +304,44 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri;
+        let position = params.position;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            if let Some((identifier, range)) = identifier_at_position(&doc.text, position) {
+                // Check if it's a renameable symbol (not a keyword or stdlib)
+                if is_lua_keyword(&identifier) {
+                    return Err(tower_lsp::jsonrpc::Error::new(
+                        tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
+                    ));
+                }
+                if is_stdlib_global(&identifier) {
+                    return Err(tower_lsp::jsonrpc::Error::new(
+                        tower_lsp::jsonrpc::ErrorCode::InvalidRequest,
+                    ));
+                }
+                return Ok(Some(PrepareRenameResponse::Range(range)));
+            }
+        }
+        Ok(None)
+    }
+
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let new_name = params.new_name;
+
+        // Validate new name
+        if new_name.is_empty() || is_lua_keyword(&new_name) {
+            return Err(tower_lsp::jsonrpc::Error::new(
+                tower_lsp::jsonrpc::ErrorCode::InvalidParams,
+            ));
+        }
+
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(&uri) {
             if let Some(edit) = compute_rename(&doc.text, position, &new_name, uri.clone()) {
@@ -400,10 +475,61 @@ impl LanguageServer for Backend {
             Ok(Some(symbols))
         }
     }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = params.text_document.uri;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            let tokens = compute_semantic_tokens(&doc.text, &doc.model);
+            return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: tokens,
+            })));
+        }
+        Ok(None)
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            let highlights = compute_document_highlights(&doc.text, position);
+            if !highlights.is_empty() {
+                return Ok(Some(highlights));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = params.text_document.uri;
+        let docs = self.documents.read().await;
+        if let Some(doc) = docs.get(&uri) {
+            let ranges: Vec<SelectionRange> = params
+                .positions
+                .iter()
+                .filter_map(|pos| compute_selection_range(&doc.text, *pos))
+                .collect();
+            if !ranges.is_empty() {
+                return Ok(Some(ranges));
+            }
+        }
+        Ok(None)
+    }
 }
 
 fn diagnostics_from_model(model: &SemanticModel) -> Vec<Diagnostic> {
-    model
+    let mut diagnostics: Vec<Diagnostic> = model
         .errors
         .iter()
         .map(|error| Diagnostic {
@@ -413,7 +539,56 @@ fn diagnostics_from_model(model: &SemanticModel) -> Vec<Diagnostic> {
             message: error.message.clone(),
             ..Diagnostic::default()
         })
-        .collect()
+        .collect();
+
+    // Add unused variable warnings
+    diagnostics.extend(compute_unused_variable_warnings(model));
+
+    diagnostics
+}
+
+fn compute_unused_variable_warnings(model: &SemanticModel) -> Vec<Diagnostic> {
+    let mut warnings = Vec::new();
+
+    // Get unused symbols from symbol table (already filtered for variables/params, skips _ prefixed)
+    for symbol in model.symbol_table.get_unused_symbols() {
+        // Skip common parameter names that are often unused (self, cls, ctx in Rover)
+        if matches!(symbol.name.as_str(), "self" | "cls") {
+            continue;
+        }
+
+        let message = match symbol.kind {
+            rover_parser::SymbolKind::Parameter => {
+                format!("Unused parameter '{}'", symbol.name)
+            }
+            _ => {
+                format!("Unused variable '{}'", symbol.name)
+            }
+        };
+
+        // Convert symbol range to LSP range
+        let range = Range {
+            start: Position {
+                line: symbol.range.start.line as u32,
+                character: symbol.range.start.column as u32,
+            },
+            end: Position {
+                line: symbol.range.end.line as u32,
+                character: symbol.range.end.column as u32,
+            },
+        };
+
+        warnings.push(Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("rover".into()),
+            message,
+            tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+            ..Diagnostic::default()
+        });
+    }
+
+    warnings
 }
 
 fn compute_completions(
@@ -787,56 +962,117 @@ fn find_references(
         Some(result) => result,
         None => return Vec::new(),
     };
-    
+
+    // Use AST-based search to find all identifier nodes matching our target
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_lua::LANGUAGE.into())
+        .expect("Failed to load Lua grammar");
+
+    let Some(tree) = parser.parse(text, None) else {
+        return vec![];
+    };
+
     let mut locations = Vec::new();
-    
-    // Search through all lines for occurrences of the identifier
-    for (line_idx, line) in text.split('\n').enumerate() {
-        let clean_line = line.strip_suffix('\r').unwrap_or(line);
-        let bytes = clean_line.as_bytes();
-        
-        let mut col = 0;
-        while col < clean_line.len() {
-            // Find potential identifier start
-            if col == 0 || !is_ident_byte(bytes[col - 1]) {
-                let remaining = &clean_line[col..];
-                if remaining.starts_with(&identifier) {
-                    // Check that it's a complete identifier (not part of a longer word)
-                    let end_col = col + identifier.len();
-                    let is_complete = end_col >= clean_line.len() 
-                        || !is_ident_byte(bytes[end_col]);
-                    
-                    if is_complete {
-                        locations.push(Location {
-                            uri: uri.clone(),
-                            range: Range {
-                                start: Position {
-                                    line: line_idx as u32,
-                                    character: col as u32,
-                                },
-                                end: Position {
-                                    line: line_idx as u32,
-                                    character: end_col as u32,
-                                },
-                            },
-                        });
-                    }
-                    col = end_col;
-                    continue;
-                }
-            }
-            col += 1;
+    let mut declaration_range: Option<Range> = None;
+
+    collect_identifier_references(
+        tree.root_node(),
+        text,
+        &identifier,
+        &uri,
+        &mut locations,
+        &mut declaration_range,
+    );
+
+    // Filter out declaration if not requested
+    if !include_declaration {
+        if let Some(decl_range) = declaration_range {
+            locations.retain(|loc| loc.range != decl_range);
         }
     }
-    
-    // Filter out declaration if requested
-    if !include_declaration && !locations.is_empty() {
-        // The first occurrence is often the declaration, but this is a simplification
-        // In practice, we'd need to check against the symbol table
-        // For now, return all locations
-    }
-    
+
     locations
+}
+
+fn collect_identifier_references(
+    node: tree_sitter::Node,
+    text: &str,
+    target: &str,
+    uri: &Url,
+    locations: &mut Vec<Location>,
+    declaration_range: &mut Option<Range>,
+) {
+    // Check if this node is an identifier matching our target
+    if node.kind() == "identifier" {
+        let name = &text[node.start_byte()..node.end_byte()];
+        if name == target {
+            let start = node.start_position();
+            let end = node.end_position();
+
+            let range = Range {
+                start: Position {
+                    line: start.row as u32,
+                    character: start.column as u32,
+                },
+                end: Position {
+                    line: end.row as u32,
+                    character: end.column as u32,
+                },
+            };
+
+            // Check if this is a declaration site
+            if is_declaration_site(node) && declaration_range.is_none() {
+                *declaration_range = Some(range);
+            }
+
+            locations.push(Location {
+                uri: uri.clone(),
+                range,
+            });
+        }
+    }
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_identifier_references(child, text, target, uri, locations, declaration_range);
+    }
+}
+
+fn is_declaration_site(node: tree_sitter::Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+
+    match parent.kind() {
+        // Function parameters
+        "parameters" => true,
+
+        // Variable declaration (local x = ...)
+        "variable_list" => {
+            if let Some(gp) = parent.parent() {
+                gp.kind() == "variable_declaration"
+            } else {
+                false
+            }
+        }
+
+        // For loop variables
+        "loop_expression" | "in_clause" => true,
+
+        // Function name in declaration
+        "function_declaration" => {
+            // Check if this identifier is the function name
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                name_node.id() == node.id()
+            } else {
+                false
+            }
+        }
+
+        _ => false,
+    }
 }
 
 fn find_function<'a>(
@@ -1846,6 +2082,381 @@ fn collect_folding_ranges(node: tree_sitter::Node, ranges: &mut Vec<FoldingRange
 
 fn format_document(text: &str) -> Option<String> {
     Some(rover_parser::format_code(text))
+}
+
+fn compute_semantic_tokens(text: &str, model: &SemanticModel) -> Vec<SemanticToken> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_lua::LANGUAGE.into())
+        .expect("Failed to load Lua grammar");
+
+    let Some(tree) = parser.parse(text, None) else {
+        return vec![];
+    };
+
+    let mut raw_tokens: Vec<(u32, u32, u32, u32, u32)> = vec![]; // (line, col, len, type, modifiers)
+    collect_semantic_tokens(tree.root_node(), text, model, &mut raw_tokens);
+
+    // Sort by position
+    raw_tokens.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    // Convert to delta encoding
+    let mut tokens = vec![];
+    let mut prev_line = 0u32;
+    let mut prev_char = 0u32;
+
+    for (line, col, len, token_type, modifiers) in raw_tokens {
+        let delta_line = line - prev_line;
+        let delta_start = if delta_line == 0 { col - prev_char } else { col };
+
+        tokens.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: len,
+            token_type,
+            token_modifiers_bitset: modifiers,
+        });
+
+        prev_line = line;
+        prev_char = col;
+    }
+
+    tokens
+}
+
+fn collect_semantic_tokens(
+    node: tree_sitter::Node,
+    text: &str,
+    model: &SemanticModel,
+    tokens: &mut Vec<(u32, u32, u32, u32, u32)>,
+) {
+    let start = node.start_position();
+    let end = node.end_position();
+    let len = if start.row == end.row {
+        (end.column - start.column) as u32
+    } else {
+        (node.end_byte() - node.start_byte()) as u32
+    };
+
+    match node.kind() {
+        // Keywords
+        "local" | "function" | "end" | "if" | "then" | "else" | "elseif" | "for" | "in"
+        | "while" | "do" | "repeat" | "until" | "return" | "break" | "and" | "or" | "not"
+        | "true" | "false" | "nil" => {
+            tokens.push((start.row as u32, start.column as u32, len, 10, 0)); // KEYWORD
+        }
+
+        // Strings
+        "string" | "string_content" => {
+            tokens.push((start.row as u32, start.column as u32, len, 8, 0)); // STRING
+        }
+
+        // Numbers
+        "number" => {
+            tokens.push((start.row as u32, start.column as u32, len, 9, 0)); // NUMBER
+        }
+
+        // Comments
+        "comment" => {
+            tokens.push((start.row as u32, start.column as u32, len, 11, 0)); // COMMENT
+        }
+
+        // Identifiers - classify based on context and symbol table
+        "identifier" => {
+            let name = &text[node.start_byte()..node.end_byte()];
+            let (token_type, modifiers) = classify_identifier(node, name, model);
+            tokens.push((start.row as u32, start.column as u32, len, token_type, modifiers));
+        }
+
+        // Function names in declarations
+        "function_name" | "function_name_field" => {
+            tokens.push((start.row as u32, start.column as u32, len, 3, 1)); // FUNCTION + DEFINITION
+        }
+
+        // Method calls
+        "method" => {
+            tokens.push((start.row as u32, start.column as u32, len, 4, 0)); // METHOD
+        }
+
+        // Table field keys
+        "field_name" => {
+            tokens.push((start.row as u32, start.column as u32, len, 5, 0)); // PROPERTY
+        }
+
+        _ => {}
+    }
+
+    // Recurse
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_semantic_tokens(child, text, model, tokens);
+    }
+}
+
+fn classify_identifier(
+    node: tree_sitter::Node,
+    name: &str,
+    model: &SemanticModel,
+) -> (u32, u32) {
+    // Check parent context
+    let parent = node.parent();
+
+    // Is it a function call?
+    if let Some(p) = parent {
+        if p.kind() == "function_call" {
+            // Check if stdlib
+            if is_stdlib_global(name) {
+                return (3, 16); // FUNCTION + DEFAULT_LIBRARY
+            }
+            return (3, 0); // FUNCTION
+        }
+
+        // Is it a method call receiver?
+        if p.kind() == "method_index_expression" {
+            if let Some(first_child) = p.child(0) {
+                if first_child.id() == node.id() {
+                    // This is the receiver (e.g., "ctx" in "ctx:method()")
+                    if model.symbol_specs.contains_key(name) {
+                        return (2, 0); // CLASS (Rover type)
+                    }
+                }
+            }
+        }
+
+        // Is it being assigned to?
+        if p.kind() == "variable_list" {
+            if let Some(gp) = p.parent() {
+                if gp.kind() == "assignment_statement" || gp.kind() == "variable_declaration" {
+                    return (6, 1); // VARIABLE + DEFINITION
+                }
+            }
+        }
+
+        // Is it a parameter?
+        if p.kind() == "parameters" {
+            return (7, 1); // PARAMETER + DEFINITION
+        }
+    }
+
+    // Check symbol table
+    if let Some(symbol) = model.symbol_table.resolve_symbol_global(name) {
+        match symbol.kind {
+            rover_parser::SymbolKind::Parameter => return (7, 0), // PARAMETER
+            rover_parser::SymbolKind::Function => return (3, 0), // FUNCTION
+            rover_parser::SymbolKind::RoverServer | rover_parser::SymbolKind::RoverGuard => {
+                return (2, 0) // CLASS
+            }
+            rover_parser::SymbolKind::ContextParam => return (6, 0), // VARIABLE
+            _ => {}
+        }
+    }
+
+    // Check Rover symbol specs
+    if model.symbol_specs.contains_key(name) {
+        return (2, 0); // CLASS
+    }
+
+    // Stdlib globals
+    if is_stdlib_global(name) {
+        return (6, 16); // VARIABLE + DEFAULT_LIBRARY
+    }
+
+    // Default: regular variable
+    (6, 0) // VARIABLE
+}
+
+fn is_stdlib_global(name: &str) -> bool {
+    matches!(
+        name,
+        "print"
+            | "type"
+            | "tostring"
+            | "tonumber"
+            | "pairs"
+            | "ipairs"
+            | "next"
+            | "pcall"
+            | "xpcall"
+            | "error"
+            | "assert"
+            | "require"
+            | "select"
+            | "unpack"
+            | "setmetatable"
+            | "getmetatable"
+            | "rawget"
+            | "rawset"
+            | "rawequal"
+            | "string"
+            | "table"
+            | "math"
+            | "io"
+            | "os"
+            | "debug"
+            | "coroutine"
+            | "package"
+            | "collectgarbage"
+            | "loadstring"
+            | "loadfile"
+            | "dofile"
+            | "load"
+    )
+}
+
+fn is_lua_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "and"
+            | "break"
+            | "do"
+            | "else"
+            | "elseif"
+            | "end"
+            | "false"
+            | "for"
+            | "function"
+            | "if"
+            | "in"
+            | "local"
+            | "nil"
+            | "not"
+            | "or"
+            | "repeat"
+            | "return"
+            | "then"
+            | "true"
+            | "until"
+            | "while"
+    )
+}
+
+fn compute_document_highlights(text: &str, position: Position) -> Vec<DocumentHighlight> {
+    let Some((identifier, _)) = identifier_at_position(text, position) else {
+        return vec![];
+    };
+
+    let mut highlights = vec![];
+    let lines: Vec<&str> = text.lines().collect();
+
+    for (line_idx, line) in lines.iter().enumerate() {
+        let mut start = 0;
+        while let Some(pos) = line[start..].find(&identifier) {
+            let col = start + pos;
+            let end_col = col + identifier.len();
+
+            // Check word boundaries
+            let before_ok =
+                col == 0 || !line.as_bytes().get(col - 1).map_or(false, |&b| is_ident_byte(b));
+            let after_ok = end_col >= line.len()
+                || !line.as_bytes().get(end_col).map_or(false, |&b| is_ident_byte(b));
+
+            if before_ok && after_ok {
+                // Determine if this is a write or read
+                let kind = if is_write_position(text, line_idx, col) {
+                    DocumentHighlightKind::WRITE
+                } else {
+                    DocumentHighlightKind::READ
+                };
+
+                highlights.push(DocumentHighlight {
+                    range: Range {
+                        start: Position {
+                            line: line_idx as u32,
+                            character: col as u32,
+                        },
+                        end: Position {
+                            line: line_idx as u32,
+                            character: end_col as u32,
+                        },
+                    },
+                    kind: Some(kind),
+                });
+            }
+
+            start = end_col;
+        }
+    }
+
+    highlights
+}
+
+fn is_write_position(text: &str, line: usize, col: usize) -> bool {
+    // Simple heuristic: check if followed by '=' but not '=='
+    let line_text = text.lines().nth(line).unwrap_or("");
+    let after = &line_text[col..];
+
+    // Skip the identifier
+    let mut chars = after.chars().peekable();
+    while chars.peek().map_or(false, |c| c.is_alphanumeric() || *c == '_') {
+        chars.next();
+    }
+
+    // Skip whitespace
+    while chars.peek().map_or(false, |c| c.is_whitespace()) {
+        chars.next();
+    }
+
+    // Check for assignment
+    if chars.next() == Some('=') {
+        return chars.peek() != Some(&'=');
+    }
+
+    false
+}
+
+fn compute_selection_range(text: &str, position: Position) -> Option<SelectionRange> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_lua::LANGUAGE.into())
+        .expect("Failed to load Lua grammar");
+
+    let tree = parser.parse(text, None)?;
+
+    // Find the smallest node at position
+    let point = tree_sitter::Point::new(position.line as usize, position.character as usize);
+    let mut node = tree.root_node().descendant_for_point_range(point, point)?;
+
+    // Build selection range hierarchy from innermost to outermost
+    let mut ranges: Vec<Range> = vec![];
+
+    loop {
+        let start = node.start_position();
+        let end = node.end_position();
+
+        let range = Range {
+            start: Position {
+                line: start.row as u32,
+                character: start.column as u32,
+            },
+            end: Position {
+                line: end.row as u32,
+                character: end.column as u32,
+            },
+        };
+
+        // Avoid duplicate ranges
+        if ranges.last() != Some(&range) {
+            ranges.push(range);
+        }
+
+        if let Some(parent) = node.parent() {
+            node = parent;
+        } else {
+            break;
+        }
+    }
+
+    // Convert to nested SelectionRange
+    let mut result: Option<SelectionRange> = None;
+
+    for range in ranges.into_iter().rev() {
+        result = Some(SelectionRange {
+            range,
+            parent: result.map(Box::new),
+        });
+    }
+
+    result
 }
 
 pub async fn start_lsp() {

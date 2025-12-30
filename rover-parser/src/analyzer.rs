@@ -275,6 +275,11 @@ impl Analyzer {
             self.register_local_variables(node);
         }
 
+        // Track variable usage (reads)
+        if node.kind() == "identifier" {
+            self.track_identifier_usage(node);
+        }
+
         let matches = Self::rule_engine().apply(self, node);
 
         let mut cursor = node.walk();
@@ -2011,6 +2016,7 @@ impl Analyzer {
                 },
             },
             type_annotation: None,
+            used: false,
         };
         self.symbol_table.insert_symbol(symbol);
     }
@@ -2066,6 +2072,71 @@ impl Analyzer {
                     }
                 }
             }
+        }
+    }
+
+    /// Track identifier usage - mark variables as used when they're read
+    fn track_identifier_usage(&mut self, node: Node) {
+        // Skip if not an identifier
+        if node.kind() != "identifier" {
+            return;
+        }
+
+        // Check if this identifier is in a declaration context (not a read)
+        if self.is_declaration_context(node) {
+            return;
+        }
+
+        let name = self.source[node.start_byte()..node.end_byte()].to_string();
+        let line = node.start_position().row;
+        let column = node.start_position().column;
+        
+        self.symbol_table.mark_symbol_used_at_position(&name, line, column);
+    }
+
+    /// Check if the identifier node is in a declaration context (LHS of assignment, parameter, etc.)
+    fn is_declaration_context(&self, node: Node) -> bool {
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+
+        match parent.kind() {
+            // Parameters in function definitions
+            "parameters" => true,
+            // Variable list on LHS of assignment
+            "variable_list" => true,
+            // Name list in local declarations
+            "name_list" => true,
+            // Loop variable declarations  
+            "loop_expression" | "in_clause" => true,
+            // Function name in function declaration
+            "function_declaration" => {
+                // Check if this identifier is the function name (first identifier child)
+                let mut cursor = parent.walk();
+                for child in parent.children(&mut cursor) {
+                    if child.kind() == "identifier" {
+                        return child.start_byte() == node.start_byte();
+                    }
+                }
+                false
+            }
+            // Field name in table field (key = value)
+            "field" => {
+                // The first identifier in a field is the key (declaration), not a read
+                let mut cursor = parent.walk();
+                for child in parent.children(&mut cursor) {
+                    if child.kind() == "identifier" {
+                        return child.start_byte() == node.start_byte();
+                    }
+                    // If we hit '=' first, this is the value side
+                    if child.kind() == "=" {
+                        return false;
+                    }
+                }
+                false
+            }
+            _ => false,
         }
     }
 }
