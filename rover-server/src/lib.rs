@@ -24,7 +24,8 @@ use mlua::{
     FromLua, Function, Lua,
     Value::{self},
 };
-use tokio::sync::{mpsc, oneshot};
+use flume;
+use tokio::sync::oneshot;
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -155,7 +156,7 @@ impl FromLua for ServerConfig {
 use event_loop::LuaRequest;
 
 async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
-    let (tx, rx) = mpsc::channel::<event_loop::LuaRequest>(1024);
+    let (tx, rx) = flume::bounded::<event_loop::LuaRequest>(1024);
 
     let addr = format!("{}:{}", config.host, config.port);
     if config.log_level != "nope" {
@@ -204,7 +205,7 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec
 
 async fn handler(
     req: Request<hyper::body::Incoming>,
-    tx: mpsc::Sender<event_loop::LuaRequest>,
+    tx: flume::Sender<event_loop::LuaRequest>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let (parts, body_stream) = req.into_parts();
 
@@ -244,7 +245,7 @@ async fn handler(
 
     let (resp_tx, resp_rx) = oneshot::channel();
 
-    tx.send(LuaRequest {
+    tx.send_async(LuaRequest {
         method: Bytes::from(parts.method.as_str().to_string()),
         path: Bytes::from(parts.uri.path().to_string()),
         headers,

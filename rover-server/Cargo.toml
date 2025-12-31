@@ -21,6 +21,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 smallvec = "1.15.1"
 matchit = "0.8"
 rover-openapi = {path = "../rover-openapi"}
+flume = "0.11"
 
 
 [lib]
