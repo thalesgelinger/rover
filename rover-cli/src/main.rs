@@ -32,8 +32,8 @@ enum Commands {
     },
     /// Format Lua code
     Fmt {
-        /// Path to the Lua file to format
-        file: PathBuf,
+        /// Path to Lua file(s) to format. If omitted, formats all .lua files in current directory
+        file: Option<PathBuf>,
         /// Check formatting without modifying files
         #[arg(short, long)]
         check: bool,
