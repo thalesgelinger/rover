@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rover_parser::{
     FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, MemberKind, Route, SemanticModel,
-    SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata, analyze, analyze_with_options,
+    SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata, analyze_with_options,
     lookup_spec, LuaType,
 };
 
@@ -544,10 +544,36 @@ fn diagnostics_from_model(model: &SemanticModel) -> Vec<Diagnostic> {
         })
         .collect();
 
+    // Add type errors from type inference
+    diagnostics.extend(compute_type_errors(model));
+
     // Add unused variable warnings
     diagnostics.extend(compute_unused_variable_warnings(model));
 
     diagnostics
+}
+
+fn compute_type_errors(model: &SemanticModel) -> Vec<Diagnostic> {
+    model
+        .type_errors
+        .iter()
+        .map(|error| Diagnostic {
+            range: Range {
+                start: Position {
+                    line: error.line as u32,
+                    character: error.column as u32,
+                },
+                end: Position {
+                    line: error.line as u32,
+                    character: (error.column + 1) as u32,
+                },
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("rover".into()),
+            message: error.message.clone(),
+            ..Diagnostic::default()
+        })
+        .collect()
 }
 
 fn compute_unused_variable_warnings(model: &SemanticModel) -> Vec<Diagnostic> {
@@ -620,23 +646,35 @@ fn compute_completions(
 
     // Symbol spec completions (rover., ctx:, g., etc.)
     if let Some((base, partial)) = detect_member_access(&line_prefix) {
+        // Check if base is a table with known fields
+        if let Some(symbol) = model.symbol_table.resolve_symbol_global(&base) {
+            if matches!(symbol.inferred_type, LuaType::Table(_)) {
+                items.extend(table_field_completions(&symbol.inferred_type, &partial));
+                if !items.is_empty() {
+                    return items;
+                }
+            }
+        }
+
         // Collect from local symbol specs
         if let Some(spec) = model.symbol_specs.get(&base) {
             items.extend(symbol_spec_completions(spec, &partial));
         }
-        
+
         // Also try global spec registry for known identifiers
         if items.is_empty() {
             if let Some(spec_doc) = lookup_spec(&base) {
                 items.extend(spec_doc_completions(&spec_doc, &partial));
             }
         }
-        
+
         // Add user-defined members (e.g., api.users.get)
-        if let Some(members) = model.dynamic_members.get(&base) {
-            items.extend(user_defined_member_completions(members, &partial));
+        if items.is_empty() {
+            if let Some(members) = model.dynamic_members.get(&base) {
+                items.extend(user_defined_member_completions(members, &partial));
+            }
         }
-        
+
         return items;
     }
     
@@ -717,34 +755,17 @@ fn build_symbol_hover(
     
     // Priority 1: Check symbol table for local variables/parameters
     if let Some(symbol) = model.symbol_table.resolve_symbol_global(&identifier) {
-        let mut lines = Vec::new();
-        let kind_str = match symbol.kind {
-            rover_parser::SymbolKind::Variable => "local variable",
-            rover_parser::SymbolKind::Function => "function",
-            rover_parser::SymbolKind::Parameter => "parameter",
-            rover_parser::SymbolKind::Global => "global",
-            rover_parser::SymbolKind::Builtin => "builtin",
-            rover_parser::SymbolKind::RoverServer => "rover server",
-            rover_parser::SymbolKind::RoverGuard => "rover guard",
-            rover_parser::SymbolKind::ContextParam => "context parameter",
+        // Show only the type - simple and clean
+        let type_str = if matches!(symbol.inferred_type, LuaType::Function(_)) {
+            format!("{}{}", identifier, format_function_type(&symbol.inferred_type))
+        } else {
+            symbol.inferred_type.to_string()
         };
-        lines.push(format!("**{}** _{}_", identifier, kind_str));
-        
-        // Show inferred type if not Unknown
-        if !matches!(symbol.inferred_type, LuaType::Unknown) {
-            lines.push(format!("Inferred type: `{}`", symbol.inferred_type));
-        }
-        
-        if let Some(type_annotation) = &symbol.type_annotation {
-            lines.push(format!("Type annotation: `{}`", type_annotation));
-        }
-        
-        lines.push(format!("Defined at line {}", symbol.range.start.line + 1));
 
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: lines.join("\n\n"),
+                value: format!("```lua\n{}\n```", type_str),
             }),
             range: Some(range),
         });
@@ -752,27 +773,10 @@ fn build_symbol_hover(
     
     // Priority 2: Rover symbol specs from the model
     if let Some(spec) = model.symbol_specs.get(&identifier) {
-        let mut lines = Vec::new();
-        lines.push(format!("**{}**", identifier));
-        if !spec.doc.is_empty() {
-            lines.push(spec.doc.clone());
-        }
-        if !spec.members.is_empty() {
-            lines.push("**Members**".into());
-            for member in &spec.members {
-                let detail = if member.doc.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {}", member.doc)
-                };
-                lines.push(format!("- `{}`{}", member.name, detail));
-            }
-        }
-
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: lines.join("\n"),
+                value: format!("```lua\n{}\n```", spec.spec_id),
             }),
             range: Some(range),
         });
@@ -780,27 +784,10 @@ fn build_symbol_hover(
     
     // Priority 3: Lua stdlib from global spec registry
     if let Some(spec_doc) = lookup_spec(&identifier) {
-        let mut lines = Vec::new();
-        lines.push(format!("**{}**", identifier));
-        if !spec_doc.doc.is_empty() {
-            lines.push(spec_doc.doc.to_string());
-        }
-        if !spec_doc.members.is_empty() {
-            lines.push("**Members**".into());
-            for member in &spec_doc.members {
-                let detail = if member.doc.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {}", member.doc)
-                };
-                lines.push(format!("- `{}`{}", member.name, detail));
-            }
-        }
-
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: lines.join("\n"),
+                value: format!("```lua\n{}\n```", spec_doc.doc),
             }),
             range: Some(range),
         });
@@ -871,11 +858,77 @@ fn find_definition(
     uri: Url,
 ) -> Option<Location> {
     // Extract the identifier at the cursor position
-    let (identifier, _) = identifier_at_position(text, position)?;
+    let (identifier, ident_range) = identifier_at_position(text, position)?;
     
-    // Try to resolve the symbol in the symbol table
     let line = position.line as usize;
     let column = position.character as usize;
+    
+    // Check if this is a property access (e.g., a.b where cursor is on 'b')
+    // Look at the text before the identifier to see if there's a dot
+    let text_before_ident = get_text_before_ident(text, position, ident_range);
+    let is_property_access = text_before_ident.ends_with('.');
+    
+    if is_property_access {
+        // For property access, find the base object
+        // e.g., in "a.b", cursor on "b", find "a" and go to its definition
+        if let Some(base_object_name) = extract_base_object(text, position, ident_range) {
+            if let Some(symbol) = model.symbol_table.resolve_symbol_at_position(&base_object_name, line, column) {
+                return Some(Location {
+                    uri,
+                    range: Range {
+                        start: Position {
+                            line: symbol.range.start.line as u32,
+                            character: symbol.range.start.column as u32,
+                        },
+                        end: Position {
+                            line: symbol.range.end.line as u32,
+                            character: symbol.range.end.column as u32,
+                        },
+                    },
+                });
+            }
+        }
+    }
+    
+    // Check if this is a require() call
+    if identifier == "require" {
+        // Find require calls in the file using the AST
+        if let Some(tree) = &model.tree {
+            let root = tree.root_node();
+            let node = find_node_at_position(&root, line, column)?;
+            
+            // Check if we're inside a function call arguments
+            if node.kind() == "arguments" {
+                // Find the first string argument (module path)
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "string" {
+                        // Extract module path
+                        let start = child.start_byte();
+                        let end = child.end_byte();
+                        let module_path = &text[start..end];
+                        
+                        // Remove quotes
+                        let clean_path = module_path.trim_matches('"');
+                        
+                        // Try to find the module file
+                        let resolved_path = resolve_module_path(clean_path, &uri)?;
+                        
+                        // Return location in the resolved file
+                        return Some(Location {
+                            uri: uri.clone(),
+                            range: Range {
+                                start: Position { line: 0, character: 0 },
+                                end: Position { line: 0, character: 0 },
+                            },
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    // Try to resolve the symbol in the symbol table
     if let Some(symbol) = model.symbol_table.resolve_symbol_at_position(&identifier, line, column) {
         return Some(Location {
             uri,
@@ -890,6 +943,67 @@ fn find_definition(
                 },
             },
         });
+    }
+    
+    None
+}
+
+fn get_text_before_ident(text: &str, position: Position, ident_range: Range) -> String {
+    let line_start = text.split('\n').nth(position.line as usize).unwrap_or("");
+    let ident_start = ident_range.start.character as usize;
+    line_start[..ident_start].to_string()
+}
+
+fn extract_base_object(text: &str, position: Position, ident_range: Range) -> Option<String> {
+    let line_start = text.split('\n').nth(position.line as usize).unwrap_or("");
+    let ident_start = ident_range.start.character as usize;
+    let before_ident = &line_start[..ident_start];
+    
+    // Find the last word before the dot (e.g., "a" in "a.b" or "a.b.c")
+    let parts: Vec<&str> = before_ident.split(|c: char| !c.is_alphanumeric() && c != '_').collect();
+    if parts.len() >= 1 {
+        return Some(parts.last()?.to_string());
+    }
+    
+    None
+}
+
+fn find_node_at_position<'a>(root: &'a tree_sitter::Node<'a>, line: usize, column: usize) -> Option<tree_sitter::Node<'a>> {
+    let mut cursor = root.walk();
+    
+    for child in root.children(&mut cursor) {
+        let child_row = child.start_position().row as usize;
+        let child_col = child.start_position().column as usize;
+        let child_end_col = child.end_position().column as usize;
+        let child_end_row = child.end_position().row as usize;
+        
+        if child_row <= line && child_end_row >= line {
+            if child_col <= column && child_end_col >= column {
+                return Some(child);
+            }
+        }
+    }
+    
+    None
+}
+
+fn resolve_module_path(_module_path: &str, current_uri: &Url) -> Option<String> {
+    use std::path::Path;
+    
+    // Get current file's directory
+    let current_path = current_uri.to_file_path().ok()?;
+    let current_dir = current_path.parent()?;
+    
+    // Try .lua extension
+    let lua_path = current_dir.join(format!("{}.lua", _module_path));
+    if lua_path.exists() {
+        return lua_path.to_str().map(|s| s.to_string());
+    }
+    
+    // Try init.lua
+    let init_path = current_dir.join(_module_path).join("init.lua");
+    if init_path.exists() {
+        return init_path.to_str().map(|s| s.to_string());
     }
     
     None
@@ -1511,6 +1625,27 @@ fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<Co
     items
 }
 
+fn table_field_completions(ty: &rover_parser::LuaType, partial: &str) -> Vec<CompletionItem> {
+    match ty {
+        rover_parser::LuaType::Table(table) => {
+            let mut items = Vec::new();
+            for (field_name, field_type) in &table.fields {
+                if partial.is_empty() || field_name.starts_with(partial) {
+                    items.push(CompletionItem {
+                        label: field_name.clone(),
+                        kind: Some(CompletionItemKind::FIELD),
+                        detail: Some(field_type.to_string()),
+                        ..CompletionItem::default()
+                    });
+                }
+            }
+            items.sort_by(|a, b| a.label.cmp(&b.label));
+            items
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn user_defined_member_completions(members: &[String], partial: &str) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     
@@ -2004,6 +2139,37 @@ fn compute_code_actions(
     }
 
     actions
+}
+
+fn format_function_type(ty: &rover_parser::LuaType) -> String {
+    match ty {
+        rover_parser::LuaType::Function(func) => {
+            let params: Vec<String> = func
+                .params
+                .iter()
+                .map(|(name, param_ty)| {
+                    if matches!(param_ty, rover_parser::LuaType::Unknown) {
+                        name.clone()
+                    } else {
+                        format!("{}: {}", name, param_ty)
+                    }
+                })
+                .collect();
+
+            let param_str = params.join(", ");
+            if func.vararg {
+                let full = if param_str.is_empty() {
+                    "...".to_string()
+                } else {
+                    format!("{}, ...", param_str)
+                };
+                format!("({}): {}", full, func.return_type())
+            } else {
+                format!("({}): {}", param_str, func.return_type())
+            }
+        }
+        _ => ty.to_string(),
+    }
 }
 
 fn ranges_intersect(a: &Range, b: &Range) -> bool {
