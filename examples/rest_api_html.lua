@@ -2,7 +2,7 @@ local api = rover.server {}
 
 -- Define a reusable card component
 function rover.html.card(props)
-    return rover.html(props) [=[
+	return rover.html(props) [=[
         <div class="card">
             <h2>{{ title }}</h2>
             <div class="card-content">{{ content }}</div>
@@ -12,26 +12,26 @@ end
 
 -- Define a list item component
 function rover.html.list_item(props)
-    return rover.html(props) [=[
+	return rover.html(props) [=[
         <li class="list-item">{{ text }}</li>
     ]=]
 end
 
 -- Main page handler using api.html for HTTP response
 function api.get()
-    local data = {
-        user = {
-            name = "Thales"
-        },
-        items = {
-            {title = "Item 1"},
-            {title = "Item 2"},
-            {title = "Item 3"}
-        },
-        show_footer = true
-    }
+	local data = {
+		user = {
+			name = "Thales",
+		},
+		items = {
+			{ title = "Item 1" },
+			{ title = "Item 2" },
+			{ title = "Item 3" },
+		},
+		show_footer = true,
+	}
 
-    return api.html(data) [=[
+	return api.html(data) [=[
         <!DOCTYPE html>
         <html>
         <head>
