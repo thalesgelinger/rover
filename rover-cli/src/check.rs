@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use rover_parser::{analyze, ParsingError, SemanticModel};
+use rover_parser::{analyze_with_options, AnalyzeOptions, ParsingError, SemanticModel};
 use std::fs;
 use std::path::PathBuf;
 
@@ -20,8 +20,8 @@ pub fn run_check(options: CheckOptions) -> Result<()> {
     let code = fs::read_to_string(&options.file)
         .with_context(|| format!("Failed to read file: {}", options.file.display()))?;
 
-    // Analyze the code
-    let model = analyze(&code);
+    // Analyze the code with type inference enabled
+    let model = analyze_with_options(&code, AnalyzeOptions { type_inference: true });
 
     // Display results
     match options.format {
@@ -30,7 +30,7 @@ pub fn run_check(options: CheckOptions) -> Result<()> {
     }
 
     // Exit with error code if there are errors
-    if !model.errors.is_empty() {
+    if !model.errors.is_empty() || !model.type_errors.is_empty() {
         std::process::exit(1);
     }
 
@@ -43,8 +43,8 @@ pub fn pre_run_check(file: &PathBuf) -> Result<bool> {
     let code = fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    // Analyze the code
-    let model = analyze(&code);
+    // Analyze the code with type inference enabled
+    let model = analyze_with_options(&code, AnalyzeOptions { type_inference: true });
 
     let file_display = file.display().to_string();
 
@@ -102,7 +102,7 @@ fn display_pretty(model: &SemanticModel, file: &PathBuf, verbose: bool) -> Resul
 
     let file_display = file.display().to_string();
 
-    if model.errors.is_empty() {
+    if model.errors.is_empty() && model.type_errors.is_empty() {
         println!("\n{}", "✓ No errors found!".green().bold());
 
         if verbose {
@@ -112,19 +112,25 @@ fn display_pretty(model: &SemanticModel, file: &PathBuf, verbose: bool) -> Resul
         return Ok(());
     }
 
+    let total_errors = model.errors.len() + model.type_errors.len();
+
     // Print errors
     println!(
         "\n{} {} found:\n",
         "✗".red().bold(),
-        if model.errors.len() == 1 {
+        if total_errors == 1 {
             "error".red()
         } else {
-            format!("{} errors", model.errors.len()).red()
+            format!("{} errors", total_errors).red()
         }
     );
 
     for error in &model.errors {
         display_error(error, &file_display);
+    }
+
+    for error in &model.type_errors {
+        display_type_error(error, &file_display);
     }
 
     if verbose {
@@ -156,6 +162,21 @@ fn display_error(error: &ParsingError, file: &str) {
         println!("  {} {}", "help:".cyan().bold(), suggestion.cyan());
     }
 
+    println!();
+}
+
+fn display_type_error(error: &rover_parser::TypeError, file: &str) {
+    let error_marker = "error:".red().bold();
+
+    println!(
+        "{} {}:{}:{}",
+        error_marker,
+        file.bright_white(),
+        format!("{}", error.line + 1).yellow(),
+        format!("{}", error.column + 1).yellow()
+    );
+
+    println!("  {}", error.message.white());
     println!();
 }
 
