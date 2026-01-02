@@ -43,22 +43,25 @@ pub fn analyze_with_options(code: &str, options: AnalyzeOptions) -> SemanticMode
         .set_language(&language.into())
         .expect("Error loading Lua parser");
     let tree = parser.parse(code, None).unwrap();
-
+    
     let mut analyzer = Analyzer::new(code.to_string());
     analyzer.walk(tree.root_node());
-
+    
     if let Some(ref mut server) = analyzer.model.server {
         server.exported = true;
     }
-
+    
     // Copy symbol table to model
     analyzer.model.symbol_table = analyzer.symbol_table.clone();
-
+    
+    // Store tree for advanced language features
+    analyzer.model.tree = Some(tree.clone());
+    
     // Run type inference if enabled
     if options.type_inference {
         run_type_inference(code, &tree, &mut analyzer.model);
     }
-
+    
     analyzer.model
 }
 
@@ -94,9 +97,11 @@ fn infer_types_recursive<'a>(
             type_inf.process_assignment(node);
         }
         "function_declaration" | "function_definition" => {
-            // Infer function type and store by name
-            let func_type = type_inf.infer_expression(node);
-            if let Some(name) = extract_function_name_from_node(node, _code) {
+            // Extract name first so we can pass it to infer_function_definition_with_name
+            let func_name = extract_function_name_from_node(node, _code);
+            let func_type = type_inf.infer_function_definition_with_name(node, func_name.as_deref());
+
+            if let Some(name) = func_name {
                 type_inf.env.set(name, func_type);
             }
         }
@@ -112,6 +117,8 @@ fn infer_types_recursive<'a>(
                     break;
                 }
             }
+            // Also infer expression to check argument types
+            type_inf.infer_expression(node);
         }
         "if_statement" => {
             // Handle control flow narrowing

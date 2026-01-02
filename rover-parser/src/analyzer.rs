@@ -18,6 +18,9 @@ pub struct SemanticModel {
     pub symbol_table: SymbolTable,
     /// Type errors from type inference
     pub type_errors: Vec<crate::types::TypeError>,
+    /// AST tree for advanced language features (optional for backward compatibility)
+    #[allow(dead_code)]
+    pub tree: Option<tree_sitter::Tree>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +207,7 @@ impl Analyzer {
                 dynamic_members: HashMap::new(),
                 symbol_table: SymbolTable::new(),
                 type_errors: Vec::new(),
+                tree: None,
             },
             symbol_table: SymbolTable::new(),
             function_symbol_table: HashMap::new(),

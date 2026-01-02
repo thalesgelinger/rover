@@ -199,42 +199,41 @@ impl ParamConstraints {
             return LuaType::Unknown;
         };
 
-        let mut result_type = LuaType::Unknown;
+        let mut exact_types: Vec<LuaType> = Vec::new();
         let mut table_fields: HashMap<String, LuaType> = HashMap::new();
 
-        for constraint in constraints {
-            match constraint {
-                TypeConstraint::ExactType(ty) => {
-                    if matches!(result_type, LuaType::Unknown) {
-                        result_type = ty.clone();
-                    } else {
-                        // Merge with existing - use intersection semantics
-                        result_type = ty.clone();
+            for constraint in constraints {
+                match constraint {
+                    TypeConstraint::ExactType(ty) => {
+                        exact_types.push(ty.clone());
+                    }
+                    TypeConstraint::HasField { field, field_type } => {
+                        table_fields.insert(field.clone(), field_type.clone());
+                    }
+                    TypeConstraint::HasMethod { method, method_type } => {
+                        table_fields.insert(
+                            method.clone(),
+                            LuaType::Function(Box::new(method_type.clone())),
+                        );
                     }
                 }
-                TypeConstraint::HasField { field, field_type } => {
-                    table_fields.insert(field.clone(), field_type.clone());
-                }
-                TypeConstraint::HasMethod { method, method_type } => {
-                    table_fields.insert(
-                        method.clone(),
-                        LuaType::Function(Box::new(method_type.clone())),
-                    );
-                }
             }
+
+        // If we collected multiple exact types, create a union
+        if exact_types.len() > 1 {
+            return LuaType::Union(exact_types);
+        }
+
+        // If we have one exact type, return it
+        if exact_types.len() == 1 {
+            return exact_types[0].clone();
         }
 
         // If we collected table fields, create a table type
         if !table_fields.is_empty() {
-            let table = TableType::with_fields(table_fields);
-            if matches!(result_type, LuaType::Unknown) {
-                LuaType::Table(table)
-            } else {
-                // Merge with existing type if compatible
-                result_type
-            }
+            LuaType::Table(TableType::with_fields(table_fields))
         } else {
-            result_type
+            LuaType::Unknown
         }
     }
 }
@@ -246,14 +245,18 @@ pub struct TypeInference<'a> {
     pub env: TypeEnv,
     /// Type errors collected during inference
     pub errors: Vec<TypeError>,
-    /// Constraints for function parameters
+    /// Constraints for function parameters (current function scope)
     param_constraints: ParamConstraints,
+    /// Constraints per function name (for checking calls)
+    pub function_constraints: HashMap<String, ParamConstraints>,
     /// Narrowing stack for control flow
     narrowing_stack: Vec<NarrowingContext>,
     /// Cache for module exports (module_path -> exports)
     module_cache: Arc<HashMap<String, ModuleExports>>,
     /// Base path for resolving module paths
     base_path: Option<String>,
+    /// Current function being analyzed (for constraint collection)
+    current_function: Option<String>,
 }
 
 impl<'a> TypeInference<'a> {
@@ -268,9 +271,11 @@ impl<'a> TypeInference<'a> {
             env,
             errors: Vec::new(),
             param_constraints: ParamConstraints::new(),
+            function_constraints: HashMap::new(),
             narrowing_stack: Vec::new(),
             module_cache: Arc::new(HashMap::new()),
             base_path: None,
+            current_function: None,
         }
     }
 
@@ -806,48 +811,137 @@ impl<'a> TypeInference<'a> {
     }
 
     /// Infer type of a function definition
-    fn infer_function_definition(&mut self, node: Node) -> LuaType {
+    pub fn infer_function_definition(&mut self, node: Node) -> LuaType {
+        self.infer_function_definition_with_name(node, None)
+    }
+
+    /// Infer type of a function definition with optional name for constraint tracking
+    pub fn infer_function_definition_with_name(&mut self, node: Node, func_name: Option<&str>) -> LuaType {
+
         let params = self.extract_function_params(node);
-        
+
         // Create child environment for function body
         let child_env = self.env.child();
         let old_env = std::mem::replace(&mut self.env, child_env);
-        
-        // Register parameters in scope
+
+        // Save old constraints and current function
+        let old_constraints = std::mem::replace(&mut self.param_constraints, ParamConstraints::new());
+        let old_current_function = self.current_function.take();
+        self.current_function = func_name.map(|s| s.to_string());
+
+        // Register parameters in scope (with Unknown type initially)
         for (name, ty) in &params {
             self.env.set(name.clone(), ty.clone());
         }
-        
+
+        // Process function body to collect constraints from asserts
+        self.process_function_body(node);
+
         // Analyze function body to find return types
         let returns = self.infer_function_returns(node);
-        
-        // Restore environment
+
+        // Apply constraints to parameter types
+        let params_with_types: Vec<(String, LuaType)> = params
+            .iter()
+            .map(|(name, _)| {
+                let constrained_type = self.param_constraints.resolve(name);
+                (name.clone(), constrained_type)
+            })
+            .collect();
+
+        // Store constraints for this function (for checking calls later)
+        if let Some(fn_name) = func_name {
+            self.function_constraints.insert(fn_name.to_string(), self.param_constraints.clone());
+        }
+
+        // Restore environment and constraints
         self.env = old_env;
-        
-        LuaType::Function(Box::new(FunctionType {
-            params,
+        self.param_constraints = old_constraints;
+        self.current_function = old_current_function;
+
+        let result = LuaType::Function(Box::new(FunctionType {
+            params: params_with_types,
             returns,
             vararg: false,
             is_method: false,
-        }))
+        }));
+
+
+        result
+    }
+
+    /// Process function body to collect type constraints from asserts
+    fn process_function_body(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "block" {
+                self.process_block_for_constraints(child);
+            }
+        }
+    }
+
+    /// Recursively process a block to find assert statements
+    fn process_block_for_constraints(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "function_call" => {
+                    // Check if it's an assert call
+                    let mut fc_cursor = child.walk();
+                    for fc_child in child.children(&mut fc_cursor) {
+                        if fc_child.kind() == "identifier" {
+                            let name = self.node_text(fc_child);
+                            if name == "assert" {
+                                self.process_assert(child);
+                            }
+                            break;
+                        }
+                    }
+                }
+                "if_statement" | "while_statement" | "repeat_statement" | "for_statement" | "do_statement" => {
+                    // Recurse into control structures
+                    self.process_block_for_constraints(child);
+                }
+                "block" => {
+                    self.process_block_for_constraints(child);
+                }
+                _ => {
+                    // Check children for nested structures
+                    if child.named_child_count() > 0 {
+                        self.process_block_for_constraints(child);
+                    }
+                }
+            }
+        }
     }
 
     /// Extract function parameters
     fn extract_function_params(&self, node: Node) -> Vec<(String, LuaType)> {
         let mut params = Vec::new();
-        
+
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "parameters" {
                 let mut param_cursor = child.walk();
-                for param in child.children(&mut param_cursor) {
-                    if param.kind() == "identifier" {
-                        params.push((self.node_text(param), LuaType::Unknown));
+
+                if param_cursor.goto_first_child() {
+                    loop {
+                        let kind = param_cursor.node().kind();
+
+                        if kind == "identifier" {
+                            let name = self.node_text(param_cursor.node());
+                            params.push((name, LuaType::Unknown));
+                        }
+
+                        if !param_cursor.goto_next_sibling() {
+                            break;
+                        }
                     }
                 }
             }
         }
-        
+
         params
     }
 
@@ -1114,34 +1208,31 @@ impl<'a> TypeInference<'a> {
     /// Infer type of function call
     fn infer_function_call(&mut self, node: Node) -> LuaType {
         let mut callee: Option<Node> = None;
-        let mut _args: Option<Node> = None;
+        let mut args: Option<Node> = None;
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
-                "identifier" | "dot_index_expression" | "method_index_expression" 
+                "identifier" | "dot_index_expression" | "method_index_expression"
                     if callee.is_none() => {
                     callee = Some(child);
                 }
                 "arguments" => {
-                    _args = Some(child);
+                    args = Some(child);
                 }
                 _ => {}
             }
         }
 
         let Some(callee_node) = callee else { return LuaType::Unknown };
-        
-        // Get callee type
+
         let callee_type = self.infer_expression(callee_node);
-        
-        // Check for type() calls for narrowing
+
         if let Some(name) = self.get_callee_name(callee_node) {
             if name == "type" {
                 return LuaType::String;
             }
 
-            // Check for require() - handle cross-file type flow
             if name == "require" {
                 if let Some(module_name) = self.extract_string_arg(node) {
                     return self.handle_require(&module_name);
@@ -1149,17 +1240,22 @@ impl<'a> TypeInference<'a> {
                 return LuaType::Any;
             }
 
-            // Check for pcall/xpcall - returns (success: boolean, result: T | error: any)
             if name == "pcall" || name == "xpcall" {
                 return self.infer_pcall(node);
             }
 
-            // Check stdlib functions
             if let Some(func_type) = self.env.get_function(&name) {
+                if let Some(args_node) = &args {
+                    self.check_function_call_args(*args_node, &func_type, Some(&name));
+                }
                 return func_type.return_type().clone();
             }
         }
-        
+
+        if let (LuaType::Function(func), Some(args_node)) = (&callee_type, &args) {
+            self.check_function_call_args(*args_node, func, None);
+        }
+
         match callee_type {
             LuaType::Function(func) => func.return_type().clone(),
             _ => LuaType::Unknown,
@@ -1191,7 +1287,40 @@ impl<'a> TypeInference<'a> {
         // Return union of boolean (success) and result type
         LuaType::union(vec![LuaType::Boolean, result_type])
     }
-    
+
+    /// Check that function call arguments match expected parameter types
+    fn check_function_call_args(&mut self, args_node: Node, func_type: &FunctionType, _func_name: Option<&str>) {
+        let mut cursor = args_node.walk();
+        let mut arg_index = 0;
+
+        for child in args_node.children(&mut cursor) {
+            if !child.is_named() {
+                continue;
+            }
+
+            if let Some((_param_name, param_type)) = func_type.params.get(arg_index) {
+                let arg_type = self.infer_expression(child);
+
+                // Use the parameter type from the function signature (which includes constraints)
+                let expected_type = param_type.clone();
+
+
+                if !arg_type.is_assignable_to(&expected_type) && !matches!(expected_type, LuaType::Unknown) {
+                    let start = child.start_position();
+                    
+                    // Avoid duplicate errors at the same location
+                    let already_reported = self.errors.iter().any(|e| e.line == start.row && e.column == start.column);
+                    if !already_reported {
+                        let err = TypeError::type_mismatch(&expected_type, &arg_type, start.row, start.column);
+                        self.errors.push(err);
+                    }
+                }
+
+                arg_index += 1;
+            }
+        }
+    }
+
     /// Find arguments node in function call
     fn find_arguments<'tree>(&self, node: &Node<'tree>) -> Option<Node<'tree>> {
         let mut cursor = node.walk();
@@ -1558,22 +1687,138 @@ impl<'a> TypeInference<'a> {
 
     /// Process an assert statement for type constraints
     pub fn process_assert(&mut self, node: Node) {
-        // Look for pattern: assert(type(x) == "typename")
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "arguments" {
                 let mut arg_cursor = child.walk();
                 for arg in child.children(&mut arg_cursor) {
                     if arg.kind() == "binary_expression" {
-                        if let Some((var, ty)) = self.extract_type_assertion(arg) {
+                        // Check for nil patterns first
+                        if let Some((var, narrow_type)) = self.extract_narrowing_assert(arg) {
+                            // Apply narrowing to variable
+                            if let Some(current_type) = self.env.get(&var) {
+                                let narrowed = narrow_type(&current_type);
+                                self.env.update(&var, narrowed);
+                            }
+                        }
+
+                        // Collect all type assertions (handles both simple and or patterns)
+                        let assertions = self.extract_type_assertions(arg);
+                        for (var, ty) in assertions {
                             // Apply constraint to parameter
                             self.param_constraints.add(&var, TypeConstraint::ExactType(ty.clone()));
-                            
+
                             // Also update environment
                             self.env.update(&var, ty);
                         }
+                    } else if arg.is_named() {
+                        // Handle simple assert(x) - narrow to truthy
+                        let var_name = self.source[arg.start_byte()..arg.end_byte()].to_string();
+                        if let Some(current_type) = self.env.get(&var_name) {
+                            let truthy_type = current_type.truthy();
+                            self.env.update(&var_name, truthy_type);
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    /// Extract narrowing patterns from assert (nil checks, etc.)
+    fn extract_narrowing_assert(&self, node: Node) -> Option<(String, Box<dyn Fn(&LuaType) -> LuaType>)> {
+        let mut left: Option<Node> = None;
+        let mut right: Option<Node> = None;
+        let mut op: Option<&str> = None;
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                if left.is_none() {
+                    left = Some(child);
+                } else {
+                    right = Some(child);
+                }
+            } else {
+                let text = self.source[child.start_byte()..child.end_byte()].trim();
+                if text == "==" || text == "~=" {
+                    op = Some(text);
+                }
+            }
+        }
+
+        let Some(left_node) = left else { return None };
+        let Some(right_node) = right else { return None };
+        let Some(operator) = op else { return None };
+
+        // Check for variable name
+        if left_node.kind() != "identifier" {
+            return None;
+        }
+        let var_name = self.source[left_node.start_byte()..left_node.end_byte()].to_string();
+
+        // Check for nil on right side
+        if right_node.kind() != "nil" {
+            return None;
+        }
+
+        if operator == "==" {
+            // assert(x == nil) - narrow to nil
+            return Some((var_name, Box::new(|_: &LuaType| LuaType::Nil)));
+        } else if operator == "~=" {
+            // assert(x ~= nil) - narrow to not-nil
+            return Some((var_name, Box::new(|ty: &LuaType| {
+                ty.exclude(&LuaType::Nil)
+            })));
+        }
+
+        None
+    }
+
+    /// Extract all type assertions from a binary expression (handles or patterns)
+    fn extract_type_assertions(&mut self, node: Node) -> Vec<(String, LuaType)> {
+        let mut results = Vec::new();
+        self.collect_type_assertions(node, &mut results);
+        results
+    }
+
+    /// Recursively collect type assertions from binary expressions
+    fn collect_type_assertions(&mut self, node: Node, results: &mut Vec<(String, LuaType)>) {
+        if node.kind() != "binary_expression" {
+            return;
+        }
+
+        let mut left: Option<Node> = None;
+        let mut right: Option<Node> = None;
+        let mut op: Option<&str> = None;
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                if left.is_none() {
+                    left = Some(child);
+                } else {
+                    right = Some(child);
+                }
+            } else {
+                let text = self.source[child.start_byte()..child.end_byte()].trim();
+                if text == "or" || text == "==" {
+                    op = Some(text);
+                }
+            }
+        }
+
+        let Some(left_node) = left else { return };
+        let Some(right_node) = right else { return };
+        let Some(operator) = op else { return };
+
+        if operator == "or" {
+            // Recursively collect from both sides of `or`
+            self.collect_type_assertions(left_node, results);
+            self.collect_type_assertions(right_node, results);
+        } else if operator == "==" {
+            // This is a type check: type(x) == "typename"
+            if let Some((var, ty)) = self.extract_type_assertion(node) {
+                results.push((var, ty));
             }
         }
     }
