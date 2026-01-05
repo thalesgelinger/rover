@@ -7,12 +7,9 @@ mod http_server;
 
 pub use http_task::HttpResponse;
 pub use response::RoverResponse;
-use smallvec::SmallVec;
-use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::time::Instant;
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 
 use mlua::{
     FromLua, Function, Lua,

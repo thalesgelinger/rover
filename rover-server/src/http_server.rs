@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::time::Instant;
-use std::io::Read;
 use anyhow::Result;
 use mlua::Lua;
 use smallvec::SmallVec;

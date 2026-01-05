@@ -1,26 +1,14 @@
-use std::collections::HashMap;
 use std::time::Instant;
 use anyhow::Result;
-use mlua::{Lua, Thread};
+use mlua::Lua;
 use smallvec::SmallVec;
-use mio::{Events, Poll, Token};
 use tracing::debug;
 
 use crate::{HttpMethod, Route, ServerConfig, fast_router::FastRouter, HttpResponse, Bytes};
 
-pub struct CoroutineState {
-    pub thread: Thread,
-    pub started_at: Instant,
-    pub method: Bytes,
-    pub path: Bytes,
-}
-
 pub struct EventLoop {
     lua: Lua,
     router: FastRouter,
-    poll: Poll,
-    coroutines: HashMap<Token, CoroutineState>,
-    next_token: usize,
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
 }
@@ -33,14 +21,10 @@ impl EventLoop {
         openapi_spec: Option<serde_json::Value>,
     ) -> Result<Self> {
         let router = FastRouter::from_routes(routes)?;
-        let poll = Poll::new()?;
         
         Ok(Self {
             lua,
             router,
-            poll,
-            coroutines: HashMap::new(),
-            next_token: 1,
             config,
             openapi_spec,
         })
@@ -115,17 +99,5 @@ impl EventLoop {
         }
     }
 
-    pub fn run(&mut self) -> Result<()> {
-        let mut events = Events::with_capacity(128);
 
-        loop {
-            self.poll.poll(&mut events, None)?;
-
-            for event in events.iter() {
-                if let Some(coro_state) = self.coroutines.remove(&event.token()) {
-                    let _ = coro_state;
-                }
-            }
-        }
-    }
 }
