@@ -1,13 +1,12 @@
 use mlua::prelude::*;
-use reqwest::{header::HeaderMap, Client, Method};
+use curl::easy::Easy;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
 
-/// HTTP client configuration similar to axios
 #[derive(Clone)]
 pub struct HttpClient {
     base_url: Option<String>,
-    default_headers: HeaderMap,
+    default_headers: Vec<(String, String)>,
     timeout: Option<Duration>,
 }
 
@@ -15,7 +14,7 @@ impl HttpClient {
     pub fn new() -> Self {
         Self {
             base_url: None,
-            default_headers: HeaderMap::new(),
+            default_headers: Vec::new(),
             timeout: Some(Duration::from_secs(30)),
         }
     }
@@ -37,88 +36,76 @@ impl HttpClient {
 
 impl LuaUserData for HttpClient {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        // GET request
-        methods.add_async_method("get", |lua, this, (url, config): (String, Option<LuaTable>)| async move {
+        methods.add_method("get", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, Method::GET, url, None, config).await
+            make_request(&lua, &client, "GET", url, None, config)
         });
 
-        // POST request
-        methods.add_async_method("post", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| async move {
+        methods.add_method("post", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, Method::POST, url, data, config).await
+            make_request(&lua, &client, "POST", url, data, config)
         });
 
-        // PUT request
-        methods.add_async_method("put", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| async move {
+        methods.add_method("put", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, Method::PUT, url, data, config).await
+            make_request(&lua, &client, "PUT", url, data, config)
         });
 
-        // DELETE request
-        methods.add_async_method("delete", |lua, this, (url, config): (String, Option<LuaTable>)| async move {
+        methods.add_method("delete", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, Method::DELETE, url, None, config).await
+            make_request(&lua, &client, "DELETE", url, None, config)
         });
 
-        // PATCH request
-        methods.add_async_method("patch", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| async move {
+        methods.add_method("patch", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, Method::PATCH, url, data, config).await
+            make_request(&lua, &client, "PATCH", url, data, config)
         });
 
-        // HEAD request
-        methods.add_async_method("head", |lua, this, (url, config): (String, Option<LuaTable>)| async move {
+        methods.add_method("head", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, Method::HEAD, url, None, config).await
+            make_request(&lua, &client, "HEAD", url, None, config)
         });
 
-        // OPTIONS request
-        methods.add_async_method("options", |lua, this, (url, config): (String, Option<LuaTable>)| async move {
+        methods.add_method("options", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, Method::OPTIONS, url, None, config).await
+            make_request(&lua, &client, "OPTIONS", url, None, config)
         });
     }
 }
 
-async fn make_request(
+fn make_request(
     lua: &Lua,
     client: &HttpClient,
-    method: Method,
+    method: &str,
     url: String,
     data: Option<LuaValue>,
     config: Option<LuaTable>,
 ) -> LuaResult<LuaTable> {
     let full_url = client.build_url(&url);
-
-    // Build reqwest client
-    let mut req_client = Client::builder();
+    let mut easy = Easy::new();
+    
+    easy.url(&full_url).map_err(|e| LuaError::external(e))?;
+    
     if let Some(timeout) = client.timeout {
-        req_client = req_client.timeout(timeout);
-    }
-    let req_client = req_client.build().map_err(|e| LuaError::external(e))?;
-
-    // Build request
-    let mut req = req_client.request(method.clone(), &full_url);
-
-    // Add default headers
-    for (key, value) in client.default_headers.iter() {
-        req = req.header(key, value);
+        easy.timeout(timeout).map_err(|e| LuaError::external(e))?;
     }
 
-    // Add config headers
+    let mut headers = curl::easy::List::new();
+    for (k, v) in &client.default_headers {
+        headers.append(&format!("{}: {}", k, v)).map_err(|e| LuaError::external(e))?;
+    }
+
     if let Some(ref cfg) = config {
-        if let Ok(headers) = cfg.get::<LuaTable>("headers") {
-            for pair in headers.pairs::<String, String>() {
+        if let Ok(hdrs) = cfg.get::<LuaTable>("headers") {
+            for pair in hdrs.pairs::<String, String>() {
                 if let Ok((key, value)) = pair {
-                    req = req.header(key, value);
+                    headers.append(&format!("{}: {}", key, value)).map_err(|e| LuaError::external(e))?;
                 }
             }
         }
 
-        // Add query params
         if let Ok(params) = cfg.get::<LuaTable>("params") {
-            let mut query_params = Vec::new();
+            let mut query_parts = Vec::new();
             for pair in params.pairs::<String, LuaValue>() {
                 if let Ok((key, value)) = pair {
                     let value_str = match value {
@@ -128,42 +115,91 @@ async fn make_request(
                         LuaValue::Boolean(b) => b.to_string(),
                         _ => continue,
                     };
-                    query_params.push((key, value_str));
+                    query_parts.push(format!("{}={}", 
+                        urlencoding::encode(&key),
+                        urlencoding::encode(&value_str)
+                    ));
                 }
             }
-            req = req.query(&query_params);
+            if !query_parts.is_empty() {
+                let new_url = if full_url.contains('?') {
+                    format!("{}&{}", full_url, query_parts.join("&"))
+                } else {
+                    format!("{}?{}", full_url, query_parts.join("&"))
+                };
+                easy.url(&new_url).map_err(|e| LuaError::external(e))?;
+            }
         }
     }
 
-    // Add request body
-    if let Some(body_data) = data {
-        let json_str = lua_value_to_json(lua, &body_data)?;
-        req = req.header("Content-Type", "application/json");
-        req = req.body(json_str);
+    match method {
+        "GET" => easy.get(true).map_err(|e| LuaError::external(e))?,
+        "POST" => easy.post(true).map_err(|e| LuaError::external(e))?,
+        "PUT" => easy.put(true).map_err(|e| LuaError::external(e))?,
+        "DELETE" => easy.custom_request("DELETE").map_err(|e| LuaError::external(e))?,
+        "PATCH" => easy.custom_request("PATCH").map_err(|e| LuaError::external(e))?,
+        "HEAD" => easy.nobody(true).map_err(|e| LuaError::external(e))?,
+        "OPTIONS" => easy.custom_request("OPTIONS").map_err(|e| LuaError::external(e))?,
+        _ => {}
     }
 
-    // Execute request
-    let response = req.send().await.map_err(|e| LuaError::external(e))?;
+    if let Some(body_data) = data {
+        let json_str = lua_value_to_json(lua, &body_data)?;
+        let body_bytes = json_str.as_bytes();
+        headers.append("Content-Type: application/json").map_err(|e| LuaError::external(e))?;
+        easy.post_field_size(body_bytes.len() as u64).map_err(|e| LuaError::external(e))?;
+        
+        let mut body_data = body_bytes.to_vec();
+        easy.read_function(move |buf| {
+            let to_read = buf.len().min(body_data.len());
+            buf[..to_read].copy_from_slice(&body_data[..to_read]);
+            body_data.drain(..to_read);
+            Ok(to_read)
+        }).map_err(|e| LuaError::external(e))?;
+    }
 
-    // Build response table
+    easy.http_headers(headers).map_err(|e| LuaError::external(e))?;
+
+    let mut response_data = Vec::new();
+    let mut response_headers = Vec::new();
+    
+    {
+        let mut transfer = easy.transfer();
+        transfer.write_function(|data| {
+            response_data.extend_from_slice(data);
+            Ok(data.len())
+        }).map_err(|e| LuaError::external(e))?;
+
+        transfer.header_function(|header| {
+            if let Ok(header_str) = std::str::from_utf8(header) {
+                response_headers.push(header_str.to_string());
+            }
+            true
+        }).map_err(|e| LuaError::external(e))?;
+
+        transfer.perform().map_err(|e| LuaError::external(e))?;
+    }
+
+    let status_code = easy.response_code().map_err(|e| LuaError::external(e))?;
+    
     let result = lua.create_table()?;
-    result.set("status", response.status().as_u16())?;
-    result.set("statusText", response.status().canonical_reason().unwrap_or(""))?;
-    result.set("ok", response.status().is_success())?;
+    result.set("status", status_code)?;
+    result.set("ok", status_code >= 200 && status_code < 300)?;
 
-    // Response headers
     let headers_table = lua.create_table()?;
-    for (key, value) in response.headers() {
-        if let Ok(value_str) = value.to_str() {
-            headers_table.set(key.as_str(), value_str)?;
+    for header in response_headers {
+        if let Some((key, value)) = header.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            if !key.is_empty() && !value.is_empty() {
+                headers_table.set(key, value)?;
+            }
         }
     }
     result.set("headers", headers_table)?;
 
-    // Response body
-    let body_text = response.text().await.map_err(|e| LuaError::external(e))?;
-
-    // Try to parse as JSON, fallback to text
+    let body_text = String::from_utf8_lossy(&response_data).to_string();
+    
     if let Ok(json_value) = serde_json::from_str::<JsonValue>(&body_text) {
         let lua_value = json_to_lua_value(lua, &json_value)?;
         result.set("data", lua_value)?;
@@ -177,7 +213,6 @@ async fn make_request(
 fn lua_value_to_json(_lua: &Lua, value: &LuaValue) -> LuaResult<String> {
     match value {
         LuaValue::Table(table) => {
-            // Convert Lua table to JSON using serde_json
             let json_value = table_to_json_value(table)?;
             serde_json::to_string(&json_value)
                 .map_err(|e| LuaError::RuntimeError(format!("JSON serialization failed: {}", e)))
@@ -192,7 +227,6 @@ fn lua_value_to_json(_lua: &Lua, value: &LuaValue) -> LuaResult<String> {
 }
 
 fn table_to_json_value(table: &LuaTable) -> LuaResult<JsonValue> {
-    // Check if it's an array (sequential numeric keys starting from 1)
     let mut is_array = true;
     let mut max_index = 0;
 
@@ -211,7 +245,6 @@ fn table_to_json_value(table: &LuaTable) -> LuaResult<JsonValue> {
     }
 
     if is_array && max_index > 0 {
-        // It's an array
         let mut arr = Vec::new();
         for i in 1..=max_index {
             if let Ok(value) = table.get::<LuaValue>(i) {
@@ -220,7 +253,6 @@ fn table_to_json_value(table: &LuaTable) -> LuaResult<JsonValue> {
         }
         Ok(JsonValue::Array(arr))
     } else {
-        // It's an object
         let mut obj = serde_json::Map::new();
         for pair in table.clone().pairs::<String, LuaValue>() {
             if let Ok((key, value)) = pair {
@@ -280,69 +312,52 @@ fn json_to_lua_value(lua: &Lua, value: &JsonValue) -> LuaResult<LuaValue> {
     }
 }
 
-/// Create the HTTP module for Lua
 pub fn create_http_module(lua: &Lua) -> LuaResult<LuaTable> {
     let http = lua.create_table()?;
     let client = HttpClient::new();
 
-    // Create convenience methods that use default client
     let client_get = client.clone();
-    http.set("get", lua.create_async_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+    http.set("get", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
         let client = client_get.clone();
-        async move {
-            make_request(&lua, &client, Method::GET, url, None, config).await
-        }
+        make_request(&lua, &client, "GET", url, None, config)
     })?)?;
 
     let client_post = client.clone();
-    http.set("post", lua.create_async_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+    http.set("post", lua.create_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
         let client = client_post.clone();
-        async move {
-            make_request(&lua, &client, Method::POST, url, data, config).await
-        }
+        make_request(&lua, &client, "POST", url, data, config)
     })?)?;
 
     let client_put = client.clone();
-    http.set("put", lua.create_async_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+    http.set("put", lua.create_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
         let client = client_put.clone();
-        async move {
-            make_request(&lua, &client, Method::PUT, url, data, config).await
-        }
+        make_request(&lua, &client, "PUT", url, data, config)
     })?)?;
 
     let client_delete = client.clone();
-    http.set("delete", lua.create_async_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+    http.set("delete", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
         let client = client_delete.clone();
-        async move {
-            make_request(&lua, &client, Method::DELETE, url, None, config).await
-        }
+        make_request(&lua, &client, "DELETE", url, None, config)
     })?)?;
 
     let client_patch = client.clone();
-    http.set("patch", lua.create_async_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+    http.set("patch", lua.create_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
         let client = client_patch.clone();
-        async move {
-            make_request(&lua, &client, Method::PATCH, url, data, config).await
-        }
+        make_request(&lua, &client, "PATCH", url, data, config)
     })?)?;
 
     let client_head = client.clone();
-    http.set("head", lua.create_async_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+    http.set("head", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
         let client = client_head.clone();
-        async move {
-            make_request(&lua, &client, Method::HEAD, url, None, config).await
-        }
+        make_request(&lua, &client, "HEAD", url, None, config)
     })?)?;
 
     let client_options = client.clone();
-    http.set("options", lua.create_async_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+    http.set("options", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
         let client = client_options.clone();
-        async move {
-            make_request(&lua, &client, Method::OPTIONS, url, None, config).await
-        }
+        make_request(&lua, &client, "OPTIONS", url, None, config)
     })?)?;
 
-    // Create method - creates a new HTTP client instance with custom config
     http.set("create", lua.create_function(|_lua, config: LuaTable| {
         let mut client = HttpClient::new();
 
@@ -357,11 +372,7 @@ pub fn create_http_module(lua: &Lua) -> LuaResult<LuaTable> {
         if let Ok(headers) = config.get::<LuaTable>("headers") {
             for pair in headers.pairs::<String, String>() {
                 if let Ok((key, value)) = pair {
-                    if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
-                        if let Ok(header_value) = reqwest::header::HeaderValue::from_str(&value) {
-                            client.default_headers.insert(header_name, header_value);
-                        }
-                    }
+                    client.default_headers.push((key, value));
                 }
             }
         }

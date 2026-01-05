@@ -7,7 +7,6 @@ mod inspect;
 mod io;
 mod server;
 pub mod template;
-pub mod event_loop;
 
 use guard::BodyValue;
 use html::create_html_module;
