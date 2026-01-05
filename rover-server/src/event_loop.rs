@@ -6,7 +6,7 @@ use std::time::Instant;
 use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use mlua::{Lua, Function, Table, Value};
+use mlua::{Lua, Function, Table, Value, Thread, ThreadStatus};
 use slab::Slab;
 use smallvec::SmallVec;
 use tracing::{debug, info, warn};
