@@ -4,6 +4,7 @@ mod response;
 pub mod http_task;
 mod event_loop;
 mod http_server;
+mod connection;
 
 pub use http_task::HttpResponse;
 pub use response::RoverResponse;

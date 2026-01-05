@@ -18,7 +18,8 @@ smallvec = "1.15.1"
 matchit = "0.8"
 rover-openapi = {path = "../rover-openapi"}
 mio = { version = "1.0", features = ["os-poll", "net"] }
-tiny_http = "0.12"
+httparse = "1.10"
+slab = "0.4"
 
 
 [lib]
