@@ -21,36 +21,27 @@ pub struct LuaRequest {
 pub fn run(lua: Lua, routes: Vec<Route>, rx: Receiver<LuaRequest>, config: ServerConfig, openapi_spec: Option<serde_json::Value>) {
     tokio::spawn(async move {
         let fast_router = FastRouter::from_routes(routes).expect("Failed to build router");
-        let mut batch = Vec::with_capacity(32);
+
+        // Use micro-batching: small batches processed quickly
+        let mut batch = Vec::with_capacity(8);
 
         loop {
             batch.clear();
 
-            // Blocking receive for first request
+            // Get first request (blocking)
             match rx.recv_async().await {
                 Ok(req) => batch.push(req),
-                Err(_) => break, // Channel closed, shutdown
-            }
+                Err(_) => break,
+            };
 
-            // Drain all pending requests (non-blocking)
-            loop {
+            // Try to grab a few more (non-blocking) - but don't wait
+            while batch.len() < 8 {
                 match rx.try_recv() {
-                    Ok(req) => {
-                        batch.push(req);
-                        if batch.len() >= 32 {
-                            break; // Max batch size
-                        }
-                    }
-                    Err(_) => break, // No more pending requests
+                    Ok(req) => batch.push(req),
+                    Err(_) => break,
                 }
             }
 
-            // Optional debug logging
-            if tracing::event_enabled!(tracing::Level::DEBUG) && batch.len() > 1 {
-                debug!("Processing batch of {} requests", batch.len());
-            }
-
-            // Process entire batch
             for req in batch.drain(..) {
                 // Methods should be only lua functions, so lua function is utf8 safe
                 let method_str = unsafe { std::str::from_utf8_unchecked(&req.method) };
@@ -121,7 +112,7 @@ pub fn run(lua: Lua, routes: Vec<Route>, rx: Receiver<LuaRequest>, config: Serve
                     started_at: req.started_at,
                 };
 
-                // Execute the task
+                // Execute task
                 if let Err(e) = task.execute(&lua).await {
                     debug!("Task execution failed: {}", e);
                 }

@@ -156,7 +156,7 @@ impl FromLua for ServerConfig {
 use event_loop::LuaRequest;
 
 async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
-    let (tx, rx) = flume::bounded::<event_loop::LuaRequest>(1024);
+    let (tx, rx) = flume::bounded::<event_loop::LuaRequest>(4096); // Increased from 1024
 
     let addr = format!("{}:{}", config.host, config.port);
     if config.log_level != "nope" {
