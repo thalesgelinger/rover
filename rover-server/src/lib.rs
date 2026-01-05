@@ -3,20 +3,14 @@ mod fast_router;
 mod response;
 pub mod http_task;
 mod event_loop;
+mod http_server;
 
-pub use http_task::{HttpTask, HttpResponse};
+pub use http_task::HttpResponse;
 pub use response::RoverResponse;
-use http_body_util::Full;
-pub use hyper::body::Bytes;
-use hyper::service::service_fn;
-use hyper::{Request, Response};
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto;
 use smallvec::SmallVec;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Instant;
-use tokio::net::TcpListener;
 
 use anyhow::{Result, anyhow};
 
@@ -24,9 +18,9 @@ use mlua::{
     FromLua, Function, Lua,
     Value::{self},
 };
-use flume;
-use tokio::sync::oneshot;
 use tracing::info;
+
+pub type Bytes = Vec<u8>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -153,10 +147,25 @@ impl FromLua for ServerConfig {
     }
 }
 
-use event_loop::LuaRequest;
-
-async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec: Option<serde_json::Value>) -> Result<()> {
-    let (tx, rx) = flume::bounded::<event_loop::LuaRequest>(1024);
+pub fn run(
+    lua: Lua,
+    routes: RouteTable,
+    config: ServerConfig,
+    openapi_spec: Option<serde_json::Value>,
+) {
+    if config.log_level != "nope" {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.log_level)),
+            )
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_file(false)
+            .with_line_number(false)
+            .init();
+    }
 
     let addr = format!("{}:{}", config.host, config.port);
     if config.log_level != "nope" {
@@ -181,133 +190,21 @@ async fn server(lua: Lua, routes: RouteTable, config: ServerConfig, openapi_spec
         parts.try_into().unwrap_or([127, 0, 0, 1])
     };
 
-    let addr = SocketAddr::from((host, config.port));
+    let sock_addr = SocketAddr::from((host, config.port));
 
-    let listener = TcpListener::bind(addr).await?;
-
-    event_loop::run(lua, routes.routes, rx, config.clone(), openapi_spec);
-
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let io = TokioIo::new(stream);
-        let tx = tx.clone();
-
-        tokio::task::spawn(async move {
-            if let Err(err) = auto::Builder::new(TokioExecutor::new())
-                .serve_connection(io, service_fn(move |req| handler(req, tx.clone())))
-                .await
-            {
-                eprintln!("Error serving connection: {}", err);
+    match http_server::run_server(lua, routes.routes, config, openapi_spec, sock_addr) {
+        Ok(_) => {}
+        Err(e) => {
+            if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                if io_err.kind() == std::io::ErrorKind::AddrInUse {
+                    eprintln!("\n❌ Error: Unable to start server");
+                    eprintln!("   Port {} is already in use on {}", sock_addr.port(), sock_addr.ip());
+                    eprintln!("   Please choose a different port or stop the process using port {}\n", sock_addr.port());
+                    std::process::exit(1);
+                }
             }
-        });
-    }
-}
-
-async fn handler(
-    req: Request<hyper::body::Incoming>,
-    tx: flume::Sender<event_loop::LuaRequest>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let (parts, body_stream) = req.into_parts();
-
-    let headers: SmallVec<[(Bytes, Bytes); 8]> = if parts.headers.is_empty() {
-        SmallVec::new()
-    } else {
-        parts
-            .headers
-            .iter()
-            .filter_map(|(k, v)| {
-                v.to_str().ok().map(|v_str| {
-                    (
-                        Bytes::from(k.as_str().to_string()),
-                        Bytes::from(v_str.to_string()),
-                    )
-                })
-            })
-            .collect()
-    };
-
-    let query: SmallVec<[(Bytes, Bytes); 8]> = match parts.uri.query() {
-        Some(q) => form_urlencoded::parse(q.as_bytes())
-            .map(|(k, v)| (Bytes::from(k.into_owned()), Bytes::from(v.into_owned())))
-            .collect(),
-        None => SmallVec::new(),
-    };
-
-    let body_bytes = http_body_util::BodyExt::collect(body_stream)
-        .await
-        .unwrap()
-        .to_bytes();
-    let body = if !body_bytes.is_empty() {
-        Some(body_bytes)
-    } else {
-        None
-    };
-
-    let (resp_tx, resp_rx) = oneshot::channel();
-
-    tx.send_async(LuaRequest {
-        method: Bytes::from(parts.method.as_str().to_string()),
-        path: Bytes::from(parts.uri.path().to_string()),
-        headers,
-        query,
-        body,
-        respond_to: resp_tx,
-        started_at: Instant::now(),
-    })
-    .await
-    .unwrap();
-
-    let resp = resp_rx.await.unwrap();
-
-    let mut response = Response::new(Full::new(resp.body));
-    *response.status_mut() = resp.status.into();
-
-    // Set Content-Type header if provided
-    if let Some(content_type) = resp.content_type {
-        response.headers_mut().insert(
-            hyper::header::CONTENT_TYPE,
-            content_type
-                .parse()
-                .unwrap_or_else(|_| hyper::header::HeaderValue::from_static("text/plain")),
-        );
-    }
-
-    Ok(response)
-}
-
-pub fn run(
-    lua: Lua,
-    routes: RouteTable,
-    config: ServerConfig,
-    openapi_spec: Option<serde_json::Value>,
-) {
-    if config.log_level != "nope" {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.log_level)),
-            )
-            .with_target(false)
-            .with_thread_ids(false)
-            .with_thread_names(false)
-            .with_file(false)
-            .with_line_number(false)
-            .init();
-    }
-
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-if let Err(e) = runtime.block_on(server(lua, routes, config.clone(), openapi_spec)) {
-        // Check if the error is due to the port being already in use
-        if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-            if io_err.kind() == std::io::ErrorKind::AddrInUse {
-                eprintln!("\n❌ Error: Unable to start server");
-                eprintln!("   Port {} is already in use on {}", config.port, config.host);
-                eprintln!("   Please choose a different port or stop the process using port {}\n", config.port);
-                std::process::exit(1);
-            }
+            eprintln!("\n❌ Error starting server: {}\n", e);
+            std::process::exit(1);
         }
-        // For other errors, print the generic error message
-        eprintln!("\n❌ Error starting server: {}\n", e);
-        std::process::exit(1);
     }
 }
