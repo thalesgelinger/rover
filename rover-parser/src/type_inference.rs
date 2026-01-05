@@ -1045,7 +1045,10 @@ impl<'a> TypeInference<'a> {
             // Arithmetic operators -> number
             "+" | "-" | "*" | "/" | "%" | "^" => {
                 // Check operands are numeric
-                if !matches!(left_type, LuaType::Number | LuaType::Unknown | LuaType::Any) {
+                let left_is_valid = matches!(left_type, LuaType::Number | LuaType::Unknown | LuaType::Any);
+                let right_is_valid = matches!(right_type, LuaType::Number | LuaType::Unknown | LuaType::Any);
+                
+                if !left_is_valid {
                     self.errors.push(TypeError::type_mismatch(
                         &LuaType::Number,
                         &left_type,
@@ -1053,7 +1056,7 @@ impl<'a> TypeInference<'a> {
                         left_node.start_position().column,
                     ));
                 }
-                if !matches!(right_type, LuaType::Number | LuaType::Unknown | LuaType::Any) {
+                if !right_is_valid {
                     self.errors.push(TypeError::type_mismatch(
                         &LuaType::Number,
                         &right_type,
@@ -1066,11 +1069,37 @@ impl<'a> TypeInference<'a> {
             
             // String concatenation -> string
             ".." => {
+                // Check that operands can be concatenated (not nil)
+                let left_can_concat = !matches!(left_type, LuaType::Nil);
+                let right_can_concat = !matches!(right_type, LuaType::Nil);
+                
+                if !left_can_concat {
+                    self.errors.push(TypeError {
+                        message: "Cannot concatenate nil".to_string(),
+                        expected: LuaType::String,
+                        actual: left_type.clone(),
+                        line: left_node.start_position().row,
+                        column: left_node.start_position().column,
+                    });
+                }
+                if !right_can_concat {
+                    self.errors.push(TypeError {
+                        message: "Cannot concatenate nil".to_string(),
+                        expected: LuaType::String,
+                        actual: right_type.clone(),
+                        line: right_node.start_position().row,
+                        column: right_node.start_position().column,
+                    });
+                }
                 LuaType::String
             }
             
             // Comparison operators -> boolean
-            "==" | "~=" | "<" | ">" | "<=" | ">=" => LuaType::Boolean,
+            "==" | "~=" | "<" | ">" | "<=" | ">=" => {
+                // Lua allows comparing any types, but we can warn about obvious mismatches
+                // For now, just return boolean without errors
+                LuaType::Boolean
+            }
             
             // Logical operators
             "and" => {
@@ -1109,12 +1138,36 @@ impl<'a> TypeInference<'a> {
         }
 
         let Some(operand_node) = operand else { return LuaType::Unknown };
+        let operand_type = self.infer_expression(operand_node);
         
         match op {
-            Some("-") => LuaType::Number,
+            Some("-") => {
+                // Unary minus requires numeric type
+                if !matches!(operand_type, LuaType::Number | LuaType::Unknown | LuaType::Any) {
+                    self.errors.push(TypeError::type_mismatch(
+                        &LuaType::Number,
+                        &operand_type,
+                        operand_node.start_position().row,
+                        operand_node.start_position().column,
+                    ));
+                }
+                LuaType::Number
+            }
             Some("not") => LuaType::Boolean,
-            Some("#") => LuaType::Number, // length operator
-            _ => self.infer_expression(operand_node),
+            Some("#") => {
+                // Length operator requires string or table
+                if !matches!(operand_type, LuaType::String | LuaType::Table(_) | LuaType::Unknown | LuaType::Any) {
+                    self.errors.push(TypeError {
+                        message: format!("Cannot get length of {}", operand_type),
+                        expected: LuaType::String,
+                        actual: operand_type,
+                        line: operand_node.start_position().row,
+                        column: operand_node.start_position().column,
+                    });
+                }
+                LuaType::Number
+            }
+            _ => operand_type,
         }
     }
 
@@ -1143,7 +1196,22 @@ impl<'a> TypeInference<'a> {
         
         match &base_type {
             LuaType::Table(table) => {
-                table.get_field(&field_name).cloned().unwrap_or(LuaType::Unknown)
+                if let Some(field_type) = table.get_field(&field_name) {
+                    field_type.clone()
+                } else {
+                    // Field doesn't exist in known table structure
+                    // Only warn if table has known fields (not open table)
+                    if !table.fields.is_empty() {
+                        self.errors.push(TypeError {
+                            message: format!("Field '{}' does not exist on table", field_name),
+                            expected: LuaType::Unknown,
+                            actual: LuaType::Nil,
+                            line: node.start_position().row,
+                            column: node.start_position().column,
+                        });
+                    }
+                    LuaType::Unknown
+                }
             }
             LuaType::String => {
                 // String methods accessed via string:method() not string.method
@@ -1200,7 +1268,56 @@ impl<'a> TypeInference<'a> {
     }
 
     /// Infer type of method access
-    fn infer_method_access(&mut self, _node: Node) -> LuaType {
+    fn infer_method_access(&mut self, node: Node) -> LuaType {
+        // Extract base and method name
+        let mut base: Option<Node> = None;
+        let mut method: Option<String> = None;
+        
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" | "dot_index_expression" if base.is_none() => {
+                    base = Some(child);
+                }
+                "identifier" => {
+                    method = Some(self.node_text(child));
+                }
+                _ => {}
+            }
+        }
+        
+        if let (Some(base_node), Some(method_name)) = (base, method) {
+            let base_type = self.infer_expression(base_node);
+            
+            // Check if method exists on the base type
+            match &base_type {
+                LuaType::String => {
+                    // String methods
+                    if let Some(string_type) = self.env.get("string") {
+                        if let LuaType::Table(string_lib) = string_type {
+                            if let Some(method_type) = string_lib.get_field(&method_name) {
+                                return method_type.clone();
+                            }
+                        }
+                    }
+                }
+                LuaType::Table(_table) => {
+                    // Table methods - we'd need more info about table structure
+                    // For now, just return unknown
+                }
+                _ => {
+                    // Method call on non-table/string type
+                    self.errors.push(TypeError {
+                        message: format!("Cannot call method '{}' on type {}", method_name, base_type),
+                        expected: LuaType::Table(TableType::new()),
+                        actual: base_type,
+                        line: node.start_position().row,
+                        column: node.start_position().column,
+                    });
+                }
+            }
+        }
+        
         // Method access returns the method itself, actual call handled by function_call
         LuaType::Function(Box::new(FunctionType::default()))
     }
@@ -1244,6 +1361,29 @@ impl<'a> TypeInference<'a> {
                 return self.infer_pcall(node);
             }
 
+            // Check for library function calls like string.len, math.floor
+            if name.contains(".") {
+                let parts: Vec<&str> = name.split('.').collect();
+                if parts.len() == 2 {
+                    let module_name = parts[0];
+                    let func_name = parts[1];
+                    
+                    if let Some(module_type) = self.env.get(module_name) {
+                        if let LuaType::Table(table) = module_type {
+                            if let Some(func_type) = table.get_field(func_name) {
+                                // Validate arguments
+                                if let (LuaType::Function(func), Some(args_node)) = (func_type, &args) {
+                                    self.check_function_call_args(*args_node, func, Some(&name));
+                                    return func.return_type().clone();
+                                } else if let LuaType::Function(func) = func_type {
+                                    return func.return_type().clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if let Some(func_type) = self.env.get_function(&name) {
                 if let Some(args_node) = &args {
                     self.check_function_call_args(*args_node, &func_type, Some(&name));
@@ -1277,6 +1417,17 @@ impl<'a> TypeInference<'a> {
         
         // Infer type of the called function
         let func_type = self.infer_expression(first_arg_node);
+        
+        // Validate first argument is a function
+        if !matches!(func_type, LuaType::Function(_) | LuaType::Unknown | LuaType::Any) {
+            self.errors.push(TypeError {
+                message: format!("pcall first argument must be a function, got {}", func_type),
+                expected: LuaType::Function(Box::new(FunctionType::default())),
+                actual: func_type.clone(),
+                line: first_arg_node.start_position().row,
+                column: first_arg_node.start_position().column,
+            });
+        }
         
         // The result is the function's return type (or Any if unknown)
         let result_type = match func_type {

@@ -262,8 +262,14 @@ impl Analyzer {
                 true
             }
             "function_declaration" | "function_definition" => {
+                // Capture parent scope ID before pushing function scope
+                let parent_scope_id = self.symbol_table.get_current_scope().map(|s| s.id);
                 self.push_scope_with_range(ScopeType::Function, node);
                 self.register_function_params(node);
+                // Register function name in the parent scope
+                if let Some(parent_id) = parent_scope_id {
+                    self.register_function_name(node, parent_id);
+                }
                 true
             }
             "do_statement" | "while_statement" | "if_statement" => {
@@ -970,7 +976,7 @@ impl Analyzer {
             if parent.kind() == "dot_index_expression"
                 && Self::is_first_named_child(parent, current)
             {
-                return self.extract_field_name(parent);
+                return self.extract_field_name_from_dot(parent);
             } else if parent.kind() == "bracket_index_expression"
                 && Self::is_first_named_child(parent, current)
             {
@@ -993,15 +999,21 @@ impl Analyzer {
         }
     }
 
-    fn extract_field_name(&mut self, node: Node) -> Option<String> {
-        // Extract field name from dot_index_expression
+    fn extract_field_name_from_dot(&self, node: Node) -> Option<String> {
         let mut cursor = node.walk();
+        let mut member_node: Option<Node> = None;
+
         for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                return Some(self.source[child.start_byte()..child.end_byte()].to_string());
+            match child.kind() {
+                "identifier" | "field" => {
+                    member_node = Some(child);
+                }
+                _ => {}
             }
         }
-        None
+
+        let member_n = member_node?;
+        Some(self.source[member_n.start_byte()..member_n.end_byte()].to_string())
     }
 
     fn extract_bracket_field_name(&mut self, node: Node) -> Option<String> {
@@ -2045,6 +2057,41 @@ impl Analyzer {
                         self.register_variable(&name, SymbolKind::Parameter, param);
                     }
                 }
+            }
+        }
+    }
+    
+    /// Register the function name in the parent scope (for go-to-definition and hover)
+    fn register_function_name(&mut self, node: Node, parent_scope_id: usize) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                let name = self.source[child.start_byte()..child.end_byte()].to_string();
+                let range = SourceRange::from_node(child);
+                // Register function name in the parent scope
+                if let Some(scope) = self.symbol_table.get_scope_mut(parent_scope_id) {
+                    scope.symbols.insert(
+                        name.clone(),
+                        Symbol {
+                            name: name.clone(),
+                            kind: SymbolKind::Function,
+                            range: crate::symbol::SourceRange {
+                                start: crate::symbol::SourcePosition {
+                                    line: range.start.line,
+                                    column: range.start.column,
+                                },
+                                end: crate::symbol::SourcePosition {
+                                    line: range.end.line,
+                                    column: range.end.column,
+                                },
+                            },
+                            type_annotation: None,
+                            used: false,
+                            inferred_type: crate::types::LuaType::Unknown,
+                        },
+                    );
+                }
+                return;
             }
         }
     }
