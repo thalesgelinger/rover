@@ -6,7 +6,8 @@ mod event_loop;
 mod http_server;
 mod connection;
 
-pub use http_task::HttpResponse;
+// Keep HttpResponse for backward compatibility
+pub use http_task::{HttpResponse, CoroutineResponse};
 pub use response::RoverResponse;
 use std::net::SocketAddr;
 
