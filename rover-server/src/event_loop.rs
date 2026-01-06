@@ -1,6 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -16,7 +16,7 @@ use crate::http_task::{execute_handler_coroutine, CoroutineResponse};
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
-const POLL_TIMEOUT_MS: u64 = 100; // Check for timeouts every 100ms
+const TIMEOUT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 struct PendingCoroutine {
     thread: Thread,
@@ -32,6 +32,7 @@ pub struct EventLoop {
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
     yielded_coroutines: HashMap<usize, PendingCoroutine>,
+    last_timeout_check: Instant,
 }
 
 impl EventLoop {
@@ -58,16 +59,16 @@ impl EventLoop {
             config,
             openapi_spec,
             yielded_coroutines: HashMap::with_capacity(1024),
+            last_timeout_check: Instant::now(),
         })
     }
 
     pub fn run(&mut self) -> Result<()> {
         let mut events = Events::with_capacity(1024);
-        let poll_timeout = Some(std::time::Duration::from_millis(POLL_TIMEOUT_MS));
 
         loop {
-            // Poll with timeout to periodically check for coroutine timeouts
-            self.poll.poll(&mut events, poll_timeout)?;
+            // Block on real events only (pure event-driven)
+            self.poll.poll(&mut events, None)?;
 
             for event in events.iter() {
                 match event.token() {
@@ -76,7 +77,13 @@ impl EventLoop {
                 }
             }
 
-            // Only resume yielded coroutines if there are any
+            // Check timeouts periodically (low overhead)
+            if self.last_timeout_check.elapsed() > TIMEOUT_CHECK_INTERVAL {
+                self.check_timeouts()?;
+                self.last_timeout_check = Instant::now();
+            }
+
+            // Resume yielded coroutines
             if !self.yielded_coroutines.is_empty() {
                 self.resume_yielded_coroutines()?;
             }
@@ -306,27 +313,13 @@ impl EventLoop {
         Ok(())
     }
 
-    fn resume_yielded_coroutines(&mut self) -> Result<()> {
-        let mut to_resume = Vec::new();
+    fn check_timeouts(&mut self) -> Result<()> {
         let mut to_timeout = Vec::new();
 
-        // Collect keys to process to avoid borrowing issues
+        // Collect timed-out coroutines
         for (&conn_idx, pending) in self.yielded_coroutines.iter() {
-            if !self.connections.contains(conn_idx) {
-                to_resume.push(conn_idx);
-                continue;
-            }
-
             if pending.started_at.elapsed().as_millis() as u64 > DEFAULT_COROUTINE_TIMEOUT_MS {
                 to_timeout.push(conn_idx);
-                continue;
-            }
-
-            match pending.thread.status() {
-                ThreadStatus::Resumable => {
-                    to_resume.push(conn_idx);
-                }
-                _ => {}
             }
         }
 
@@ -345,6 +338,27 @@ impl EventLoop {
                 conn.token,
                 Interest::WRITABLE,
             )?;
+        }
+
+        Ok(())
+    }
+
+    fn resume_yielded_coroutines(&mut self) -> Result<()> {
+        let mut to_resume = Vec::new();
+
+        // Collect resumable coroutines
+        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
+            if !self.connections.contains(conn_idx) {
+                to_resume.push(conn_idx);
+                continue;
+            }
+
+            match pending.thread.status() {
+                ThreadStatus::Resumable => {
+                    to_resume.push(conn_idx);
+                }
+                _ => {}
+            }
         }
 
         // Resume coroutines
