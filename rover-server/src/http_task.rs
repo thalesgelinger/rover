@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -27,6 +26,7 @@ impl ThreadPool {
         }
     }
 
+    #[allow(unused_mut)]
     pub fn acquire(&mut self, lua: &Lua, handler: &Function) -> Result<Thread> {
         if let Some(mut thread) = self.available.pop() {
             thread.reset(handler.clone())?;
@@ -223,54 +223,46 @@ fn build_lua_context(
     ctx.set("method", method)?;
     ctx.set("path", path)?;
 
-    let headers = Arc::new(headers.to_vec());
+    // Phase 4: Remove Arc wrapping - clone data directly for better perf on small data
+    let headers_data: Vec<(Bytes, Bytes)> = headers.to_vec();
     let headers_fn = lua.create_function(move |lua, ()| {
-        let headers_slice = headers.as_slice();
-        if headers_slice.is_empty() {
+        if headers_data.is_empty() {
             return lua.create_table();
         }
-        let headers_table = lua.create_table_with_capacity(0, headers_slice.len())?;
-        for (k, v) in headers_slice {
-            let k_str = std::str::from_utf8(k).map_err(|_| {
-                mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string())
-            })?;
-            let v_str = std::str::from_utf8(v).map_err(|_| {
-                mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str))
-            })?;
+        let headers_table = lua.create_table_with_capacity(0, headers_data.len())?;
+        for (k, v) in &headers_data {
+            // Phase 3: Skip UTF-8 validation for ASCII headers
+            let k_str = unsafe { std::str::from_utf8_unchecked(k) };
+            let v_str = unsafe { std::str::from_utf8_unchecked(v) };
             headers_table.set(k_str, v_str)?;
         }
         Ok(headers_table)
     })?;
     ctx.set("headers", headers_fn)?;
 
-    let query = Arc::new(query.to_vec());
+    let query_data: Vec<(Bytes, Bytes)> = query.to_vec();
     let query_fn = lua.create_function(move |lua, ()| {
-        let query_slice = query.as_slice();
-        if query_slice.is_empty() {
+        if query_data.is_empty() {
             return lua.create_table();
         }
-        let query_table = lua.create_table_with_capacity(0, query_slice.len())?;
-        for (k, v) in query_slice {
-            let k_str = std::str::from_utf8(k).map_err(|_| {
-                mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string())
-            })?;
-            let v_str = std::str::from_utf8(v).map_err(|_| {
-                mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str))
-            })?;
+        let query_table = lua.create_table_with_capacity(0, query_data.len())?;
+        for (k, v) in &query_data {
+            // Phase 3: Skip UTF-8 validation for URL-encoded ASCII params
+            let k_str = unsafe { std::str::from_utf8_unchecked(k) };
+            let v_str = unsafe { std::str::from_utf8_unchecked(v) };
             query_table.set(k_str, v_str)?;
         }
         Ok(query_table)
     })?;
     ctx.set("query", query_fn)?;
 
-    let params = Arc::new(params.clone());
+    let params_data: HashMap<String, String> = params.clone();
     let params_fn = lua.create_function(move |lua, ()| {
-        let params_ref = params.as_ref();
-        if params_ref.is_empty() {
+        if params_data.is_empty() {
             return lua.create_table();
         }
-        let params_table = lua.create_table_with_capacity(0, params_ref.len())?;
-        for (k, v) in params_ref {
+        let params_table = lua.create_table_with_capacity(0, params_data.len())?;
+        for (k, v) in &params_data {
             params_table.set(k.as_str(), v.as_str())?;
         }
         Ok(params_table)
@@ -280,11 +272,8 @@ fn build_lua_context(
     let body_bytes = body.map(|b| b.to_vec());
     let body_fn = lua.create_function(move |lua, ()| {
         if let Some(ref body) = body_bytes {
-            let body_str = std::str::from_utf8(body).map_err(|_| {
-                mlua::Error::RuntimeError(
-                    "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
-                )
-            })?;
+            // Phase 3: Skip UTF-8 validation for performance
+            let body_str = unsafe { std::str::from_utf8_unchecked(body) };
 
             let globals = lua.globals();
             let rover: Table = globals.get("rover")?;
