@@ -95,30 +95,44 @@ pub fn execute_handler_coroutine(
         }
     };
 
-    // Call handler directly (no coroutine overhead since we don't support yielding I/O yet)
-    // TODO: When we add yielding I/O support, we'll need to detect yields and use coroutines
-    let result: Value = match handler.call(ctx) {
-        Ok(r) => r,
+    // Always use coroutines to support yielding I/O operations
+    // The coroutine may complete immediately (fast path) or yield for I/O (slow path)
+    let thread = lua.create_thread(handler.clone())?;
+
+    match thread.resume::<Value>(ctx) {
+        Ok(result) => {
+            // Check if the coroutine yielded or completed
+            use mlua::ThreadStatus;
+            match thread.status() {
+                ThreadStatus::Resumable => {
+                    // Handler yielded - return the thread to be resumed later
+                    Ok(CoroutineResponse::Yielded { thread })
+                }
+                _ => {
+                    // Handler completed without yielding (or died)
+                    let (status, body, content_type) = convert_lua_response(lua, result);
+                    let elapsed = started_at.elapsed();
+                    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+
+                    if status >= 200 && status < 300 {
+                        if tracing::event_enabled!(tracing::Level::INFO) {
+                            info!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+                        }
+                    } else if status >= 400 {
+                        if tracing::event_enabled!(tracing::Level::WARN) {
+                            warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+                        }
+                    }
+
+                    Ok(CoroutineResponse::Ready { status, body, content_type })
+                }
+            }
+        }
         Err(e) => {
-            return convert_error_to_response(e, method, path, started_at);
-        }
-    };
-
-    let (status, body, content_type) = convert_lua_response(lua, result);
-    let elapsed = started_at.elapsed();
-    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-
-    if status >= 200 && status < 300 {
-        if tracing::event_enabled!(tracing::Level::INFO) {
-            info!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
-        }
-    } else if status >= 400 {
-        if tracing::event_enabled!(tracing::Level::WARN) {
-            warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+            // Error during execution
+            convert_error_to_response(e, method, path, started_at)
         }
     }
-
-    Ok(CoroutineResponse::Ready { status, body, content_type })
 }
 
 fn convert_error_to_response(

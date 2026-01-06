@@ -2,12 +2,34 @@ use mlua::prelude::*;
 use curl::easy::Easy;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static HTTP_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct HttpClient {
     base_url: Option<String>,
     default_headers: Vec<(String, String)>,
     timeout: Option<Duration>,
+}
+
+/// Marker for HTTP requests that should yield
+#[derive(Clone, Debug)]
+pub struct HttpRequestDescriptor {
+    pub id: u64,
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+}
+
+impl LuaUserData for HttpRequestDescriptor {
+    fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("__rover_http_request", |_, _| Ok(true));
+        fields.add_field_method_get("id", |_, this| Ok(this.id));
+        fields.add_field_method_get("method", |_, this| Ok(this.method.clone()));
+        fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
+    }
 }
 
 impl HttpClient {
@@ -38,39 +60,111 @@ impl LuaUserData for HttpClient {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("get", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, "GET", url, None, config)
+            // Check if we should yield (running in coroutine)
+            if should_yield_for_io(lua)? {
+                yield_http_request(lua, &client, "GET", url, None, config)
+            } else {
+                make_request(&lua, &client, "GET", url, None, config)
+            }
         });
 
         methods.add_method("post", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, "POST", url, data, config)
+            if should_yield_for_io(lua)? {
+                yield_http_request(lua, &client, "POST", url, data, config)
+            } else {
+                make_request(&lua, &client, "POST", url, data, config)
+            }
         });
 
         methods.add_method("put", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, "PUT", url, data, config)
+            if should_yield_for_io(lua)? {
+                yield_http_request(lua, &client, "PUT", url, data, config)
+            } else {
+                make_request(&lua, &client, "PUT", url, data, config)
+            }
         });
 
         methods.add_method("delete", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, "DELETE", url, None, config)
+            if should_yield_for_io(lua)? {
+                yield_http_request(lua, &client, "DELETE", url, None, config)
+            } else {
+                make_request(&lua, &client, "DELETE", url, None, config)
+            }
         });
 
         methods.add_method("patch", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, "PATCH", url, data, config)
+            if should_yield_for_io(lua)? {
+                yield_http_request(lua, &client, "PATCH", url, data, config)
+            } else {
+                make_request(&lua, &client, "PATCH", url, data, config)
+            }
         });
 
         methods.add_method("head", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, "HEAD", url, None, config)
+            if should_yield_for_io(lua)? {
+                yield_http_request(lua, &client, "HEAD", url, None, config)
+            } else {
+                make_request(&lua, &client, "HEAD", url, None, config)
+            }
         });
 
         methods.add_method("options", |lua, this, (url, config): (String, Option<LuaTable>)| {
             let client = this.clone();
-            make_request(&lua, &client, "OPTIONS", url, None, config)
+            if should_yield_for_io(lua)? {
+                yield_http_request(lua, &client, "OPTIONS", url, None, config)
+            } else {
+                make_request(&lua, &client, "OPTIONS", url, None, config)
+            }
         });
     }
+}
+
+/// Check if we should yield for I/O (currently running in a coroutine)
+fn should_yield_for_io(lua: &Lua) -> LuaResult<bool> {
+    // Check if there's a running coroutine
+    let globals = lua.globals();
+    if let Ok(coroutine) = globals.get::<LuaTable>("coroutine") {
+        if let Ok(running) = coroutine.get::<LuaFunction>("running") {
+            // Call coroutine.running() - returns (thread, is_main)
+            if let Ok((thread, is_main)) = running.call::<(LuaValue, bool)>(()) {
+                // If not main and we have a thread, we should yield
+                return Ok(!is_main && matches!(thread, LuaValue::Thread(_)));
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Yield for HTTP request - performs blocking I/O then yields to simulate async
+fn yield_http_request(
+    lua: &Lua,
+    client: &HttpClient,
+    method: &str,
+    url: String,
+    data: Option<LuaValue>,
+    config: Option<LuaTable>,
+) -> LuaResult<LuaTable> {
+    // For now, perform the blocking request
+    // TODO: Use curl::multi for true async when we have event loop polling
+    let result = make_request(lua, client, method, url, data, config)?;
+
+    // Yield to give event loop a chance to process other requests
+    // This simulates async behavior even with blocking I/O
+    let globals = lua.globals();
+    if let Ok(coroutine) = globals.get::<LuaTable>("coroutine") {
+        if let Ok(yield_fn) = coroutine.get::<LuaFunction>("yield") {
+            // Yield and immediately return the result
+            // This allows other coroutines to run while we "wait"
+            let _ = yield_fn.call::<()>(());
+        }
+    }
+
+    Ok(result)
 }
 
 fn make_request(
