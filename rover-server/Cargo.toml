@@ -20,6 +20,7 @@ rover-openapi = {path = "../rover-openapi"}
 mio = { version = "1.0", features = ["os-poll", "net"] }
 httparse = "1.10"
 slab = "0.4"
+bytes = "1.10"
 
 
 [lib]

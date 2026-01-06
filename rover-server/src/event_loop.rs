@@ -13,6 +13,7 @@ use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::FastRouter;
 use crate::{HttpMethod, Route, ServerConfig, Bytes};
 use crate::http_task::{execute_handler_coroutine, CoroutineResponse};
+use crate::buffer_pool::BufferPool;
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
@@ -33,6 +34,7 @@ pub struct EventLoop {
     openapi_spec: Option<serde_json::Value>,
     yielded_coroutines: HashMap<usize, PendingCoroutine>,
     last_timeout_check: Instant,
+    buffer_pool: BufferPool,
 }
 
 impl EventLoop {
@@ -60,6 +62,7 @@ impl EventLoop {
             openapi_spec,
             yielded_coroutines: HashMap::with_capacity(1024),
             last_timeout_check: Instant::now(),
+            buffer_pool: BufferPool::new(),
         })
     }
 
@@ -248,7 +251,7 @@ impl EventLoop {
 
         let query: Vec<(Bytes, Bytes)> = if let Some(qs) = query_str {
             form_urlencoded::parse(qs.as_bytes())
-                .map(|(k, v)| (Bytes::from(k.into_owned()), Bytes::from(v.into_owned())))
+                .map(|(k, v)| (Bytes::copy_from_slice(k.as_bytes()), Bytes::copy_from_slice(v.as_bytes())))
                 .collect()
         } else {
             Vec::new()
@@ -256,7 +259,7 @@ impl EventLoop {
 
         let headers: Vec<(Bytes, Bytes)> = conn.headers
             .iter()
-            .map(|(k, v)| (Bytes::from(k.clone()), Bytes::from(v.clone())))
+            .map(|(k, v)| (Bytes::copy_from_slice(k.as_str().as_bytes()), Bytes::copy_from_slice(v.as_str().as_bytes())))
             .collect();
 
         let body = conn.get_body();

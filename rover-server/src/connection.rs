@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use mio::net::TcpStream;
 use mio::Token;
 use mlua::Thread;
+use crate::Bytes;
 
 const READ_BUF_SIZE: usize = 4096;
 const MAX_HEADERS: usize = 32;
@@ -41,13 +42,13 @@ impl Connection {
             socket,
             token,
             state: ConnectionState::Reading,
-            read_buf: Vec::with_capacity(READ_BUF_SIZE),
+            read_buf: Vec::with_capacity(READ_BUF_SIZE * 2),
             read_pos: 0,
-            write_buf: Vec::with_capacity(512),
+            write_buf: Vec::with_capacity(4096),
             write_pos: 0,
             method: None,
             path: None,
-            headers: Vec::with_capacity(8),
+            headers: Vec::with_capacity(16),
             body: None,
             content_length: 0,
             headers_complete: false,
@@ -153,6 +154,14 @@ impl Connection {
     pub fn get_body(&self) -> Option<&[u8]> {
         if let Some((start, len)) = self.body {
             Some(&self.read_buf[start..start + len])
+        } else {
+            None
+        }
+    }
+
+    pub fn get_body_bytes(&self) -> Option<Bytes> {
+        if let Some((start, len)) = self.body {
+            Some(Bytes::copy_from_slice(&self.read_buf[start..start + len]))
         } else {
             None
         }

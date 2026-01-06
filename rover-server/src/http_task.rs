@@ -53,7 +53,7 @@ pub fn execute_handler(
 }
 
 pub enum CoroutineResponse {
-    Ready { status: u16, body: Vec<u8>, content_type: Option<String> },
+    Ready { status: u16, body: Bytes, content_type: Option<String> },
     Yielded { thread: Thread },
 }
 
