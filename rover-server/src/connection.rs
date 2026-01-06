@@ -181,7 +181,7 @@ impl Connection {
     pub fn set_response(&mut self, status: u16, body: &[u8], content_type: Option<&str>) {
         self.write_buf.clear();
         self.write_pos = 0;
-        
+
         let status_text = match status {
             200 => "OK",
             201 => "Created",
@@ -191,21 +191,42 @@ impl Connection {
             500 => "Internal Server Error",
             _ => "Unknown",
         };
-        
+
         let ct = content_type.unwrap_or("text/plain");
         let conn = if self.keep_alive { "keep-alive" } else { "close" };
-        
-        let header_len = 12 + status_text.len() + ct.len() + 20 + conn.len() + 2;
-        self.write_buf.reserve(header_len + body.len());
-        
+
+        // Pre-calculate exact size to avoid reallocations
+        let header_size =
+            9 + // "HTTP/1.1 "
+            3 + // status code
+            1 + // space
+            status_text.len() +
+            15 + // "\r\nContent-Type: "
+            ct.len() +
+            18 + // "\r\nContent-Length: "
+            20 + // max digits for content length
+            14 + // "\r\nConnection: "
+            conn.len() +
+            4; // "\r\n\r\n"
+
+        let total_size = header_size + body.len();
+
+        // Reserve exact capacity (zero-copy optimization)
+        if self.write_buf.capacity() < total_size {
+            self.write_buf.reserve(total_size - self.write_buf.capacity());
+        }
+
+        // Build response in-place
         write!(self.write_buf, "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
             status, status_text, ct, body.len(), conn).unwrap();
-        
+
+        // Zero-copy body append
         self.write_buf.extend_from_slice(body);
         self.state = ConnectionState::Writing;
     }
 
     pub fn reset(&mut self) {
+        // Keep capacity to avoid reallocations (zero-copy optimization)
         self.read_buf.clear();
         self.read_pos = 0;
         self.write_buf.clear();

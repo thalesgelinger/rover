@@ -3,8 +3,36 @@ use curl::easy::Easy;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::RefCell;
 
 static HTTP_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+// Thread-local connection pool for curl handles (single-threaded, no locking needed!)
+thread_local! {
+    static CURL_POOL: RefCell<Vec<Easy>> = RefCell::new(Vec::with_capacity(8));
+}
+
+/// Get a curl handle from the pool or create a new one
+fn get_curl_handle() -> Easy {
+    CURL_POOL.with(|pool| {
+        pool.borrow_mut().pop().unwrap_or_else(|| Easy::new())
+    })
+}
+
+/// Return a curl handle to the pool for reuse
+fn return_curl_handle(mut handle: Easy) {
+    // Reset the handle to clean state
+    handle.reset();
+
+    CURL_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        // Keep pool size reasonable (max 16 handles)
+        if pool.len() < 16 {
+            pool.push(handle);
+        }
+        // Otherwise, just drop it
+    });
+}
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -176,8 +204,10 @@ fn make_request(
     config: Option<LuaTable>,
 ) -> LuaResult<LuaTable> {
     let full_url = client.build_url(&url);
-    let mut easy = Easy::new();
-    
+
+    // Get handle from connection pool (zero-allocation reuse!)
+    let mut easy = get_curl_handle();
+
     easy.url(&full_url).map_err(|e| LuaError::external(e))?;
     
     if let Some(timeout) = client.timeout {
@@ -293,13 +323,16 @@ fn make_request(
     result.set("headers", headers_table)?;
 
     let body_text = String::from_utf8_lossy(&response_data).to_string();
-    
+
     if let Ok(json_value) = serde_json::from_str::<JsonValue>(&body_text) {
         let lua_value = json_to_lua_value(lua, &json_value)?;
         result.set("data", lua_value)?;
     } else {
         result.set("data", body_text)?;
     }
+
+    // Return connection to pool for reuse (connection pooling optimization!)
+    return_curl_handle(easy);
 
     Ok(result)
 }
