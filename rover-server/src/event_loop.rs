@@ -12,7 +12,7 @@ use slab::Slab;
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::FastRouter;
 use crate::{HttpMethod, Route, ServerConfig, Bytes};
-use crate::http_task::{execute_handler_coroutine, CoroutineResponse};
+use crate::http_task::{execute_handler_coroutine, CoroutineResponse, ThreadPool};
 use crate::buffer_pool::BufferPool;
 
 const LISTENER: Token = Token(0);
@@ -36,6 +36,7 @@ pub struct EventLoop {
     last_timeout_check: Instant,
     buffer_pool: BufferPool,
     connection_interests: HashMap<usize, Interest>,
+    thread_pool: ThreadPool,
 }
 
 impl EventLoop {
@@ -65,6 +66,7 @@ impl EventLoop {
             last_timeout_check: Instant::now(),
             buffer_pool: BufferPool::new(),
             connection_interests: HashMap::with_capacity(1024),
+            thread_pool: ThreadPool::new(2048),
         })
     }
 
@@ -192,20 +194,18 @@ impl EventLoop {
 
     fn start_request_coroutine(&mut self, conn_idx: usize) -> Result<()> {
         let started_at = Instant::now();
-        
-        let (method_str, path_str, keep_alive) = {
-            let conn = &self.connections[conn_idx];
-            let method = conn.method.as_ref().map(|s| s.as_str()).unwrap_or_default();
-            let full_path = conn.path.as_ref().map(|s| s.as_str()).unwrap_or_default();
-            let (path, _) = if let Some(pos) = full_path.find('?') {
-                (&full_path[..pos], Some(&full_path[pos+1..]))
-            } else {
-                (full_path, None)
-            };
-            (method.to_string(), path.to_string(), conn.keep_alive)
-        };
 
-        if self.config.docs && path_str == "/docs" && self.openapi_spec.is_some() {
+        let conn = &self.connections[conn_idx];
+        let method = conn.method.as_ref().map(|s| s.as_str()).unwrap_or_default();
+        let full_path = conn.path.as_ref().map(|s| s.as_str()).unwrap_or_default();
+        let (path, query_str) = if let Some(pos) = full_path.find('?') {
+            (&full_path[..pos], Some(&full_path[pos+1..]))
+        } else {
+            (full_path, None)
+        };
+        let keep_alive = conn.keep_alive;
+
+        if self.config.docs && path == "/docs" && self.openapi_spec.is_some() {
             let html = rover_openapi::scalar_html(self.openapi_spec.as_ref().unwrap());
             let conn = &mut self.connections[conn_idx];
             conn.keep_alive = keep_alive;
@@ -214,12 +214,12 @@ impl EventLoop {
             return Ok(());
         }
 
-        let http_method = match HttpMethod::from_str(&method_str) {
+        let http_method = match HttpMethod::from_str(method) {
             Some(m) => m,
             None => {
                 let error_msg = format!(
                     "Invalid HTTP method '{}'. Valid methods: {}",
-                    method_str,
+                    method,
                     HttpMethod::valid_methods().join(", ")
                 );
                 let conn = &mut self.connections[conn_idx];
@@ -234,7 +234,7 @@ impl EventLoop {
             }
         };
 
-        let (handler, params) = match self.router.match_route(http_method, &path_str) {
+        let (handler, params) = match self.router.match_route(http_method, path) {
             Some((h, p)) => (h.clone(), p),
             None => {
                 let conn = &mut self.connections[conn_idx];
@@ -243,15 +243,6 @@ impl EventLoop {
                 self.update_interest(conn_idx, Interest::WRITABLE)?;
                 return Ok(());
             }
-        };
-
-        let conn = &self.connections[conn_idx];
-        let method_str_ref = conn.method.as_ref().map(|s| s.as_str()).unwrap_or_default();
-        let full_path = conn.path.as_ref().map(|s| s.as_str()).unwrap_or_default();
-        let (path, query_str) = if let Some(pos) = full_path.find('?') {
-            (&full_path[..pos], Some(&full_path[pos+1..]))
-        } else {
-            (full_path, None)
         };
 
         let query: Vec<(Bytes, Bytes)> = if let Some(qs) = query_str {
@@ -272,13 +263,14 @@ impl EventLoop {
         match execute_handler_coroutine(
             &self.lua,
             &handler,
-            method_str_ref,
+            method,
             path,
             &headers,
             &query,
             &params,
             body,
             started_at,
+            &mut self.thread_pool,
         ) {
             Ok(CoroutineResponse::Ready { status, body, content_type }) => {
                 let conn = &mut self.connections[conn_idx];
@@ -358,12 +350,14 @@ impl EventLoop {
             if let Some(pending) = self.yielded_coroutines.remove(&conn_idx) {
                 match pending.thread.resume(()) {
                     Ok(mlua::Value::Nil) => {
+                        self.thread_pool.release(pending.thread);
                         if let Some(conn) = self.connections.get_mut(conn_idx) {
                             conn.thread = None;
                             conn.state = ConnectionState::Closed;
                         }
                     }
                     Ok(_) => {
+                        self.thread_pool.release(pending.thread);
                         if let Some(conn) = self.connections.get_mut(conn_idx) {
                             conn.thread = None;
 
@@ -371,6 +365,7 @@ impl EventLoop {
                         }
                     }
                     Err(_) => {
+                        self.thread_pool.release(pending.thread);
                         if let Some(conn) = self.connections.get_mut(conn_idx) {
                             conn.thread = None;
                             conn.state = ConnectionState::Closed;

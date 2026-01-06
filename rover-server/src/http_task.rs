@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use mlua::{Function, Lua, Table, Value, Thread};
+use mlua::{Function, Lua, Table, Value, Thread, ThreadStatus};
 use tracing::{debug, info, warn};
 
 use crate::{to_json::ToJson, response::RoverResponse, Bytes};
@@ -12,6 +12,35 @@ pub struct HttpResponse {
     pub status: u16,
     pub body: Bytes,
     pub content_type: Option<String>,
+}
+
+pub struct ThreadPool {
+    available: Vec<Thread>,
+    max_size: usize,
+}
+
+impl ThreadPool {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            available: Vec::with_capacity(max_size),
+            max_size,
+        }
+    }
+
+    pub fn acquire(&mut self, lua: &Lua, handler: &Function) -> Result<Thread> {
+        if let Some(mut thread) = self.available.pop() {
+            thread.reset(handler.clone())?;
+            Ok(thread)
+        } else {
+            Ok(lua.create_thread(handler.clone())?)
+        }
+    }
+
+    pub fn release(&mut self, thread: Thread) {
+        if thread.status() == ThreadStatus::Finished && self.available.len() < self.max_size {
+            self.available.push(thread);
+        }
+    }
 }
 
 #[deprecated(note = "Use execute_handler_coroutine instead for non-blocking execution")]
@@ -67,6 +96,7 @@ pub fn execute_handler_coroutine(
     params: &HashMap<String, String>,
     body: Option<&[u8]>,
     started_at: Instant,
+    pool: &mut ThreadPool,
 ) -> Result<CoroutineResponse> {
     if tracing::event_enabled!(tracing::Level::DEBUG) {
         if !query.is_empty() {
@@ -97,7 +127,7 @@ pub fn execute_handler_coroutine(
 
     // Always use coroutines to support yielding I/O operations
     // The coroutine may complete immediately (fast path) or yield for I/O (slow path)
-    let thread = lua.create_thread(handler.clone())?;
+    let thread = pool.acquire(lua, handler)?;
 
     match thread.resume::<Value>(ctx) {
         Ok(result) => {
@@ -123,6 +153,9 @@ pub fn execute_handler_coroutine(
                             warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
                         }
                     }
+
+                    // Return finished thread to pool
+                    pool.release(thread);
 
                     Ok(CoroutineResponse::Ready { status, body, content_type })
                 }
