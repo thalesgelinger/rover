@@ -95,62 +95,71 @@ pub fn execute_handler_coroutine(
         }
     };
 
-    let thread = lua.create_thread(handler.clone())?;
-
-    match thread.resume(ctx) {
-        Ok(result) => {
-            let (status, body, content_type) = convert_lua_response(lua, result);
-            let elapsed = started_at.elapsed();
-            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-
-            if status >= 200 && status < 300 {
-                if tracing::event_enabled!(tracing::Level::INFO) {
-                    info!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
-                }
-            } else if status >= 400 {
-                if tracing::event_enabled!(tracing::Level::WARN) {
-                    warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
-                }
-            }
-
-            Ok(CoroutineResponse::Ready { status, body, content_type })
-        }
+    // Call handler directly (no coroutine overhead since we don't support yielding I/O yet)
+    // TODO: When we add yielding I/O support, we'll need to detect yields and use coroutines
+    let result: Value = match handler.call(ctx) {
+        Ok(r) => r,
         Err(e) => {
-            let validation_err = match &e {
-                mlua::Error::ExternalError(arc_err) => arc_err.downcast_ref::<rover_types::ValidationErrors>(),
-                mlua::Error::CallbackError { cause, .. } => {
-                    if let mlua::Error::ExternalError(arc_err) = cause.as_ref() {
-                        arc_err.downcast_ref::<rover_types::ValidationErrors>()
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
+            return convert_error_to_response(e, method, path, started_at);
+        }
+    };
 
-            let (status, body) = if let Some(validation_errors) = validation_err {
-                (400, Bytes::from(validation_errors.to_json_string()))
-            } else {
-                let mut error_str = e.to_string();
-                if let Some(stack_pos) = error_str.find("\nstack traceback:") {
-                    error_str = error_str[..stack_pos].to_string();
-                }
-                error_str = error_str.trim_start_matches("runtime error: ").to_string();
-                (500, Bytes::from(format!("{{\"error\": \"{}\"}}", error_str.replace("\"", "\\\"").replace("\n", "\\n"))))
-            };
+    let (status, body, content_type) = convert_lua_response(lua, result);
+    let elapsed = started_at.elapsed();
+    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
-            let elapsed = started_at.elapsed();
-            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-
-            if status >= 400 {
-                if tracing::event_enabled!(tracing::Level::WARN) {
-                    warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
-                }
-            }
-
-            Ok(CoroutineResponse::Ready { status, body, content_type: None })
+    if status >= 200 && status < 300 {
+        if tracing::event_enabled!(tracing::Level::INFO) {
+            info!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+        }
+    } else if status >= 400 {
+        if tracing::event_enabled!(tracing::Level::WARN) {
+            warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
         }
     }
+
+    Ok(CoroutineResponse::Ready { status, body, content_type })
+}
+
+fn convert_error_to_response(
+    e: mlua::Error,
+    method: &str,
+    path: &str,
+    started_at: Instant,
+) -> Result<CoroutineResponse> {
+    let validation_err = match &e {
+        mlua::Error::ExternalError(arc_err) => arc_err.downcast_ref::<rover_types::ValidationErrors>(),
+        mlua::Error::CallbackError { cause, .. } => {
+            if let mlua::Error::ExternalError(arc_err) = cause.as_ref() {
+                arc_err.downcast_ref::<rover_types::ValidationErrors>()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    let (status, body) = if let Some(validation_errors) = validation_err {
+        (400, Bytes::from(validation_errors.to_json_string()))
+    } else {
+        let mut error_str = e.to_string();
+        if let Some(stack_pos) = error_str.find("\nstack traceback:") {
+            error_str = error_str[..stack_pos].to_string();
+        }
+        error_str = error_str.trim_start_matches("runtime error: ").to_string();
+        (500, Bytes::from(format!("{{\"error\": \"{}\"}}", error_str.replace("\"", "\\\"").replace("\n", "\\n"))))
+    };
+
+    let elapsed = started_at.elapsed();
+    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+
+    if status >= 400 {
+        if tracing::event_enabled!(tracing::Level::WARN) {
+            warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+        }
+    }
+
+    Ok(CoroutineResponse::Ready { status, body, content_type: None })
 }
 
 fn build_lua_context(
