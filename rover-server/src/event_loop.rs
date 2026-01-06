@@ -16,6 +16,7 @@ use crate::http_task::{execute_handler_coroutine, CoroutineResponse};
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
+const POLL_TIMEOUT_MS: u64 = 100; // Check for timeouts every 100ms
 
 struct PendingCoroutine {
     thread: Thread,
@@ -62,18 +63,23 @@ impl EventLoop {
 
     pub fn run(&mut self) -> Result<()> {
         let mut events = Events::with_capacity(1024);
-        
+        let poll_timeout = Some(std::time::Duration::from_millis(POLL_TIMEOUT_MS));
+
         loop {
-            self.poll.poll(&mut events, None)?;
-            
+            // Poll with timeout to periodically check for coroutine timeouts
+            self.poll.poll(&mut events, poll_timeout)?;
+
             for event in events.iter() {
                 match event.token() {
                     LISTENER => self.accept_connections()?,
                     token => self.handle_connection(token, event)?,
                 }
             }
-            
-            self.resume_yielded_coroutines()?;
+
+            // Only resume yielded coroutines if there are any
+            if !self.yielded_coroutines.is_empty() {
+                self.resume_yielded_coroutines()?;
+            }
         }
     }
 
