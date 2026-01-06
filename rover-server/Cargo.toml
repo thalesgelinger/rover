@@ -21,6 +21,7 @@ mio = { version = "1.0", features = ["os-poll", "net"] }
 httparse = "1.10"
 slab = "0.4"
 bytes = "1.10"
+lru = "0.12"
 
 
 [lib]

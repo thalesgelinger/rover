@@ -2,8 +2,10 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
 use anyhow::Result;
+use lru::LruCache;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Lua, Thread, ThreadStatus};
@@ -18,10 +20,18 @@ use crate::buffer_pool::BufferPool;
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
 const TIMEOUT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+const ROUTE_CACHE_SIZE: usize = 128;
 
 struct PendingCoroutine {
     thread: Thread,
     started_at: Instant,
+}
+
+/// Cached route lookup result
+#[derive(Clone)]
+struct CachedRoute {
+    handler_idx: usize,
+    params: HashMap<String, String>,
 }
 
 pub struct EventLoop {
@@ -37,6 +47,7 @@ pub struct EventLoop {
     buffer_pool: BufferPool,
     connection_interests: HashMap<usize, Interest>,
     thread_pool: ThreadPool,
+    route_cache: LruCache<(HttpMethod, String), Option<CachedRoute>>,
 }
 
 impl EventLoop {
@@ -67,6 +78,7 @@ impl EventLoop {
             buffer_pool: BufferPool::new(),
             connection_interests: HashMap::with_capacity(1024),
             thread_pool: ThreadPool::new(2048),
+            route_cache: LruCache::new(NonZeroUsize::new(ROUTE_CACHE_SIZE).unwrap()),
         })
     }
 
@@ -234,35 +246,66 @@ impl EventLoop {
             }
         };
 
-        let (handler, params) = match self.router.match_route(http_method, path) {
-            Some((h, p)) => (h.clone(), p),
-            None => {
-                let conn = &mut self.connections[conn_idx];
-                conn.keep_alive = keep_alive;
-                conn.set_response(404, b"Route not found", Some("text/plain"));
-                self.update_interest(conn_idx, Interest::WRITABLE)?;
-                return Ok(());
+        // Try route cache first
+        let cache_key = (http_method, path.to_string());
+        let (handler, params) = if let Some(cached) = self.route_cache.get(&cache_key) {
+            match cached {
+                Some(cr) => (self.router.get_handler(cr.handler_idx), cr.params.clone()),
+                None => {
+                    let conn = &mut self.connections[conn_idx];
+                    conn.keep_alive = keep_alive;
+                    conn.set_response(404, b"Route not found", Some("text/plain"));
+                    self.update_interest(conn_idx, Interest::WRITABLE)?;
+                    return Ok(());
+                }
+            }
+        } else {
+            // Cache miss - do actual lookup
+            match self.router.match_route_indexed(http_method, path) {
+                Some((idx, p)) => {
+                    self.route_cache.put(cache_key.clone(), Some(CachedRoute {
+                        handler_idx: idx,
+                        params: p.clone(),
+                    }));
+                    (self.router.get_handler(idx), p)
+                }
+                None => {
+                    self.route_cache.put(cache_key, None);
+                    let conn = &mut self.connections[conn_idx];
+                    conn.keep_alive = keep_alive;
+                    conn.set_response(404, b"Route not found", Some("text/plain"));
+                    self.update_interest(conn_idx, Interest::WRITABLE)?;
+                    return Ok(());
+                }
             }
         };
 
+        // Use pooled buffers for query parsing
         let query: Vec<(Bytes, Bytes)> = if let Some(qs) = query_str {
-            form_urlencoded::parse(qs.as_bytes())
-                .map(|(k, v)| (Bytes::copy_from_slice(k.as_bytes()), Bytes::copy_from_slice(v.as_bytes())))
-                .collect()
+            let mut buf = self.buffer_pool.get_bytes_pairs(8);
+            for (k, v) in form_urlencoded::parse(qs.as_bytes()) {
+                buf.push((Bytes::copy_from_slice(k.as_bytes()), Bytes::copy_from_slice(v.as_bytes())));
+            }
+            buf
         } else {
             Vec::new()
         };
 
-        let headers: Vec<(Bytes, Bytes)> = conn.headers
-            .iter()
-            .map(|(k, v)| (Bytes::copy_from_slice(k.as_str().as_bytes()), Bytes::copy_from_slice(v.as_str().as_bytes())))
-            .collect();
+        // Use pooled buffers for headers
+        let header_count = conn.headers.len();
+        let mut headers = self.buffer_pool.get_bytes_pairs(header_count);
+        for (k, v) in conn.headers.iter() {
+            headers.push((
+                Bytes::copy_from_slice(k.as_bytes()),
+                Bytes::copy_from_slice(v.as_bytes()),
+            ));
+        }
 
         let body = conn.get_body();
 
         match execute_handler_coroutine(
             &self.lua,
-            &handler,
+            handler,
             method,
             path,
             &headers,
@@ -273,6 +316,12 @@ impl EventLoop {
             &mut self.thread_pool,
         ) {
             Ok(CoroutineResponse::Ready { status, body, content_type }) => {
+                // Return buffers to pool
+                self.buffer_pool.return_bytes_pairs(headers);
+                if !query.is_empty() {
+                    self.buffer_pool.return_bytes_pairs(query);
+                }
+
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(status, &body, content_type.as_ref().map(|s| s.as_str()));
@@ -280,6 +329,12 @@ impl EventLoop {
                 self.update_interest(conn_idx, Interest::WRITABLE)?;
             }
             Ok(CoroutineResponse::Yielded { thread }) => {
+                // Return buffers to pool
+                self.buffer_pool.return_bytes_pairs(headers);
+                if !query.is_empty() {
+                    self.buffer_pool.return_bytes_pairs(query);
+                }
+
                 let conn = &mut self.connections[conn_idx];
                 conn.thread = Some(thread.clone());
 
@@ -291,6 +346,12 @@ impl EventLoop {
                 self.update_interest(conn_idx, Interest::WRITABLE)?;
             }
             Err(_) => {
+                // Return buffers to pool
+                self.buffer_pool.return_bytes_pairs(headers);
+                if !query.is_empty() {
+                    self.buffer_pool.return_bytes_pairs(query);
+                }
+
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(500, b"Internal server error", Some("text/plain"));
