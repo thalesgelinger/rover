@@ -1,6 +1,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::time::Instant;
+use std::collections::HashMap;
 
 use anyhow::Result;
 use mio::net::TcpListener;
@@ -15,6 +16,12 @@ use crate::http_task::{execute_handler_coroutine, CoroutineResponse};
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
+const POLL_TIMEOUT_MS: u64 = 100; // Check for timeouts every 100ms
+
+struct PendingCoroutine {
+    thread: Thread,
+    started_at: Instant,
+}
 
 pub struct EventLoop {
     poll: Poll,
@@ -24,7 +31,7 @@ pub struct EventLoop {
     router: FastRouter,
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
-    yielded_coroutines: Slab<(usize, Thread, Instant)>,
+    yielded_coroutines: HashMap<usize, PendingCoroutine>,
 }
 
 impl EventLoop {
@@ -50,24 +57,29 @@ impl EventLoop {
             router,
             config,
             openapi_spec,
-            yielded_coroutines: Slab::with_capacity(1024),
+            yielded_coroutines: HashMap::with_capacity(1024),
         })
     }
 
     pub fn run(&mut self) -> Result<()> {
         let mut events = Events::with_capacity(1024);
-        
+        let poll_timeout = Some(std::time::Duration::from_millis(POLL_TIMEOUT_MS));
+
         loop {
-            self.poll.poll(&mut events, None)?;
-            
+            // Poll with timeout to periodically check for coroutine timeouts
+            self.poll.poll(&mut events, poll_timeout)?;
+
             for event in events.iter() {
                 match event.token() {
                     LISTENER => self.accept_connections()?,
                     token => self.handle_connection(token, event)?,
                 }
             }
-            
-            self.resume_yielded_coroutines()?;
+
+            // Only resume yielded coroutines if there are any
+            if !self.yielded_coroutines.is_empty() {
+                self.resume_yielded_coroutines()?;
+            }
         }
     }
 
@@ -267,11 +279,12 @@ impl EventLoop {
             Ok(CoroutineResponse::Yielded { thread }) => {
                 let conn = &mut self.connections[conn_idx];
                 conn.thread = Some(thread.clone());
-                
-                let entry = self.yielded_coroutines.vacant_entry();
-                let _token = entry.key();
-                entry.insert((conn_idx, thread, Instant::now()));
-                
+
+                self.yielded_coroutines.insert(conn_idx, PendingCoroutine {
+                    thread,
+                    started_at: Instant::now(),
+                });
+
                 self.poll.registry().reregister(
                     &mut conn.socket,
                     conn.token,
@@ -296,27 +309,30 @@ impl EventLoop {
     fn resume_yielded_coroutines(&mut self) -> Result<()> {
         let mut to_resume = Vec::new();
         let mut to_timeout = Vec::new();
-        
-        for (idx, &mut (conn_idx, ref thread, yielded_at)) in self.yielded_coroutines.iter_mut() {
+
+        // Collect keys to process to avoid borrowing issues
+        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
             if !self.connections.contains(conn_idx) {
+                to_resume.push(conn_idx);
                 continue;
             }
-            
-            if yielded_at.elapsed().as_millis() as u64 > DEFAULT_COROUTINE_TIMEOUT_MS {
-                to_timeout.push((idx, conn_idx));
+
+            if pending.started_at.elapsed().as_millis() as u64 > DEFAULT_COROUTINE_TIMEOUT_MS {
+                to_timeout.push(conn_idx);
                 continue;
             }
-            
-            match thread.status() {
+
+            match pending.thread.status() {
                 ThreadStatus::Resumable => {
-                    to_resume.push((idx, conn_idx));
+                    to_resume.push(conn_idx);
                 }
                 _ => {}
             }
         }
-        
-        for (idx, conn_idx) in to_timeout {
-            let _ = self.yielded_coroutines.remove(idx);
+
+        // Handle timeouts
+        for conn_idx in to_timeout {
+            self.yielded_coroutines.remove(&conn_idx);
             if !self.connections.contains(conn_idx) {
                 continue;
             }
@@ -330,36 +346,38 @@ impl EventLoop {
                 Interest::WRITABLE,
             )?;
         }
-        
-        for (idx, conn_idx) in to_resume {
-            if let Some((_, thread, _)) = self.yielded_coroutines.get_mut(idx) {
-                match thread.resume(()) {
+
+        // Resume coroutines
+        for conn_idx in to_resume {
+            if let Some(pending) = self.yielded_coroutines.remove(&conn_idx) {
+                match pending.thread.resume(()) {
                     Ok(mlua::Value::Nil) => {
-                        let conn = &mut self.connections[conn_idx];
-                        conn.thread = None;
-                        conn.state = ConnectionState::Closed;
+                        if let Some(conn) = self.connections.get_mut(conn_idx) {
+                            conn.thread = None;
+                            conn.state = ConnectionState::Closed;
+                        }
                     }
                     Ok(_) => {
-                        let conn = &mut self.connections[conn_idx];
-                        conn.thread = None;
-                        
-                        self.poll.registry().reregister(
-                            &mut conn.socket,
-                            conn.token,
-                            Interest::WRITABLE,
-                        )?;
+                        if let Some(conn) = self.connections.get_mut(conn_idx) {
+                            conn.thread = None;
+
+                            self.poll.registry().reregister(
+                                &mut conn.socket,
+                                conn.token,
+                                Interest::WRITABLE,
+                            )?;
+                        }
                     }
                     Err(_) => {
-                        let conn = &mut self.connections[conn_idx];
-                        conn.thread = None;
-                        conn.state = ConnectionState::Closed;
+                        if let Some(conn) = self.connections.get_mut(conn_idx) {
+                            conn.thread = None;
+                            conn.state = ConnectionState::Closed;
+                        }
                     }
                 }
-                
-                drop(self.yielded_coroutines.remove(idx));
             }
         }
-        
+
         Ok(())
     }
 }
