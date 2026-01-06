@@ -58,16 +58,25 @@ impl FastRouter {
         })
     }
 
-    pub fn match_route(
+    /// Get handler by index (for cached route lookups)
+    #[inline]
+    pub fn get_handler(&self, idx: usize) -> &Function {
+        &self.handlers[idx]
+    }
+
+    /// Match route and return handler index + params (for caching)
+    pub fn match_route_indexed(
         &self,
         method: HttpMethod,
         path: &str,
-    ) -> Option<(&Function, HashMap<String, String>)> {
+    ) -> Option<(usize, HashMap<String, String>)> {
+        // Fast path: static routes (no params)
         let path_hash = hash_path(path);
         if let Some(&handler_idx) = self.static_routes.get(&(path_hash, method)) {
-            return Some((&self.handlers[handler_idx], HashMap::new()));
+            return Some((handler_idx, HashMap::new()));
         }
 
+        // Slow path: dynamic routes with parameters
         let matched = self.router.at(path).ok()?;
 
         let handler_idx = matched
@@ -75,8 +84,6 @@ impl FastRouter {
             .iter()
             .find(|(m, _)| *m == method)
             .map(|(_, idx)| *idx)?;
-
-        let handler = &self.handlers[handler_idx];
 
         let mut params = HashMap::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
@@ -87,6 +94,16 @@ impl FastRouter {
             params.insert(name.to_string(), decoded);
         }
 
-        Some((handler, params))
+        Some((handler_idx, params))
+    }
+
+    /// Original match_route (kept for backward compatibility)
+    pub fn match_route(
+        &self,
+        method: HttpMethod,
+        path: &str,
+    ) -> Option<(&Function, HashMap<String, String>)> {
+        self.match_route_indexed(method, path)
+            .map(|(idx, params)| (&self.handlers[idx], params))
     }
 }
