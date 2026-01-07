@@ -97,7 +97,45 @@ impl EventLoop {
             if !self.yielded_coroutines.is_empty() {
                 self.resume_yielded_coroutines()?;
             }
+
+            // Flush any pending writes (connections in Writing state)
+            self.flush_writes()?;
         }
+    }
+
+    fn flush_writes(&mut self) -> Result<()> {
+        let mut to_close = Vec::new();
+        let mut to_remove = Vec::new();
+
+        for (idx, conn) in self.connections.iter_mut() {
+            if conn.state == ConnectionState::Writing {
+                match conn.try_write() {
+                    Ok(true) => {
+                        if conn.keep_alive {
+                            conn.reset();
+                        } else {
+                            conn.state = ConnectionState::Closed;
+                            to_close.push(Token(idx + 1));
+                            to_remove.push(idx);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(_) => {
+                        conn.state = ConnectionState::Closed;
+                        to_close.push(Token(idx + 1));
+                        to_remove.push(idx);
+                    }
+                }
+            }
+        }
+
+        for idx in to_remove {
+            if let Some(mut conn) = self.connections.try_remove(idx) {
+                let _ = self.poll.registry().deregister(&mut conn.socket);
+            }
+        }
+
+        Ok(())
     }
 
     fn accept_connections(&mut self) -> Result<()> {

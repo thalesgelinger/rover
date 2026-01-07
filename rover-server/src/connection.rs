@@ -120,33 +120,59 @@ impl Connection {
             let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
             let mut req = httparse::Request::new(&mut headers);
             
-            match req.parse(&self.read_buf[..self.read_pos]) {
+            let parse_buf = &self.read_buf[..self.read_pos];
+            match req.parse(parse_buf) {
                 Ok(httparse::Status::Complete(header_len)) => {
                     self.headers_complete = true;
 
-                    let read_buf_ptr = self.read_buf.as_ptr() as usize;
-                    self.method_offset = req.method.as_ref().map(|s| {
-                        let offset = s.as_ptr() as usize - read_buf_ptr;
-                        (offset, s.len())
+                    let base_ptr = parse_buf.as_ptr();
+                    let buf_len = parse_buf.len();
+                    let mut calc_offset = |ptr: *const u8, len: usize| -> Option<usize> {
+                        let diff = unsafe { ptr.offset_from(base_ptr) };
+                        if diff < 0 {
+                            return None;
+                        }
+                        let offset = diff as usize;
+                        if offset + len <= buf_len {
+                            Some(offset)
+                        } else {
+                            None
+                        }
+                    };
+
+                    self.method_offset = req.method.as_ref().and_then(|s| {
+                        calc_offset(s.as_ptr(), s.len()).map(|start| (start, s.len()))
                     });
-                    self.path_offset = req.path.as_ref().map(|s| {
-                        let offset = s.as_ptr() as usize - read_buf_ptr;
-                        (offset, s.len())
+                    self.path_offset = req.path.as_ref().and_then(|s| {
+                        calc_offset(s.as_ptr(), s.len()).map(|start| (start, s.len()))
                     });
+
+                    if self.method_offset.is_none() || self.path_offset.is_none() {
+                        self.state = ConnectionState::Closed;
+                        return Ok(false);
+                    }
 
                     self.header_offsets.clear();
                     for header in req.headers.iter() {
-                        let h_name_start = header.name.as_ptr() as usize - read_buf_ptr;
-                        let h_name_len = header.name.len();
-                        let h_val_start = header.value.as_ptr() as usize - read_buf_ptr;
-                        let h_val_len = header.value.len();
+                        let Some(h_name_start) = calc_offset(header.name.as_ptr(), header.name.len()) else {
+                            self.state = ConnectionState::Closed;
+                            return Ok(false);
+                        };
+                        let Some(h_val_start) = calc_offset(header.value.as_ptr(), header.value.len()) else {
+                            self.state = ConnectionState::Closed;
+                            return Ok(false);
+                        };
 
+                        let h_name_len = header.name.len();
+                        let h_val_len = header.value.len();
                         let name_str = unsafe { std::str::from_utf8_unchecked(&self.read_buf[h_name_start..h_name_start + h_name_len]) };
+                        let value_bytes = &self.read_buf[h_val_start..h_val_start + h_val_len];
+                        let value_str = unsafe { std::str::from_utf8_unchecked(value_bytes) };
+
                         if name_str.eq_ignore_ascii_case("content-length") {
-                            self.content_length = name_str.parse().unwrap_or(0);
-                        }
-                        if name_str.eq_ignore_ascii_case("connection") {
-                            self.keep_alive = !name_str.eq_ignore_ascii_case("close");
+                            self.content_length = value_str.trim().parse().unwrap_or(0);
+                        } else if name_str.eq_ignore_ascii_case("connection") {
+                            self.keep_alive = !value_str.trim().eq_ignore_ascii_case("close");
                         }
 
                         self.header_offsets.push((h_name_start, h_name_len, h_val_start, h_val_len));
