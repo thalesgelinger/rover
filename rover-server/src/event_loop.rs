@@ -206,8 +206,8 @@ impl EventLoop {
         let started_at = Instant::now();
 
         let conn = &self.connections[conn_idx];
-        let method = conn.method.as_ref().map(|s| s.as_str()).unwrap_or_default();
-        let full_path = conn.path.as_ref().map(|s| s.as_str()).unwrap_or_default();
+        let method = conn.method_str().unwrap_or_default();
+        let full_path = conn.path_str().unwrap_or_default();
         let (path, query_str) = if let Some(pos) = full_path.find('?') {
             (&full_path[..pos], Some(&full_path[pos+1..]))
         } else {
@@ -267,10 +267,9 @@ impl EventLoop {
             Vec::new()
         };
 
-        // Use pooled buffers for headers
-        let header_count = conn.headers.len();
+        let header_count = conn.header_offsets.len();
         let mut headers = self.buffer_pool.get_bytes_pairs(header_count);
-        for (k, v) in conn.headers.iter() {
+        for (k, v) in conn.headers_iter() {
             headers.push((
                 Bytes::copy_from_slice(k.as_bytes()),
                 Bytes::copy_from_slice(v.as_bytes()),

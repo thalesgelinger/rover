@@ -29,9 +29,10 @@ pub struct Connection {
     pub body_buf: Bytes,     // Body (zero-copy from response)
     pub body_pos: usize,     // Position in body
     
-    pub method: Option<String>,
-    pub path: Option<String>,
-    pub headers: Vec<(String, String)>,
+    // Zero-copy: offsets into read_buf instead of Strings
+    pub method_offset: Option<(usize, usize)>,
+    pub path_offset: Option<(usize, usize)>,
+    pub header_offsets: Vec<(usize, usize, usize, usize)>,
     pub body: Option<(usize, usize)>,
     pub content_length: usize,
     pub headers_complete: bool,
@@ -48,19 +49,40 @@ impl Connection {
             state: ConnectionState::Reading,
             read_buf: BytesMut::with_capacity(READ_BUF_SIZE * 2),
             read_pos: 0,
-            write_buf: Vec::with_capacity(512),  // Headers are typically small
+            write_buf: Vec::with_capacity(512),
             write_pos: 0,
             body_buf: Bytes::new(),
             body_pos: 0,
-            method: None,
-            path: None,
-            headers: Vec::with_capacity(16),
+            method_offset: None,
+            path_offset: None,
+            header_offsets: Vec::with_capacity(16),
             body: None,
             content_length: 0,
             headers_complete: false,
             keep_alive: true,
             thread: None,
         }
+    }
+
+    pub fn method_str(&self) -> Option<&str> {
+        self.method_offset.map(|(off, len)| 
+            unsafe { std::str::from_utf8_unchecked(&self.read_buf[off..off + len]) }
+        )
+    }
+
+    pub fn path_str(&self) -> Option<&str> {
+        self.path_offset.map(|(off, len)| 
+            unsafe { std::str::from_utf8_unchecked(&self.read_buf[off..off + len]) }
+        )
+    }
+
+    pub fn headers_iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.header_offsets.iter().map(move |&(name_off, name_len, val_off, val_len)| {
+            (
+                unsafe { std::str::from_utf8_unchecked(&self.read_buf[name_off..name_off + name_len]) },
+                unsafe { std::str::from_utf8_unchecked(&self.read_buf[val_off..val_off + val_len]) },
+            )
+        })
     }
 
     pub fn try_read(&mut self) -> std::io::Result<bool> {
@@ -97,27 +119,32 @@ impl Connection {
             match req.parse(&self.read_buf[..self.read_pos]) {
                 Ok(httparse::Status::Complete(header_len)) => {
                     self.headers_complete = true;
-                    self.method = req.method.map(|s| s.to_string());
-                    self.path = req.path.map(|s| s.to_string());
-                    
-                    self.headers.clear();
+                    self.method_offset = req.method.map(|s| (s.as_ptr() as usize, s.len()));
+                    self.path_offset = req.path.map(|s| (s.as_ptr() as usize, s.len()));
+
+                    self.header_offsets.clear();
                     for header in req.headers.iter() {
-                        let name = header.name.to_string();
-                        let value = String::from_utf8_lossy(header.value).to_string();
-                        
-                        if name.eq_ignore_ascii_case("content-length") {
-                            self.content_length = value.parse().unwrap_or(0);
+                        let name_off = header.name.as_ptr() as usize;
+                        let name_len = header.name.len();
+                        let val_off = header.value.as_ptr() as usize;
+                        let val_len = header.value.len();
+
+                        let name_str = unsafe { std::str::from_utf8_unchecked(&self.read_buf[name_off..name_off + name_len]) };
+                        let val_str = unsafe { std::str::from_utf8_unchecked(&self.read_buf[val_off..val_off + val_len]) };
+
+                        if name_str.eq_ignore_ascii_case("content-length") {
+                            self.content_length = val_str.parse().unwrap_or(0);
                         }
-                        if name.eq_ignore_ascii_case("connection") {
-                            self.keep_alive = !value.eq_ignore_ascii_case("close");
+                        if name_str.eq_ignore_ascii_case("connection") {
+                            self.keep_alive = !val_str.eq_ignore_ascii_case("close");
                         }
-                        
-                        self.headers.push((name, value));
+
+                        self.header_offsets.push((name_off, name_len, val_off, val_len));
                     }
-                    
+
                     let body_start = header_len;
                     let body_received = self.read_pos - body_start;
-                    
+
                     if body_received >= self.content_length {
                         if self.content_length > 0 {
                             self.body = Some((body_start, self.content_length));
@@ -310,16 +337,15 @@ impl Connection {
     }
 
     pub fn reset(&mut self) {
-        // Keep capacity to avoid reallocations (zero-copy optimization)
         self.read_buf.clear();
         self.read_pos = 0;
         self.write_buf.clear();
         self.write_pos = 0;
         self.body_buf = Bytes::new();
         self.body_pos = 0;
-        self.method = None;
-        self.path = None;
-        self.headers.clear();
+        self.method_offset = None;
+        self.path_offset = None;
+        self.header_offsets.clear();
         self.body = None;
         self.content_length = 0;
         self.headers_complete = false;
