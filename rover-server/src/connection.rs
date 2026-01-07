@@ -1,4 +1,5 @@
 use std::io::{Read, Write, IoSlice};
+use std::time::Instant;
 use mio::net::TcpStream;
 use mio::Token;
 use mlua::Thread;
@@ -37,6 +38,9 @@ pub struct Connection {
     pub keep_alive: bool,
 
     pub thread: Option<Thread>,
+
+    yielded_at: Option<Instant>,
+    request_ctx_idx: Option<usize>,
 }
 
 impl Connection {
@@ -59,6 +63,8 @@ impl Connection {
             headers_complete: false,
             keep_alive: true,
             thread: None,
+            yielded_at: None,
+            request_ctx_idx: None,
         }
     }
 
@@ -349,5 +355,7 @@ impl Connection {
         self.headers_complete = false;
         self.state = ConnectionState::Reading;
         self.thread = None;
+        self.yielded_at = None;
+        self.request_ctx_idx = None;
     }
 }
