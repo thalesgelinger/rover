@@ -1,7 +1,7 @@
 use std::io::{Read, Write, IoSlice};
 use std::time::Instant;
 use mio::net::TcpStream;
-use mio::Token;
+use mio::{Token, Interest, Registry};
 use mlua::Thread;
 use crate::Bytes;
 use bytes::BytesMut;
@@ -66,6 +66,14 @@ impl Connection {
             yielded_at: None,
             request_ctx_idx: None,
         }
+    }
+
+    pub fn reregister(&mut self, registry: &Registry, interest: Interest) -> std::io::Result<()> {
+        registry.reregister(&mut self.socket, self.token, interest)
+    }
+
+    pub fn deregister(&mut self, registry: &Registry) -> std::io::Result<()> {
+        registry.deregister(&mut self.socket)
     }
 
     pub fn method_str(&self) -> Option<&str> {

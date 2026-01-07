@@ -101,45 +101,7 @@ impl EventLoop {
             if !self.yielded_coroutines.is_empty() {
                 self.resume_yielded_coroutines()?;
             }
-
-            // Flush any pending writes (connections in Writing state)
-            self.flush_writes()?;
         }
-    }
-
-    fn flush_writes(&mut self) -> Result<()> {
-        let mut to_close = Vec::new();
-        let mut to_remove = Vec::new();
-
-        for (idx, conn) in self.connections.iter_mut() {
-            if conn.state == ConnectionState::Writing {
-                match conn.try_write() {
-                    Ok(true) => {
-                        if conn.keep_alive {
-                            conn.reset();
-                        } else {
-                            conn.state = ConnectionState::Closed;
-                            to_close.push(Token(idx + 1));
-                            to_remove.push(idx);
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(_) => {
-                        conn.state = ConnectionState::Closed;
-                        to_close.push(Token(idx + 1));
-                        to_remove.push(idx);
-                    }
-                }
-            }
-        }
-
-        for idx in to_remove {
-            if let Some(mut conn) = self.connections.try_remove(idx) {
-                let _ = self.poll.registry().deregister(&mut conn.socket);
-            }
-        }
-
-        Ok(())
     }
 
     fn accept_connections(&mut self) -> Result<()> {
@@ -148,13 +110,13 @@ impl EventLoop {
                 Ok((mut socket, _addr)) => {
                     let entry = self.connections.vacant_entry();
                     let token = Token(entry.key() + 1);
-                    
+
                     self.poll.registry().register(
                         &mut socket,
                         token,
-                        Interest::READABLE | Interest::WRITABLE,
+                        Interest::READABLE,
                     )?;
-                    
+
                     entry.insert(Connection::new(socket, token));
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -173,17 +135,17 @@ impl EventLoop {
             return Ok(());
         }
 
-        let should_process = {
+        let (should_process, should_close, should_reset) = {
             let conn = &mut self.connections[conn_idx];
 
             match conn.state {
                 ConnectionState::Reading if event.is_readable() => {
                     match conn.try_read() {
-                        Ok(true) => true,
-                        Ok(false) => false,
+                        Ok(true) => (true, false, false),
+                        Ok(false) => (false, false, false),
                         Err(_) => {
                             conn.state = ConnectionState::Closed;
-                            false
+                            (false, true, false)
                         }
                     }
                 }
@@ -191,27 +153,34 @@ impl EventLoop {
                     match conn.try_write() {
                         Ok(true) => {
                             if conn.keep_alive {
-                                conn.reset();
+                                (false, false, true)
                             } else {
                                 conn.state = ConnectionState::Closed;
+                                (false, true, false)
                             }
-                            false
                         }
-                        Ok(false) => false,
+                        Ok(false) => (false, false, false),
                         Err(_) => {
                             conn.state = ConnectionState::Closed;
-                            false
+                            (false, true, false)
                         }
                     }
                 }
-                _ => false,
+                _ => (false, false, false),
             }
         };
 
-        if matches!(self.connections.get(conn_idx).map(|c| &c.state), Some(ConnectionState::Closed)) {
+        if should_close {
             let mut conn = self.connections.remove(conn_idx);
             let _ = self.poll.registry().deregister(&mut conn.socket);
             return Ok(());
+        }
+
+        if should_reset {
+            if let Some(conn) = self.connections.get_mut(conn_idx) {
+                conn.reset();
+                let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+            }
         }
 
         if should_process {
@@ -239,6 +208,7 @@ impl EventLoop {
             let conn = &mut self.connections[conn_idx];
             conn.keep_alive = keep_alive;
             conn.set_response(200, html.as_bytes(), Some("text/html"));
+            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             return Ok(());
         }
 
@@ -253,6 +223,7 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(400, error_msg.as_bytes(), Some("text/plain"));
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
         };
@@ -264,6 +235,7 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(404, b"Route not found", Some("text/plain"));
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
         };
@@ -313,6 +285,7 @@ impl EventLoop {
                 // Use set_response_bytes for true zero-copy (body is already Bytes)
 
                 conn.set_response_bytes(status, body, content_type);
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
 
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
@@ -337,6 +310,7 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(500, b"Internal server error", Some("text/plain"));
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             }
         }
 
@@ -363,6 +337,7 @@ impl EventLoop {
             conn.thread = None;
             conn.state = ConnectionState::Writing;
             conn.set_response(500, b"Coroutine timeout", Some("text/plain"));
+            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
         }
 
         Ok(())
