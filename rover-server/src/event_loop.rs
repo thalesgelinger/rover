@@ -92,11 +92,8 @@ impl EventLoop {
                 }
             }
 
-            // Check timeouts periodically (low overhead)
-            if self.last_timeout_check.elapsed() > TIMEOUT_CHECK_INTERVAL {
-                self.check_timeouts()?;
-                self.last_timeout_check = Instant::now();
-            }
+            // Always check timeouts (triggered by poll timeout or I/O completion)
+            self.check_timeouts()?;
 
             // Resume yielded coroutines
             if !self.yielded_coroutines.is_empty() {
