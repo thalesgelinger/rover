@@ -341,6 +341,15 @@ pub fn validate_table(
 }
 
 /// A wrapper around parsed body that can be validated with :expect()
+///
+/// Lua API methods:
+/// - `body:json()` - Parse JSON to Lua table (expensive)
+/// - `body:as_string()` - Get raw JSON string without parsing (zero-copy, fast)
+/// - `body:echo()` - Alias for :as_string(), for echoing back pre-serialized JSON
+/// - `body:text()` - Get body as plain text string
+/// - `body:bytes()` - Get body as Lua table of bytes
+/// - `body:expect(schema)` - Validate body against schema, returns validated table
+/// - `body:raw()` - DEPRECATED: Same as :json(), use :as_string() for zero-copy
 pub struct BodyValue {
     json_string: String,
     raw_bytes: Vec<u8>,
@@ -378,6 +387,14 @@ impl UserData for BodyValue {
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid UTF-8 in body: {}", e)))?;
 
             Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("as_string", |lua, this, ()| {
+            Ok(Value::String(lua.create_string(&this.json_string)?))
+        });
+
+        methods.add_method("echo", |lua, this, ()| {
+            Ok(Value::String(lua.create_string(&this.json_string)?))
         });
 
         methods.add_method("bytes", |lua, this, ()| {

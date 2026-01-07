@@ -14,7 +14,7 @@ use slab::Slab;
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::FastRouter;
 use crate::{HttpMethod, Route, ServerConfig, Bytes};
-use crate::http_task::{execute_handler_coroutine, CoroutineResponse, ThreadPool};
+use crate::http_task::{execute_handler_coroutine, CoroutineResponse, ThreadPool, RequestContextPool};
 use crate::buffer_pool::BufferPool;
 
 const LISTENER: Token = Token(0);
@@ -25,6 +25,7 @@ const ROUTE_CACHE_SIZE: usize = 128;
 struct PendingCoroutine {
     thread: Thread,
     started_at: Instant,
+    ctx_idx: usize,
 }
 
 /// Cached route lookup result
@@ -48,6 +49,7 @@ pub struct EventLoop {
     connection_interests: HashMap<usize, Interest>,
     thread_pool: ThreadPool,
     route_cache: LruCache<(HttpMethod, String), Option<CachedRoute>>,
+    request_pool: RequestContextPool,
 }
 
 impl EventLoop {
@@ -60,11 +62,13 @@ impl EventLoop {
     ) -> Result<Self> {
         let poll = Poll::new()?;
         let mut listener = TcpListener::bind(addr)?;
-        
+
         poll.registry().register(&mut listener, LISTENER, Interest::READABLE)?;
-        
+
         let router = FastRouter::from_routes(routes)?;
-        
+
+        let request_pool = RequestContextPool::new(&lua, 1024)?;
+
         Ok(Self {
             poll,
             listener,
@@ -79,6 +83,7 @@ impl EventLoop {
             connection_interests: HashMap::with_capacity(1024),
             thread_pool: ThreadPool::new(2048),
             route_cache: LruCache::new(NonZeroUsize::new(ROUTE_CACHE_SIZE).unwrap()),
+            request_pool,
         })
     }
 
@@ -314,6 +319,7 @@ impl EventLoop {
             body,
             started_at,
             &mut self.thread_pool,
+            &mut self.request_pool,
         ) {
             Ok(CoroutineResponse::Ready { status, body, content_type }) => {
                 // Return buffers to pool
@@ -328,7 +334,7 @@ impl EventLoop {
 
                 self.update_interest(conn_idx, Interest::WRITABLE)?;
             }
-            Ok(CoroutineResponse::Yielded { thread }) => {
+            Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
                 // Return buffers to pool
                 self.buffer_pool.return_bytes_pairs(headers);
                 if !query.is_empty() {
@@ -341,6 +347,7 @@ impl EventLoop {
                 self.yielded_coroutines.insert(conn_idx, PendingCoroutine {
                     thread,
                     started_at: Instant::now(),
+                    ctx_idx,
                 });
 
                 self.update_interest(conn_idx, Interest::WRITABLE)?;
@@ -412,6 +419,7 @@ impl EventLoop {
                 match pending.thread.resume(()) {
                     Ok(mlua::Value::Nil) => {
                         self.thread_pool.release(pending.thread);
+                        self.request_pool.release(pending.ctx_idx);
                         if let Some(conn) = self.connections.get_mut(conn_idx) {
                             conn.thread = None;
                             conn.state = ConnectionState::Closed;
@@ -419,6 +427,7 @@ impl EventLoop {
                     }
                     Ok(_) => {
                         self.thread_pool.release(pending.thread);
+                        self.request_pool.release(pending.ctx_idx);
                         if let Some(conn) = self.connections.get_mut(conn_idx) {
                             conn.thread = None;
 
@@ -427,6 +436,7 @@ impl EventLoop {
                     }
                     Err(_) => {
                         self.thread_pool.release(pending.thread);
+                        self.request_pool.release(pending.ctx_idx);
                         if let Some(conn) = self.connections.get_mut(conn_idx) {
                             conn.thread = None;
                             conn.state = ConnectionState::Closed;

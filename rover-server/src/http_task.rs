@@ -2,10 +2,149 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::Result;
-use mlua::{Function, Lua, Table, Value, Thread, ThreadStatus};
+use mlua::{Function, Lua, Table, Value, Thread, ThreadStatus, UserData, UserDataMethods, RegistryKey};
 use tracing::{debug, info, warn};
 
 use crate::{to_json::ToJson, response::RoverResponse, Bytes};
+
+pub struct RequestContext {
+    method: String,
+    path: String,
+    headers: Vec<(Bytes, Bytes)>,
+    query: Vec<(Bytes, Bytes)>,
+    params: HashMap<String, String>,
+    body: Option<Vec<u8>>,
+}
+
+impl UserData for RequestContext {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("headers", |lua, this, ()| {
+            if this.headers.is_empty() {
+                return lua.create_table();
+            }
+            let headers_table = lua.create_table_with_capacity(0, this.headers.len())?;
+            for (k, v) in &this.headers {
+                let k_str = unsafe { std::str::from_utf8_unchecked(k) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(v) };
+                headers_table.set(k_str, v_str)?;
+            }
+            Ok(headers_table)
+        });
+
+        methods.add_method("query", |lua, this, ()| {
+            if this.query.is_empty() {
+                return lua.create_table();
+            }
+            let query_table = lua.create_table_with_capacity(0, this.query.len())?;
+            for (k, v) in &this.query {
+                let k_str = unsafe { std::str::from_utf8_unchecked(k) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(v) };
+                query_table.set(k_str, v_str)?;
+            }
+            Ok(query_table)
+        });
+
+        methods.add_method("params", |lua, this, ()| {
+            if this.params.is_empty() {
+                return lua.create_table();
+            }
+            let params_table = lua.create_table_with_capacity(0, this.params.len())?;
+            for (k, v) in &this.params {
+                params_table.set(k.as_str(), v.as_str())?;
+            }
+            Ok(params_table)
+        });
+
+        methods.add_method("body", |lua, this, ()| {
+            if let Some(ref body) = this.body {
+                let body_str = unsafe { std::str::from_utf8_unchecked(body) };
+
+                let globals = lua.globals();
+                let rover: Table = globals.get("rover")?;
+                let guard: Table = rover.get("guard")?;
+
+                if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
+                    constructor.call((body_str.to_string(), body.clone()))
+                } else {
+                    Ok(Value::String(lua.create_string(body_str)?))
+                }
+            } else {
+                Err(mlua::Error::RuntimeError(
+                    "Request has no body".to_string(),
+                ))
+            }
+        });
+    }
+}
+
+pub struct RequestContextPool {
+    pool: Vec<RegistryKey>,
+    available: Vec<usize>,
+    capacity: usize,
+}
+
+impl RequestContextPool {
+    pub fn new(lua: &Lua, capacity: usize) -> mlua::Result<Self> {
+        let mut pool = Vec::with_capacity(capacity);
+        let mut available = Vec::with_capacity(capacity);
+
+        for _ in 0..capacity {
+            let ctx = RequestContext {
+                method: String::new(),
+                path: String::new(),
+                headers: Vec::new(),
+                query: Vec::new(),
+                params: HashMap::new(),
+                body: None,
+            };
+
+            let userdata = lua.create_userdata(ctx)?;
+            let key = lua.create_registry_value(userdata)?;
+            pool.push(key);
+            available.push(pool.len() - 1);
+        }
+
+        Ok(Self {
+            pool,
+            available,
+            capacity,
+        })
+    }
+
+    pub fn acquire(
+        &mut self,
+        lua: &Lua,
+        method: &str,
+        path: &str,
+        headers: &[(Bytes, Bytes)],
+        query: &[(Bytes, Bytes)],
+        params: &HashMap<String, String>,
+        body: Option<&[u8]>,
+    ) -> mlua::Result<(Value, usize)> {
+        let idx = self.available.pop()
+            .ok_or_else(|| mlua::Error::RuntimeError("RequestContextPool exhausted".to_string()))?;
+
+        let key = &self.pool[idx];
+        let userdata: mlua::AnyUserData = lua.registry_value(&key)?;
+
+        let mut ctx = userdata.borrow_mut::<RequestContext>()?;
+        ctx.method = method.to_string();
+        ctx.path = path.to_string();
+        ctx.headers = headers.to_vec();
+        ctx.query = query.to_vec();
+        ctx.params = params.clone();
+        ctx.body = body.map(|b| b.to_vec());
+        drop(ctx);
+
+        Ok((Value::UserData(userdata), idx))
+    }
+
+    pub fn release(&mut self, idx: usize) {
+        if idx < self.capacity {
+            self.available.push(idx);
+        }
+    }
+}
 
 pub struct HttpResponse {
     pub status: u16,
@@ -83,7 +222,7 @@ pub fn execute_handler(
 
 pub enum CoroutineResponse {
     Ready { status: u16, body: Bytes, content_type: Option<String> },
-    Yielded { thread: Thread },
+    Yielded { thread: Thread, ctx_idx: usize },
 }
 
 pub fn execute_handler_coroutine(
@@ -96,7 +235,8 @@ pub fn execute_handler_coroutine(
     params: &HashMap<String, String>,
     body: Option<&[u8]>,
     started_at: Instant,
-    pool: &mut ThreadPool,
+    thread_pool: &mut ThreadPool,
+    request_pool: &mut RequestContextPool,
 ) -> Result<CoroutineResponse> {
     if tracing::event_enabled!(tracing::Level::DEBUG) {
         if !query.is_empty() {
@@ -108,7 +248,7 @@ pub fn execute_handler_coroutine(
         }
     }
 
-    let ctx = match build_lua_context(lua, method, path, headers, query, params, body) {
+    let (ctx, ctx_idx) = match request_pool.acquire(lua, method, path, headers, query, params, body) {
         Ok(c) => c,
         Err(e) => {
             let error_msg = e.to_string();
@@ -127,7 +267,7 @@ pub fn execute_handler_coroutine(
 
     // Always use coroutines to support yielding I/O operations
     // The coroutine may complete immediately (fast path) or yield for I/O (slow path)
-    let thread = pool.acquire(lua, handler)?;
+    let thread = thread_pool.acquire(lua, handler)?;
 
     match thread.resume::<Value>(ctx) {
         Ok(result) => {
@@ -136,7 +276,7 @@ pub fn execute_handler_coroutine(
             match thread.status() {
                 ThreadStatus::Resumable => {
                     // Handler yielded - return the thread to be resumed later
-                    Ok(CoroutineResponse::Yielded { thread })
+                    Ok(CoroutineResponse::Yielded { thread, ctx_idx })
                 }
                 _ => {
                     // Handler completed without yielding (or died)
@@ -154,15 +294,17 @@ pub fn execute_handler_coroutine(
                         }
                     }
 
-                    // Return finished thread to pool
-                    pool.release(thread);
+                    // Return thread and context to pools
+                    thread_pool.release(thread);
+                    request_pool.release(ctx_idx);
 
                     Ok(CoroutineResponse::Ready { status, body, content_type })
                 }
             }
         }
         Err(e) => {
-            // Error during execution
+            // Error during execution - release context
+            request_pool.release(ctx_idx);
             convert_error_to_response(e, method, path, started_at)
         }
     }

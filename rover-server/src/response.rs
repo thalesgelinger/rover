@@ -21,6 +21,15 @@ impl RoverResponse {
         }
     }
 
+    pub fn json_bytes(status: u16, body: Bytes, headers: Option<HashMap<String, String>>) -> Self {
+        Self {
+            status,
+            body,
+            content_type: "application/json".to_string(),
+            headers,
+        }
+    }
+
     pub fn text(status: u16, body: Bytes, headers: Option<HashMap<String, String>>) -> Self {
         Self {
             status,
@@ -57,6 +66,15 @@ impl RoverResponse {
             body: Bytes::new(),
             content_type: "text/plain".to_string(),
             headers: None,
+        }
+    }
+
+    pub fn raw(status: u16, body: Bytes, headers: Option<HashMap<String, String>>) -> Self {
+        Self {
+            status,
+            body,
+            content_type: "application/octet-stream".to_string(),
+            headers,
         }
     }
 }
