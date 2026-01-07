@@ -14,6 +14,7 @@ use crate::fast_router::FastRouter;
 use crate::{HttpMethod, Route, ServerConfig, Bytes};
 use crate::http_task::{execute_handler_coroutine, CoroutineResponse, ThreadPool, RequestContextPool};
 use crate::buffer_pool::BufferPool;
+use crate::table_pool::LuaTablePool;
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
@@ -39,6 +40,7 @@ pub struct EventLoop {
     connection_interests: HashMap<usize, Interest>,
     thread_pool: ThreadPool,
     request_pool: RequestContextPool,
+    table_pool: LuaTablePool,
 }
 
 impl EventLoop {
@@ -58,6 +60,8 @@ impl EventLoop {
 
         let request_pool = RequestContextPool::new(&lua, 1024)?;
 
+        let table_pool = LuaTablePool::new(1024);
+
         Ok(Self {
             poll,
             listener,
@@ -72,6 +76,7 @@ impl EventLoop {
             connection_interests: HashMap::with_capacity(1024),
             thread_pool: ThreadPool::new(2048),
             request_pool,
+            table_pool,
         })
     }
 
@@ -286,6 +291,7 @@ impl EventLoop {
             started_at,
             &mut self.thread_pool,
             &mut self.request_pool,
+            &self.table_pool,
         ) {
             Ok(CoroutineResponse::Ready { status, body, content_type }) => {
                 // Return buffers to pool

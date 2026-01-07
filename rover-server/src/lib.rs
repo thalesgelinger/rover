@@ -6,6 +6,8 @@ mod event_loop;
 mod http_server;
 mod connection;
 mod buffer_pool;
+pub mod table_pool;
+pub mod direct_json_parser;
 
 // Keep HttpResponse for backward compatibility
 pub use http_task::{HttpResponse, CoroutineResponse};

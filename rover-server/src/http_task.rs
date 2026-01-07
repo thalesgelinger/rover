@@ -6,6 +6,7 @@ use mlua::{Function, Lua, Table, Value, Thread, ThreadStatus, UserData, UserData
 use tracing::{debug, info, warn};
 
 use crate::{to_json::ToJson, response::RoverResponse, Bytes};
+use crate::table_pool::LuaTablePool;
 
 pub struct RequestContext {
     method: Bytes,
@@ -243,6 +244,7 @@ pub fn execute_handler_coroutine(
     started_at: Instant,
     thread_pool: &mut ThreadPool,
     request_pool: &mut RequestContextPool,
+    _table_pool: &LuaTablePool,
 ) -> Result<CoroutineResponse> {
     if tracing::event_enabled!(tracing::Level::DEBUG) {
         if !query.is_empty() {

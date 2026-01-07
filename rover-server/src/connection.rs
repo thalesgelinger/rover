@@ -3,6 +3,7 @@ use mio::net::TcpStream;
 use mio::Token;
 use mlua::Thread;
 use crate::Bytes;
+use bytes::BytesMut;
 
 const READ_BUF_SIZE: usize = 4096;
 const MAX_HEADERS: usize = 32;
@@ -19,7 +20,7 @@ pub struct Connection {
     pub token: Token,
     pub state: ConnectionState,
     
-    pub read_buf: Vec<u8>,
+    pub read_buf: BytesMut,
     pub read_pos: usize,
     
     // Vectored I/O: separate header and body buffers
@@ -45,7 +46,7 @@ impl Connection {
             socket,
             token,
             state: ConnectionState::Reading,
-            read_buf: Vec::with_capacity(READ_BUF_SIZE * 2),
+            read_buf: BytesMut::with_capacity(READ_BUF_SIZE * 2),
             read_pos: 0,
             write_buf: Vec::with_capacity(512),  // Headers are typically small
             write_pos: 0,
