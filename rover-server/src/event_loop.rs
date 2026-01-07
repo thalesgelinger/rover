@@ -296,7 +296,7 @@ impl EventLoop {
 
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
-                conn.set_response(status, &body, content_type.as_ref().map(|s| s.as_str()));
+                conn.set_response(status, &body, content_type);
 
                 self.update_interest(conn_idx, Interest::WRITABLE)?;
             }

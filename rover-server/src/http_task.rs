@@ -155,7 +155,7 @@ impl RequestContextPool {
 pub struct HttpResponse {
     pub status: u16,
     pub body: Bytes,
-    pub content_type: Option<String>,
+    pub content_type: Option<&'static str>,
 }
 
 pub struct ThreadPool {
@@ -227,7 +227,7 @@ pub fn execute_handler(
 }
 
 pub enum CoroutineResponse {
-    Ready { status: u16, body: Bytes, content_type: Option<String> },
+    Ready { status: u16, body: Bytes, content_type: Option<&'static str> },
     Yielded { thread: Thread, ctx_idx: usize },
 }
 
@@ -286,7 +286,18 @@ pub fn execute_handler_coroutine(
                 }
                 _ => {
                     // Handler completed without yielding (or died)
-                    let (status, body, content_type) = convert_lua_response(lua, result);
+                    // Fast path: check for RoverResponse directly to avoid function call overhead
+                    let (status, body, content_type) = if let Value::UserData(ref ud) = result {
+                        if let Ok(response) = ud.borrow::<RoverResponse>() {
+                            // Zero-copy for Bytes (uses Arc internally), static str for content_type
+                            (response.status, response.body.clone(), Some(response.content_type))
+                        } else {
+                            convert_lua_response(lua, result)
+                        }
+                    } else {
+                        convert_lua_response(lua, result)
+                    };
+                    
                     let elapsed = started_at.elapsed();
                     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
@@ -449,20 +460,20 @@ fn build_lua_context(
     Ok(ctx)
 }
 
-fn convert_lua_response(_lua: &Lua, result: Value) -> (u16, Bytes, Option<String>) {
+fn convert_lua_response(_lua: &Lua, result: Value) -> (u16, Bytes, Option<&'static str>) {
     match result {
         Value::UserData(ref ud) => {
             if let Ok(response) = ud.borrow::<RoverResponse>() {
                 (
                     response.status,
                     response.body.clone(),
-                    Some(response.content_type.clone()),
+                    Some(response.content_type),
                 )
             } else {
                 (
                     500,
                     Bytes::from("Invalid userdata type"),
-                    Some("text/plain".to_string()),
+                    Some("text/plain"),
                 )
             }
         }
@@ -470,31 +481,31 @@ fn convert_lua_response(_lua: &Lua, result: Value) -> (u16, Bytes, Option<String
         Value::String(ref s) => (
             200,
             Bytes::from(s.to_str().unwrap().to_string()),
-            Some("text/plain".to_string()),
+            Some("text/plain"),
         ),
 
         Value::Table(table) => {
             let json = lua_table_to_json(&table).unwrap_or_else(|e| {
                 format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
             });
-            (200, Bytes::from(json), Some("application/json".to_string()))
+            (200, Bytes::from(json), Some("application/json"))
         }
 
-        Value::Integer(i) => (200, Bytes::from(i.to_string()), Some("text/plain".to_string())),
-        Value::Number(n) => (200, Bytes::from(n.to_string()), Some("text/plain".to_string())),
-        Value::Boolean(b) => (200, Bytes::from(b.to_string()), Some("text/plain".to_string())),
+        Value::Integer(i) => (200, Bytes::from(i.to_string()), Some("text/plain")),
+        Value::Number(n) => (200, Bytes::from(n.to_string()), Some("text/plain")),
+        Value::Boolean(b) => (200, Bytes::from(b.to_string()), Some("text/plain")),
         Value::Nil => (204, Bytes::new(), None),
 
         Value::Error(e) => (
             500,
             Bytes::from(e.to_string()),
-            Some("text/plain".to_string()),
+            Some("text/plain"),
         ),
 
         _ => (
             500,
             Bytes::from("Unsupported return type"),
-            Some("text/plain".to_string()),
+            Some("text/plain"),
         ),
     }
 }
