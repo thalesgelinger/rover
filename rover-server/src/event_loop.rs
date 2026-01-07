@@ -2,6 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
+use std::mem;
 
 use anyhow::Result;
 use mio::net::TcpListener;
@@ -170,13 +171,16 @@ impl EventLoop {
             }
         };
 
-        if should_close {
+        let is_closed_state = matches!(self.connections.get(conn_idx).map(|c| &c.state), Some(ConnectionState::Closed));
+        if should_close || is_closed_state {
+            self.recycle_write_buf(conn_idx);
             let mut conn = self.connections.remove(conn_idx);
             let _ = self.poll.registry().deregister(&mut conn.socket);
             return Ok(());
         }
 
         if should_reset {
+            self.recycle_write_buf(conn_idx);
             if let Some(conn) = self.connections.get_mut(conn_idx) {
                 conn.reset();
                 let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
@@ -188,6 +192,15 @@ impl EventLoop {
         }
 
         Ok(())
+    }
+
+    fn recycle_write_buf(&mut self, conn_idx: usize) {
+        if let Some(conn) = self.connections.get_mut(conn_idx) {
+            let buf = mem::take(&mut conn.write_buf);
+            if !buf.is_empty() {
+                self.buffer_pool.return_response_buf(buf);
+            }
+        }
     }
 
     fn start_request_coroutine(&mut self, conn_idx: usize) -> Result<()> {
@@ -207,7 +220,8 @@ impl EventLoop {
             let html = rover_openapi::scalar_html(self.openapi_spec.as_ref().unwrap());
             let conn = &mut self.connections[conn_idx];
             conn.keep_alive = keep_alive;
-            conn.set_response(200, html.as_bytes(), Some("text/html"));
+            let buf = self.buffer_pool.get_response_buf();
+            conn.set_response_with_buf(200, html.as_bytes(), Some("text/html"), buf);
             let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             return Ok(());
         }
@@ -222,7 +236,8 @@ impl EventLoop {
                 );
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
-                conn.set_response(400, error_msg.as_bytes(), Some("text/plain"));
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_with_buf(400, error_msg.as_bytes(), Some("text/plain"), buf);
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
@@ -234,7 +249,8 @@ impl EventLoop {
             None => {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
-                conn.set_response(404, b"Route not found", Some("text/plain"));
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_with_buf(404, b"Route not found", Some("text/plain"), buf);
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
@@ -252,10 +268,15 @@ impl EventLoop {
         // Acquire headers from pool (known exact size from connection)
         let header_count = conn.header_offsets.len();
         let mut headers = self.buffer_pool.get_bytes_pairs(header_count);
-        for (k, v) in conn.headers_iter() {
+        let header_buf = if !conn.parsed_buf.is_empty() {
+            conn.parsed_buf.clone()
+        } else {
+            conn.read_buf.clone().freeze()
+        };
+        for &(name_off, name_len, val_off, val_len) in conn.header_offsets.iter() {
             headers.push((
-                Bytes::copy_from_slice(k.as_bytes()),
-                Bytes::copy_from_slice(v.as_bytes()),
+                header_buf.slice(name_off..name_off + name_len),
+                header_buf.slice(val_off..val_off + val_len),
             ));
         }
 
@@ -283,8 +304,8 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 // Use set_response_bytes for true zero-copy (body is already Bytes)
-
-                conn.set_response_bytes(status, body, content_type);
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_bytes_with_buf(status, body, content_type, buf);
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
 
             }
@@ -309,7 +330,8 @@ impl EventLoop {
 
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
-                conn.set_response(500, b"Internal server error", Some("text/plain"));
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_with_buf(500, b"Internal server error", Some("text/plain"), buf);
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             }
         }
@@ -336,7 +358,8 @@ impl EventLoop {
             let conn = &mut self.connections[conn_idx];
             conn.thread = None;
             conn.state = ConnectionState::Writing;
-            conn.set_response(500, b"Coroutine timeout", Some("text/plain"));
+            let buf = self.buffer_pool.get_response_buf();
+            conn.set_response_with_buf(500, b"Coroutine timeout", Some("text/plain"), buf);
             let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
         }
 

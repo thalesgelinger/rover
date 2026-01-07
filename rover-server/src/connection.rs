@@ -1,5 +1,6 @@
 use std::io::{Read, Write, IoSlice};
 use std::time::Instant;
+use std::mem;
 use mio::net::TcpStream;
 use mio::{Token, Interest, Registry};
 use mlua::Thread;
@@ -22,6 +23,7 @@ pub struct Connection {
     pub state: ConnectionState,
 
     pub read_buf: BytesMut,
+    pub parsed_buf: Bytes,
     pub read_pos: usize,
 
     pub write_buf: Vec<u8>,
@@ -50,6 +52,7 @@ impl Connection {
             token,
             state: ConnectionState::Reading,
             read_buf: BytesMut::with_capacity(READ_BUF_SIZE * 2),
+            parsed_buf: Bytes::new(),
             read_pos: 0,
             write_buf: Vec::with_capacity(512),
             write_pos: 0,
@@ -77,23 +80,52 @@ impl Connection {
     }
 
     pub fn method_str(&self) -> Option<&str> {
+        let buf: &[u8] = if !self.parsed_buf.is_empty() {
+            &self.parsed_buf
+        } else {
+            &self.read_buf
+        };
+
         self.method_offset.map(|(off, len)|
-            unsafe { std::str::from_utf8_unchecked(&self.read_buf[off..off + len]) }
+            unsafe { std::str::from_utf8_unchecked(&buf[off..off + len]) }
         )
     }
 
     pub fn path_str(&self) -> Option<&str> {
+        let buf: &[u8] = if !self.parsed_buf.is_empty() {
+            &self.parsed_buf
+        } else {
+            &self.read_buf
+        };
+
         self.path_offset.map(|(off, len)|
-            unsafe { std::str::from_utf8_unchecked(&self.read_buf[off..off + len]) }
+            unsafe { std::str::from_utf8_unchecked(&buf[off..off + len]) }
         )
     }
 
     pub fn headers_iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.header_offsets.iter().map(move |&(name_off, name_len, val_off, val_len)| {
-            (
-                unsafe { std::str::from_utf8_unchecked(&self.read_buf[name_off..name_off + name_len]) },
-                unsafe { std::str::from_utf8_unchecked(&self.read_buf[val_off..val_off + val_len]) },
-            )
+        let buf_ptr: *const u8 = if !self.parsed_buf.is_empty() {
+            self.parsed_buf.as_ptr()
+        } else {
+            self.read_buf.as_ptr()
+        };
+
+        let buf_len = if !self.parsed_buf.is_empty() {
+            self.parsed_buf.len()
+        } else {
+            self.read_buf.len()
+        };
+
+        self.header_offsets.iter().filter_map(move |&(name_off, name_len, val_off, val_len)| {
+            if name_off + name_len > buf_len || val_off + val_len > buf_len {
+                return None;
+            }
+            unsafe {
+                Some((
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf_ptr.add(name_off), name_len)),
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf_ptr.add(val_off), val_len)),
+                ))
+            }
         })
     }
 
@@ -193,6 +225,10 @@ impl Connection {
                         if self.content_length > 0 {
                             self.body = Some((body_start, self.content_length));
                         }
+                        if self.parsed_buf.is_empty() && self.read_pos > 0 {
+                            self.parsed_buf = self.read_buf.split_to(self.read_pos).freeze();
+                            self.read_pos = 0;
+                        }
                         return Ok(true);
                     }
                 }
@@ -210,6 +246,10 @@ impl Connection {
                 if body_received >= self.content_length {
                     if self.content_length > 0 {
                         self.body = Some((pos, self.content_length));
+                    }
+                    if self.parsed_buf.is_empty() && self.read_pos > 0 {
+                        self.parsed_buf = self.read_buf.split_to(self.read_pos).freeze();
+                        self.read_pos = 0;
                     }
                     return Ok(true);
                 }
@@ -229,8 +269,14 @@ impl Connection {
     }
 
     pub fn get_body(&self) -> Option<&[u8]> {
+        let buf: &[u8] = if !self.parsed_buf.is_empty() {
+            &self.parsed_buf
+        } else {
+            &self.read_buf
+        };
+
         if let Some((start, len)) = self.body {
-            Some(&self.read_buf[start..start + len])
+            buf.get(start..start + len)
         } else {
             None
         }
@@ -238,6 +284,9 @@ impl Connection {
 
     pub fn get_body_bytes(&self) -> Option<Bytes> {
         if let Some((start, len)) = self.body {
+            if !self.parsed_buf.is_empty() {
+                return Some(self.parsed_buf.slice(start..start + len));
+            }
             Some(Bytes::copy_from_slice(&self.read_buf[start..start + len]))
         } else {
             None
@@ -325,8 +374,9 @@ impl Connection {
         Ok(true)
     }
 
-    pub fn set_response(&mut self, status: u16, body: &[u8], content_type: Option<&str>) {
-        self.write_buf.clear();
+    pub fn set_response_with_buf(&mut self, status: u16, body: &[u8], content_type: Option<&str>, mut buf: Vec<u8>) {
+        buf.clear();
+        self.write_buf = buf;
         self.write_pos = 0;
         self.body_pos = 0;
 
@@ -353,8 +403,9 @@ impl Connection {
     }
 
     /// Set response with pre-allocated Bytes body (true zero-copy)
-    pub fn set_response_bytes(&mut self, status: u16, body: Bytes, content_type: Option<&str>) {
-        self.write_buf.clear();
+    pub fn set_response_bytes_with_buf(&mut self, status: u16, body: Bytes, content_type: Option<&str>, mut buf: Vec<u8>) {
+        buf.clear();
+        self.write_buf = buf;
         self.write_pos = 0;
         self.body_pos = 0;
 
@@ -380,8 +431,20 @@ impl Connection {
         self.state = ConnectionState::Writing;
     }
 
+    // Backward-compatible helpers
+    pub fn set_response(&mut self, status: u16, body: &[u8], content_type: Option<&str>) {
+        let buf = mem::take(&mut self.write_buf);
+        self.set_response_with_buf(status, body, content_type, buf);
+    }
+
+    pub fn set_response_bytes(&mut self, status: u16, body: Bytes, content_type: Option<&str>) {
+        let buf = mem::take(&mut self.write_buf);
+        self.set_response_bytes_with_buf(status, body, content_type, buf);
+    }
+
     pub fn reset(&mut self) {
         self.read_buf.clear();
+        self.parsed_buf = Bytes::new();
         self.read_pos = 0;
         self.write_buf.clear();
         self.write_pos = 0;
