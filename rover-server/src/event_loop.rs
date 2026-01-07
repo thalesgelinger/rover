@@ -37,7 +37,6 @@ pub struct EventLoop {
     yielded_coroutines: HashMap<usize, PendingCoroutine>,
     last_timeout_check: Instant,
     buffer_pool: BufferPool,
-    connection_interests: HashMap<usize, Interest>,
     thread_pool: ThreadPool,
     request_pool: RequestContextPool,
     table_pool: LuaTablePool,
@@ -73,26 +72,10 @@ impl EventLoop {
             yielded_coroutines: HashMap::with_capacity(1024),
             last_timeout_check: Instant::now(),
             buffer_pool: BufferPool::new(),
-            connection_interests: HashMap::with_capacity(1024),
             thread_pool: ThreadPool::new(2048),
             request_pool,
             table_pool,
         })
-    }
-
-    fn update_interest(&mut self, conn_idx: usize, new_interest: Interest) -> Result<()> {
-        let current = self.connection_interests.get(&conn_idx);
-
-        if current != Some(&new_interest) {
-            let conn = &mut self.connections[conn_idx];
-            self.poll.registry().reregister(
-                &mut conn.socket,
-                conn.token,
-                new_interest,
-            )?;
-            self.connection_interests.insert(conn_idx, new_interest);
-        }
-        Ok(())
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -132,7 +115,7 @@ impl EventLoop {
                     self.poll.registry().register(
                         &mut socket,
                         token,
-                        Interest::READABLE,
+                        Interest::READABLE | Interest::WRITABLE,
                     )?;
                     
                     entry.insert(Connection::new(socket, token));
@@ -148,14 +131,14 @@ impl EventLoop {
 
     fn handle_connection(&mut self, token: Token, event: &mio::event::Event) -> Result<()> {
         let conn_idx = token.0 - 1;
-        
+
         if !self.connections.contains(conn_idx) {
             return Ok(());
         }
 
         let should_process = {
             let conn = &mut self.connections[conn_idx];
-            
+
             match conn.state {
                 ConnectionState::Reading if event.is_readable() => {
                     match conn.try_read() {
@@ -172,7 +155,6 @@ impl EventLoop {
                         Ok(true) => {
                             if conn.keep_alive {
                                 conn.reset();
-                                self.update_interest(conn_idx, Interest::READABLE)?;
                             } else {
                                 conn.state = ConnectionState::Closed;
                             }
@@ -220,7 +202,6 @@ impl EventLoop {
             let conn = &mut self.connections[conn_idx];
             conn.keep_alive = keep_alive;
             conn.set_response(200, html.as_bytes(), Some("text/html"));
-            self.update_interest(conn_idx, Interest::WRITABLE)?;
             return Ok(());
         }
 
@@ -235,11 +216,6 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(400, error_msg.as_bytes(), Some("text/plain"));
-                self.poll.registry().reregister(
-                    &mut conn.socket,
-                    conn.token,
-                    Interest::WRITABLE,
-                )?;
                 return Ok(());
             }
         };
@@ -251,7 +227,6 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(404, b"Route not found", Some("text/plain"));
-                self.update_interest(conn_idx, Interest::WRITABLE)?;
                 return Ok(());
             }
         };
@@ -302,9 +277,9 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 // Use set_response_bytes for true zero-copy (body is already Bytes)
+
                 conn.set_response_bytes(status, body, content_type);
 
-                self.update_interest(conn_idx, Interest::WRITABLE)?;
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
                 // Return buffers to pool
@@ -321,8 +296,6 @@ impl EventLoop {
                     started_at: Instant::now(),
                     ctx_idx,
                 });
-
-                self.update_interest(conn_idx, Interest::WRITABLE)?;
             }
             Err(_) => {
                 // Return buffers to pool
@@ -334,7 +307,6 @@ impl EventLoop {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 conn.set_response(500, b"Internal server error", Some("text/plain"));
-                self.update_interest(conn_idx, Interest::WRITABLE)?;
             }
         }
 
@@ -361,7 +333,6 @@ impl EventLoop {
             conn.thread = None;
             conn.state = ConnectionState::Writing;
             conn.set_response(500, b"Coroutine timeout", Some("text/plain"));
-            self.update_interest(conn_idx, Interest::WRITABLE)?;
         }
 
         Ok(())
@@ -402,8 +373,6 @@ impl EventLoop {
                         self.request_pool.release(pending.ctx_idx);
                         if let Some(conn) = self.connections.get_mut(conn_idx) {
                             conn.thread = None;
-
-                            self.update_interest(conn_idx, Interest::WRITABLE)?;
                         }
                     }
                     Err(_) => {

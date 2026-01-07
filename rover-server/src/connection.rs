@@ -19,17 +19,15 @@ pub struct Connection {
     pub socket: TcpStream,
     pub token: Token,
     pub state: ConnectionState,
-    
+
     pub read_buf: BytesMut,
     pub read_pos: usize,
-    
-    // Vectored I/O: separate header and body buffers
-    pub write_buf: Vec<u8>,  // Headers only
-    pub write_pos: usize,    // Position in headers
-    pub body_buf: Bytes,     // Body (zero-copy from response)
-    pub body_pos: usize,     // Position in body
-    
-    // Zero-copy: offsets into read_buf instead of Strings
+
+    pub write_buf: Vec<u8>,
+    pub write_pos: usize,
+    pub body_buf: Bytes,
+    pub body_pos: usize,
+
     pub method_offset: Option<(usize, usize)>,
     pub path_offset: Option<(usize, usize)>,
     pub header_offsets: Vec<(usize, usize, usize, usize)>,
@@ -37,7 +35,7 @@ pub struct Connection {
     pub content_length: usize,
     pub headers_complete: bool,
     pub keep_alive: bool,
-    
+
     pub thread: Option<Thread>,
 }
 
@@ -65,13 +63,13 @@ impl Connection {
     }
 
     pub fn method_str(&self) -> Option<&str> {
-        self.method_offset.map(|(off, len)| 
+        self.method_offset.map(|(off, len)|
             unsafe { std::str::from_utf8_unchecked(&self.read_buf[off..off + len]) }
         )
     }
 
     pub fn path_str(&self) -> Option<&str> {
-        self.path_offset.map(|(off, len)| 
+        self.path_offset.map(|(off, len)|
             unsafe { std::str::from_utf8_unchecked(&self.read_buf[off..off + len]) }
         )
     }
