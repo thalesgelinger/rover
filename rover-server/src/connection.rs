@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Read, Write, IoSlice};
 use mio::net::TcpStream;
 use mio::Token;
 use mlua::Thread;
@@ -22,8 +22,11 @@ pub struct Connection {
     pub read_buf: Vec<u8>,
     pub read_pos: usize,
     
-    pub write_buf: Vec<u8>,
-    pub write_pos: usize,
+    // Vectored I/O: separate header and body buffers
+    pub write_buf: Vec<u8>,  // Headers only
+    pub write_pos: usize,    // Position in headers
+    pub body_buf: Bytes,     // Body (zero-copy from response)
+    pub body_pos: usize,     // Position in body
     
     pub method: Option<String>,
     pub path: Option<String>,
@@ -44,8 +47,10 @@ impl Connection {
             state: ConnectionState::Reading,
             read_buf: Vec::with_capacity(READ_BUF_SIZE * 2),
             read_pos: 0,
-            write_buf: Vec::with_capacity(4096),
+            write_buf: Vec::with_capacity(512),  // Headers are typically small
             write_pos: 0,
+            body_buf: Bytes::new(),
+            body_pos: 0,
             method: None,
             path: None,
             headers: Vec::with_capacity(16),
@@ -168,6 +173,50 @@ impl Connection {
     }
 
     pub fn try_write(&mut self) -> std::io::Result<bool> {
+        // Calculate remaining data in each buffer
+        let header_remaining = self.write_buf.len().saturating_sub(self.write_pos);
+        let body_remaining = self.body_buf.len().saturating_sub(self.body_pos);
+        
+        // Fast path: everything already written
+        if header_remaining == 0 && body_remaining == 0 {
+            return Ok(true);
+        }
+        
+        // Try vectored I/O first (single syscall for header + body)
+        if header_remaining > 0 && body_remaining > 0 {
+            let slices = [
+                IoSlice::new(&self.write_buf[self.write_pos..]),
+                IoSlice::new(&self.body_buf[self.body_pos..]),
+            ];
+            
+            match self.socket.write_vectored(&slices) {
+                Ok(0) => {
+                    self.state = ConnectionState::Closed;
+                    return Ok(false);
+                }
+                Ok(n) => {
+                    // Distribute written bytes across buffers
+                    if n <= header_remaining {
+                        self.write_pos += n;
+                    } else {
+                        self.write_pos = self.write_buf.len();
+                        self.body_pos += n - header_remaining;
+                    }
+                    
+                    // Check if done
+                    if self.write_pos >= self.write_buf.len() && self.body_pos >= self.body_buf.len() {
+                        return Ok(true);
+                    }
+                    // Continue in the loop for remaining data
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        
+        // Finish writing headers if needed
         while self.write_pos < self.write_buf.len() {
             match self.socket.write(&self.write_buf[self.write_pos..]) {
                 Ok(0) => {
@@ -184,12 +233,30 @@ impl Connection {
             }
         }
         
+        // Finish writing body if needed
+        while self.body_pos < self.body_buf.len() {
+            match self.socket.write(&self.body_buf[self.body_pos..]) {
+                Ok(0) => {
+                    self.state = ConnectionState::Closed;
+                    return Ok(false);
+                }
+                Ok(n) => {
+                    self.body_pos += n;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        
         Ok(true)
     }
 
     pub fn set_response(&mut self, status: u16, body: &[u8], content_type: Option<&str>) {
         self.write_buf.clear();
         self.write_pos = 0;
+        self.body_pos = 0;
 
         let status_text = match status {
             200 => "OK",
@@ -204,33 +271,40 @@ impl Connection {
         let ct = content_type.unwrap_or("text/plain");
         let conn = if self.keep_alive { "keep-alive" } else { "close" };
 
-        // Pre-calculate exact size to avoid reallocations
-        let header_size =
-            9 + // "HTTP/1.1 "
-            3 + // status code
-            1 + // space
-            status_text.len() +
-            15 + // "\r\nContent-Type: "
-            ct.len() +
-            18 + // "\r\nContent-Length: "
-            20 + // max digits for content length
-            14 + // "\r\nConnection: "
-            conn.len() +
-            4; // "\r\n\r\n"
-
-        let total_size = header_size + body.len();
-
-        // Reserve exact capacity (zero-copy optimization)
-        if self.write_buf.capacity() < total_size {
-            self.write_buf.reserve(total_size - self.write_buf.capacity());
-        }
-
-        // Build response in-place
+        // Build headers only (body stored separately for vectored I/O)
         write!(self.write_buf, "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
             status, status_text, ct, body.len(), conn).unwrap();
 
-        // Zero-copy body append
-        self.write_buf.extend_from_slice(body);
+        // Store body separately (zero-copy via Bytes)
+        self.body_buf = Bytes::copy_from_slice(body);
+        self.state = ConnectionState::Writing;
+    }
+
+    /// Set response with pre-allocated Bytes body (true zero-copy)
+    pub fn set_response_bytes(&mut self, status: u16, body: Bytes, content_type: Option<&str>) {
+        self.write_buf.clear();
+        self.write_pos = 0;
+        self.body_pos = 0;
+
+        let status_text = match status {
+            200 => "OK",
+            201 => "Created",
+            204 => "No Content",
+            400 => "Bad Request",
+            404 => "Not Found",
+            500 => "Internal Server Error",
+            _ => "Unknown",
+        };
+
+        let ct = content_type.unwrap_or("text/plain");
+        let conn = if self.keep_alive { "keep-alive" } else { "close" };
+
+        // Build headers only
+        write!(self.write_buf, "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
+            status, status_text, ct, body.len(), conn).unwrap();
+
+        // Store body directly (true zero-copy - no slice copy)
+        self.body_buf = body;
         self.state = ConnectionState::Writing;
     }
 
@@ -240,6 +314,8 @@ impl Connection {
         self.read_pos = 0;
         self.write_buf.clear();
         self.write_pos = 0;
+        self.body_buf = Bytes::new();
+        self.body_pos = 0;
         self.method = None;
         self.path = None;
         self.headers.clear();

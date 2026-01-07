@@ -296,7 +296,8 @@ impl EventLoop {
 
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
-                conn.set_response(status, &body, content_type);
+                // Use set_response_bytes for true zero-copy (body is already Bytes)
+                conn.set_response_bytes(status, body, content_type);
 
                 self.update_interest(conn_idx, Interest::WRITABLE)?;
             }
