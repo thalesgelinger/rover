@@ -2,10 +2,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 
 use anyhow::Result;
-use lru::LruCache;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Lua, Thread, ThreadStatus};
@@ -20,19 +18,11 @@ use crate::buffer_pool::BufferPool;
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
 const TIMEOUT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
-const ROUTE_CACHE_SIZE: usize = 128;
 
 struct PendingCoroutine {
     thread: Thread,
     started_at: Instant,
     ctx_idx: usize,
-}
-
-/// Cached route lookup result
-#[derive(Clone)]
-struct CachedRoute {
-    handler_idx: usize,
-    params: HashMap<String, String>,
 }
 
 pub struct EventLoop {
@@ -48,7 +38,6 @@ pub struct EventLoop {
     buffer_pool: BufferPool,
     connection_interests: HashMap<usize, Interest>,
     thread_pool: ThreadPool,
-    route_cache: LruCache<(HttpMethod, String), Option<CachedRoute>>,
     request_pool: RequestContextPool,
 }
 
@@ -82,7 +71,6 @@ impl EventLoop {
             buffer_pool: BufferPool::new(),
             connection_interests: HashMap::with_capacity(1024),
             thread_pool: ThreadPool::new(2048),
-            route_cache: LruCache::new(NonZeroUsize::new(ROUTE_CACHE_SIZE).unwrap()),
             request_pool,
         })
     }
@@ -251,37 +239,15 @@ impl EventLoop {
             }
         };
 
-        // Try route cache first
-        let cache_key = (http_method, path.to_string());
-        let (handler, params) = if let Some(cached) = self.route_cache.get(&cache_key) {
-            match cached {
-                Some(cr) => (self.router.get_handler(cr.handler_idx), cr.params.clone()),
-                None => {
-                    let conn = &mut self.connections[conn_idx];
-                    conn.keep_alive = keep_alive;
-                    conn.set_response(404, b"Route not found", Some("text/plain"));
-                    self.update_interest(conn_idx, Interest::WRITABLE)?;
-                    return Ok(());
-                }
-            }
-        } else {
-            // Cache miss - do actual lookup
-            match self.router.match_route_indexed(http_method, path) {
-                Some((idx, p)) => {
-                    self.route_cache.put(cache_key.clone(), Some(CachedRoute {
-                        handler_idx: idx,
-                        params: p.clone(),
-                    }));
-                    (self.router.get_handler(idx), p)
-                }
-                None => {
-                    self.route_cache.put(cache_key, None);
-                    let conn = &mut self.connections[conn_idx];
-                    conn.keep_alive = keep_alive;
-                    conn.set_response(404, b"Route not found", Some("text/plain"));
-                    self.update_interest(conn_idx, Interest::WRITABLE)?;
-                    return Ok(());
-                }
+        // Direct route lookup (no caching - FastRouter is fast enough)
+        let (handler, params) = match self.router.match_route(http_method, path) {
+            Some((h, p)) => (h, p),
+            None => {
+                let conn = &mut self.connections[conn_idx];
+                conn.keep_alive = keep_alive;
+                conn.set_response(404, b"Route not found", Some("text/plain"));
+                self.update_interest(conn_idx, Interest::WRITABLE)?;
+                return Ok(());
             }
         };
 
@@ -311,8 +277,8 @@ impl EventLoop {
         match execute_handler_coroutine(
             &self.lua,
             handler,
-            method,
-            path,
+            method.as_bytes(),
+            path.as_bytes(),
             &headers,
             &query,
             &params,

@@ -8,12 +8,12 @@ use tracing::{debug, info, warn};
 use crate::{to_json::ToJson, response::RoverResponse, Bytes};
 
 pub struct RequestContext {
-    method: String,
-    path: String,
+    method: Bytes,
+    path: Bytes,
     headers: Vec<(Bytes, Bytes)>,
     query: Vec<(Bytes, Bytes)>,
-    params: HashMap<String, String>,
-    body: Option<Vec<u8>>,
+    params: Vec<(Bytes, Bytes)>,
+    body: Option<Bytes>,
 }
 
 impl UserData for RequestContext {
@@ -50,7 +50,9 @@ impl UserData for RequestContext {
             }
             let params_table = lua.create_table_with_capacity(0, this.params.len())?;
             for (k, v) in &this.params {
-                params_table.set(k.as_str(), v.as_str())?;
+                let k_str = unsafe { std::str::from_utf8_unchecked(k) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(v) };
+                params_table.set(k_str, v_str)?;
             }
             Ok(params_table)
         });
@@ -64,7 +66,7 @@ impl UserData for RequestContext {
                 let guard: Table = rover.get("guard")?;
 
                 if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
-                    constructor.call((body_str.to_string(), body.clone()))
+                    constructor.call((body_str.to_string(), body.to_vec()))
                 } else {
                     Ok(Value::String(lua.create_string(body_str)?))
                 }
@@ -90,11 +92,11 @@ impl RequestContextPool {
 
         for _ in 0..capacity {
             let ctx = RequestContext {
-                method: String::new(),
-                path: String::new(),
+                method: Bytes::new(),
+                path: Bytes::new(),
                 headers: Vec::new(),
                 query: Vec::new(),
-                params: HashMap::new(),
+                params: Vec::new(),
                 body: None,
             };
 
@@ -114,11 +116,11 @@ impl RequestContextPool {
     pub fn acquire(
         &mut self,
         lua: &Lua,
-        method: &str,
-        path: &str,
+        method: &[u8],
+        path: &[u8],
         headers: &[(Bytes, Bytes)],
         query: &[(Bytes, Bytes)],
-        params: &HashMap<String, String>,
+        params: &[(Bytes, Bytes)],
         body: Option<&[u8]>,
     ) -> mlua::Result<(Value, usize)> {
         let idx = self.available.pop()
@@ -128,12 +130,16 @@ impl RequestContextPool {
         let userdata: mlua::AnyUserData = lua.registry_value(&key)?;
 
         let mut ctx = userdata.borrow_mut::<RequestContext>()?;
-        ctx.method = method.to_string();
-        ctx.path = path.to_string();
-        ctx.headers = headers.to_vec();
-        ctx.query = query.to_vec();
-        ctx.params = params.clone();
-        ctx.body = body.map(|b| b.to_vec());
+        ctx.method = Bytes::copy_from_slice(method);
+        ctx.path = Bytes::copy_from_slice(path);
+        // Reuse vectors - clear and extend instead of clone
+        ctx.headers.clear();
+        ctx.headers.extend_from_slice(headers);
+        ctx.query.clear();
+        ctx.query.extend_from_slice(query);
+        ctx.params.clear();
+        ctx.params.extend_from_slice(params);
+        ctx.body = body.map(Bytes::copy_from_slice);
         drop(ctx);
 
         Ok((Value::UserData(userdata), idx))
@@ -228,11 +234,11 @@ pub enum CoroutineResponse {
 pub fn execute_handler_coroutine(
     lua: &Lua,
     handler: &Function,
-    method: &str,
-    path: &str,
+    method: &[u8],
+    path: &[u8],
     headers: &[(Bytes, Bytes)],
     query: &[(Bytes, Bytes)],
-    params: &HashMap<String, String>,
+    params: &[(Bytes, Bytes)],
     body: Option<&[u8]>,
     started_at: Instant,
     thread_pool: &mut ThreadPool,
@@ -286,11 +292,15 @@ pub fn execute_handler_coroutine(
 
                     if status >= 200 && status < 300 {
                         if tracing::event_enabled!(tracing::Level::INFO) {
-                            info!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+                            let method_str = unsafe { std::str::from_utf8_unchecked(method) };
+                            let path_str = unsafe { std::str::from_utf8_unchecked(path) };
+                            info!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
                         }
                     } else if status >= 400 {
                         if tracing::event_enabled!(tracing::Level::WARN) {
-                            warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+                            let method_str = unsafe { std::str::from_utf8_unchecked(method) };
+                            let path_str = unsafe { std::str::from_utf8_unchecked(path) };
+                            warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
                         }
                     }
 
@@ -312,8 +322,8 @@ pub fn execute_handler_coroutine(
 
 fn convert_error_to_response(
     e: mlua::Error,
-    method: &str,
-    path: &str,
+    method: &[u8],
+    path: &[u8],
     started_at: Instant,
 ) -> Result<CoroutineResponse> {
     let validation_err = match &e {
@@ -344,7 +354,9 @@ fn convert_error_to_response(
 
     if status >= 400 {
         if tracing::event_enabled!(tracing::Level::WARN) {
-            warn!("{} {} - {} in {:.2}ms", method, path, status, elapsed_ms);
+            let method_str = unsafe { std::str::from_utf8_unchecked(method) };
+            let path_str = unsafe { std::str::from_utf8_unchecked(path) };
+            warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
         }
     }
 

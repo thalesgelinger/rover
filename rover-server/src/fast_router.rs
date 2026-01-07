@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
+use bytes::Bytes;
 use matchit::Router;
 use mlua::Function;
 use smallvec::SmallVec;
@@ -64,16 +65,16 @@ impl FastRouter {
         &self.handlers[idx]
     }
 
-    /// Match route and return handler index + params (for caching)
-    pub fn match_route_indexed(
+    /// Match route and return handler + params (zero-copy where possible)
+    pub fn match_route(
         &self,
         method: HttpMethod,
         path: &str,
-    ) -> Option<(usize, HashMap<String, String>)> {
+    ) -> Option<(&Function, Vec<(Bytes, Bytes)>)> {
         // Fast path: static routes (no params)
         let path_hash = hash_path(path);
         if let Some(&handler_idx) = self.static_routes.get(&(path_hash, method)) {
-            return Some((handler_idx, HashMap::new()));
+            return Some((&self.handlers[handler_idx], Vec::new()));
         }
 
         // Slow path: dynamic routes with parameters
@@ -85,25 +86,18 @@ impl FastRouter {
             .find(|(m, _)| *m == method)
             .map(|(_, idx)| *idx)?;
 
-        let mut params = HashMap::with_capacity(matched.params.len());
+        let mut params = Vec::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
             let decoded = urlencoding::decode(value).ok()?.into_owned();
             if decoded.is_empty() {
                 return None;
             }
-            params.insert(name.to_string(), decoded);
+            params.push((
+                Bytes::copy_from_slice(name.as_bytes()),
+                Bytes::copy_from_slice(decoded.as_bytes()),
+            ));
         }
 
-        Some((handler_idx, params))
-    }
-
-    /// Original match_route (kept for backward compatibility)
-    pub fn match_route(
-        &self,
-        method: HttpMethod,
-        path: &str,
-    ) -> Option<(&Function, HashMap<String, String>)> {
-        self.match_route_indexed(method, path)
-            .map(|(idx, params)| (&self.handlers[idx], params))
+        Some((&self.handlers[handler_idx], params))
     }
 }
