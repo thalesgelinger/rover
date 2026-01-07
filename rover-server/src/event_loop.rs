@@ -36,7 +36,6 @@ pub struct EventLoop {
     openapi_spec: Option<serde_json::Value>,
     yielded_coroutines: HashMap<usize, PendingCoroutine>,
     last_timeout_check: Instant,
-    buffer_pool: BufferPool,
     thread_pool: ThreadPool,
     request_pool: RequestContextPool,
     table_pool: LuaTablePool,
@@ -71,7 +70,6 @@ impl EventLoop {
             openapi_spec,
             yielded_coroutines: HashMap::with_capacity(1024),
             last_timeout_check: Instant::now(),
-            buffer_pool: BufferPool::new(),
             thread_pool: ThreadPool::new(2048),
             request_pool,
             table_pool,
@@ -228,19 +226,18 @@ impl EventLoop {
             }
         };
 
-        // Use pooled buffers for query parsing
+        // Direct allocation for query parsing
         let query: Vec<(Bytes, Bytes)> = if let Some(qs) = query_str {
-            let mut buf = self.buffer_pool.get_bytes_pairs(8);
-            for (k, v) in form_urlencoded::parse(qs.as_bytes()) {
-                buf.push((Bytes::copy_from_slice(k.as_bytes()), Bytes::copy_from_slice(v.as_bytes())));
-            }
-            buf
+            form_urlencoded::parse(qs.as_bytes())
+                .map(|(k, v)| (Bytes::copy_from_slice(k.as_bytes()), Bytes::copy_from_slice(v.as_bytes())))
+                .collect()
         } else {
             Vec::new()
         };
 
+        // Direct allocation for headers
         let header_count = conn.header_offsets.len();
-        let mut headers = self.buffer_pool.get_bytes_pairs(header_count);
+        let mut headers = Vec::with_capacity(header_count);
         for (k, v) in conn.headers_iter() {
             headers.push((
                 Bytes::copy_from_slice(k.as_bytes()),
@@ -266,9 +263,9 @@ impl EventLoop {
         ) {
             Ok(CoroutineResponse::Ready { status, body, content_type }) => {
                 // Return buffers to pool
-                self.buffer_pool.return_bytes_pairs(headers);
+                // No longer pooling headers
                 if !query.is_empty() {
-                    self.buffer_pool.return_bytes_pairs(query);
+                    // No longer pooling query
                 }
 
                 let conn = &mut self.connections[conn_idx];
@@ -280,9 +277,9 @@ impl EventLoop {
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
                 // Return buffers to pool
-                self.buffer_pool.return_bytes_pairs(headers);
+                // No longer pooling headers
                 if !query.is_empty() {
-                    self.buffer_pool.return_bytes_pairs(query);
+                    // No longer pooling headers
                 }
 
                 let conn = &mut self.connections[conn_idx];
@@ -296,9 +293,9 @@ impl EventLoop {
             }
             Err(_) => {
                 // Return buffers to pool
-                self.buffer_pool.return_bytes_pairs(headers);
+                // No longer pooling headers
                 if !query.is_empty() {
-                    self.buffer_pool.return_bytes_pairs(query);
+                    // No longer pooling query
                 }
 
                 let conn = &mut self.connections[conn_idx];
