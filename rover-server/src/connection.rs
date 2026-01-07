@@ -123,27 +123,33 @@ impl Connection {
             match req.parse(&self.read_buf[..self.read_pos]) {
                 Ok(httparse::Status::Complete(header_len)) => {
                     self.headers_complete = true;
-                    self.method_offset = req.method.map(|s| (s.as_ptr() as usize, s.len()));
-                    self.path_offset = req.path.map(|s| (s.as_ptr() as usize, s.len()));
+
+                    let read_buf_ptr = self.read_buf.as_ptr() as usize;
+                    self.method_offset = req.method.as_ref().map(|s| {
+                        let offset = s.as_ptr() as usize - read_buf_ptr;
+                        (offset, s.len())
+                    });
+                    self.path_offset = req.path.as_ref().map(|s| {
+                        let offset = s.as_ptr() as usize - read_buf_ptr;
+                        (offset, s.len())
+                    });
 
                     self.header_offsets.clear();
                     for header in req.headers.iter() {
-                        let name_off = header.name.as_ptr() as usize;
-                        let name_len = header.name.len();
-                        let val_off = header.value.as_ptr() as usize;
-                        let val_len = header.value.len();
+                        let h_name_start = header.name.as_ptr() as usize - read_buf_ptr;
+                        let h_name_len = header.name.len();
+                        let h_val_start = header.value.as_ptr() as usize - read_buf_ptr;
+                        let h_val_len = header.value.len();
 
-                        let name_str = unsafe { std::str::from_utf8_unchecked(&self.read_buf[name_off..name_off + name_len]) };
-                        let val_str = unsafe { std::str::from_utf8_unchecked(&self.read_buf[val_off..val_off + val_len]) };
-
+                        let name_str = unsafe { std::str::from_utf8_unchecked(&self.read_buf[h_name_start..h_name_start + h_name_len]) };
                         if name_str.eq_ignore_ascii_case("content-length") {
-                            self.content_length = val_str.parse().unwrap_or(0);
+                            self.content_length = name_str.parse().unwrap_or(0);
                         }
                         if name_str.eq_ignore_ascii_case("connection") {
-                            self.keep_alive = !val_str.eq_ignore_ascii_case("close");
+                            self.keep_alive = !name_str.eq_ignore_ascii_case("close");
                         }
 
-                        self.header_offsets.push((name_off, name_len, val_off, val_len));
+                        self.header_offsets.push((h_name_start, h_name_len, h_val_start, h_val_len));
                     }
 
                     let body_start = header_len;
