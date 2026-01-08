@@ -7,6 +7,7 @@ use tracing::{debug, info, warn};
 
 use crate::{to_json::ToJson, response::RoverResponse, Bytes};
 use crate::table_pool::LuaTablePool;
+use crate::buffer_pool::BufferPool;
 
 pub struct RequestContext {
     buf: Bytes,
@@ -284,7 +285,8 @@ pub fn execute_handler(
         }
     };
 
-    let (status, body, content_type) = convert_lua_response(lua, result);
+    let mut pool = BufferPool::new();
+    let (status, body, content_type) = convert_lua_response(lua, result, &mut pool);
     Ok(HttpResponse { status, body, content_type })
 }
 
@@ -310,6 +312,7 @@ pub fn execute_handler_coroutine(
     thread_pool: &mut ThreadPool,
     request_pool: &mut RequestContextPool,
     _table_pool: &LuaTablePool,
+    buffer_pool: &mut BufferPool,
 ) -> Result<CoroutineResponse> {
     if tracing::event_enabled!(tracing::Level::DEBUG) {
         if !query.is_empty() {
@@ -359,10 +362,10 @@ pub fn execute_handler_coroutine(
                         if let Ok(response) = ud.borrow::<RoverResponse>() {
                             (response.status, response.body.clone(), Some(response.content_type))
                         } else {
-                            convert_lua_response(lua, result)
+                            convert_lua_response(lua, result, buffer_pool)
                         }
                     } else {
-                        convert_lua_response(lua, result)
+                        convert_lua_response(lua, result, buffer_pool)
                     };
 
                     let elapsed = started_at.elapsed();
@@ -392,7 +395,7 @@ pub fn execute_handler_coroutine(
         }
         Err(e) => {
             request_pool.release(ctx_idx);
-            convert_error_to_response(e, &buf, method_off, method_len, path_off, path_len, started_at)
+            convert_error_to_response(e, &buf, method_off, method_len, path_off, path_len, started_at, buffer_pool)
         }
     }
 }
@@ -405,6 +408,7 @@ fn convert_error_to_response(
     path_off: u16,
     path_len: u16,
     started_at: Instant,
+    _buffer_pool: &mut BufferPool,
 ) -> Result<CoroutineResponse> {
     let validation_err = match &e {
         mlua::Error::ExternalError(arc_err) => arc_err.downcast_ref::<rover_types::ValidationErrors>(),
@@ -529,7 +533,7 @@ fn build_lua_context(
     Ok(ctx)
 }
 
-fn convert_lua_response(_lua: &Lua, result: Value) -> (u16, Bytes, Option<&'static str>) {
+fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool) -> (u16, Bytes, Option<&'static str>) {
     match result {
         Value::UserData(ref ud) => {
             if let Ok(response) = ud.borrow::<RoverResponse>() {
@@ -554,7 +558,7 @@ fn convert_lua_response(_lua: &Lua, result: Value) -> (u16, Bytes, Option<&'stat
         ),
 
         Value::Table(table) => {
-            let json = lua_table_to_json(&table).unwrap_or_else(|e| {
+            let json = lua_table_to_json(&table, buffer_pool).unwrap_or_else(|e| {
                 format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
             });
             (200, Bytes::from(json), Some("application/json"))
@@ -579,8 +583,9 @@ fn convert_lua_response(_lua: &Lua, result: Value) -> (u16, Bytes, Option<&'stat
     }
 }
 
-fn lua_table_to_json(table: &Table) -> Result<String> {
-    table
-        .to_json_string()
-        .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))
+fn lua_table_to_json(table: &Table, buffer_pool: &mut BufferPool) -> Result<String> {
+    let mut buf = buffer_pool.get_json_buf();
+    table.to_json(&mut buf).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
+    let json = String::from_utf8(buf).map_err(|e| anyhow::anyhow!("Invalid UTF-8 in JSON: {}", e))?;
+    Ok(json)
 }

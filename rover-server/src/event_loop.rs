@@ -344,6 +344,7 @@ impl EventLoop {
             &mut self.thread_pool,
             &mut self.request_pool,
             &self.table_pool,
+            &mut self.buffer_pool,
         ) {
             Ok(CoroutineResponse::Ready { status, body, content_type }) => {
                 let conn = &mut self.connections[conn_idx];
