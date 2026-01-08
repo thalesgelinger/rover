@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+bytes = "1.10"
 mlua = { version="0.11.5", features = ["anyhow", "vendored", "luajit52", "send", "serialize"] }
 rover_server = {path = "../rover-server"}
 rover-parser = {path = "../rover-parser"}

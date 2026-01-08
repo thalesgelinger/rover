@@ -12,10 +12,52 @@ use slab::Slab;
 
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::FastRouter;
-use crate::{HttpMethod, Route, ServerConfig, Bytes};
+use crate::{HttpMethod, Route, ServerConfig};
 use crate::http_task::{execute_handler_coroutine, CoroutineResponse, ThreadPool, RequestContextPool};
 use crate::buffer_pool::BufferPool;
 use crate::table_pool::LuaTablePool;
+
+fn parse_query_string_offsets(qs: &[u8]) -> Vec<(u16, u8, u16, u16)> {
+    let mut result = Vec::new();
+    if qs.is_empty() {
+        return result;
+    }
+
+    let mut pos = 0;
+    let qs_len = qs.len();
+
+    while pos < qs_len {
+        let key_start = pos as u16;
+
+        while pos < qs_len && qs[pos] != b'=' && qs[pos] != b'&' {
+            pos += 1;
+        }
+
+        let key_len_raw = (pos - key_start as usize) as u8;
+
+        if pos >= qs_len || qs[pos] == b'&' {
+            if key_len_raw > 0 {
+                result.push((key_start, key_len_raw, key_start, key_len_raw as u16));
+            }
+            pos += 1;
+            continue;
+        }
+
+        pos += 1;
+        let val_start = pos as u16;
+
+        while pos < qs_len && qs[pos] != b'&' {
+            pos += 1;
+        }
+
+        let val_len_raw = (pos - val_start as usize) as u16;
+        result.push((key_start, key_len_raw, val_start, val_len_raw));
+
+        pos += 1;
+    }
+
+    result
+}
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
@@ -256,67 +298,63 @@ impl EventLoop {
             }
         };
 
-        // Acquire query from pool (estimated size from query string length)
-        let query_expected_size = query_str.map_or(0, |qs| qs.len() / 10);
-        let mut query = self.buffer_pool.get_bytes_pairs(query_expected_size);
-        if let Some(qs) = query_str {
-            for (k, v) in form_urlencoded::parse(qs.as_bytes()) {
-                query.push((Bytes::copy_from_slice(k.as_bytes()), Bytes::copy_from_slice(v.as_bytes())));
-            }
-        }
-
-        // Acquire headers from pool (known exact size from connection)
-        let header_count = conn.header_offsets.len();
-        let mut headers = self.buffer_pool.get_bytes_pairs(header_count);
-        let header_buf = if !conn.parsed_buf.is_empty() {
+        // Get shared buffer for all request data
+        let buf = if !conn.parsed_buf.is_empty() {
             conn.parsed_buf.clone()
         } else {
             conn.read_buf.clone().freeze()
         };
+
+        // Compute offsets for method and path
+        let (method_off, method_len) = conn.method_offset.unwrap_or((0, 0));
+        let (path_off, path_len) = conn.path_offset.unwrap_or((0, 0));
+
+        // Parse query string to get offsets
+        let query_offsets = if let Some(qs) = query_str {
+            let query_offset_in_buf = path_off as usize + path_len + 1;
+            let query_bytes = &buf[query_offset_in_buf..query_offset_in_buf + qs.len()];
+            parse_query_string_offsets(query_bytes)
+        } else {
+            Vec::new()
+        };
+
+        // Get header offsets (already stored in connection)
+        let mut header_offsets = Vec::with_capacity(conn.header_offsets.len());
         for &(name_off, name_len, val_off, val_len) in conn.header_offsets.iter() {
-            headers.push((
-                header_buf.slice(name_off..name_off + name_len),
-                header_buf.slice(val_off..val_off + val_len),
-            ));
+            header_offsets.push((name_off as u16, name_len as u8, val_off as u16, val_len as u16));
         }
 
-        let body = conn.get_body();
+        // Get body offset and length
+        let (body_off, body_len) = conn.body.map(|(off, len)| (off as u32, len as u32)).unwrap_or((0, 0));
 
         match execute_handler_coroutine(
             &self.lua,
             handler,
-            method.as_bytes(),
-            path.as_bytes(),
-            &headers,
-            &query,
+            buf,
+            method_off as u16,
+            method_len as u8,
+            path_off as u16,
+            path_len as u16,
+            body_off,
+            body_len,
+            header_offsets,
+            query_offsets,
             &params,
-            body,
             started_at,
             &mut self.thread_pool,
             &mut self.request_pool,
             &self.table_pool,
         ) {
             Ok(CoroutineResponse::Ready { status, body, content_type }) => {
-                // Return buffers to pool
-                self.buffer_pool.return_bytes_pairs(headers);
-                self.buffer_pool.return_bytes_pairs(query);
-
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
-                // Use set_response_bytes for true zero-copy (body is already Bytes)
                 let buf = self.buffer_pool.get_response_buf();
                 conn.set_response_bytes_with_buf(status, body, content_type, buf);
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
-
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
-                // Return buffers to pool (coroutine only needs ctx_idx)
-                self.buffer_pool.return_bytes_pairs(headers);
-                self.buffer_pool.return_bytes_pairs(query);
-
                 let conn = &mut self.connections[conn_idx];
                 conn.thread = Some(thread.clone());
-
                 self.yielded_coroutines.insert(conn_idx, PendingCoroutine {
                     thread,
                     started_at: Instant::now(),
@@ -324,10 +362,6 @@ impl EventLoop {
                 });
             }
             Err(_) => {
-                // Return buffers to pool
-                self.buffer_pool.return_bytes_pairs(headers);
-                self.buffer_pool.return_bytes_pairs(query);
-
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();

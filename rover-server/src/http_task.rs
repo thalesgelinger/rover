@@ -9,12 +9,21 @@ use crate::{to_json::ToJson, response::RoverResponse, Bytes};
 use crate::table_pool::LuaTablePool;
 
 pub struct RequestContext {
-    method: Bytes,
-    path: Bytes,
-    headers: Vec<(Bytes, Bytes)>,
-    query: Vec<(Bytes, Bytes)>,
+    buf: Bytes,
+    
+    method_off: u16,
+    method_len: u8,
+    
+    path_off: u16,
+    path_len: u16,
+    
+    body_off: u32,
+    body_len: u32,
+    
+    headers: Vec<(u16, u8, u16, u16)>,
+    query: Vec<(u16, u8, u16, u16)>,
+    
     params: Vec<(Bytes, Bytes)>,
-    body: Option<Bytes>,
 }
 
 impl UserData for RequestContext {
@@ -24,9 +33,11 @@ impl UserData for RequestContext {
                 return lua.create_table();
             }
             let headers_table = lua.create_table_with_capacity(0, this.headers.len())?;
-            for (k, v) in &this.headers {
-                let k_str = unsafe { std::str::from_utf8_unchecked(k) };
-                let v_str = unsafe { std::str::from_utf8_unchecked(v) };
+            for &(name_off, name_len, val_off, val_len) in &this.headers {
+                let name_bytes = &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
+                let val_bytes = &this.buf[val_off as usize..(val_off + val_len) as usize];
+                let k_str = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(val_bytes) };
                 headers_table.set(k_str, v_str)?;
             }
             Ok(headers_table)
@@ -37,9 +48,11 @@ impl UserData for RequestContext {
                 return lua.create_table();
             }
             let query_table = lua.create_table_with_capacity(0, this.query.len())?;
-            for (k, v) in &this.query {
-                let k_str = unsafe { std::str::from_utf8_unchecked(k) };
-                let v_str = unsafe { std::str::from_utf8_unchecked(v) };
+            for &(name_off, name_len, val_off, val_len) in &this.query {
+                let name_bytes = &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
+                let val_bytes = &this.buf[val_off as usize..(val_off + val_len) as usize];
+                let k_str = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(val_bytes) };
                 query_table.set(k_str, v_str)?;
             }
             Ok(query_table)
@@ -59,23 +72,60 @@ impl UserData for RequestContext {
         });
 
         methods.add_method("body", |lua, this, ()| {
-            if let Some(ref body) = this.body {
-                let body_str = unsafe { std::str::from_utf8_unchecked(body) };
-
-                let globals = lua.globals();
-                let rover: Table = globals.get("rover")?;
-                let guard: Table = rover.get("guard")?;
-
-                if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
-                    constructor.call((body_str.to_string(), body.to_vec()))
-                } else {
-                    Ok(Value::String(lua.create_string(body_str)?))
-                }
+            if this.body_len > 0 {
+                let body_bytes = this.buf.slice(this.body_off as usize..(this.body_off + this.body_len) as usize);
+                let body_value = BodyValue::new(body_bytes);
+                lua.create_userdata(body_value).map(Value::UserData)
             } else {
                 Err(mlua::Error::RuntimeError(
                     "Request has no body".to_string(),
                 ))
             }
+        });
+    }
+}
+
+pub struct BodyValue {
+    bytes: Bytes,
+}
+
+impl BodyValue {
+    pub fn new(bytes: Bytes) -> Self {
+        Self { bytes }
+    }
+}
+
+impl UserData for BodyValue {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("json", |lua, this, ()| {
+            crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)
+        });
+
+        methods.add_method("raw", |lua, this, ()| {
+            crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)
+        });
+
+        methods.add_method("text", |lua, this, ()| {
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("as_string", |lua, this, ()| {
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("echo", |lua, this, ()| {
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("bytes", |lua, this, ()| {
+            let table = lua.create_table_with_capacity(this.bytes.len(), 0)?;
+            for (i, byte) in this.bytes.iter().enumerate() {
+                table.set(i + 1, *byte)?;
+            }
+            Ok(Value::Table(table))
         });
     }
 }
@@ -93,12 +143,16 @@ impl RequestContextPool {
 
         for _ in 0..capacity {
             let ctx = RequestContext {
-                method: Bytes::new(),
-                path: Bytes::new(),
+                buf: Bytes::new(),
+                method_off: 0,
+                method_len: 0,
+                path_off: 0,
+                path_len: 0,
+                body_off: 0,
+                body_len: 0,
                 headers: Vec::new(),
                 query: Vec::new(),
                 params: Vec::new(),
-                body: None,
             };
 
             let userdata = lua.create_userdata(ctx)?;
@@ -117,12 +171,16 @@ impl RequestContextPool {
     pub fn acquire(
         &mut self,
         lua: &Lua,
-        method: &[u8],
-        path: &[u8],
-        headers: &[(Bytes, Bytes)],
-        query: &[(Bytes, Bytes)],
+        buf: Bytes,
+        method_off: u16,
+        method_len: u8,
+        path_off: u16,
+        path_len: u16,
+        body_off: u32,
+        body_len: u32,
+        headers: Vec<(u16, u8, u16, u16)>,
+        query: Vec<(u16, u8, u16, u16)>,
         params: &[(Bytes, Bytes)],
-        body: Option<&[u8]>,
     ) -> mlua::Result<(Value, usize)> {
         let idx = self.available.pop()
             .ok_or_else(|| mlua::Error::RuntimeError("RequestContextPool exhausted".to_string()))?;
@@ -131,16 +189,19 @@ impl RequestContextPool {
         let userdata: mlua::AnyUserData = lua.registry_value(&key)?;
 
         let mut ctx = userdata.borrow_mut::<RequestContext>()?;
-        ctx.method = Bytes::copy_from_slice(method);
-        ctx.path = Bytes::copy_from_slice(path);
-        // Reuse vectors - clear and extend instead of clone
+        ctx.buf = buf;
+        ctx.method_off = method_off;
+        ctx.method_len = method_len;
+        ctx.path_off = path_off;
+        ctx.path_len = path_len;
+        ctx.body_off = body_off;
+        ctx.body_len = body_len;
         ctx.headers.clear();
-        ctx.headers.extend_from_slice(headers);
+        ctx.headers.extend(headers);
         ctx.query.clear();
-        ctx.query.extend_from_slice(query);
+        ctx.query.extend(query);
         ctx.params.clear();
         ctx.params.extend_from_slice(params);
-        ctx.body = body.map(Bytes::copy_from_slice);
         drop(ctx);
 
         Ok((Value::UserData(userdata), idx))
@@ -235,12 +296,16 @@ pub enum CoroutineResponse {
 pub fn execute_handler_coroutine(
     lua: &Lua,
     handler: &Function,
-    method: &[u8],
-    path: &[u8],
-    headers: &[(Bytes, Bytes)],
-    query: &[(Bytes, Bytes)],
+    buf: Bytes,
+    method_off: u16,
+    method_len: u8,
+    path_off: u16,
+    path_len: u16,
+    body_off: u32,
+    body_len: u32,
+    headers: Vec<(u16, u8, u16, u16)>,
+    query: Vec<(u16, u8, u16, u16)>,
     params: &[(Bytes, Bytes)],
-    body: Option<&[u8]>,
     started_at: Instant,
     thread_pool: &mut ThreadPool,
     request_pool: &mut RequestContextPool,
@@ -250,13 +315,14 @@ pub fn execute_handler_coroutine(
         if !query.is_empty() {
             debug!("  ├─ query: {:?}", query);
         }
-        if let Some(body) = body {
-            let body_display = std::str::from_utf8(body).unwrap_or("<binary data>");
+        if body_len > 0 {
+            let body_bytes = &buf[body_off as usize..(body_off + body_len) as usize];
+            let body_display = std::str::from_utf8(body_bytes).unwrap_or("<binary data>");
             debug!("  └─ body: {}", body_display);
         }
     }
 
-    let (ctx, ctx_idx) = match request_pool.acquire(lua, method, path, headers, query, params, body) {
+    let (ctx, ctx_idx) = match request_pool.acquire(lua, buf.clone(), method_off, method_len, path_off, path_len, body_off, body_len, headers, query, params) {
         Ok(c) => c,
         Err(e) => {
             let error_msg = e.to_string();
@@ -291,7 +357,6 @@ pub fn execute_handler_coroutine(
                     // Fast path: check for RoverResponse directly to avoid function call overhead
                     let (status, body, content_type) = if let Value::UserData(ref ud) = result {
                         if let Ok(response) = ud.borrow::<RoverResponse>() {
-                            // Zero-copy for Bytes (uses Arc internally), static str for content_type
                             (response.status, response.body.clone(), Some(response.content_type))
                         } else {
                             convert_lua_response(lua, result)
@@ -299,20 +364,20 @@ pub fn execute_handler_coroutine(
                     } else {
                         convert_lua_response(lua, result)
                     };
-                    
+
                     let elapsed = started_at.elapsed();
                     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
 
                     if status >= 200 && status < 300 {
                         if tracing::event_enabled!(tracing::Level::INFO) {
-                            let method_str = unsafe { std::str::from_utf8_unchecked(method) };
-                            let path_str = unsafe { std::str::from_utf8_unchecked(path) };
+                            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
+                            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
                             info!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
                         }
                     } else if status >= 400 {
                         if tracing::event_enabled!(tracing::Level::WARN) {
-                            let method_str = unsafe { std::str::from_utf8_unchecked(method) };
-                            let path_str = unsafe { std::str::from_utf8_unchecked(path) };
+                            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
+                            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
                             warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
                         }
                     }
@@ -326,17 +391,19 @@ pub fn execute_handler_coroutine(
             }
         }
         Err(e) => {
-            // Error during execution - release context
             request_pool.release(ctx_idx);
-            convert_error_to_response(e, method, path, started_at)
+            convert_error_to_response(e, &buf, method_off, method_len, path_off, path_len, started_at)
         }
     }
 }
 
 fn convert_error_to_response(
     e: mlua::Error,
-    method: &[u8],
-    path: &[u8],
+    buf: &Bytes,
+    method_off: u16,
+    method_len: u8,
+    path_off: u16,
+    path_len: u16,
     started_at: Instant,
 ) -> Result<CoroutineResponse> {
     let validation_err = match &e {
@@ -367,8 +434,8 @@ fn convert_error_to_response(
 
     if status >= 400 {
         if tracing::event_enabled!(tracing::Level::WARN) {
-            let method_str = unsafe { std::str::from_utf8_unchecked(method) };
-            let path_str = unsafe { std::str::from_utf8_unchecked(path) };
+            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
+            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
             warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
         }
     }

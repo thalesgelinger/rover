@@ -93,14 +93,6 @@ pub fn run(path: &str) -> Result<()> {
 
     let _ = guard.set_metatable(Some(guard_meta));
 
-    // Add hidden __body_value for BodyValue constructor
-    guard.set(
-        "__body_value",
-        lua.create_function(|_lua, (json_string, raw_bytes): (String, Vec<u8>)| {
-            Ok(BodyValue::new(json_string, raw_bytes))
-        })?,
-    )?;
-
     rover.set("guard", guard)?;
 
     // Override global io module with async version

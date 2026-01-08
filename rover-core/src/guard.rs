@@ -1,8 +1,9 @@
 use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value};
 use std::sync::Arc;
 use serde_json;
+use bytes::Bytes;
 pub use rover_types::{ValidationError, ValidationErrors};
-use rover_server::direct_json_parser::json_bytes_to_lua_direct;
+use rover_server::direct_json_parser::{json_bytes_to_lua_direct, json_bytes_ref_to_lua_direct};
 
 /// Validate a single field value based on config passed from Lua
 pub fn validate_field(
@@ -352,13 +353,12 @@ pub fn validate_table(
 /// - `body:expect(schema)` - Validate body against schema, returns validated table
 /// - `body:raw()` - DEPRECATED: Same as :json(), use :as_string() for zero-copy
 pub struct BodyValue {
-    json_string: String,
-    raw_bytes: Vec<u8>,
+    bytes: Bytes,
 }
 
 impl BodyValue {
-    pub fn new(json_string: String, raw_bytes: Vec<u8>) -> Self {
-        Self { json_string, raw_bytes }
+    pub fn new(bytes: Bytes) -> Self {
+        Self { bytes }
     }
 }
 
@@ -366,31 +366,31 @@ impl BodyValue {
     impl UserData for BodyValue {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("json", |lua, this, ()| {
-            json_bytes_to_lua_direct(lua, this.raw_bytes.clone())
+            json_bytes_ref_to_lua_direct(lua, &this.bytes)
         });
 
         methods.add_method("raw", |lua, this, ()| {
-            json_bytes_to_lua_direct(lua, this.raw_bytes.clone())
+            json_bytes_ref_to_lua_direct(lua, &this.bytes)
         });
 
         methods.add_method("text", |lua, this, ()| {
-            let text_str = std::str::from_utf8(&this.raw_bytes)
-                .map_err(|e| LuaError::RuntimeError(format!("Invalid UTF-8 in body: {}", e)))?;
-
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
             Ok(Value::String(lua.create_string(text_str)?))
         });
 
         methods.add_method("as_string", |lua, this, ()| {
-            Ok(Value::String(lua.create_string(&this.json_string)?))
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
         });
 
         methods.add_method("echo", |lua, this, ()| {
-            Ok(Value::String(lua.create_string(&this.json_string)?))
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
         });
 
         methods.add_method("bytes", |lua, this, ()| {
-            let table = lua.create_table_with_capacity(this.raw_bytes.len(), 0)?;
-            for (i, byte) in this.raw_bytes.iter().enumerate() {
+            let table = lua.create_table_with_capacity(this.bytes.len(), 0)?;
+            for (i, byte) in this.bytes.iter().enumerate() {
                 table.set(i + 1, *byte)?;
             }
             Ok(Value::Table(table))
@@ -398,7 +398,7 @@ impl BodyValue {
 
         methods.add_method("expect", |lua, this, schema: Table| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let parsed = json_bytes_to_lua_direct(lua, this.raw_bytes.clone())?;
+                let parsed = json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
 
                 let body_object = match parsed {
                     Value::Table(table) => table,
@@ -471,15 +471,15 @@ mod tests {
     #[test]
     fn test_body_value_json_method() {
         let lua = Lua::new();
-        let body = BodyValue::new(r#"{"name": "John", "age": 30}"#.to_string(), vec![]);
-        
+        let body = BodyValue::new(Bytes::from(r#"{"name": "John", "age": 30}"#));
+
         let body_value = lua.create_userdata(body).unwrap();
-        
+
         let result: mlua::Table = body_value.call_method("json", ()).unwrap();
-        
+
         let name: String = result.get("name").unwrap();
         let age: i64 = result.get("age").unwrap();
-        
+
         assert_eq!(name, "John");
         assert_eq!(age, 30);
     }
@@ -488,12 +488,12 @@ mod tests {
     fn test_body_value_text_method() {
         let lua = Lua::new();
         let text = "Hello, World!";
-        let body = BodyValue::new(text.to_string(), text.as_bytes().to_vec());
-        
+        let body = BodyValue::new(Bytes::from(text));
+
         let body_value = lua.create_userdata(body).unwrap();
-        
+
         let result: String = body_value.call_method("text", ()).unwrap();
-        
+
         assert_eq!(result, "Hello, World!");
     }
 
@@ -501,18 +501,18 @@ mod tests {
     fn test_body_value_bytes_method() {
         let lua = Lua::new();
         let bytes: Vec<u8> = vec![72, 101, 108, 108, 111];
-        let body = BodyValue::new("Hello".to_string(), bytes.clone());
-        
+        let body = BodyValue::new(Bytes::from(bytes.clone()));
+
         let body_value = lua.create_userdata(body).unwrap();
-        
+
         let result: mlua::Table = body_value.call_method("bytes", ()).unwrap();
-        
+
         let len: i64 = result.len().unwrap();
         assert_eq!(len, 5);
-        
+
         let first: u8 = result.get(1).unwrap();
         assert_eq!(first, 72);
-        
+
         let last: u8 = result.get(5).unwrap();
         assert_eq!(last, 111);
     }
@@ -520,26 +520,26 @@ mod tests {
     #[test]
     fn test_body_value_expect_method() {
         let lua = Lua::new();
-        let body = BodyValue::new(r#"{"name": "John", "age": 30}"#.to_string(), vec![]);
-        
+        let body = BodyValue::new(Bytes::from(r#"{"name": "John", "age": 30}"#));
+
         let body_value = lua.create_userdata(body).unwrap();
-        
+
         let schema = lua.create_table().unwrap();
         schema.set("name", lua.create_table().unwrap()).unwrap();
-        
+
         let schema_name: Table = schema.get("name").unwrap();
         schema_name.set("type", "string").unwrap();
         schema_name.set("required", true).unwrap();
-        
+
         schema.set("age", lua.create_table().unwrap()).unwrap();
         let schema_age: Table = schema.get("age").unwrap();
         schema_age.set("type", "integer").unwrap();
-        
+
         let result: mlua::Table = body_value.call_method("expect", schema).unwrap();
-        
+
         let name: String = result.get("name").unwrap();
         let age: i64 = result.get("age").unwrap();
-        
+
         assert_eq!(name, "John");
         assert_eq!(age, 30);
     }

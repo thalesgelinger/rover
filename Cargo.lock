@@ -972,6 +972,7 @@ name = "rover_core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "curl",
  "mlua",
  "rover-openapi",

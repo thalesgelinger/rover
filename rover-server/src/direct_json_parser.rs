@@ -1,10 +1,18 @@
 use mlua::{Lua, Value};
 use serde_json::Value as SerdeValue;
+use crate::Bytes;
 
 pub fn json_bytes_to_lua_direct(lua: &Lua, bytes: Vec<u8>) -> mlua::Result<Value> {
     let parsed: SerdeValue = serde_json::from_slice(&bytes)
         .map_err(|e| mlua::Error::RuntimeError(format!("JSON parsing failed: {}", e)))?;
-    
+
+    serde_value_to_lua(lua, &parsed)
+}
+
+pub fn json_bytes_ref_to_lua_direct(lua: &Lua, bytes: &Bytes) -> mlua::Result<Value> {
+    let parsed: SerdeValue = serde_json::from_slice(bytes)
+        .map_err(|e| mlua::Error::RuntimeError(format!("JSON parsing failed: {}", e)))?;
+
     serde_value_to_lua(lua, &parsed)
 }
 
