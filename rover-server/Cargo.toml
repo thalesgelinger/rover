@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+ahash = "0.8"
+memchr = "2"
 mlua = { version="0.11.5", features = ["anyhow", "vendored", "luajit52", "send", "serialize"] }
 rover_types = { path = "../rover-types" }
 serde_json = "1.0"

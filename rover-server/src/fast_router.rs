@@ -6,12 +6,13 @@ use bytes::Bytes;
 use matchit::Router;
 use mlua::Function;
 use smallvec::SmallVec;
+use ahash::AHasher;
 
 use crate::{HttpMethod, Route};
 
 #[inline]
 fn hash_path(path: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = AHasher::default();
     path.hash(&mut hasher);
     hasher.finish()
 }
