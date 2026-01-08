@@ -586,6 +586,7 @@ fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool)
 fn lua_table_to_json(table: &Table, buffer_pool: &mut BufferPool) -> Result<String> {
     let mut buf = buffer_pool.get_json_buf();
     table.to_json(&mut buf).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-    let json = String::from_utf8(buf).map_err(|e| anyhow::anyhow!("Invalid UTF-8 in JSON: {}", e))?;
+    let json = String::from_utf8_lossy(&buf).to_string();
+    buffer_pool.return_json_buf(buf);
     Ok(json)
 }
