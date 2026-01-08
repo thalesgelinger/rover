@@ -1,7 +1,11 @@
-use std::io::{Read, Write};
+use std::io::{Read, Write, IoSlice};
+use std::time::Instant;
+use std::mem;
 use mio::net::TcpStream;
-use mio::Token;
+use mio::{Token, Interest, Registry};
 use mlua::Thread;
+use crate::Bytes;
+use bytes::BytesMut;
 
 const READ_BUF_SIZE: usize = 4096;
 const MAX_HEADERS: usize = 32;
@@ -17,22 +21,28 @@ pub struct Connection {
     pub socket: TcpStream,
     pub token: Token,
     pub state: ConnectionState,
-    
-    pub read_buf: Vec<u8>,
+
+    pub read_buf: BytesMut,
+    pub parsed_buf: Bytes,
     pub read_pos: usize,
-    
+
     pub write_buf: Vec<u8>,
     pub write_pos: usize,
-    
-    pub method: Option<String>,
-    pub path: Option<String>,
-    pub headers: Vec<(String, String)>,
+    pub body_buf: Bytes,
+    pub body_pos: usize,
+
+    pub method_offset: Option<(usize, usize)>,
+    pub path_offset: Option<(usize, usize)>,
+    pub header_offsets: Vec<(usize, usize, usize, usize)>,
     pub body: Option<(usize, usize)>,
     pub content_length: usize,
     pub headers_complete: bool,
     pub keep_alive: bool,
-    
+
     pub thread: Option<Thread>,
+
+    yielded_at: Option<Instant>,
+    request_ctx_idx: Option<usize>,
 }
 
 impl Connection {
@@ -41,19 +51,82 @@ impl Connection {
             socket,
             token,
             state: ConnectionState::Reading,
-            read_buf: Vec::with_capacity(READ_BUF_SIZE),
+            read_buf: BytesMut::with_capacity(READ_BUF_SIZE * 2),
+            parsed_buf: Bytes::new(),
             read_pos: 0,
             write_buf: Vec::with_capacity(512),
             write_pos: 0,
-            method: None,
-            path: None,
-            headers: Vec::with_capacity(8),
+            body_buf: Bytes::new(),
+            body_pos: 0,
+            method_offset: None,
+            path_offset: None,
+            header_offsets: Vec::with_capacity(16),
             body: None,
             content_length: 0,
             headers_complete: false,
             keep_alive: true,
             thread: None,
+            yielded_at: None,
+            request_ctx_idx: None,
         }
+    }
+
+    pub fn reregister(&mut self, registry: &Registry, interest: Interest) -> std::io::Result<()> {
+        registry.reregister(&mut self.socket, self.token, interest)
+    }
+
+    pub fn deregister(&mut self, registry: &Registry) -> std::io::Result<()> {
+        registry.deregister(&mut self.socket)
+    }
+
+    pub fn method_str(&self) -> Option<&str> {
+        let buf: &[u8] = if !self.parsed_buf.is_empty() {
+            &self.parsed_buf
+        } else {
+            &self.read_buf
+        };
+
+        self.method_offset.map(|(off, len)|
+            unsafe { std::str::from_utf8_unchecked(&buf[off..off + len]) }
+        )
+    }
+
+    pub fn path_str(&self) -> Option<&str> {
+        let buf: &[u8] = if !self.parsed_buf.is_empty() {
+            &self.parsed_buf
+        } else {
+            &self.read_buf
+        };
+
+        self.path_offset.map(|(off, len)|
+            unsafe { std::str::from_utf8_unchecked(&buf[off..off + len]) }
+        )
+    }
+
+    pub fn headers_iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        let buf_ptr: *const u8 = if !self.parsed_buf.is_empty() {
+            self.parsed_buf.as_ptr()
+        } else {
+            self.read_buf.as_ptr()
+        };
+
+        let buf_len = if !self.parsed_buf.is_empty() {
+            self.parsed_buf.len()
+        } else {
+            self.read_buf.len()
+        };
+
+        self.header_offsets.iter().filter_map(move |&(name_off, name_len, val_off, val_len)| {
+            if name_off + name_len > buf_len || val_off + val_len > buf_len {
+                return None;
+            }
+            unsafe {
+                Some((
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf_ptr.add(name_off), name_len)),
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf_ptr.add(val_off), val_len)),
+                ))
+            }
+        })
     }
 
     pub fn try_read(&mut self) -> std::io::Result<bool> {
@@ -87,33 +160,74 @@ impl Connection {
             let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
             let mut req = httparse::Request::new(&mut headers);
             
-            match req.parse(&self.read_buf[..self.read_pos]) {
+            let parse_buf = &self.read_buf[..self.read_pos];
+            match req.parse(parse_buf) {
                 Ok(httparse::Status::Complete(header_len)) => {
                     self.headers_complete = true;
-                    self.method = req.method.map(|s| s.to_string());
-                    self.path = req.path.map(|s| s.to_string());
-                    
-                    self.headers.clear();
-                    for header in req.headers.iter() {
-                        let name = header.name.to_string();
-                        let value = String::from_utf8_lossy(header.value).to_string();
-                        
-                        if name.eq_ignore_ascii_case("content-length") {
-                            self.content_length = value.parse().unwrap_or(0);
+
+                    let base_ptr = parse_buf.as_ptr();
+                    let buf_len = parse_buf.len();
+                    let mut calc_offset = |ptr: *const u8, len: usize| -> Option<usize> {
+                        let diff = unsafe { ptr.offset_from(base_ptr) };
+                        if diff < 0 {
+                            return None;
                         }
-                        if name.eq_ignore_ascii_case("connection") {
-                            self.keep_alive = !value.eq_ignore_ascii_case("close");
+                        let offset = diff as usize;
+                        if offset + len <= buf_len {
+                            Some(offset)
+                        } else {
+                            None
                         }
-                        
-                        self.headers.push((name, value));
+                    };
+
+                    self.method_offset = req.method.as_ref().and_then(|s| {
+                        calc_offset(s.as_ptr(), s.len()).map(|start| (start, s.len()))
+                    });
+                    self.path_offset = req.path.as_ref().and_then(|s| {
+                        calc_offset(s.as_ptr(), s.len()).map(|start| (start, s.len()))
+                    });
+
+                    if self.method_offset.is_none() || self.path_offset.is_none() {
+                        self.state = ConnectionState::Closed;
+                        return Ok(false);
                     }
-                    
+
+                    self.header_offsets.clear();
+                    for header in req.headers.iter() {
+                        let Some(h_name_start) = calc_offset(header.name.as_ptr(), header.name.len()) else {
+                            self.state = ConnectionState::Closed;
+                            return Ok(false);
+                        };
+                        let Some(h_val_start) = calc_offset(header.value.as_ptr(), header.value.len()) else {
+                            self.state = ConnectionState::Closed;
+                            return Ok(false);
+                        };
+
+                        let h_name_len = header.name.len();
+                        let h_val_len = header.value.len();
+                        let name_str = unsafe { std::str::from_utf8_unchecked(&self.read_buf[h_name_start..h_name_start + h_name_len]) };
+                        let value_bytes = &self.read_buf[h_val_start..h_val_start + h_val_len];
+                        let value_str = unsafe { std::str::from_utf8_unchecked(value_bytes) };
+
+                        if name_str.eq_ignore_ascii_case("content-length") {
+                            self.content_length = value_str.trim().parse().unwrap_or(0);
+                        } else if name_str.eq_ignore_ascii_case("connection") {
+                            self.keep_alive = !value_str.trim().eq_ignore_ascii_case("close");
+                        }
+
+                        self.header_offsets.push((h_name_start, h_name_len, h_val_start, h_val_len));
+                    }
+
                     let body_start = header_len;
                     let body_received = self.read_pos - body_start;
-                    
+
                     if body_received >= self.content_length {
                         if self.content_length > 0 {
                             self.body = Some((body_start, self.content_length));
+                        }
+                        if self.parsed_buf.is_empty() && self.read_pos > 0 {
+                            self.parsed_buf = self.read_buf.split_to(self.read_pos).freeze();
+                            self.read_pos = 0;
                         }
                         return Ok(true);
                     }
@@ -133,6 +247,10 @@ impl Connection {
                     if self.content_length > 0 {
                         self.body = Some((pos, self.content_length));
                     }
+                    if self.parsed_buf.is_empty() && self.read_pos > 0 {
+                        self.parsed_buf = self.read_buf.split_to(self.read_pos).freeze();
+                        self.read_pos = 0;
+                    }
                     return Ok(true);
                 }
             }
@@ -151,14 +269,75 @@ impl Connection {
     }
 
     pub fn get_body(&self) -> Option<&[u8]> {
+        let buf: &[u8] = if !self.parsed_buf.is_empty() {
+            &self.parsed_buf
+        } else {
+            &self.read_buf
+        };
+
         if let Some((start, len)) = self.body {
-            Some(&self.read_buf[start..start + len])
+            buf.get(start..start + len)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_body_bytes(&self) -> Option<Bytes> {
+        if let Some((start, len)) = self.body {
+            if !self.parsed_buf.is_empty() {
+                return Some(self.parsed_buf.slice(start..start + len));
+            }
+            Some(Bytes::copy_from_slice(&self.read_buf[start..start + len]))
         } else {
             None
         }
     }
 
     pub fn try_write(&mut self) -> std::io::Result<bool> {
+        // Calculate remaining data in each buffer
+        let header_remaining = self.write_buf.len().saturating_sub(self.write_pos);
+        let body_remaining = self.body_buf.len().saturating_sub(self.body_pos);
+        
+        // Fast path: everything already written
+        if header_remaining == 0 && body_remaining == 0 {
+            return Ok(true);
+        }
+        
+        // Try vectored I/O first (single syscall for header + body)
+        if header_remaining > 0 && body_remaining > 0 {
+            let slices = [
+                IoSlice::new(&self.write_buf[self.write_pos..]),
+                IoSlice::new(&self.body_buf[self.body_pos..]),
+            ];
+            
+            match self.socket.write_vectored(&slices) {
+                Ok(0) => {
+                    self.state = ConnectionState::Closed;
+                    return Ok(false);
+                }
+                Ok(n) => {
+                    // Distribute written bytes across buffers
+                    if n <= header_remaining {
+                        self.write_pos += n;
+                    } else {
+                        self.write_pos = self.write_buf.len();
+                        self.body_pos += n - header_remaining;
+                    }
+                    
+                    // Check if done
+                    if self.write_pos >= self.write_buf.len() && self.body_pos >= self.body_buf.len() {
+                        return Ok(true);
+                    }
+                    // Continue in the loop for remaining data
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        
+        // Finish writing headers if needed
         while self.write_pos < self.write_buf.len() {
             match self.socket.write(&self.write_buf[self.write_pos..]) {
                 Ok(0) => {
@@ -175,12 +354,31 @@ impl Connection {
             }
         }
         
+        // Finish writing body if needed
+        while self.body_pos < self.body_buf.len() {
+            match self.socket.write(&self.body_buf[self.body_pos..]) {
+                Ok(0) => {
+                    self.state = ConnectionState::Closed;
+                    return Ok(false);
+                }
+                Ok(n) => {
+                    self.body_pos += n;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        
         Ok(true)
     }
 
-    pub fn set_response(&mut self, status: u16, body: &[u8], content_type: Option<&str>) {
-        self.write_buf.clear();
+    pub fn set_response_with_buf(&mut self, status: u16, body: &[u8], content_type: Option<&str>, mut buf: Vec<u8>) {
+        buf.clear();
+        self.write_buf = buf;
         self.write_pos = 0;
+        self.body_pos = 0;
 
         let status_text = match status {
             200 => "OK",
@@ -195,49 +393,72 @@ impl Connection {
         let ct = content_type.unwrap_or("text/plain");
         let conn = if self.keep_alive { "keep-alive" } else { "close" };
 
-        // Pre-calculate exact size to avoid reallocations
-        let header_size =
-            9 + // "HTTP/1.1 "
-            3 + // status code
-            1 + // space
-            status_text.len() +
-            15 + // "\r\nContent-Type: "
-            ct.len() +
-            18 + // "\r\nContent-Length: "
-            20 + // max digits for content length
-            14 + // "\r\nConnection: "
-            conn.len() +
-            4; // "\r\n\r\n"
-
-        let total_size = header_size + body.len();
-
-        // Reserve exact capacity (zero-copy optimization)
-        if self.write_buf.capacity() < total_size {
-            self.write_buf.reserve(total_size - self.write_buf.capacity());
-        }
-
-        // Build response in-place
+        // Build headers only (body stored separately for vectored I/O)
         write!(self.write_buf, "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
             status, status_text, ct, body.len(), conn).unwrap();
 
-        // Zero-copy body append
-        self.write_buf.extend_from_slice(body);
+        // Store body separately (zero-copy via Bytes)
+        self.body_buf = Bytes::copy_from_slice(body);
         self.state = ConnectionState::Writing;
     }
 
+    /// Set response with pre-allocated Bytes body (true zero-copy)
+    pub fn set_response_bytes_with_buf(&mut self, status: u16, body: Bytes, content_type: Option<&str>, mut buf: Vec<u8>) {
+        buf.clear();
+        self.write_buf = buf;
+        self.write_pos = 0;
+        self.body_pos = 0;
+
+        let status_text = match status {
+            200 => "OK",
+            201 => "Created",
+            204 => "No Content",
+            400 => "Bad Request",
+            404 => "Not Found",
+            500 => "Internal Server Error",
+            _ => "Unknown",
+        };
+
+        let ct = content_type.unwrap_or("text/plain");
+        let conn = if self.keep_alive { "keep-alive" } else { "close" };
+
+        // Build headers only
+        write!(self.write_buf, "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
+            status, status_text, ct, body.len(), conn).unwrap();
+
+        // Store body directly (true zero-copy - no slice copy)
+        self.body_buf = body;
+        self.state = ConnectionState::Writing;
+    }
+
+    // Backward-compatible helpers
+    pub fn set_response(&mut self, status: u16, body: &[u8], content_type: Option<&str>) {
+        let buf = mem::take(&mut self.write_buf);
+        self.set_response_with_buf(status, body, content_type, buf);
+    }
+
+    pub fn set_response_bytes(&mut self, status: u16, body: Bytes, content_type: Option<&str>) {
+        let buf = mem::take(&mut self.write_buf);
+        self.set_response_bytes_with_buf(status, body, content_type, buf);
+    }
+
     pub fn reset(&mut self) {
-        // Keep capacity to avoid reallocations (zero-copy optimization)
         self.read_buf.clear();
+        self.parsed_buf = Bytes::new();
         self.read_pos = 0;
         self.write_buf.clear();
         self.write_pos = 0;
-        self.method = None;
-        self.path = None;
-        self.headers.clear();
+        self.body_buf = Bytes::new();
+        self.body_pos = 0;
+        self.method_offset = None;
+        self.path_offset = None;
+        self.header_offsets.clear();
         self.body = None;
         self.content_length = 0;
         self.headers_complete = false;
         self.state = ConnectionState::Reading;
         self.thread = None;
+        self.yielded_at = None;
+        self.request_ctx_idx = None;
     }
 }

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
-mlua = { version="0.11.5", features = ["anyhow", "vendored", "luajit", "send", "serialize"] }
+mlua = { version="0.11.5", features = ["anyhow", "vendored", "luajit52", "send", "serialize"] }
 rover_types = { path = "../rover-types" }
 serde_json = "1.0"
 itoa = "1.0"
@@ -20,6 +20,8 @@ rover-openapi = {path = "../rover-openapi"}
 mio = { version = "1.0", features = ["os-poll", "net"] }
 httparse = "1.10"
 slab = "0.4"
+bytes = "1.10"
+lru = "0.12"
 
 
 [lib]

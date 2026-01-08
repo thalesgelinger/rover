@@ -2,6 +2,7 @@ use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value};
 use std::sync::Arc;
 use serde_json;
 pub use rover_types::{ValidationError, ValidationErrors};
+use rover_server::direct_json_parser::json_bytes_to_lua_direct;
 
 /// Validate a single field value based on config passed from Lua
 pub fn validate_field(
@@ -341,6 +342,15 @@ pub fn validate_table(
 }
 
 /// A wrapper around parsed body that can be validated with :expect()
+///
+/// Lua API methods:
+/// - `body:json()` - Parse JSON to Lua table (expensive)
+/// - `body:as_string()` - Get raw JSON string without parsing (zero-copy, fast)
+/// - `body:echo()` - Alias for :as_string(), for echoing back pre-serialized JSON
+/// - `body:text()` - Get body as plain text string
+/// - `body:bytes()` - Get body as Lua table of bytes
+/// - `body:expect(schema)` - Validate body against schema, returns validated table
+/// - `body:raw()` - DEPRECATED: Same as :json(), use :as_string() for zero-copy
 pub struct BodyValue {
     json_string: String,
     raw_bytes: Vec<u8>,
@@ -353,24 +363,14 @@ impl BodyValue {
 }
 
 
-impl UserData for BodyValue {
+    impl UserData for BodyValue {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("json", |lua, this, ()| {
-            let parsed_json: serde_json::Value = serde_json::from_str(&this.json_string)
-                .map_err(|e| {
-                    LuaError::RuntimeError(format!("Invalid JSON in request body: {}", e))
-                })?;
-
-            json_to_lua(lua, &parsed_json)
+            json_bytes_to_lua_direct(lua, this.raw_bytes.clone())
         });
 
         methods.add_method("raw", |lua, this, ()| {
-            let parsed_json: serde_json::Value = serde_json::from_str(&this.json_string)
-                .map_err(|e| {
-                    LuaError::RuntimeError(format!("Invalid JSON in request body: {}", e))
-                })?;
-
-            json_to_lua(lua, &parsed_json)
+            json_bytes_to_lua_direct(lua, this.raw_bytes.clone())
         });
 
         methods.add_method("text", |lua, this, ()| {
@@ -378,6 +378,14 @@ impl UserData for BodyValue {
                 .map_err(|e| LuaError::RuntimeError(format!("Invalid UTF-8 in body: {}", e)))?;
 
             Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("as_string", |lua, this, ()| {
+            Ok(Value::String(lua.create_string(&this.json_string)?))
+        });
+
+        methods.add_method("echo", |lua, this, ()| {
+            Ok(Value::String(lua.create_string(&this.json_string)?))
         });
 
         methods.add_method("bytes", |lua, this, ()| {
@@ -390,13 +398,10 @@ impl UserData for BodyValue {
 
         methods.add_method("expect", |lua, this, schema: Table| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let parsed_json: serde_json::Value = serde_json::from_str(&this.json_string)
-                    .map_err(|e| {
-                        LuaError::RuntimeError(format!("Invalid JSON in request body: {}", e))
-                    })?;
+                let parsed = json_bytes_to_lua_direct(lua, this.raw_bytes.clone())?;
 
-                let body_object = match parsed_json {
-                    serde_json::Value::Object(obj) => obj,
+                let body_object = match parsed {
+                    Value::Table(table) => table,
                     _ => {
                         return Err(LuaError::RuntimeError(
                             "Request body must be a JSON object".to_string(),
@@ -404,29 +409,7 @@ impl UserData for BodyValue {
                     }
                 };
 
-                let data_table = lua.create_table().map_err(|e| {
-                    eprintln!("INTERNAL ERROR: Failed to create data table: {}", e);
-                    LuaError::RuntimeError(
-                        "Internal server error while processing request".to_string(),
-                    )
-                })?;
-
-                for (k, v) in body_object {
-                    data_table.set(
-                        k.as_str(),
-                        json_to_lua(lua, &v).map_err(|e| {
-                            eprintln!(
-                                "INTERNAL ERROR: Failed to convert JSON value for key '{}': {}",
-                                k, e
-                            );
-                            LuaError::RuntimeError(
-                                "Internal server error while processing request".to_string(),
-                            )
-                        })?,
-                    )?;
-                }
-
-                match validate_table(lua, &data_table, &schema, "") {
+                match validate_table(lua, &body_object, &schema, "") {
                     Ok(validated) => Ok(validated),
                     Err(errors) => {
                         let validation_errors = ValidationErrors::new(errors);

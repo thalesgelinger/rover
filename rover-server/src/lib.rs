@@ -5,6 +5,9 @@ pub mod http_task;
 mod event_loop;
 mod http_server;
 mod connection;
+mod buffer_pool;
+pub mod table_pool;
+pub mod direct_json_parser;
 
 // Keep HttpResponse for backward compatibility
 pub use http_task::{HttpResponse, CoroutineResponse};
@@ -19,7 +22,7 @@ use mlua::{
 };
 use tracing::info;
 
-pub type Bytes = Vec<u8>;
+pub type Bytes = bytes::Bytes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
+use bytes::Bytes;
 use matchit::Router;
 use mlua::Function;
 use smallvec::SmallVec;
@@ -58,16 +59,25 @@ impl FastRouter {
         })
     }
 
+    /// Get handler by index (for cached route lookups)
+    #[inline]
+    pub fn get_handler(&self, idx: usize) -> &Function {
+        &self.handlers[idx]
+    }
+
+    /// Match route and return handler + params (zero-copy where possible)
     pub fn match_route(
         &self,
         method: HttpMethod,
         path: &str,
-    ) -> Option<(&Function, HashMap<String, String>)> {
+    ) -> Option<(&Function, Vec<(Bytes, Bytes)>)> {
+        // Fast path: static routes (no params)
         let path_hash = hash_path(path);
         if let Some(&handler_idx) = self.static_routes.get(&(path_hash, method)) {
-            return Some((&self.handlers[handler_idx], HashMap::new()));
+            return Some((&self.handlers[handler_idx], Vec::new()));
         }
 
+        // Slow path: dynamic routes with parameters
         let matched = self.router.at(path).ok()?;
 
         let handler_idx = matched
@@ -76,17 +86,18 @@ impl FastRouter {
             .find(|(m, _)| *m == method)
             .map(|(_, idx)| *idx)?;
 
-        let handler = &self.handlers[handler_idx];
-
-        let mut params = HashMap::with_capacity(matched.params.len());
+        let mut params = Vec::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
             let decoded = urlencoding::decode(value).ok()?.into_owned();
             if decoded.is_empty() {
                 return None;
             }
-            params.insert(name.to_string(), decoded);
+            params.push((
+                Bytes::copy_from_slice(name.as_bytes()),
+                Bytes::copy_from_slice(decoded.as_bytes()),
+            ));
         }
 
-        Some((handler, params))
+        Some((&self.handlers[handler_idx], params))
     }
 }
