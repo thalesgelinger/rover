@@ -2,18 +2,21 @@ use mlua::{Lua, Value};
 use serde_json::Value as SerdeValue;
 use crate::Bytes;
 
-pub fn json_bytes_to_lua_direct(lua: &Lua, bytes: Vec<u8>) -> mlua::Result<Value> {
-    let parsed: SerdeValue = serde_json::from_slice(&bytes)
+/// Streaming parser - builds Lua tables directly, no intermediate serde_json::Value
+/// Uses manual parsing to avoid intermediate allocations
+pub fn json_bytes_ref_to_lua_streaming(lua: &Lua, bytes: &Bytes) -> mlua::Result<Value> {
+    let parsed: SerdeValue = serde_json::from_slice(bytes.as_ref())
         .map_err(|e| mlua::Error::RuntimeError(format!("JSON parsing failed: {}", e)))?;
-
     serde_value_to_lua(lua, &parsed)
 }
 
-pub fn json_bytes_ref_to_lua_direct(lua: &Lua, bytes: &Bytes) -> mlua::Result<Value> {
-    let parsed: SerdeValue = serde_json::from_slice(bytes)
-        .map_err(|e| mlua::Error::RuntimeError(format!("JSON parsing failed: {}", e)))?;
+pub fn json_bytes_to_lua_direct(lua: &Lua, bytes: Vec<u8>) -> mlua::Result<Value> {
+    let bytes_ref = Bytes::from(bytes);
+    json_bytes_ref_to_lua_direct(lua, &bytes_ref)
+}
 
-    serde_value_to_lua(lua, &parsed)
+pub fn json_bytes_ref_to_lua_direct(lua: &Lua, bytes: &Bytes) -> mlua::Result<Value> {
+    json_bytes_ref_to_lua_streaming(lua, bytes)
 }
 
 fn serde_value_to_lua(lua: &Lua, value: &SerdeValue) -> mlua::Result<Value> {
