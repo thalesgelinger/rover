@@ -1017,6 +1017,7 @@ dependencies = [
  "rover-openapi",
  "rover_types",
  "ryu",
+ "serde",
  "serde_json",
  "slab",
  "smallvec",
