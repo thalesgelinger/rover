@@ -1,6 +1,6 @@
 use std::io;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::collections::HashMap;
 use std::mem;
 
@@ -61,7 +61,6 @@ fn parse_query_string_offsets(qs: &[u8]) -> Vec<(u16, u8, u16, u16)> {
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
-const TIMEOUT_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 struct PendingCoroutine {
     thread: Thread,
@@ -78,7 +77,6 @@ pub struct EventLoop {
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
     yielded_coroutines: HashMap<usize, PendingCoroutine>,
-    last_timeout_check: Instant,
     thread_pool: ThreadPool,
     request_pool: RequestContextPool,
     table_pool: LuaTablePool,
@@ -115,7 +113,6 @@ impl EventLoop {
             config,
             openapi_spec,
             yielded_coroutines: HashMap::with_capacity(1024),
-            last_timeout_check: Instant::now(),
             thread_pool: ThreadPool::new(2048),
             request_pool,
             table_pool,

@@ -25,7 +25,7 @@ impl LuaTablePool {
         if let Some(table) = available.pop() {
             *self.total_reused.borrow_mut() += 1;
             
-            table.clear();
+            let _ = table.clear();
             
             table
         } else {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json;
 use bytes::Bytes;
 pub use rover_types::{ValidationError, ValidationErrors};
-use rover_server::direct_json_parser::{json_bytes_to_lua_direct, json_bytes_ref_to_lua_direct};
+use rover_server::direct_json_parser::json_bytes_ref_to_lua_direct;
 
 /// Validate a single field value based on config passed from Lua
 pub fn validate_field(
@@ -352,11 +352,13 @@ pub fn validate_table(
 /// - `body:bytes()` - Get body as Lua table of bytes
 /// - `body:expect(schema)` - Validate body against schema, returns validated table
 /// - `body:raw()` - DEPRECATED: Same as :json(), use :as_string() for zero-copy
+#[allow(dead_code)]
 pub struct BodyValue {
     bytes: Bytes,
 }
 
 impl BodyValue {
+    #[allow(dead_code)]
     pub fn new(bytes: Bytes) -> Self {
         Self { bytes }
     }
@@ -432,6 +434,7 @@ impl BodyValue {
 }
 
 /// Convert serde_json::Value to mlua::Value
+#[allow(dead_code)]
 fn json_to_lua(lua: &Lua, value: &serde_json::Value) -> mlua::Result<Value> {
     match value {
         serde_json::Value::Null => Ok(Value::Nil),

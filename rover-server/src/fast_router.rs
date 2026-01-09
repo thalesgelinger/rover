@@ -60,12 +60,6 @@ impl FastRouter {
         })
     }
 
-    /// Get handler by index (for cached route lookups)
-    #[inline]
-    pub fn get_handler(&self, idx: usize) -> &Function {
-        &self.handlers[idx]
-    }
-
     /// Match route and return handler + params (zero-copy where possible)
     pub fn match_route(
         &self,

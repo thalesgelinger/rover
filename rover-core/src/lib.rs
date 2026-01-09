@@ -3,12 +3,10 @@ mod auto_table;
 mod guard;
 pub mod html;
 mod http;
-mod inspect;
 mod io;
 mod server;
 pub mod template;
 
-use guard::BodyValue;
 use html::create_html_module;
 use server::{AppServer, Server};
 
@@ -129,16 +127,12 @@ pub fn run(path: &str) -> Result<()> {
 }
 
 #[derive(Debug)]
-pub struct Config {
-    name: String,
-}
+pub struct Config;
 
 impl FromLua for Config {
     fn from_lua(value: Value, _lua: &Lua) -> mlua::Result<Self> {
         match value {
-            Value::Table(table) => Ok(Config {
-                name: table.get("name")?,
-            }),
+            Value::Table(_table) => Ok(Config),
             _ => Err(Error::FromLuaConversionError {
                 from: value.type_name(),
                 to: "Config".into(),
@@ -151,8 +145,8 @@ impl FromLua for Config {
 pub fn get_config() -> Result<Config> {
     let lua = Lua::new();
     let content = std::fs::read_to_string("rover.lua")?;
-    let config: Config = lua.load(&content).eval()?;
-    Ok(config)
+    let _config: Config = lua.load(&content).eval()?;
+    Ok(Config)
 }
 
 #[cfg(test)]
@@ -168,6 +162,6 @@ mod tests {
     #[test]
     fn should_get_config_as_rust_struct() {
         let result = get_config();
-        assert_eq!(result.unwrap().name, "rover");
+        assert!(result.is_ok());
     }
 }

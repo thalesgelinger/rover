@@ -1,6 +1,5 @@
 use std::io::{Read, Write, IoSlice};
 use std::time::Instant;
-use std::mem;
 use mio::net::TcpStream;
 use mio::{Token, Interest, Registry};
 use mlua::Thread;
@@ -75,10 +74,6 @@ impl Connection {
         registry.reregister(&mut self.socket, self.token, interest)
     }
 
-    pub fn deregister(&mut self, registry: &Registry) -> std::io::Result<()> {
-        registry.deregister(&mut self.socket)
-    }
-
     pub fn method_str(&self) -> Option<&str> {
         let buf: &[u8] = if !self.parsed_buf.is_empty() {
             &self.parsed_buf
@@ -101,32 +96,6 @@ impl Connection {
         self.path_offset.map(|(off, len)|
             unsafe { std::str::from_utf8_unchecked(&buf[off..off + len]) }
         )
-    }
-
-    pub fn headers_iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        let buf_ptr: *const u8 = if !self.parsed_buf.is_empty() {
-            self.parsed_buf.as_ptr()
-        } else {
-            self.read_buf.as_ptr()
-        };
-
-        let buf_len = if !self.parsed_buf.is_empty() {
-            self.parsed_buf.len()
-        } else {
-            self.read_buf.len()
-        };
-
-        self.header_offsets.iter().filter_map(move |&(name_off, name_len, val_off, val_len)| {
-            if name_off + name_len > buf_len || val_off + val_len > buf_len {
-                return None;
-            }
-            unsafe {
-                Some((
-                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf_ptr.add(name_off), name_len)),
-                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(buf_ptr.add(val_off), val_len)),
-                ))
-            }
-        })
     }
 
     pub fn try_read(&mut self) -> std::io::Result<bool> {
@@ -167,7 +136,7 @@ impl Connection {
 
                     let base_ptr = parse_buf.as_ptr();
                     let buf_len = parse_buf.len();
-                    let mut calc_offset = |ptr: *const u8, len: usize| -> Option<usize> {
+                    let calc_offset = |ptr: *const u8, len: usize| -> Option<usize> {
                         let diff = unsafe { ptr.offset_from(base_ptr) };
                         if diff < 0 {
                             return None;
@@ -266,31 +235,6 @@ impl Connection {
             }
         }
         None
-    }
-
-    pub fn get_body(&self) -> Option<&[u8]> {
-        let buf: &[u8] = if !self.parsed_buf.is_empty() {
-            &self.parsed_buf
-        } else {
-            &self.read_buf
-        };
-
-        if let Some((start, len)) = self.body {
-            buf.get(start..start + len)
-        } else {
-            None
-        }
-    }
-
-    pub fn get_body_bytes(&self) -> Option<Bytes> {
-        if let Some((start, len)) = self.body {
-            if !self.parsed_buf.is_empty() {
-                return Some(self.parsed_buf.slice(start..start + len));
-            }
-            Some(Bytes::copy_from_slice(&self.read_buf[start..start + len]))
-        } else {
-            None
-        }
     }
 
     pub fn try_write(&mut self) -> std::io::Result<bool> {
@@ -429,17 +373,6 @@ impl Connection {
         // Store body directly (true zero-copy - no slice copy)
         self.body_buf = body;
         self.state = ConnectionState::Writing;
-    }
-
-    // Backward-compatible helpers
-    pub fn set_response(&mut self, status: u16, body: &[u8], content_type: Option<&str>) {
-        let buf = mem::take(&mut self.write_buf);
-        self.set_response_with_buf(status, body, content_type, buf);
-    }
-
-    pub fn set_response_bytes(&mut self, status: u16, body: Bytes, content_type: Option<&str>) {
-        let buf = mem::take(&mut self.write_buf);
-        self.set_response_bytes_with_buf(status, body, content_type, buf);
     }
 
     pub fn reset(&mut self) {

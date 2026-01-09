@@ -2,12 +2,8 @@ use mlua::prelude::*;
 use curl::easy::Easy;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::cell::RefCell;
 
-static HTTP_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-// Thread-local connection pool for curl handles (single-threaded, no locking needed!)
 thread_local! {
     static CURL_POOL: RefCell<Vec<Easy>> = RefCell::new(Vec::with_capacity(8));
 }
@@ -39,25 +35,6 @@ pub struct HttpClient {
     base_url: Option<String>,
     default_headers: Vec<(String, String)>,
     timeout: Option<Duration>,
-}
-
-/// Marker for HTTP requests that should yield
-#[derive(Clone, Debug)]
-pub struct HttpRequestDescriptor {
-    pub id: u64,
-    pub method: String,
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-    pub body: Option<String>,
-}
-
-impl LuaUserData for HttpRequestDescriptor {
-    fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("__rover_http_request", |_, _| Ok(true));
-        fields.add_field_method_get("id", |_, this| Ok(this.id));
-        fields.add_field_method_get("method", |_, this| Ok(this.method.clone()));
-        fields.add_field_method_get("url", |_, this| Ok(this.url.clone()));
-    }
 }
 
 impl HttpClient {
