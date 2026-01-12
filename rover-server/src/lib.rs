@@ -9,7 +9,6 @@ mod buffer_pool;
 pub mod table_pool;
 pub mod direct_json_parser;
 
-// Keep HttpResponse for backward compatibility
 pub use http_task::{HttpResponse, CoroutineResponse};
 pub use response::RoverResponse;
 use std::net::SocketAddr;

@@ -251,45 +251,6 @@ impl ThreadPool {
     }
 }
 
-#[deprecated(note = "Use execute_handler_coroutine instead for non-blocking execution")]
-pub fn execute_handler(
-    lua: &Lua,
-    handler: &Function,
-    method: &str,
-    path: &str,
-    headers: &[(Bytes, Bytes)],
-    query: &[(Bytes, Bytes)],
-    params: &HashMap<String, String>,
-    body: Option<&[u8]>,
-    _started_at: Instant,
-) -> Result<HttpResponse> {
-    let ctx = match build_lua_context(lua, method, path, headers, query, params, body) {
-        Ok(c) => c,
-        Err(e) => {
-            return Ok(HttpResponse {
-                status: 500,
-                body: Bytes::from(e.to_string()),
-                content_type: None,
-            });
-        }
-    };
-
-    let result: Value = match handler.call(ctx) {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(HttpResponse {
-                status: 500,
-                body: Bytes::from(e.to_string()),
-                content_type: None,
-            });
-        }
-    };
-
-    let mut pool = BufferPool::new();
-    let (status, body, content_type) = convert_lua_response(lua, result, &mut pool);
-    Ok(HttpResponse { status, body, content_type })
-}
-
 pub enum CoroutineResponse {
     Ready { status: u16, body: Bytes, content_type: Option<&'static str> },
     Yielded { thread: Thread, ctx_idx: usize },
@@ -445,92 +406,6 @@ fn convert_error_to_response(
     }
 
     Ok(CoroutineResponse::Ready { status, body, content_type: None })
-}
-
-fn build_lua_context(
-    lua: &Lua,
-    method: &str,
-    path: &str,
-    headers: &[(Bytes, Bytes)],
-    query: &[(Bytes, Bytes)],
-    params: &HashMap<String, String>,
-    body: Option<&[u8]>,
-) -> Result<Table> {
-    let ctx = lua.create_table()?;
-
-    ctx.set("method", method)?;
-    ctx.set("path", path)?;
-
-    // Phase 4: Remove Arc wrapping - clone data directly for better perf on small data
-    let headers_data: Vec<(Bytes, Bytes)> = headers.to_vec();
-    let headers_fn = lua.create_function(move |lua, ()| {
-        if headers_data.is_empty() {
-            return lua.create_table();
-        }
-        let headers_table = lua.create_table_with_capacity(0, headers_data.len())?;
-        for (k, v) in &headers_data {
-            // Phase 3: Skip UTF-8 validation for ASCII headers
-            let k_str = unsafe { std::str::from_utf8_unchecked(k) };
-            let v_str = unsafe { std::str::from_utf8_unchecked(v) };
-            headers_table.set(k_str, v_str)?;
-        }
-        Ok(headers_table)
-    })?;
-    ctx.set("headers", headers_fn)?;
-
-    let query_data: Vec<(Bytes, Bytes)> = query.to_vec();
-    let query_fn = lua.create_function(move |lua, ()| {
-        if query_data.is_empty() {
-            return lua.create_table();
-        }
-        let query_table = lua.create_table_with_capacity(0, query_data.len())?;
-        for (k, v) in &query_data {
-            // Phase 3: Skip UTF-8 validation for URL-encoded ASCII params
-            let k_str = unsafe { std::str::from_utf8_unchecked(k) };
-            let v_str = unsafe { std::str::from_utf8_unchecked(v) };
-            query_table.set(k_str, v_str)?;
-        }
-        Ok(query_table)
-    })?;
-    ctx.set("query", query_fn)?;
-
-    let params_data: HashMap<String, String> = params.clone();
-    let params_fn = lua.create_function(move |lua, ()| {
-        if params_data.is_empty() {
-            return lua.create_table();
-        }
-        let params_table = lua.create_table_with_capacity(0, params_data.len())?;
-        for (k, v) in &params_data {
-            params_table.set(k.as_str(), v.as_str())?;
-        }
-        Ok(params_table)
-    })?;
-    ctx.set("params", params_fn)?;
-
-    let body_bytes = body.map(|b| b.to_vec());
-    let body_fn = lua.create_function(move |lua, ()| {
-        if let Some(ref body) = body_bytes {
-            // Phase 3: Skip UTF-8 validation for performance
-            let body_str = unsafe { std::str::from_utf8_unchecked(body) };
-
-            let globals = lua.globals();
-            let rover: Table = globals.get("rover")?;
-            let guard: Table = rover.get("guard")?;
-
-            if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
-                constructor.call((body_str.to_string(), body.clone()))
-            } else {
-                Ok(Value::String(lua.create_string(body_str)?))
-            }
-        } else {
-            Err(mlua::Error::RuntimeError(
-                "Request has no body".to_string(),
-            ))
-        }
-    })?;
-    ctx.set("body", body_fn)?;
-
-    Ok(ctx)
 }
 
 fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool) -> (u16, Bytes, Option<&'static str>) {

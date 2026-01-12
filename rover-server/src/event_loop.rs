@@ -282,7 +282,6 @@ impl EventLoop {
             }
         };
 
-        // Direct route lookup (no caching - FastRouter is fast enough)
         let (handler, params) = match self.router.match_route(http_method, path) {
             Some((h, p)) => (h, p),
             None => {
@@ -295,7 +294,6 @@ impl EventLoop {
             }
         };
 
-        // Get shared buffer for all request data
         let buf = if !conn.parsed_buf.is_empty() {
             conn.parsed_buf.clone()
         } else {
