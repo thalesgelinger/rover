@@ -12,37 +12,10 @@ pub trait ToJson {
     }
 }
 
-impl ToJson for Table {
+ impl ToJson for Table {
     fn to_json(&self, buf: &mut Vec<u8>) -> mlua::Result<()> {
         serialize_table(self, buf, 0)
     }
-}
-
-// Lightweight type detection - only counts, doesn't collect values
-fn detect_table_type(table: &Table) -> mlua::Result<(bool, usize)> {
-    let mut max_index = 0;
-    let mut has_sequential = true;
-    let mut count = 0;
-
-    for pair in table.pairs::<Value, Value>() {
-        let (key, _) = pair?;
-        count += 1;
-
-        match key {
-            Value::Integer(i) if i >= 1 => {
-                if i as usize > max_index {
-                    max_index = i as usize;
-                }
-            }
-            _ => {
-                has_sequential = false;
-                break; // Early exit for non-arrays
-            }
-        }
-    }
-
-    let is_array = has_sequential && max_index > 0 && max_index == count;
-    Ok((is_array, max_index))
 }
 
 #[inline]
@@ -53,29 +26,50 @@ fn serialize_table(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Resu
         ));
     }
 
-    let (is_array, max_index) = detect_table_type(table)?;
+    let first_key: Value = table.raw_get(1)?;
 
-    if is_array {
-        serialize_array_from_table(table, buf, max_index, depth)
-    } else {
-        serialize_object_direct(table, buf, depth)
+    if let Value::Integer(idx) = first_key {
+        if idx == 1 {
+            if try_serialize_as_array(table, buf, depth).is_ok() {
+                return Ok(());
+            }
+        }
     }
+
+    serialize_object_direct(table, buf, depth)
 }
 
-fn serialize_array_from_table(
-    table: &Table,
-    buf: &mut Vec<u8>,
-    len: usize,
-    depth: usize,
-) -> mlua::Result<()> {
+fn try_serialize_as_array(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Result<()> {
+    let first_key: Value = table.raw_get(1)?;
+
+    match first_key {
+        Value::Nil => return Err(mlua::Error::RuntimeError("Not an array".to_string())),
+        _ => {}
+    }
+
+    let mut i = 1;
+
+    while !matches!(table.raw_get(i)?, Value::Nil) {
+        i += 1;
+        if i > 1000 {
+            break;
+        }
+    }
+
+    if i == 2 {
+        return Err(mlua::Error::RuntimeError("Not an array".to_string()));
+    }
+
     buf.push(b'[');
 
-    for i in 1..=len {
-        if i > 1 {
+    let mut first = true;
+    for j in 1..i {
+        if !first {
             buf.push(b',');
         }
+        first = false;
 
-        let value: Value = table.get(i)?;
+        let value: Value = table.raw_get(j)?;
         serialize_value(&value, buf, depth + 1)?;
     }
 

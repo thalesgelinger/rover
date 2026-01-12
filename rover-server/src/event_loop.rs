@@ -1,131 +1,450 @@
-use hyper::{StatusCode, body::Bytes};
-use mlua::Lua;
-use smallvec::SmallVec;
-use flume::Receiver;
-use tracing::{debug, warn};
+use std::io;
+use std::net::SocketAddr;
+use std::time::Instant;
+use std::collections::HashMap;
+use std::mem;
 
-use crate::{HttpMethod, Route, ServerConfig, fast_router::FastRouter, http_task::HttpTask};
+use anyhow::Result;
+use mio::net::TcpListener;
+use mio::{Events, Interest, Poll, Token};
+use mlua::{Lua, Thread, ThreadStatus};
+use slab::Slab;
 
-/// HTTP-specific request wrapper
-pub struct LuaRequest {
-    pub method: Bytes,
-    pub path: Bytes,
-    pub headers: SmallVec<[(Bytes, Bytes); 8]>,
-    pub query: SmallVec<[(Bytes, Bytes); 8]>,
-    pub body: Option<Bytes>,
-    pub respond_to: tokio::sync::oneshot::Sender<crate::HttpResponse>,
-    pub started_at: std::time::Instant,
+use crate::connection::{Connection, ConnectionState};
+use crate::fast_router::FastRouter;
+use crate::{HttpMethod, Route, ServerConfig};
+use crate::http_task::{execute_handler_coroutine, CoroutineResponse, ThreadPool, RequestContextPool};
+use crate::buffer_pool::BufferPool;
+use crate::table_pool::LuaTablePool;
+
+fn parse_query_string_offsets(qs: &[u8]) -> Vec<(u16, u8, u16, u16)> {
+    let mut result = Vec::new();
+    if qs.is_empty() {
+        return result;
+    }
+
+    let mut pos = 0;
+    let qs_len = qs.len();
+
+    while pos < qs_len {
+        let key_start = pos as u16;
+
+        while pos < qs_len && qs[pos] != b'=' && qs[pos] != b'&' {
+            pos += 1;
+        }
+
+        let key_len_raw = (pos - key_start as usize) as u8;
+
+        if pos >= qs_len || qs[pos] == b'&' {
+            if key_len_raw > 0 {
+                result.push((key_start, key_len_raw, key_start, key_len_raw as u16));
+            }
+            pos += 1;
+            continue;
+        }
+
+        pos += 1;
+        let val_start = pos as u16;
+
+        while pos < qs_len && qs[pos] != b'&' {
+            pos += 1;
+        }
+
+        let val_len_raw = (pos - val_start as usize) as u16;
+        result.push((key_start, key_len_raw, val_start, val_len_raw));
+
+        pos += 1;
+    }
+
+    result
 }
 
-/// Run the HTTP event loop that routes requests to Lua handlers
-pub fn run(lua: Lua, routes: Vec<Route>, rx: Receiver<LuaRequest>, config: ServerConfig, openapi_spec: Option<serde_json::Value>) {
-    tokio::spawn(async move {
-        let fast_router = FastRouter::from_routes(routes).expect("Failed to build router");
-        let mut batch = Vec::with_capacity(32);
+const LISTENER: Token = Token(0);
+const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
+
+struct PendingCoroutine {
+    thread: Thread,
+    started_at: Instant,
+    ctx_idx: usize,
+}
+
+pub struct EventLoop {
+    poll: Poll,
+    listener: TcpListener,
+    connections: Slab<Connection>,
+    lua: Lua,
+    router: FastRouter,
+    config: ServerConfig,
+    openapi_spec: Option<serde_json::Value>,
+    yielded_coroutines: HashMap<usize, PendingCoroutine>,
+    thread_pool: ThreadPool,
+    request_pool: RequestContextPool,
+    table_pool: LuaTablePool,
+    buffer_pool: BufferPool,
+}
+
+impl EventLoop {
+    pub fn new(
+        lua: Lua,
+        routes: Vec<Route>,
+        config: ServerConfig,
+        openapi_spec: Option<serde_json::Value>,
+        addr: SocketAddr,
+    ) -> Result<Self> {
+        let poll = Poll::new()?;
+        let mut listener = TcpListener::bind(addr)?;
+
+        poll.registry().register(&mut listener, LISTENER, Interest::READABLE)?;
+
+        let router = FastRouter::from_routes(routes)?;
+
+        let request_pool = RequestContextPool::new(&lua, 1024)?;
+
+        let table_pool = LuaTablePool::new(1024);
+
+        let buffer_pool = BufferPool::new();
+
+        Ok(Self {
+            poll,
+            listener,
+            connections: Slab::with_capacity(1024),
+            lua,
+            router,
+            config,
+            openapi_spec,
+            yielded_coroutines: HashMap::with_capacity(1024),
+            thread_pool: ThreadPool::new(2048),
+            request_pool,
+            table_pool,
+            buffer_pool,
+        })
+    }
+
+    pub fn run(&mut self) -> Result<()> {
+        let mut events = Events::with_capacity(1024);
 
         loop {
-            batch.clear();
+            // Block on real events only (pure event-driven)
+            self.poll.poll(&mut events, None)?;
 
-            // Blocking receive for first request
-            match rx.recv_async().await {
-                Ok(req) => batch.push(req),
-                Err(_) => break, // Channel closed, shutdown
+            for event in events.iter() {
+                match event.token() {
+                    LISTENER => self.accept_connections()?,
+                    token => self.handle_connection(token, event)?,
+                }
             }
 
-            // Drain all pending requests (non-blocking)
-            loop {
-                match rx.try_recv() {
-                    Ok(req) => {
-                        batch.push(req);
-                        if batch.len() >= 32 {
-                            break; // Max batch size
+            // Always check timeouts (triggered by poll timeout or I/O completion)
+            self.check_timeouts()?;
+
+            // Resume yielded coroutines
+            if !self.yielded_coroutines.is_empty() {
+                self.resume_yielded_coroutines()?;
+            }
+        }
+    }
+
+    fn accept_connections(&mut self) -> Result<()> {
+        loop {
+            match self.listener.accept() {
+                Ok((mut socket, _addr)) => {
+                    let entry = self.connections.vacant_entry();
+                    let token = Token(entry.key() + 1);
+
+                    self.poll.registry().register(
+                        &mut socket,
+                        token,
+                        Interest::READABLE,
+                    )?;
+
+                    entry.insert(Connection::new(socket, token));
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_connection(&mut self, token: Token, event: &mio::event::Event) -> Result<()> {
+        let conn_idx = token.0 - 1;
+
+        if !self.connections.contains(conn_idx) {
+            return Ok(());
+        }
+
+        let (should_process, should_close, should_reset) = {
+            let conn = &mut self.connections[conn_idx];
+
+            match conn.state {
+                ConnectionState::Reading if event.is_readable() => {
+                    match conn.try_read() {
+                        Ok(true) => (true, false, false),
+                        Ok(false) => (false, false, false),
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            (false, true, false)
                         }
                     }
-                    Err(_) => break, // No more pending requests
                 }
+                ConnectionState::Writing if event.is_writable() => {
+                    match conn.try_write() {
+                        Ok(true) => {
+                            if conn.keep_alive {
+                                (false, false, true)
+                            } else {
+                                conn.state = ConnectionState::Closed;
+                                (false, true, false)
+                            }
+                        }
+                        Ok(false) => (false, false, false),
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            (false, true, false)
+                        }
+                    }
+                }
+                _ => (false, false, false),
+            }
+        };
+
+        let is_closed_state = matches!(self.connections.get(conn_idx).map(|c| &c.state), Some(ConnectionState::Closed));
+        if should_close || is_closed_state {
+            self.recycle_write_buf(conn_idx);
+            let mut conn = self.connections.remove(conn_idx);
+            let _ = self.poll.registry().deregister(&mut conn.socket);
+            return Ok(());
+        }
+
+        if should_reset {
+            self.recycle_write_buf(conn_idx);
+            if let Some(conn) = self.connections.get_mut(conn_idx) {
+                conn.reset();
+                let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+            }
+        }
+
+        if should_process {
+            self.start_request_coroutine(conn_idx)?;
+        }
+
+        Ok(())
+    }
+
+    fn recycle_write_buf(&mut self, conn_idx: usize) {
+        if let Some(conn) = self.connections.get_mut(conn_idx) {
+            let buf = mem::take(&mut conn.write_buf);
+            if !buf.is_empty() {
+                self.buffer_pool.return_response_buf(buf);
+            }
+        }
+    }
+
+    fn start_request_coroutine(&mut self, conn_idx: usize) -> Result<()> {
+        let started_at = Instant::now();
+
+        let conn = &self.connections[conn_idx];
+        let method = conn.method_str().unwrap_or_default();
+        let full_path = conn.path_str().unwrap_or_default();
+        let (path, query_str) = if let Some(pos) = full_path.find('?') {
+            (&full_path[..pos], Some(&full_path[pos+1..]))
+        } else {
+            (full_path, None)
+        };
+        let keep_alive = conn.keep_alive;
+
+        if self.config.docs && path == "/docs" && self.openapi_spec.is_some() {
+            let html = rover_openapi::scalar_html(self.openapi_spec.as_ref().unwrap());
+            let conn = &mut self.connections[conn_idx];
+            conn.keep_alive = keep_alive;
+            let buf = self.buffer_pool.get_response_buf();
+            conn.set_response_with_buf(200, html.as_bytes(), Some("text/html"), buf);
+            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            return Ok(());
+        }
+
+        let http_method = match HttpMethod::from_str(method) {
+            Some(m) => m,
+            None => {
+                let error_msg = format!(
+                    "Invalid HTTP method '{}'. Valid methods: {}",
+                    method,
+                    HttpMethod::valid_methods().join(", ")
+                );
+                let conn = &mut self.connections[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_with_buf(400, error_msg.as_bytes(), Some("text/plain"), buf);
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
+        };
+
+        let (handler, params) = match self.router.match_route(http_method, path) {
+            Some((h, p)) => (h, p),
+            None => {
+                let conn = &mut self.connections[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_with_buf(404, b"Route not found", Some("text/plain"), buf);
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
+        };
+
+        let buf = if !conn.parsed_buf.is_empty() {
+            conn.parsed_buf.clone()
+        } else {
+            conn.read_buf.clone().freeze()
+        };
+
+        // Compute offsets for method and path
+        let (method_off, method_len) = conn.method_offset.unwrap_or((0, 0));
+        let (path_off, path_len) = conn.path_offset.unwrap_or((0, 0));
+
+        // Parse query string to get offsets
+        let query_offsets = if let Some(qs) = query_str {
+            let query_offset_in_buf = path_off as usize + path_len + 1;
+            let query_bytes = &buf[query_offset_in_buf..query_offset_in_buf + qs.len()];
+            parse_query_string_offsets(query_bytes)
+        } else {
+            Vec::new()
+        };
+
+        // Get header offsets (already stored in connection)
+        let mut header_offsets = Vec::with_capacity(conn.header_offsets.len());
+        for &(name_off, name_len, val_off, val_len) in conn.header_offsets.iter() {
+            header_offsets.push((name_off as u16, name_len as u8, val_off as u16, val_len as u16));
+        }
+
+        // Get body offset and length
+        let (body_off, body_len) = conn.body.map(|(off, len)| (off as u32, len as u32)).unwrap_or((0, 0));
+
+        match execute_handler_coroutine(
+            &self.lua,
+            handler,
+            buf,
+            method_off as u16,
+            method_len as u8,
+            path_off as u16,
+            path_len as u16,
+            body_off,
+            body_len,
+            header_offsets,
+            query_offsets,
+            &params,
+            started_at,
+            &mut self.thread_pool,
+            &mut self.request_pool,
+            &self.table_pool,
+            &mut self.buffer_pool,
+        ) {
+            Ok(CoroutineResponse::Ready { status, body, content_type }) => {
+                let conn = &mut self.connections[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_bytes_with_buf(status, body, content_type, buf);
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            }
+            Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
+                let conn = &mut self.connections[conn_idx];
+                conn.thread = Some(thread.clone());
+                self.yielded_coroutines.insert(conn_idx, PendingCoroutine {
+                    thread,
+                    started_at: Instant::now(),
+                    ctx_idx,
+                });
+            }
+            Err(_) => {
+                let conn = &mut self.connections[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_with_buf(500, b"Internal server error", Some("text/plain"), buf);
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_timeouts(&mut self) -> Result<()> {
+        let mut to_timeout = Vec::new();
+
+        // Collect timed-out coroutines
+        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
+            if pending.started_at.elapsed().as_millis() as u64 > DEFAULT_COROUTINE_TIMEOUT_MS {
+                to_timeout.push(conn_idx);
+            }
+        }
+
+        // Handle timeouts
+        for conn_idx in to_timeout {
+            self.yielded_coroutines.remove(&conn_idx);
+            if !self.connections.contains(conn_idx) {
+                continue;
+            }
+            let conn = &mut self.connections[conn_idx];
+            conn.thread = None;
+            conn.state = ConnectionState::Writing;
+            let buf = self.buffer_pool.get_response_buf();
+            conn.set_response_with_buf(500, b"Coroutine timeout", Some("text/plain"), buf);
+            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+        }
+
+        Ok(())
+    }
+
+    fn resume_yielded_coroutines(&mut self) -> Result<()> {
+        let mut to_resume = Vec::new();
+
+        // Collect resumable coroutines
+        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
+            if !self.connections.contains(conn_idx) {
+                to_resume.push(conn_idx);
+                continue;
             }
 
-            // Optional debug logging
-            if tracing::event_enabled!(tracing::Level::DEBUG) && batch.len() > 1 {
-                debug!("Processing batch of {} requests", batch.len());
-            }
-
-            // Process entire batch
-            for req in batch.drain(..) {
-                // Methods should be only lua functions, so lua function is utf8 safe
-                let method_str = unsafe { std::str::from_utf8_unchecked(&req.method) };
-
-                let method = match HttpMethod::from_str(method_str) {
-                    Some(m) => m,
-                    None => {
-                        let _ = req.respond_to.send(crate::HttpResponse {
-                            status: StatusCode::BAD_REQUEST,
-                            body: Bytes::from(format!(
-                                "Invalid HTTP method '{}'. Valid methods: {}",
-                                method_str,
-                                HttpMethod::valid_methods().join(", ")
-                            )),
-                            content_type: Some("text/plain".to_string()),
-                        });
-                        continue;
-                    }
-                };
-
-                // Paths should be only lua functions, so lua function is utf8 safe
-                let path_str = unsafe { std::str::from_utf8_unchecked(&req.path) };
-
-                // Handle /docs endpoint if enabled and spec is available
-                if config.docs && path_str == "/docs" && openapi_spec.is_some() {
-                    let html = rover_openapi::scalar_html(openapi_spec.as_ref().unwrap());
-                    let elapsed = req.started_at.elapsed();
-                    debug!(
-                        "GET /docs - 200 OK in {:.2}ms",
-                        elapsed.as_secs_f64() * 1000.0
-                    );
-                    let _ = req.respond_to.send(crate::HttpResponse {
-                        status: StatusCode::OK,
-                        body: Bytes::from(html),
-                        content_type: Some("text/html".to_string()),
-                    });
-                    continue;
+            match pending.thread.status() {
+                ThreadStatus::Resumable => {
+                    to_resume.push(conn_idx);
                 }
+                _ => {}
+            }
+        }
 
-                let (handler, params) = match fast_router.match_route(method, path_str) {
-                    Some((h, p)) => (h, p),
-                    None => {
-                        let elapsed = req.started_at.elapsed();
-                        warn!(
-                            "{} {} - 404 NOT_FOUND in {:.2}ms",
-                            method,
-                            path_str,
-                            elapsed.as_secs_f64() * 1000.0
-                        );
-                        let _ = req.respond_to.send(crate::HttpResponse {
-                            status: StatusCode::NOT_FOUND,
-                            body: Bytes::from("Route not found"),
-                            content_type: Some("text/plain".to_string()),
-                        });
-                        continue;
+        // Resume coroutines
+        for conn_idx in to_resume {
+            if let Some(pending) = self.yielded_coroutines.remove(&conn_idx) {
+                match pending.thread.resume(()) {
+                    Ok(mlua::Value::Nil) => {
+                        self.thread_pool.release(pending.thread);
+                        self.request_pool.release(pending.ctx_idx);
+                        if let Some(conn) = self.connections.get_mut(conn_idx) {
+                            conn.thread = None;
+                            conn.state = ConnectionState::Closed;
+                        }
                     }
-                };
-
-                let task = HttpTask {
-                    method: req.method,
-                    path: req.path,
-                    headers: req.headers,
-                    query: req.query,
-                    params,
-                    body: req.body,
-                    handler: handler.clone(),
-                    respond_to: req.respond_to,
-                    started_at: req.started_at,
-                };
-
-                // Execute the task
-                if let Err(e) = task.execute(&lua).await {
-                    debug!("Task execution failed: {}", e);
+                    Ok(_) => {
+                        self.thread_pool.release(pending.thread);
+                        self.request_pool.release(pending.ctx_idx);
+                        if let Some(conn) = self.connections.get_mut(conn_idx) {
+                            conn.thread = None;
+                        }
+                    }
+                    Err(_) => {
+                        self.thread_pool.release(pending.thread);
+                        self.request_pool.release(pending.ctx_idx);
+                        if let Some(conn) = self.connections.get_mut(conn_idx) {
+                            conn.thread = None;
+                            conn.state = ConnectionState::Closed;
+                        }
+                    }
                 }
             }
         }
-    });
+
+        Ok(())
+    }
 }

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub struct RoverResponse {
     pub status: u16,
     pub body: Bytes,
-    pub content_type: String,
+    pub content_type: &'static str,
     pub headers: Option<HashMap<String, String>>,
 }
 
@@ -16,7 +16,16 @@ impl RoverResponse {
         Self {
             status,
             body,
-            content_type: "application/json".to_string(),
+            content_type: "application/json",
+            headers,
+        }
+    }
+
+    pub fn json_bytes(status: u16, body: Bytes, headers: Option<HashMap<String, String>>) -> Self {
+        Self {
+            status,
+            body,
+            content_type: "application/json",
             headers,
         }
     }
@@ -25,7 +34,7 @@ impl RoverResponse {
         Self {
             status,
             body,
-            content_type: "text/plain".to_string(),
+            content_type: "text/plain",
             headers,
         }
     }
@@ -34,7 +43,7 @@ impl RoverResponse {
         Self {
             status,
             body,
-            content_type: "text/html".to_string(),
+            content_type: "text/html",
             headers,
         }
     }
@@ -46,7 +55,7 @@ impl RoverResponse {
         Self {
             status,
             body: Bytes::new(),
-            content_type: "text/plain".to_string(),
+            content_type: "text/plain",
             headers: Some(headers),
         }
     }
@@ -55,8 +64,17 @@ impl RoverResponse {
         Self {
             status,
             body: Bytes::new(),
-            content_type: "text/plain".to_string(),
+            content_type: "text/plain",
             headers: None,
+        }
+    }
+
+    pub fn raw(status: u16, body: Bytes, headers: Option<HashMap<String, String>>) -> Self {
+        Self {
+            status,
+            body,
+            content_type: "application/octet-stream",
+            headers,
         }
     }
 }

@@ -21,19 +21,41 @@ impl AppServer for Lua {
 
         let json_helper = self.create_table()?;
 
-        let json_call = self.create_function(|_lua, (_self, data): (Table, Table)| {
-            let json = data.to_json_string().map_err(|e| {
-                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
-            })?;
-            Ok(RoverResponse::json(200, Bytes::from(json), None))
+        let json_call = self.create_function(|_lua, (_self, data): (Table, Value)| {
+            match data {
+                Value::String(s) => {
+                    let json_str = s.to_str()?;
+                    Ok(RoverResponse::json(200, Bytes::copy_from_slice(json_str.as_bytes()), None))
+                }
+                Value::Table(table) => {
+                    let json = table.to_json_string().map_err(|e| {
+                        mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                    })?;
+                    Ok(RoverResponse::json(200, Bytes::from(json), None))
+                }
+                _ => Err(mlua::Error::RuntimeError(
+                    "api.json() requires a table or string".to_string(),
+                )),
+            }
         })?;
 
         let json_status_fn =
-            self.create_function(|_lua, (_self, status_code, data): (Table, u16, Table)| {
-                let json = data.to_json_string().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
-                })?;
-                Ok(RoverResponse::json(status_code, Bytes::from(json), None))
+            self.create_function(|_lua, (_self, status_code, data): (Table, u16, Value)| {
+                match data {
+                    Value::String(s) => {
+                        let json_str = s.to_str()?;
+                        Ok(RoverResponse::json(status_code, Bytes::copy_from_slice(json_str.as_bytes()), None))
+                    }
+                    Value::Table(table) => {
+                        let json = table.to_json_string().map_err(|e| {
+                            mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                        })?;
+                        Ok(RoverResponse::json(status_code, Bytes::from(json), None))
+                    }
+                    _ => Err(mlua::Error::RuntimeError(
+                        "api.json.status() requires a table or string".to_string(),
+                    )),
+                }
             })?;
         json_helper.set("status", json_status_fn)?;
 
@@ -45,12 +67,12 @@ impl AppServer for Lua {
         let text_helper = self.create_table()?;
 
         let text_call = self.create_function(|_lua, (_self, content): (Table, String)| {
-            Ok(RoverResponse::text(200, Bytes::from(content), None))
+            Ok(RoverResponse::text(200, Bytes::copy_from_slice(content.as_bytes()), None))
         })?;
 
         let text_status_fn = self.create_function(
             |_lua, (_self, status_code, content): (Table, u16, String)| {
-                Ok(RoverResponse::text(status_code, Bytes::from(content), None))
+                Ok(RoverResponse::text(status_code, Bytes::copy_from_slice(content.as_bytes()), None))
             },
         )?;
         text_helper.set("status", text_status_fn)?;
@@ -85,7 +107,7 @@ impl AppServer for Lua {
                     };
 
                     let rendered = render_template_with_components(lua, &template, &data_table, &html_table)?;
-                    Ok(RoverResponse::html(status, Bytes::from(rendered), None))
+                    Ok(RoverResponse::html(status, Bytes::copy_from_slice(rendered.as_bytes()), None))
                 })?,
             )?;
             let _ = builder.set_metatable(Some(builder_meta));
@@ -206,12 +228,32 @@ impl AppServer for Lua {
             let json = table.to_json_string().map_err(|e| {
                 mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
             })?;
-            Ok(RoverResponse::json(status, Bytes::from(json), None))
+            Ok(RoverResponse::json(status, Bytes::copy_from_slice(json.as_bytes()), None))
         })?;
         server.set("error", error_fn)?;
 
         let no_content_fn = self.create_function(|_lua, _: Table| Ok(RoverResponse::empty(204)))?;
         server.set("no_content", no_content_fn)?;
+
+        let raw_helper = self.create_table()?;
+
+        let raw_call =
+            self.create_function(|_lua, body: mlua::String| {
+                let body_str = body.to_str()?;
+                Ok(RoverResponse::raw(200, Bytes::copy_from_slice(body_str.as_bytes()), None))
+            })?;
+
+        let raw_status_fn =
+            self.create_function(|_lua, (_self, status_code, body): (Table, u16, mlua::String)| {
+                let body_str = body.to_str()?;
+                Ok(RoverResponse::raw(status_code, Bytes::copy_from_slice(body_str.as_bytes()), None))
+            })?;
+        raw_helper.set("status", raw_status_fn)?;
+
+        let raw_meta = self.create_table()?;
+        raw_meta.set("__call", raw_call)?;
+        let _ = raw_helper.set_metatable(Some(raw_meta));
+        server.set("raw", raw_helper)?;
 
         Ok(server)
     }
@@ -260,6 +302,7 @@ impl Server for Table {
                         || key_str_val == "redirect"
                         || key_str_val == "error"
                         || key_str_val == "no_content"
+                        || key_str_val == "raw"
                     {
                         continue;
                     }

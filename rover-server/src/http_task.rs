@@ -1,312 +1,467 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use hyper::{body::Bytes, StatusCode};
-use mlua::{Function, Lua, Table, Value};
-use smallvec::SmallVec;
-use tokio::sync::oneshot;
+use mlua::{Function, Lua, Table, Value, Thread, ThreadStatus, UserData, UserDataMethods, RegistryKey};
 use tracing::{debug, info, warn};
 
-use crate::{to_json::ToJson, response::RoverResponse};
+use crate::{to_json::ToJson, response::RoverResponse, Bytes};
+use crate::table_pool::LuaTablePool;
+use crate::buffer_pool::BufferPool;
 
-/// Shared request data - wrapped in Arc for zero-cost sharing across closures
-struct RequestData {
-    headers: SmallVec<[(Bytes, Bytes); 8]>,
-    query: SmallVec<[(Bytes, Bytes); 8]>,
-    params: HashMap<String, String>,
-    body: Option<Bytes>,
+pub struct RequestContext {
+    buf: Bytes,
+    
+    method_off: u16,
+    method_len: u8,
+    
+    path_off: u16,
+    path_len: u16,
+    
+    body_off: u32,
+    body_len: u32,
+    
+    headers: Vec<(u16, u8, u16, u16)>,
+    query: Vec<(u16, u8, u16, u16)>,
+    
+    params: Vec<(Bytes, Bytes)>,
 }
 
-/// HTTP-specific task that can be executed by the event loop
-pub struct HttpTask {
-    pub method: Bytes,
-    pub path: Bytes,
-    pub headers: SmallVec<[(Bytes, Bytes); 8]>,
-    pub query: SmallVec<[(Bytes, Bytes); 8]>,
-    pub params: HashMap<String, String>,
-    pub body: Option<Bytes>,
-    pub handler: Function,
-    pub respond_to: oneshot::Sender<HttpResponse>,
-    pub started_at: Instant,
-}
-
-/// HTTP response that will be sent back to the server
-pub struct HttpResponse {
-    pub status: StatusCode,
-    pub body: Bytes,
-    pub content_type: Option<String>,
-}
-
-impl HttpTask {
-    /// Execute the HTTP task by calling the Lua handler
-    pub async fn execute(self, lua: &Lua) -> Result<()> {
-        let method_str = unsafe { std::str::from_utf8_unchecked(&self.method) };
-        let path_str = unsafe { std::str::from_utf8_unchecked(&self.path) };
-
-        if tracing::event_enabled!(tracing::Level::DEBUG) {
-            if !self.query.is_empty() {
-                debug!("  ├─ query: {:?}", self.query);
+impl UserData for RequestContext {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("headers", |lua, this, ()| {
+            if this.headers.is_empty() {
+                return lua.create_table();
             }
-            if let Some(ref body) = self.body {
-                let body_display = std::str::from_utf8(body).unwrap_or("<binary data>");
-                debug!("  └─ body: {}", body_display);
+            let headers_table = lua.create_table_with_capacity(0, this.headers.len())?;
+            for &(name_off, name_len, val_off, val_len) in &this.headers {
+                let name_bytes = &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
+                let val_bytes = &this.buf[val_off as usize..(val_off + val_len) as usize];
+                let k_str = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(val_bytes) };
+                headers_table.set(k_str, v_str)?;
             }
-        }
+            Ok(headers_table)
+        });
 
-        let ctx = match build_lua_context(lua, &self) {
-            Ok(c) => c,
-            Err(e) => {
-                let error_msg = e.to_string();
-                let status = if error_msg.contains("Invalid UTF-8") {
-                    StatusCode::BAD_REQUEST
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-                let _ = self.respond_to.send(HttpResponse {
-                    status,
-                    body: Bytes::from(error_msg),
-                    content_type: None,
-                });
-                return Ok(());
+        methods.add_method("query", |lua, this, ()| {
+            if this.query.is_empty() {
+                return lua.create_table();
             }
-        };
-
-        let result: Value = match self.handler.call_async(ctx).await {
-            Ok(r) => r,
-            Err(e) => {
-                // Try to extract ValidationErrors from error (handles both direct ExternalError and CallbackError wrapping)
-                let validation_err = match &e {
-                    mlua::Error::ExternalError(arc_err) => arc_err.downcast_ref::<rover_types::ValidationErrors>(),
-                    mlua::Error::CallbackError { cause, .. } => {
-                        if let mlua::Error::ExternalError(arc_err) = cause.as_ref() {
-                            arc_err.downcast_ref::<rover_types::ValidationErrors>()
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-
-                let (status, body) = if let Some(validation_errors) = validation_err {
-                    // Direct struct→JSON conversion (zero string parsing)
-                    (StatusCode::BAD_REQUEST, Bytes::from(validation_errors.to_json_string()))
-                } else {
-                    // Generic Lua error
-                    let mut error_str = e.to_string();
-                    if let Some(stack_pos) = error_str.find("\nstack traceback:") {
-                        error_str = error_str[..stack_pos].to_string();
-                    }
-                    error_str = error_str.trim_start_matches("runtime error: ").to_string();
-                    (StatusCode::INTERNAL_SERVER_ERROR, Bytes::from(format!("{{\"error\": \"{}\"}}", error_str.replace("\"", "\\\"").replace("\n", "\\n"))))
-                };
-                
-                let _ = self.respond_to.send(HttpResponse {
-                    status,
-                    body,
-                    content_type: None,
-                });
-                return Ok(());
+            let query_table = lua.create_table_with_capacity(0, this.query.len())?;
+            for &(name_off, name_len, val_off, val_len) in &this.query {
+                let name_bytes = &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
+                let val_bytes = &this.buf[val_off as usize..(val_off + val_len) as usize];
+                let k_str = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(val_bytes) };
+                query_table.set(k_str, v_str)?;
             }
-        };
+            Ok(query_table)
+        });
 
-        let (status, body, content_type) = convert_lua_response(lua, result);
+        methods.add_method("params", |lua, this, ()| {
+            if this.params.is_empty() {
+                return lua.create_table();
+            }
+            let params_table = lua.create_table_with_capacity(0, this.params.len())?;
+            for (k, v) in &this.params {
+                let k_str = unsafe { std::str::from_utf8_unchecked(k) };
+                let v_str = unsafe { std::str::from_utf8_unchecked(v) };
+                params_table.set(k_str, v_str)?;
+            }
+            Ok(params_table)
+        });
 
-        if tracing::event_enabled!(tracing::Level::DEBUG) {
-            let body_preview = if body.len() > 200 {
-                format!(
-                    "{}... ({} bytes)",
-                    String::from_utf8_lossy(&body[..200]),
-                    body.len()
-                )
+        methods.add_method("body", |lua, this, ()| {
+            if this.body_len > 0 {
+                let body_bytes = this.buf.slice(this.body_off as usize..(this.body_off + this.body_len) as usize);
+                let body_value = BodyValue::new(body_bytes);
+                lua.create_userdata(body_value).map(Value::UserData)
             } else {
-                String::from_utf8_lossy(&body).to_string()
-            };
-            debug!("  └─ response body: {}", body_preview);
-        }
-
-        let elapsed = self.started_at.elapsed();
-        let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-
-        if status.is_success() {
-            if tracing::event_enabled!(tracing::Level::INFO) {
-                info!(
-                    "{} {} - {} in {:.2}ms",
-                    method_str,
-                    path_str,
-                    status.as_u16(),
-                    elapsed_ms
-                );
+                Err(mlua::Error::RuntimeError(
+                    "Request has no body".to_string(),
+                ))
             }
-        } else if status.is_client_error() || status.is_server_error() {
-            if tracing::event_enabled!(tracing::Level::WARN) {
-                warn!(
-                    "{} {} - {} in {:.2}ms",
-                    method_str,
-                    path_str,
-                    status.as_u16(),
-                    elapsed_ms
-                );
-            }
-        }
-
-        let _ = self.respond_to.send(HttpResponse { status, body, content_type });
-        Ok(())
+        });
     }
 }
 
-fn build_lua_context(lua: &Lua, task: &HttpTask) -> Result<Table> {
-    let ctx = lua.create_table()?;
-
-    let method_str = std::str::from_utf8(&task.method)
-        .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in HTTP method".to_string()))?;
-    ctx.set("method", method_str)?;
-
-    let path_str = std::str::from_utf8(&task.path)
-        .map_err(|_| mlua::Error::RuntimeError("Invalid UTF-8 in request path".to_string()))?;
-    ctx.set("path", path_str)?;
-
-    // Arc-based shared ownership - single clone (ref-count bump) instead of 4x data clones
-    let req_data = Arc::new(RequestData {
-        headers: task.headers.clone(),
-        query: task.query.clone(),
-        params: task.params.clone(),
-        body: task.body.clone(),
-    });
-
-    let req_data_headers = req_data.clone();
-    let headers_fn = lua.create_function(move |lua, ()| {
-        if req_data_headers.headers.is_empty() {
-            return lua.create_table();
-        }
-        let headers = lua.create_table_with_capacity(0, req_data_headers.headers.len())?;
-        for (k, v) in &req_data_headers.headers {
-            let k_str = std::str::from_utf8(k).map_err(|_| {
-                mlua::Error::RuntimeError("Invalid UTF-8 in header name".to_string())
-            })?;
-            let v_str = std::str::from_utf8(v).map_err(|_| {
-                mlua::Error::RuntimeError(format!("Invalid UTF-8 in header value for '{}'", k_str))
-            })?;
-            headers.set(k_str, v_str)?;
-        }
-        Ok(headers)
-    })?;
-    ctx.set("headers", headers_fn)?;
-
-    let req_data_query = req_data.clone();
-    let query_fn = lua.create_function(move |lua, ()| {
-        if req_data_query.query.is_empty() {
-            return lua.create_table();
-        }
-        let query = lua.create_table_with_capacity(0, req_data_query.query.len())?;
-        for (k, v) in &req_data_query.query {
-            let k_str = std::str::from_utf8(k).map_err(|_| {
-                mlua::Error::RuntimeError("Invalid UTF-8 in query parameter name".to_string())
-            })?;
-            let v_str = std::str::from_utf8(v).map_err(|_| {
-                mlua::Error::RuntimeError(format!("Invalid UTF-8 in query parameter '{}'", k_str))
-            })?;
-            query.set(k_str, v_str)?;
-        }
-        Ok(query)
-    })?;
-    ctx.set("query", query_fn)?;
-
-    let req_data_params = req_data.clone();
-    let params_fn = lua.create_function(move |lua, ()| {
-        if req_data_params.params.is_empty() {
-            return lua.create_table();
-        }
-        let params_table = lua.create_table_with_capacity(0, req_data_params.params.len())?;
-        for (k, v) in &req_data_params.params {
-            params_table.set(k.as_str(), v.as_str())?;
-        }
-        Ok(params_table)
-    })?;
-    ctx.set("params", params_fn)?;
-
-    let req_data_body = req_data.clone();
-    let body_fn = lua.create_function(move |lua, ()| {
-        if let Some(body) = &req_data_body.body {
-            let body_str = std::str::from_utf8(body).map_err(|_| {
-                mlua::Error::RuntimeError(
-                    "Request body contains invalid UTF-8 (binary data not supported)".to_string(),
-                )
-            })?;
-
-            let globals = lua.globals();
-            let rover: Table = globals.get("rover")?;
-            let guard: Table = rover.get("guard")?;
-
-            if let Ok(constructor) = guard.get::<mlua::Function>("__body_value") {
-                constructor.call((body_str.to_string(), body.to_vec()))
-            } else {
-                Ok(Value::String(lua.create_string(body_str)?))
-            }
-        } else {
-            Err(mlua::Error::RuntimeError(
-                "Request has no body".to_string(),
-            ))
-        }
-    })?;
-    ctx.set("body", body_fn)?;
-
-    Ok(ctx)
+pub struct BodyValue {
+    bytes: Bytes,
 }
 
-fn convert_lua_response(_lua: &Lua, result: Value) -> (StatusCode, Bytes, Option<String>) {
+impl BodyValue {
+    pub fn new(bytes: Bytes) -> Self {
+        Self { bytes }
+    }
+}
+
+impl UserData for BodyValue {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("json", |lua, this, ()| {
+            crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)
+        });
+
+        methods.add_method("raw", |lua, this, ()| {
+            crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)
+        });
+
+        methods.add_method("text", |lua, this, ()| {
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("as_string", |lua, this, ()| {
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("echo", |lua, this, ()| {
+            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
+            Ok(Value::String(lua.create_string(text_str)?))
+        });
+
+        methods.add_method("bytes", |lua, this, ()| {
+            let table = lua.create_table_with_capacity(this.bytes.len(), 0)?;
+            for (i, byte) in this.bytes.iter().enumerate() {
+                table.set(i + 1, *byte)?;
+            }
+            Ok(Value::Table(table))
+        });
+    }
+}
+
+pub struct RequestContextPool {
+    pool: Vec<RegistryKey>,
+    available: Vec<usize>,
+    capacity: usize,
+}
+
+impl RequestContextPool {
+    pub fn new(lua: &Lua, capacity: usize) -> mlua::Result<Self> {
+        let mut pool = Vec::with_capacity(capacity);
+        let mut available = Vec::with_capacity(capacity);
+
+        for _ in 0..capacity {
+            let ctx = RequestContext {
+                buf: Bytes::new(),
+                method_off: 0,
+                method_len: 0,
+                path_off: 0,
+                path_len: 0,
+                body_off: 0,
+                body_len: 0,
+                headers: Vec::new(),
+                query: Vec::new(),
+                params: Vec::new(),
+            };
+
+            let userdata = lua.create_userdata(ctx)?;
+            let key = lua.create_registry_value(userdata)?;
+            pool.push(key);
+            available.push(pool.len() - 1);
+        }
+
+        Ok(Self {
+            pool,
+            available,
+            capacity,
+        })
+    }
+
+    pub fn acquire(
+        &mut self,
+        lua: &Lua,
+        buf: Bytes,
+        method_off: u16,
+        method_len: u8,
+        path_off: u16,
+        path_len: u16,
+        body_off: u32,
+        body_len: u32,
+        headers: Vec<(u16, u8, u16, u16)>,
+        query: Vec<(u16, u8, u16, u16)>,
+        params: &[(Bytes, Bytes)],
+    ) -> mlua::Result<(Value, usize)> {
+        let idx = self.available.pop()
+            .ok_or_else(|| mlua::Error::RuntimeError("RequestContextPool exhausted".to_string()))?;
+
+        let key = &self.pool[idx];
+        let userdata: mlua::AnyUserData = lua.registry_value(&key)?;
+
+        let mut ctx = userdata.borrow_mut::<RequestContext>()?;
+        ctx.buf = buf;
+        ctx.method_off = method_off;
+        ctx.method_len = method_len;
+        ctx.path_off = path_off;
+        ctx.path_len = path_len;
+        ctx.body_off = body_off;
+        ctx.body_len = body_len;
+        ctx.headers.clear();
+        ctx.headers.extend(headers);
+        ctx.query.clear();
+        ctx.query.extend(query);
+        ctx.params.clear();
+        ctx.params.extend_from_slice(params);
+        drop(ctx);
+
+        Ok((Value::UserData(userdata), idx))
+    }
+
+    pub fn release(&mut self, idx: usize) {
+        if idx < self.capacity {
+            self.available.push(idx);
+        }
+    }
+}
+
+pub struct HttpResponse {
+    pub status: u16,
+    pub body: Bytes,
+    pub content_type: Option<&'static str>,
+}
+
+pub struct ThreadPool {
+    available: Vec<Thread>,
+    max_size: usize,
+}
+
+impl ThreadPool {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            available: Vec::with_capacity(max_size),
+            max_size,
+        }
+    }
+
+    #[allow(unused_mut)]
+    pub fn acquire(&mut self, lua: &Lua, handler: &Function) -> Result<Thread> {
+        if let Some(mut thread) = self.available.pop() {
+            thread.reset(handler.clone())?;
+            Ok(thread)
+        } else {
+            Ok(lua.create_thread(handler.clone())?)
+        }
+    }
+
+    pub fn release(&mut self, thread: Thread) {
+        if thread.status() == ThreadStatus::Finished && self.available.len() < self.max_size {
+            self.available.push(thread);
+        }
+    }
+}
+
+pub enum CoroutineResponse {
+    Ready { status: u16, body: Bytes, content_type: Option<&'static str> },
+    Yielded { thread: Thread, ctx_idx: usize },
+}
+
+pub fn execute_handler_coroutine(
+    lua: &Lua,
+    handler: &Function,
+    buf: Bytes,
+    method_off: u16,
+    method_len: u8,
+    path_off: u16,
+    path_len: u16,
+    body_off: u32,
+    body_len: u32,
+    headers: Vec<(u16, u8, u16, u16)>,
+    query: Vec<(u16, u8, u16, u16)>,
+    params: &[(Bytes, Bytes)],
+    started_at: Instant,
+    thread_pool: &mut ThreadPool,
+    request_pool: &mut RequestContextPool,
+    _table_pool: &LuaTablePool,
+    buffer_pool: &mut BufferPool,
+) -> Result<CoroutineResponse> {
+    if tracing::event_enabled!(tracing::Level::DEBUG) {
+        if !query.is_empty() {
+            debug!("  ├─ query: {:?}", query);
+        }
+        if body_len > 0 {
+            let body_bytes = &buf[body_off as usize..(body_off + body_len) as usize];
+            let body_display = std::str::from_utf8(body_bytes).unwrap_or("<binary data>");
+            debug!("  └─ body: {}", body_display);
+        }
+    }
+
+    let (ctx, ctx_idx) = match request_pool.acquire(lua, buf.clone(), method_off, method_len, path_off, path_len, body_off, body_len, headers, query, params) {
+        Ok(c) => c,
+        Err(e) => {
+            let error_msg = e.to_string();
+            let status = if error_msg.contains("Invalid UTF-8") {
+                400
+            } else {
+                500
+            };
+            return Ok(CoroutineResponse::Ready {
+                status,
+                body: Bytes::from(error_msg),
+                content_type: None,
+            });
+        }
+    };
+
+    // Always use coroutines to support yielding I/O operations
+    // The coroutine may complete immediately (fast path) or yield for I/O (slow path)
+    let thread = thread_pool.acquire(lua, handler)?;
+
+    match thread.resume::<Value>(ctx) {
+        Ok(result) => {
+            // Check if the coroutine yielded or completed
+            use mlua::ThreadStatus;
+            match thread.status() {
+                ThreadStatus::Resumable => {
+                    // Handler yielded - return the thread to be resumed later
+                    Ok(CoroutineResponse::Yielded { thread, ctx_idx })
+                }
+                _ => {
+                    // Handler completed without yielding (or died)
+                    // Fast path: check for RoverResponse directly to avoid function call overhead
+                    let (status, body, content_type) = if let Value::UserData(ref ud) = result {
+                        if let Ok(response) = ud.borrow::<RoverResponse>() {
+                            (response.status, response.body.clone(), Some(response.content_type))
+                        } else {
+                            convert_lua_response(lua, result, buffer_pool)
+                        }
+                    } else {
+                        convert_lua_response(lua, result, buffer_pool)
+                    };
+
+                    let elapsed = started_at.elapsed();
+                    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+
+                    if status >= 200 && status < 300 {
+                        if tracing::event_enabled!(tracing::Level::INFO) {
+                            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
+                            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
+                            info!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
+                        }
+                    } else if status >= 400 {
+                        if tracing::event_enabled!(tracing::Level::WARN) {
+                            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
+                            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
+                            warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
+                        }
+                    }
+
+                    // Return thread and context to pools
+                    thread_pool.release(thread);
+                    request_pool.release(ctx_idx);
+
+                    Ok(CoroutineResponse::Ready { status, body, content_type })
+                }
+            }
+        }
+        Err(e) => {
+            request_pool.release(ctx_idx);
+            convert_error_to_response(e, &buf, method_off, method_len, path_off, path_len, started_at, buffer_pool)
+        }
+    }
+}
+
+fn convert_error_to_response(
+    e: mlua::Error,
+    buf: &Bytes,
+    method_off: u16,
+    method_len: u8,
+    path_off: u16,
+    path_len: u16,
+    started_at: Instant,
+    _buffer_pool: &mut BufferPool,
+) -> Result<CoroutineResponse> {
+    let validation_err = match &e {
+        mlua::Error::ExternalError(arc_err) => arc_err.downcast_ref::<rover_types::ValidationErrors>(),
+        mlua::Error::CallbackError { cause, .. } => {
+            if let mlua::Error::ExternalError(arc_err) = cause.as_ref() {
+                arc_err.downcast_ref::<rover_types::ValidationErrors>()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    let (status, body) = if let Some(validation_errors) = validation_err {
+        (400, Bytes::from(validation_errors.to_json_string()))
+    } else {
+        let mut error_str = e.to_string();
+        if let Some(stack_pos) = error_str.find("\nstack traceback:") {
+            error_str = error_str[..stack_pos].to_string();
+        }
+        error_str = error_str.trim_start_matches("runtime error: ").to_string();
+        (500, Bytes::from(format!("{{\"error\": \"{}\"}}", error_str.replace("\"", "\\\"").replace("\n", "\\n"))))
+    };
+
+    let elapsed = started_at.elapsed();
+    let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+
+    if status >= 400 {
+        if tracing::event_enabled!(tracing::Level::WARN) {
+            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
+            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
+            warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
+        }
+    }
+
+    Ok(CoroutineResponse::Ready { status, body, content_type: None })
+}
+
+fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool) -> (u16, Bytes, Option<&'static str>) {
     match result {
         Value::UserData(ref ud) => {
             if let Ok(response) = ud.borrow::<RoverResponse>() {
                 (
-                    StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK),
+                    response.status,
                     response.body.clone(),
-                    Some(response.content_type.clone()),
+                    Some(response.content_type),
                 )
             } else {
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    500,
                     Bytes::from("Invalid userdata type"),
-                    Some("text/plain".to_string()),
+                    Some("text/plain"),
                 )
             }
         }
 
         Value::String(ref s) => (
-            StatusCode::OK,
+            200,
             Bytes::from(s.to_str().unwrap().to_string()),
-            Some("text/plain".to_string()),
+            Some("text/plain"),
         ),
 
         Value::Table(table) => {
-            let json = lua_table_to_json(&table).unwrap_or_else(|e| {
+            let json = lua_table_to_json(&table, buffer_pool).unwrap_or_else(|e| {
                 format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
             });
-            (StatusCode::OK, Bytes::from(json), Some("application/json".to_string()))
+            (200, Bytes::from(json), Some("application/json"))
         }
 
-        Value::Integer(i) => (StatusCode::OK, Bytes::from(i.to_string()), Some("text/plain".to_string())),
-        Value::Number(n) => (StatusCode::OK, Bytes::from(n.to_string()), Some("text/plain".to_string())),
-        Value::Boolean(b) => (StatusCode::OK, Bytes::from(b.to_string()), Some("text/plain".to_string())),
-        Value::Nil => (StatusCode::NO_CONTENT, Bytes::new(), None),
+        Value::Integer(i) => (200, Bytes::from(i.to_string()), Some("text/plain")),
+        Value::Number(n) => (200, Bytes::from(n.to_string()), Some("text/plain")),
+        Value::Boolean(b) => (200, Bytes::from(b.to_string()), Some("text/plain")),
+        Value::Nil => (204, Bytes::new(), None),
 
         Value::Error(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            500,
             Bytes::from(e.to_string()),
-            Some("text/plain".to_string()),
+            Some("text/plain"),
         ),
 
         _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            500,
             Bytes::from("Unsupported return type"),
-            Some("text/plain".to_string()),
+            Some("text/plain"),
         ),
     }
 }
 
-fn lua_table_to_json(table: &Table) -> Result<String> {
-    table
-        .to_json_string()
-        .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))
+fn lua_table_to_json(table: &Table, buffer_pool: &mut BufferPool) -> Result<String> {
+    let mut buf = buffer_pool.get_json_buf();
+    table.to_json(&mut buf).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
+    let json = String::from_utf8_lossy(&buf).to_string();
+    buffer_pool.return_json_buf(buf);
+    Ok(json)
 }
