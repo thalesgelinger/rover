@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::types::LuaType;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
@@ -39,7 +39,7 @@ pub struct Scope {
     pub scope_type: ScopeType,
     pub parent: Option<usize>,
     pub symbols: HashMap<String, Symbol>,
-    pub range: Option<SourceRange>,  // Range of the scope in source code
+    pub range: Option<SourceRange>, // Range of the scope in source code
 }
 
 impl Scope {
@@ -53,7 +53,12 @@ impl Scope {
         }
     }
 
-    pub fn new_with_range(id: usize, scope_type: ScopeType, parent: Option<usize>, range: SourceRange) -> Self {
+    pub fn new_with_range(
+        id: usize,
+        scope_type: ScopeType,
+        parent: Option<usize>,
+        range: SourceRange,
+    ) -> Self {
         Self {
             id,
             scope_type,
@@ -188,7 +193,12 @@ impl SymbolTable {
         None
     }
 
-    pub fn resolve_symbol_at_position(&self, name: &str, line: usize, column: usize) -> Option<&Symbol> {
+    pub fn resolve_symbol_at_position(
+        &self,
+        name: &str,
+        line: usize,
+        column: usize,
+    ) -> Option<&Symbol> {
         // Find innermost scope containing the position
         let scope_id = self.find_innermost_scope_at(line, column)?;
         self.resolve_symbol_from_scope(name, scope_id)
@@ -229,8 +239,7 @@ impl SymbolTable {
     }
 
     pub fn get_current_scope(&self) -> Option<&Scope> {
-        self.current_scope
-            .and_then(|id| self.scopes.get(id))
+        self.current_scope.and_then(|id| self.scopes.get(id))
     }
 
     pub fn all_symbols(&self) -> Vec<&Symbol> {
@@ -313,7 +322,9 @@ impl SymbolTable {
                     continue;
                 }
                 // Only report unused variables and parameters
-                if !symbol.used && matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Parameter) {
+                if !symbol.used
+                    && matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Parameter)
+                {
                     unused.push(symbol);
                 }
             }
@@ -343,16 +354,22 @@ pub struct SourceRange {
 impl SourceRange {
     pub fn new(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Self {
         Self {
-            start: SourcePosition { line: start_line, column: start_col },
-            end: SourcePosition { line: end_line, column: end_col },
+            start: SourcePosition {
+                line: start_line,
+                column: start_col,
+            },
+            end: SourcePosition {
+                line: end_line,
+                column: end_col,
+            },
         }
     }
 
     pub fn contains(&self, line: usize, column: usize) -> bool {
-        let after_start = (line > self.start.line) 
-            || (line == self.start.line && column >= self.start.column);
-        let before_end = (line < self.end.line) 
-            || (line == self.end.line && column <= self.end.column);
+        let after_start =
+            (line > self.start.line) || (line == self.start.line && column >= self.start.column);
+        let before_end =
+            (line < self.end.line) || (line == self.end.line && column <= self.end.column);
         after_start && before_end
     }
 }
@@ -433,7 +450,10 @@ mod tests {
         assert_eq!(current.parent, Some(2));
 
         table.pop_scope();
-        assert_eq!(table.get_current_scope().unwrap().scope_type, ScopeType::Block);
+        assert_eq!(
+            table.get_current_scope().unwrap().scope_type,
+            ScopeType::Block
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
-use mlua::prelude::*;
 use curl::easy::Easy;
+use mlua::prelude::*;
 use serde_json::Value as JsonValue;
-use std::time::Duration;
 use std::cell::RefCell;
+use std::time::Duration;
 
 thread_local! {
     static CURL_POOL: RefCell<Vec<Easy>> = RefCell::new(Vec::with_capacity(8));
@@ -10,9 +10,7 @@ thread_local! {
 
 /// Get a curl handle from the pool or create a new one
 fn get_curl_handle() -> Easy {
-    CURL_POOL.with(|pool| {
-        pool.borrow_mut().pop().unwrap_or_else(|| Easy::new())
-    })
+    CURL_POOL.with(|pool| pool.borrow_mut().pop().unwrap_or_else(|| Easy::new()))
 }
 
 /// Return a curl handle to the pool for reuse
@@ -63,69 +61,90 @@ impl HttpClient {
 
 impl LuaUserData for HttpClient {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("get", |lua, this, (url, config): (String, Option<LuaTable>)| {
-            let client = this.clone();
-            // Check if we should yield (running in coroutine)
-            if should_yield_for_io(lua)? {
-                yield_http_request(lua, &client, "GET", url, None, config)
-            } else {
-                make_request(&lua, &client, "GET", url, None, config)
-            }
-        });
+        methods.add_method(
+            "get",
+            |lua, this, (url, config): (String, Option<LuaTable>)| {
+                let client = this.clone();
+                // Check if we should yield (running in coroutine)
+                if should_yield_for_io(lua)? {
+                    yield_http_request(lua, &client, "GET", url, None, config)
+                } else {
+                    make_request(&lua, &client, "GET", url, None, config)
+                }
+            },
+        );
 
-        methods.add_method("post", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
-            let client = this.clone();
-            if should_yield_for_io(lua)? {
-                yield_http_request(lua, &client, "POST", url, data, config)
-            } else {
-                make_request(&lua, &client, "POST", url, data, config)
-            }
-        });
+        methods.add_method(
+            "post",
+            |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+                let client = this.clone();
+                if should_yield_for_io(lua)? {
+                    yield_http_request(lua, &client, "POST", url, data, config)
+                } else {
+                    make_request(&lua, &client, "POST", url, data, config)
+                }
+            },
+        );
 
-        methods.add_method("put", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
-            let client = this.clone();
-            if should_yield_for_io(lua)? {
-                yield_http_request(lua, &client, "PUT", url, data, config)
-            } else {
-                make_request(&lua, &client, "PUT", url, data, config)
-            }
-        });
+        methods.add_method(
+            "put",
+            |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+                let client = this.clone();
+                if should_yield_for_io(lua)? {
+                    yield_http_request(lua, &client, "PUT", url, data, config)
+                } else {
+                    make_request(&lua, &client, "PUT", url, data, config)
+                }
+            },
+        );
 
-        methods.add_method("delete", |lua, this, (url, config): (String, Option<LuaTable>)| {
-            let client = this.clone();
-            if should_yield_for_io(lua)? {
-                yield_http_request(lua, &client, "DELETE", url, None, config)
-            } else {
-                make_request(&lua, &client, "DELETE", url, None, config)
-            }
-        });
+        methods.add_method(
+            "delete",
+            |lua, this, (url, config): (String, Option<LuaTable>)| {
+                let client = this.clone();
+                if should_yield_for_io(lua)? {
+                    yield_http_request(lua, &client, "DELETE", url, None, config)
+                } else {
+                    make_request(&lua, &client, "DELETE", url, None, config)
+                }
+            },
+        );
 
-        methods.add_method("patch", |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
-            let client = this.clone();
-            if should_yield_for_io(lua)? {
-                yield_http_request(lua, &client, "PATCH", url, data, config)
-            } else {
-                make_request(&lua, &client, "PATCH", url, data, config)
-            }
-        });
+        methods.add_method(
+            "patch",
+            |lua, this, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+                let client = this.clone();
+                if should_yield_for_io(lua)? {
+                    yield_http_request(lua, &client, "PATCH", url, data, config)
+                } else {
+                    make_request(&lua, &client, "PATCH", url, data, config)
+                }
+            },
+        );
 
-        methods.add_method("head", |lua, this, (url, config): (String, Option<LuaTable>)| {
-            let client = this.clone();
-            if should_yield_for_io(lua)? {
-                yield_http_request(lua, &client, "HEAD", url, None, config)
-            } else {
-                make_request(&lua, &client, "HEAD", url, None, config)
-            }
-        });
+        methods.add_method(
+            "head",
+            |lua, this, (url, config): (String, Option<LuaTable>)| {
+                let client = this.clone();
+                if should_yield_for_io(lua)? {
+                    yield_http_request(lua, &client, "HEAD", url, None, config)
+                } else {
+                    make_request(&lua, &client, "HEAD", url, None, config)
+                }
+            },
+        );
 
-        methods.add_method("options", |lua, this, (url, config): (String, Option<LuaTable>)| {
-            let client = this.clone();
-            if should_yield_for_io(lua)? {
-                yield_http_request(lua, &client, "OPTIONS", url, None, config)
-            } else {
-                make_request(&lua, &client, "OPTIONS", url, None, config)
-            }
-        });
+        methods.add_method(
+            "options",
+            |lua, this, (url, config): (String, Option<LuaTable>)| {
+                let client = this.clone();
+                if should_yield_for_io(lua)? {
+                    yield_http_request(lua, &client, "OPTIONS", url, None, config)
+                } else {
+                    make_request(&lua, &client, "OPTIONS", url, None, config)
+                }
+            },
+        );
     }
 }
 
@@ -186,21 +205,25 @@ fn make_request(
     let mut easy = get_curl_handle();
 
     easy.url(&full_url).map_err(|e| LuaError::external(e))?;
-    
+
     if let Some(timeout) = client.timeout {
         easy.timeout(timeout).map_err(|e| LuaError::external(e))?;
     }
 
     let mut headers = curl::easy::List::new();
     for (k, v) in &client.default_headers {
-        headers.append(&format!("{}: {}", k, v)).map_err(|e| LuaError::external(e))?;
+        headers
+            .append(&format!("{}: {}", k, v))
+            .map_err(|e| LuaError::external(e))?;
     }
 
     if let Some(ref cfg) = config {
         if let Ok(hdrs) = cfg.get::<LuaTable>("headers") {
             for pair in hdrs.pairs::<String, String>() {
                 if let Ok((key, value)) = pair {
-                    headers.append(&format!("{}: {}", key, value)).map_err(|e| LuaError::external(e))?;
+                    headers
+                        .append(&format!("{}: {}", key, value))
+                        .map_err(|e| LuaError::external(e))?;
                 }
             }
         }
@@ -216,7 +239,8 @@ fn make_request(
                         LuaValue::Boolean(b) => b.to_string(),
                         _ => continue,
                     };
-                    query_parts.push(format!("{}={}", 
+                    query_parts.push(format!(
+                        "{}={}",
                         urlencoding::encode(&key),
                         urlencoding::encode(&value_str)
                     ));
@@ -237,52 +261,67 @@ fn make_request(
         "GET" => easy.get(true).map_err(|e| LuaError::external(e))?,
         "POST" => easy.post(true).map_err(|e| LuaError::external(e))?,
         "PUT" => easy.put(true).map_err(|e| LuaError::external(e))?,
-        "DELETE" => easy.custom_request("DELETE").map_err(|e| LuaError::external(e))?,
-        "PATCH" => easy.custom_request("PATCH").map_err(|e| LuaError::external(e))?,
+        "DELETE" => easy
+            .custom_request("DELETE")
+            .map_err(|e| LuaError::external(e))?,
+        "PATCH" => easy
+            .custom_request("PATCH")
+            .map_err(|e| LuaError::external(e))?,
         "HEAD" => easy.nobody(true).map_err(|e| LuaError::external(e))?,
-        "OPTIONS" => easy.custom_request("OPTIONS").map_err(|e| LuaError::external(e))?,
+        "OPTIONS" => easy
+            .custom_request("OPTIONS")
+            .map_err(|e| LuaError::external(e))?,
         _ => {}
     }
 
     if let Some(body_data) = data {
         let json_str = lua_value_to_json(lua, &body_data)?;
         let body_bytes = json_str.as_bytes();
-        headers.append("Content-Type: application/json").map_err(|e| LuaError::external(e))?;
-        easy.post_field_size(body_bytes.len() as u64).map_err(|e| LuaError::external(e))?;
-        
+        headers
+            .append("Content-Type: application/json")
+            .map_err(|e| LuaError::external(e))?;
+        easy.post_field_size(body_bytes.len() as u64)
+            .map_err(|e| LuaError::external(e))?;
+
         let mut body_data = body_bytes.to_vec();
         easy.read_function(move |buf| {
             let to_read = buf.len().min(body_data.len());
             buf[..to_read].copy_from_slice(&body_data[..to_read]);
             body_data.drain(..to_read);
             Ok(to_read)
-        }).map_err(|e| LuaError::external(e))?;
+        })
+        .map_err(|e| LuaError::external(e))?;
     }
 
-    easy.http_headers(headers).map_err(|e| LuaError::external(e))?;
+    easy.http_headers(headers)
+        .map_err(|e| LuaError::external(e))?;
 
     let mut response_data = Vec::new();
     let mut response_headers = Vec::new();
-    
+
     {
         let mut transfer = easy.transfer();
-        transfer.write_function(|data| {
-            response_data.extend_from_slice(data);
-            Ok(data.len())
-        }).map_err(|e| LuaError::external(e))?;
+        transfer
+            .write_function(|data| {
+                response_data.extend_from_slice(data);
+                Ok(data.len())
+            })
+            .map_err(|e| LuaError::external(e))?;
 
-        transfer.header_function(|header| {
-            if let Ok(header_str) = std::str::from_utf8(header) {
-                response_headers.push(header_str.to_string());
-            }
-            true
-        }).map_err(|e| LuaError::external(e))?;
+        transfer
+            .header_function(|header| {
+                if let Ok(header_str) = std::str::from_utf8(header) {
+                    response_headers.push(header_str.to_string());
+                }
+                true
+            })
+            .map_err(|e| LuaError::external(e))?;
 
         transfer.perform().map_err(|e| LuaError::external(e))?;
     }
 
     let status_code = easy.response_code().map_err(|e| LuaError::external(e))?;
-    
+
     let result = lua.create_table()?;
     result.set("status", status_code)?;
     result.set("ok", status_code >= 200 && status_code < 300)?;
@@ -326,7 +365,9 @@ fn lua_value_to_json(_lua: &Lua, value: &LuaValue) -> LuaResult<String> {
         LuaValue::Number(n) => Ok(n.to_string()),
         LuaValue::Boolean(b) => Ok(b.to_string()),
         LuaValue::Nil => Ok("null".to_string()),
-        _ => Err(LuaError::RuntimeError("Unsupported data type for JSON serialization".to_string())),
+        _ => Err(LuaError::RuntimeError(
+            "Unsupported data type for JSON serialization".to_string(),
+        )),
     }
 }
 
@@ -381,7 +422,9 @@ fn lua_value_to_json_value(value: &LuaValue) -> LuaResult<JsonValue> {
         }
         LuaValue::String(s) => Ok(JsonValue::String(s.to_str()?.to_string())),
         LuaValue::Table(table) => table_to_json_value(table),
-        _ => Err(LuaError::RuntimeError("Unsupported Lua type for JSON".to_string())),
+        _ => Err(LuaError::RuntimeError(
+            "Unsupported Lua type for JSON".to_string(),
+        )),
     }
 }
 
@@ -421,68 +464,98 @@ pub fn create_http_module(lua: &Lua) -> LuaResult<LuaTable> {
     let client = HttpClient::new();
 
     let client_get = client.clone();
-    http.set("get", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
-        let client = client_get.clone();
-        make_request(&lua, &client, "GET", url, None, config)
-    })?)?;
+    http.set(
+        "get",
+        lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+            let client = client_get.clone();
+            make_request(&lua, &client, "GET", url, None, config)
+        })?,
+    )?;
 
     let client_post = client.clone();
-    http.set("post", lua.create_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
-        let client = client_post.clone();
-        make_request(&lua, &client, "POST", url, data, config)
-    })?)?;
+    http.set(
+        "post",
+        lua.create_function(
+            move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+                let client = client_post.clone();
+                make_request(&lua, &client, "POST", url, data, config)
+            },
+        )?,
+    )?;
 
     let client_put = client.clone();
-    http.set("put", lua.create_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
-        let client = client_put.clone();
-        make_request(&lua, &client, "PUT", url, data, config)
-    })?)?;
+    http.set(
+        "put",
+        lua.create_function(
+            move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+                let client = client_put.clone();
+                make_request(&lua, &client, "PUT", url, data, config)
+            },
+        )?,
+    )?;
 
     let client_delete = client.clone();
-    http.set("delete", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
-        let client = client_delete.clone();
-        make_request(&lua, &client, "DELETE", url, None, config)
-    })?)?;
+    http.set(
+        "delete",
+        lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+            let client = client_delete.clone();
+            make_request(&lua, &client, "DELETE", url, None, config)
+        })?,
+    )?;
 
     let client_patch = client.clone();
-    http.set("patch", lua.create_function(move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
-        let client = client_patch.clone();
-        make_request(&lua, &client, "PATCH", url, data, config)
-    })?)?;
+    http.set(
+        "patch",
+        lua.create_function(
+            move |lua, (url, data, config): (String, Option<LuaValue>, Option<LuaTable>)| {
+                let client = client_patch.clone();
+                make_request(&lua, &client, "PATCH", url, data, config)
+            },
+        )?,
+    )?;
 
     let client_head = client.clone();
-    http.set("head", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
-        let client = client_head.clone();
-        make_request(&lua, &client, "HEAD", url, None, config)
-    })?)?;
+    http.set(
+        "head",
+        lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+            let client = client_head.clone();
+            make_request(&lua, &client, "HEAD", url, None, config)
+        })?,
+    )?;
 
     let client_options = client.clone();
-    http.set("options", lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
-        let client = client_options.clone();
-        make_request(&lua, &client, "OPTIONS", url, None, config)
-    })?)?;
+    http.set(
+        "options",
+        lua.create_function(move |lua, (url, config): (String, Option<LuaTable>)| {
+            let client = client_options.clone();
+            make_request(&lua, &client, "OPTIONS", url, None, config)
+        })?,
+    )?;
 
-    http.set("create", lua.create_function(|_lua, config: LuaTable| {
-        let mut client = HttpClient::new();
+    http.set(
+        "create",
+        lua.create_function(|_lua, config: LuaTable| {
+            let mut client = HttpClient::new();
 
-        if let Ok(base_url) = config.get::<String>("baseURL") {
-            client.base_url = Some(base_url);
-        }
+            if let Ok(base_url) = config.get::<String>("baseURL") {
+                client.base_url = Some(base_url);
+            }
 
-        if let Ok(timeout_ms) = config.get::<u64>("timeout") {
-            client.timeout = Some(Duration::from_millis(timeout_ms));
-        }
+            if let Ok(timeout_ms) = config.get::<u64>("timeout") {
+                client.timeout = Some(Duration::from_millis(timeout_ms));
+            }
 
-        if let Ok(headers) = config.get::<LuaTable>("headers") {
-            for pair in headers.pairs::<String, String>() {
-                if let Ok((key, value)) = pair {
-                    client.default_headers.push((key, value));
+            if let Ok(headers) = config.get::<LuaTable>("headers") {
+                for pair in headers.pairs::<String, String>() {
+                    if let Ok((key, value)) = pair {
+                        client.default_headers.push((key, value));
+                    }
                 }
             }
-        }
 
-        Ok(client)
-    })?)?;
+            Ok(client)
+        })?,
+    )?;
 
     Ok(http)
 }

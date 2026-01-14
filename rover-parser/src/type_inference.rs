@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tree_sitter::Node;
 
-use crate::types::{LuaType, TableType, FunctionType, TypeError};
+use crate::types::{FunctionType, LuaType, TableType, TypeError};
 
 /// Type environment mapping variable names to their types at a given point
 #[derive(Debug, Clone, Default)]
@@ -108,8 +108,14 @@ impl NarrowingContext {
     }
 
     /// Record pcall result variable mapping
-    pub fn set_pcall_result(&mut self, result_var: String, success_var: String, error_type: LuaType) {
-        self.pcall_results.insert(result_var, (success_var, error_type));
+    pub fn set_pcall_result(
+        &mut self,
+        result_var: String,
+        success_var: String,
+        error_type: LuaType,
+    ) {
+        self.pcall_results
+            .insert(result_var, (success_var, error_type));
     }
 
     /// Get narrowed type for a variable (considering pcall)
@@ -140,7 +146,10 @@ pub enum TypeConstraint {
     /// Must have this field
     HasField { field: String, field_type: LuaType },
     /// Must have this method
-    HasMethod { method: String, method_type: FunctionType },
+    HasMethod {
+        method: String,
+        method_type: FunctionType,
+    },
 }
 
 /// Module exports from a required file
@@ -202,22 +211,25 @@ impl ParamConstraints {
         let mut exact_types: Vec<LuaType> = Vec::new();
         let mut table_fields: HashMap<String, LuaType> = HashMap::new();
 
-            for constraint in constraints {
-                match constraint {
-                    TypeConstraint::ExactType(ty) => {
-                        exact_types.push(ty.clone());
-                    }
-                    TypeConstraint::HasField { field, field_type } => {
-                        table_fields.insert(field.clone(), field_type.clone());
-                    }
-                    TypeConstraint::HasMethod { method, method_type } => {
-                        table_fields.insert(
-                            method.clone(),
-                            LuaType::Function(Box::new(method_type.clone())),
-                        );
-                    }
+        for constraint in constraints {
+            match constraint {
+                TypeConstraint::ExactType(ty) => {
+                    exact_types.push(ty.clone());
+                }
+                TypeConstraint::HasField { field, field_type } => {
+                    table_fields.insert(field.clone(), field_type.clone());
+                }
+                TypeConstraint::HasMethod {
+                    method,
+                    method_type,
+                } => {
+                    table_fields.insert(
+                        method.clone(),
+                        LuaType::Function(Box::new(method_type.clone())),
+                    );
                 }
             }
+        }
 
         // If we collected multiple exact types, create a union
         if exact_types.len() > 1 {
@@ -376,7 +388,10 @@ impl<'a> TypeInference<'a> {
             "pcall".to_string(),
             FunctionType {
                 params: vec![
-                    ("f".to_string(), LuaType::Function(Box::new(FunctionType::default()))),
+                    (
+                        "f".to_string(),
+                        LuaType::Function(Box::new(FunctionType::default())),
+                    ),
                     ("...".to_string(), LuaType::Any),
                 ],
                 returns: vec![LuaType::Boolean, LuaType::Any],
@@ -389,8 +404,14 @@ impl<'a> TypeInference<'a> {
             "xpcall".to_string(),
             FunctionType {
                 params: vec![
-                    ("f".to_string(), LuaType::Function(Box::new(FunctionType::default()))),
-                    ("msgh".to_string(), LuaType::Function(Box::new(FunctionType::default()))),
+                    (
+                        "f".to_string(),
+                        LuaType::Function(Box::new(FunctionType::default())),
+                    ),
+                    (
+                        "msgh".to_string(),
+                        LuaType::Function(Box::new(FunctionType::default())),
+                    ),
                     ("...".to_string(), LuaType::Any),
                 ],
                 returns: vec![LuaType::Boolean, LuaType::Any],
@@ -429,35 +450,50 @@ impl<'a> TypeInference<'a> {
 
         // String library
         let mut string_lib = TableType::new();
-        string_lib.set_field("len".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::String], LuaType::Number)
-        )));
-        string_lib.set_field("sub".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+        string_lib.set_field(
+            "len".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::String],
+                LuaType::Number,
+            ))),
+        );
+        string_lib.set_field(
+            "sub".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("s".to_string(), LuaType::String),
                     ("i".to_string(), LuaType::Number),
                     ("j".to_string(), LuaType::Number),
                 ],
                 vec![LuaType::String],
-            )
-        )));
-        string_lib.set_field("upper".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::String], LuaType::String)
-        )));
-        string_lib.set_field("lower".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::String], LuaType::String)
-        )));
-        string_lib.set_field("format".to_string(), LuaType::Function(Box::new(
-            FunctionType {
+            ))),
+        );
+        string_lib.set_field(
+            "upper".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::String],
+                LuaType::String,
+            ))),
+        );
+        string_lib.set_field(
+            "lower".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::String],
+                LuaType::String,
+            ))),
+        );
+        string_lib.set_field(
+            "format".to_string(),
+            LuaType::Function(Box::new(FunctionType {
                 params: vec![("formatstring".to_string(), LuaType::String)],
                 returns: vec![LuaType::String],
                 vararg: true,
                 is_method: false,
-            }
-        )));
-        string_lib.set_field("find".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            })),
+        );
+        string_lib.set_field(
+            "find".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("s".to_string(), LuaType::String),
                     ("pattern".to_string(), LuaType::String),
@@ -466,114 +502,163 @@ impl<'a> TypeInference<'a> {
                     LuaType::union(vec![LuaType::Number, LuaType::Nil]),
                     LuaType::union(vec![LuaType::Number, LuaType::Nil]),
                 ],
-            )
-        )));
-        string_lib.set_field("match".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        string_lib.set_field(
+            "match".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("s".to_string(), LuaType::String),
                     ("pattern".to_string(), LuaType::String),
                 ],
                 vec![LuaType::union(vec![LuaType::String, LuaType::Nil])],
-            )
-        )));
-        string_lib.set_field("gsub".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        string_lib.set_field(
+            "gsub".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("s".to_string(), LuaType::String),
                     ("pattern".to_string(), LuaType::String),
                     ("repl".to_string(), LuaType::Any),
                 ],
                 vec![LuaType::String, LuaType::Number],
-            )
-        )));
-        string_lib.set_field("rep".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        string_lib.set_field(
+            "rep".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("s".to_string(), LuaType::String),
                     ("n".to_string(), LuaType::Number),
                 ],
                 vec![LuaType::String],
-            )
-        )));
-        string_lib.set_field("reverse".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::String], LuaType::String)
-        )));
-        string_lib.set_field("byte".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        string_lib.set_field(
+            "reverse".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::String],
+                LuaType::String,
+            ))),
+        );
+        string_lib.set_field(
+            "byte".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("s".to_string(), LuaType::String),
                     ("i".to_string(), LuaType::Number),
                 ],
                 vec![LuaType::union(vec![LuaType::Number, LuaType::Nil])],
-            )
-        )));
-        string_lib.set_field("char".to_string(), LuaType::Function(Box::new(
-            FunctionType {
+            ))),
+        );
+        string_lib.set_field(
+            "char".to_string(),
+            LuaType::Function(Box::new(FunctionType {
                 params: vec![("...".to_string(), LuaType::Number)],
                 returns: vec![LuaType::String],
                 vararg: true,
                 is_method: false,
-            }
-        )));
+            })),
+        );
         env.set("string".to_string(), LuaType::Table(string_lib));
 
         // Math library
         let mut math_lib = TableType::new();
-        math_lib.set_field("abs".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("floor".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("ceil".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("sqrt".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("sin".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("cos".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("tan".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("log".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("exp".to_string(), LuaType::Function(Box::new(
-            FunctionType::simple(vec![LuaType::Number], LuaType::Number)
-        )));
-        math_lib.set_field("pow".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+        math_lib.set_field(
+            "abs".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "floor".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "ceil".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "sqrt".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "sin".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "cos".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "tan".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "log".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "exp".to_string(),
+            LuaType::Function(Box::new(FunctionType::simple(
+                vec![LuaType::Number],
+                LuaType::Number,
+            ))),
+        );
+        math_lib.set_field(
+            "pow".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("x".to_string(), LuaType::Number),
                     ("y".to_string(), LuaType::Number),
                 ],
                 vec![LuaType::Number],
-            )
-        )));
-        math_lib.set_field("min".to_string(), LuaType::Function(Box::new(
-            FunctionType {
+            ))),
+        );
+        math_lib.set_field(
+            "min".to_string(),
+            LuaType::Function(Box::new(FunctionType {
                 params: vec![("...".to_string(), LuaType::Number)],
                 returns: vec![LuaType::Number],
                 vararg: true,
                 is_method: false,
-            }
-        )));
-        math_lib.set_field("max".to_string(), LuaType::Function(Box::new(
-            FunctionType {
+            })),
+        );
+        math_lib.set_field(
+            "max".to_string(),
+            LuaType::Function(Box::new(FunctionType {
                 params: vec![("...".to_string(), LuaType::Number)],
                 returns: vec![LuaType::Number],
                 vararg: true,
                 is_method: false,
-            }
-        )));
-        math_lib.set_field("random".to_string(), LuaType::Function(Box::new(
-            FunctionType {
+            })),
+        );
+        math_lib.set_field(
+            "random".to_string(),
+            LuaType::Function(Box::new(FunctionType {
                 params: vec![
                     ("m".to_string(), LuaType::Number),
                     ("n".to_string(), LuaType::Number),
@@ -581,84 +666,97 @@ impl<'a> TypeInference<'a> {
                 returns: vec![LuaType::Number],
                 vararg: false,
                 is_method: false,
-            }
-        )));
+            })),
+        );
         math_lib.set_field("pi".to_string(), LuaType::Number);
         math_lib.set_field("huge".to_string(), LuaType::Number);
         env.set("math".to_string(), LuaType::Table(math_lib));
 
         // Table library
         let mut table_lib = TableType::new();
-        table_lib.set_field("insert".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+        table_lib.set_field(
+            "insert".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("t".to_string(), LuaType::Table(TableType::open())),
                     ("value".to_string(), LuaType::Any),
                 ],
                 vec![],
-            )
-        )));
-        table_lib.set_field("remove".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        table_lib.set_field(
+            "remove".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("t".to_string(), LuaType::Table(TableType::open())),
                     ("pos".to_string(), LuaType::Number),
                 ],
                 vec![LuaType::Any],
-            )
-        )));
-        table_lib.set_field("concat".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        table_lib.set_field(
+            "concat".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("t".to_string(), LuaType::Table(TableType::open())),
                     ("sep".to_string(), LuaType::String),
                 ],
                 vec![LuaType::String],
-            )
-        )));
-        table_lib.set_field("sort".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        table_lib.set_field(
+            "sort".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("t".to_string(), LuaType::Table(TableType::open())),
-                    ("comp".to_string(), LuaType::Function(Box::new(FunctionType::default()))),
+                    (
+                        "comp".to_string(),
+                        LuaType::Function(Box::new(FunctionType::default())),
+                    ),
                 ],
                 vec![],
-            )
-        )));
+            ))),
+        );
         env.set("table".to_string(), LuaType::Table(table_lib));
 
         // OS library
         let mut os_lib = TableType::new();
-        os_lib.set_field("time".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(vec![], vec![LuaType::Number])
-        )));
-        os_lib.set_field("date".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+        os_lib.set_field(
+            "time".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(vec![], vec![LuaType::Number]))),
+        );
+        os_lib.set_field(
+            "date".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![("format".to_string(), LuaType::String)],
                 vec![LuaType::String],
-            )
-        )));
-        os_lib.set_field("clock".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(vec![], vec![LuaType::Number])
-        )));
-        os_lib.set_field("exit".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        os_lib.set_field(
+            "clock".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(vec![], vec![LuaType::Number]))),
+        );
+        os_lib.set_field(
+            "exit".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![("code".to_string(), LuaType::Number)],
                 vec![LuaType::Never],
-            )
-        )));
-        os_lib.set_field("getenv".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        os_lib.set_field(
+            "getenv".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![("varname".to_string(), LuaType::String)],
                 vec![LuaType::union(vec![LuaType::String, LuaType::Nil])],
-            )
-        )));
+            ))),
+        );
         env.set("os".to_string(), LuaType::Table(os_lib));
 
         // IO library
         let mut io_lib = TableType::new();
-        io_lib.set_field("open".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+        io_lib.set_field(
+            "open".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![
                     ("filename".to_string(), LuaType::String),
                     ("mode".to_string(), LuaType::String),
@@ -667,28 +765,31 @@ impl<'a> TypeInference<'a> {
                     LuaType::Table(TableType::open()), // file handle
                     LuaType::Nil,
                 ])],
-            )
-        )));
-        io_lib.set_field("read".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            ))),
+        );
+        io_lib.set_field(
+            "read".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![("format".to_string(), LuaType::Any)],
                 vec![LuaType::union(vec![LuaType::String, LuaType::Nil])],
-            )
-        )));
-        io_lib.set_field("write".to_string(), LuaType::Function(Box::new(
-            FunctionType {
+            ))),
+        );
+        io_lib.set_field(
+            "write".to_string(),
+            LuaType::Function(Box::new(FunctionType {
                 params: vec![("...".to_string(), LuaType::Any)],
                 returns: vec![LuaType::Boolean],
                 vararg: true,
                 is_method: false,
-            }
-        )));
-        io_lib.set_field("close".to_string(), LuaType::Function(Box::new(
-            FunctionType::new(
+            })),
+        );
+        io_lib.set_field(
+            "close".to_string(),
+            LuaType::Function(Box::new(FunctionType::new(
                 vec![("file".to_string(), LuaType::Any)],
                 vec![LuaType::Boolean],
-            )
-        )));
+            ))),
+        );
         env.set("io".to_string(), LuaType::Table(io_lib));
     }
 
@@ -700,34 +801,34 @@ impl<'a> TypeInference<'a> {
             "true" | "false" => LuaType::Boolean,
             "number" => LuaType::Number,
             "string" => LuaType::String,
-            
+
             // Table constructor
             "table_constructor" => self.infer_table_constructor(node),
-            
+
             // Function definition
             "function_definition" => self.infer_function_definition(node),
-            
+
             // Variable reference
             "identifier" => self.infer_identifier(node),
-            
+
             // Binary operations
             "binary_expression" => self.infer_binary_expression(node),
-            
-            // Unary operations  
+
+            // Unary operations
             "unary_expression" => self.infer_unary_expression(node),
-            
+
             // Property access
             "dot_index_expression" => self.infer_dot_access(node),
-            
+
             // Bracket index
             "bracket_index_expression" => self.infer_bracket_access(node),
-            
+
             // Method call
             "method_index_expression" => self.infer_method_access(node),
-            
+
             // Function call
             "function_call" => self.infer_function_call(node),
-            
+
             // Parenthesized expression
             "parenthesized_expression" => {
                 let mut cursor = node.walk();
@@ -738,7 +839,7 @@ impl<'a> TypeInference<'a> {
                 }
                 LuaType::Unknown
             }
-            
+
             _ => LuaType::Unknown,
         }
     }
@@ -816,8 +917,11 @@ impl<'a> TypeInference<'a> {
     }
 
     /// Infer type of a function definition with optional name for constraint tracking
-    pub fn infer_function_definition_with_name(&mut self, node: Node, func_name: Option<&str>) -> LuaType {
-
+    pub fn infer_function_definition_with_name(
+        &mut self,
+        node: Node,
+        func_name: Option<&str>,
+    ) -> LuaType {
         let params = self.extract_function_params(node);
 
         // Create child environment for function body
@@ -825,7 +929,8 @@ impl<'a> TypeInference<'a> {
         let old_env = std::mem::replace(&mut self.env, child_env);
 
         // Save old constraints and current function
-        let old_constraints = std::mem::replace(&mut self.param_constraints, ParamConstraints::new());
+        let old_constraints =
+            std::mem::replace(&mut self.param_constraints, ParamConstraints::new());
         let old_current_function = self.current_function.take();
         self.current_function = func_name.map(|s| s.to_string());
 
@@ -851,7 +956,8 @@ impl<'a> TypeInference<'a> {
 
         // Store constraints for this function (for checking calls later)
         if let Some(fn_name) = func_name {
-            self.function_constraints.insert(fn_name.to_string(), self.param_constraints.clone());
+            self.function_constraints
+                .insert(fn_name.to_string(), self.param_constraints.clone());
         }
 
         // Restore environment and constraints
@@ -865,7 +971,6 @@ impl<'a> TypeInference<'a> {
             vararg: false,
             is_method: false,
         }));
-
 
         result
     }
@@ -898,7 +1003,8 @@ impl<'a> TypeInference<'a> {
                         }
                     }
                 }
-                "if_statement" | "while_statement" | "repeat_statement" | "for_statement" | "do_statement" => {
+                "if_statement" | "while_statement" | "repeat_statement" | "for_statement"
+                | "do_statement" => {
                     // Recurse into control structures
                     self.process_block_for_constraints(child);
                 }
@@ -918,7 +1024,6 @@ impl<'a> TypeInference<'a> {
     /// Extract function parameters
     fn extract_function_params(&self, node: Node) -> Vec<(String, LuaType)> {
         let mut params = Vec::new();
-
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -948,9 +1053,9 @@ impl<'a> TypeInference<'a> {
     /// Infer return types from function body
     fn infer_function_returns(&mut self, node: Node) -> Vec<LuaType> {
         let mut return_types = Vec::new();
-        
+
         self.collect_returns(node, &mut return_types);
-        
+
         if return_types.is_empty() {
             vec![LuaType::Nil]
         } else if return_types.len() == 1 {
@@ -1033,21 +1138,29 @@ impl<'a> TypeInference<'a> {
             }
         }
 
-        let Some(left_node) = left else { return LuaType::Unknown };
-        let Some(right_node) = right else { return LuaType::Unknown };
-        
+        let Some(left_node) = left else {
+            return LuaType::Unknown;
+        };
+        let Some(right_node) = right else {
+            return LuaType::Unknown;
+        };
+
         let left_type = self.infer_expression(left_node);
         let right_type = self.infer_expression(right_node);
-        
+
         let op_str = op.unwrap_or("");
 
         match op_str {
             // Arithmetic operators -> number
             "+" | "-" | "*" | "/" | "%" | "^" => {
                 // Check operands are numeric
-                let left_is_valid = matches!(left_type, LuaType::Number | LuaType::Unknown | LuaType::Any);
-                let right_is_valid = matches!(right_type, LuaType::Number | LuaType::Unknown | LuaType::Any);
-                
+                let left_is_valid =
+                    matches!(left_type, LuaType::Number | LuaType::Unknown | LuaType::Any);
+                let right_is_valid = matches!(
+                    right_type,
+                    LuaType::Number | LuaType::Unknown | LuaType::Any
+                );
+
                 if !left_is_valid {
                     self.errors.push(TypeError::type_mismatch(
                         &LuaType::Number,
@@ -1066,13 +1179,13 @@ impl<'a> TypeInference<'a> {
                 }
                 LuaType::Number
             }
-            
+
             // String concatenation -> string
             ".." => {
                 // Check that operands can be concatenated (not nil)
                 let left_can_concat = !matches!(left_type, LuaType::Nil);
                 let right_can_concat = !matches!(right_type, LuaType::Nil);
-                
+
                 if !left_can_concat {
                     self.errors.push(TypeError {
                         message: "Cannot concatenate nil".to_string(),
@@ -1093,14 +1206,14 @@ impl<'a> TypeInference<'a> {
                 }
                 LuaType::String
             }
-            
+
             // Comparison operators -> boolean
             "==" | "~=" | "<" | ">" | "<=" | ">=" => {
                 // Lua allows comparing any types, but we can warn about obvious mismatches
                 // For now, just return boolean without errors
                 LuaType::Boolean
             }
-            
+
             // Logical operators
             "and" => {
                 // Returns first arg if falsy, otherwise second arg
@@ -1118,7 +1231,7 @@ impl<'a> TypeInference<'a> {
                     LuaType::union(vec![left_type, right_type])
                 }
             }
-            
+
             _ => LuaType::Unknown,
         }
     }
@@ -1137,13 +1250,18 @@ impl<'a> TypeInference<'a> {
             }
         }
 
-        let Some(operand_node) = operand else { return LuaType::Unknown };
+        let Some(operand_node) = operand else {
+            return LuaType::Unknown;
+        };
         let operand_type = self.infer_expression(operand_node);
-        
+
         match op {
             Some("-") => {
                 // Unary minus requires numeric type
-                if !matches!(operand_type, LuaType::Number | LuaType::Unknown | LuaType::Any) {
+                if !matches!(
+                    operand_type,
+                    LuaType::Number | LuaType::Unknown | LuaType::Any
+                ) {
                     self.errors.push(TypeError::type_mismatch(
                         &LuaType::Number,
                         &operand_type,
@@ -1156,7 +1274,10 @@ impl<'a> TypeInference<'a> {
             Some("not") => LuaType::Boolean,
             Some("#") => {
                 // Length operator requires string or table
-                if !matches!(operand_type, LuaType::String | LuaType::Table(_) | LuaType::Unknown | LuaType::Any) {
+                if !matches!(
+                    operand_type,
+                    LuaType::String | LuaType::Table(_) | LuaType::Unknown | LuaType::Any
+                ) {
                     self.errors.push(TypeError {
                         message: format!("Cannot get length of {}", operand_type),
                         expected: LuaType::String,
@@ -1189,11 +1310,15 @@ impl<'a> TypeInference<'a> {
             }
         }
 
-        let Some(base_node) = base else { return LuaType::Unknown };
-        let Some(field_name) = field else { return LuaType::Unknown };
-        
+        let Some(base_node) = base else {
+            return LuaType::Unknown;
+        };
+        let Some(field_name) = field else {
+            return LuaType::Unknown;
+        };
+
         let base_type = self.infer_expression(base_node);
-        
+
         match &base_type {
             LuaType::Table(table) => {
                 if let Some(field_type) = table.get_field(&field_name) {
@@ -1218,7 +1343,10 @@ impl<'a> TypeInference<'a> {
                 // But string.method is also valid in Lua
                 if let Some(string_type) = self.env.get("string") {
                     if let LuaType::Table(string_lib) = string_type {
-                        return string_lib.get_field(&field_name).cloned().unwrap_or(LuaType::Unknown);
+                        return string_lib
+                            .get_field(&field_name)
+                            .cloned()
+                            .unwrap_or(LuaType::Unknown);
                     }
                 }
                 LuaType::Unknown
@@ -1244,16 +1372,18 @@ impl<'a> TypeInference<'a> {
     fn infer_bracket_access(&mut self, node: Node) -> LuaType {
         let mut cursor = node.walk();
         let mut base: Option<Node> = None;
-        
+
         for child in node.children(&mut cursor) {
             if child.is_named() && base.is_none() {
                 base = Some(child);
             }
         }
 
-        let Some(base_node) = base else { return LuaType::Unknown };
+        let Some(base_node) = base else {
+            return LuaType::Unknown;
+        };
         let base_type = self.infer_expression(base_node);
-        
+
         match &base_type {
             LuaType::Table(table) => {
                 if let Some(elem_type) = &table.array_element {
@@ -1272,7 +1402,7 @@ impl<'a> TypeInference<'a> {
         // Extract base and method name
         let mut base: Option<Node> = None;
         let mut method: Option<String> = None;
-        
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
@@ -1285,10 +1415,10 @@ impl<'a> TypeInference<'a> {
                 _ => {}
             }
         }
-        
+
         if let (Some(base_node), Some(method_name)) = (base, method) {
             let base_type = self.infer_expression(base_node);
-            
+
             // Check if method exists on the base type
             match &base_type {
                 LuaType::String => {
@@ -1308,7 +1438,10 @@ impl<'a> TypeInference<'a> {
                 _ => {
                     // Method call on non-table/string type
                     self.errors.push(TypeError {
-                        message: format!("Cannot call method '{}' on type {}", method_name, base_type),
+                        message: format!(
+                            "Cannot call method '{}' on type {}",
+                            method_name, base_type
+                        ),
                         expected: LuaType::Table(TableType::new()),
                         actual: base_type,
                         line: node.start_position().row,
@@ -1317,7 +1450,7 @@ impl<'a> TypeInference<'a> {
                 }
             }
         }
-        
+
         // Method access returns the method itself, actual call handled by function_call
         LuaType::Function(Box::new(FunctionType::default()))
     }
@@ -1331,7 +1464,8 @@ impl<'a> TypeInference<'a> {
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "identifier" | "dot_index_expression" | "method_index_expression"
-                    if callee.is_none() => {
+                    if callee.is_none() =>
+                {
                     callee = Some(child);
                 }
                 "arguments" => {
@@ -1341,7 +1475,9 @@ impl<'a> TypeInference<'a> {
             }
         }
 
-        let Some(callee_node) = callee else { return LuaType::Unknown };
+        let Some(callee_node) = callee else {
+            return LuaType::Unknown;
+        };
 
         let callee_type = self.infer_expression(callee_node);
 
@@ -1367,12 +1503,14 @@ impl<'a> TypeInference<'a> {
                 if parts.len() == 2 {
                     let module_name = parts[0];
                     let func_name = parts[1];
-                    
+
                     if let Some(module_type) = self.env.get(module_name) {
                         if let LuaType::Table(table) = module_type {
                             if let Some(func_type) = table.get_field(func_name) {
                                 // Validate arguments
-                                if let (LuaType::Function(func), Some(args_node)) = (func_type, &args) {
+                                if let (LuaType::Function(func), Some(args_node)) =
+                                    (func_type, &args)
+                                {
                                     self.check_function_call_args(*args_node, func, Some(&name));
                                     return func.return_type().clone();
                                 } else if let LuaType::Function(func) = func_type {
@@ -1401,7 +1539,7 @@ impl<'a> TypeInference<'a> {
             _ => LuaType::Unknown,
         }
     }
-    
+
     /// Infer type of pcall/xpcall call
     /// Returns union of error type and success type
     fn infer_pcall(&mut self, node: Node) -> LuaType {
@@ -1409,17 +1547,20 @@ impl<'a> TypeInference<'a> {
         let Some(args_node) = args_node else {
             return LuaType::Union(vec![LuaType::Boolean, LuaType::Any]);
         };
-        
+
         // Get first argument (the function being called)
         let Some(first_arg_node) = self.get_first_arg(&args_node) else {
             return LuaType::Union(vec![LuaType::Boolean, LuaType::Any]);
         };
-        
+
         // Infer type of the called function
         let func_type = self.infer_expression(first_arg_node);
-        
+
         // Validate first argument is a function
-        if !matches!(func_type, LuaType::Function(_) | LuaType::Unknown | LuaType::Any) {
+        if !matches!(
+            func_type,
+            LuaType::Function(_) | LuaType::Unknown | LuaType::Any
+        ) {
             self.errors.push(TypeError {
                 message: format!("pcall first argument must be a function, got {}", func_type),
                 expected: LuaType::Function(Box::new(FunctionType::default())),
@@ -1428,19 +1569,24 @@ impl<'a> TypeInference<'a> {
                 column: first_arg_node.start_position().column,
             });
         }
-        
+
         // The result is the function's return type (or Any if unknown)
         let result_type = match func_type {
             LuaType::Function(func) => func.return_type().clone(),
             _ => LuaType::Any,
         };
-        
+
         // Return union of boolean (success) and result type
         LuaType::union(vec![LuaType::Boolean, result_type])
     }
 
     /// Check that function call arguments match expected parameter types
-    fn check_function_call_args(&mut self, args_node: Node, func_type: &FunctionType, _func_name: Option<&str>) {
+    fn check_function_call_args(
+        &mut self,
+        args_node: Node,
+        func_type: &FunctionType,
+        _func_name: Option<&str>,
+    ) {
         let mut cursor = args_node.walk();
         let mut arg_index = 0;
 
@@ -1455,14 +1601,23 @@ impl<'a> TypeInference<'a> {
                 // Use the parameter type from the function signature (which includes constraints)
                 let expected_type = param_type.clone();
 
-
-                if !arg_type.is_assignable_to(&expected_type) && !matches!(expected_type, LuaType::Unknown) {
+                if !arg_type.is_assignable_to(&expected_type)
+                    && !matches!(expected_type, LuaType::Unknown)
+                {
                     let start = child.start_position();
-                    
+
                     // Avoid duplicate errors at the same location
-                    let already_reported = self.errors.iter().any(|e| e.line == start.row && e.column == start.column);
+                    let already_reported = self
+                        .errors
+                        .iter()
+                        .any(|e| e.line == start.row && e.column == start.column);
                     if !already_reported {
-                        let err = TypeError::type_mismatch(&expected_type, &arg_type, start.row, start.column);
+                        let err = TypeError::type_mismatch(
+                            &expected_type,
+                            &arg_type,
+                            start.row,
+                            start.column,
+                        );
                         self.errors.push(err);
                     }
                 }
@@ -1482,7 +1637,7 @@ impl<'a> TypeInference<'a> {
         }
         None
     }
-    
+
     /// Get first argument from arguments node
     fn get_first_arg<'tree>(&self, node: &Node<'tree>) -> Option<Node<'tree>> {
         let mut cursor = node.walk();
@@ -1745,7 +1900,7 @@ impl<'a> TypeInference<'a> {
         match target.kind() {
             "identifier" => {
                 let name = self.node_text(target);
-                
+
                 // Check for type conflicts
                 if let Some(existing) = self.env.get(&name) {
                     if !matches!(existing, LuaType::Unknown) && existing != value_type {
@@ -1762,7 +1917,7 @@ impl<'a> TypeInference<'a> {
                         });
                     }
                 }
-                
+
                 self.env.update(&name, value_type);
             }
             "dot_index_expression" => {
@@ -1800,10 +1955,10 @@ impl<'a> TypeInference<'a> {
 
         let Some(base_node) = base else { return };
         let Some(field_name) = field else { return };
-        
+
         if let Some(base_name) = self.get_identifier_name(base_node) {
             let base_type = self.env.get(&base_name).unwrap_or(LuaType::Unknown);
-            
+
             let new_type = match base_type {
                 LuaType::Table(mut table) => {
                     table.set_field(field_name, value_type);
@@ -1812,7 +1967,7 @@ impl<'a> TypeInference<'a> {
                 LuaType::Unknown => {
                     let mut table = TableType::new();
                     table.set_field(field_name.clone(), value_type.clone());
-                    
+
                     // Also record constraint for param inference
                     self.param_constraints.add(
                         &base_name,
@@ -1821,12 +1976,12 @@ impl<'a> TypeInference<'a> {
                             field_type: value_type,
                         },
                     );
-                    
+
                     LuaType::Table(table)
                 }
                 _ => return, // Can't assign to non-table
             };
-            
+
             self.env.update(&base_name, new_type);
         }
     }
@@ -1857,7 +2012,8 @@ impl<'a> TypeInference<'a> {
                         let assertions = self.extract_type_assertions(arg);
                         for (var, ty) in assertions {
                             // Apply constraint to parameter
-                            self.param_constraints.add(&var, TypeConstraint::ExactType(ty.clone()));
+                            self.param_constraints
+                                .add(&var, TypeConstraint::ExactType(ty.clone()));
 
                             // Also update environment
                             self.env.update(&var, ty);
@@ -1876,7 +2032,10 @@ impl<'a> TypeInference<'a> {
     }
 
     /// Extract narrowing patterns from assert (nil checks, etc.)
-    fn extract_narrowing_assert(&self, node: Node) -> Option<(String, Box<dyn Fn(&LuaType) -> LuaType>)> {
+    fn extract_narrowing_assert(
+        &self,
+        node: Node,
+    ) -> Option<(String, Box<dyn Fn(&LuaType) -> LuaType>)> {
         let mut left: Option<Node> = None;
         let mut right: Option<Node> = None;
         let mut op: Option<&str> = None;
@@ -1917,9 +2076,7 @@ impl<'a> TypeInference<'a> {
             return Some((var_name, Box::new(|_: &LuaType| LuaType::Nil)));
         } else if operator == "~=" {
             // assert(x ~= nil) - narrow to not-nil
-            return Some((var_name, Box::new(|ty: &LuaType| {
-                ty.exclude(&LuaType::Nil)
-            })));
+            return Some((var_name, Box::new(|ty: &LuaType| ty.exclude(&LuaType::Nil))));
         }
 
         None
@@ -2007,7 +2164,7 @@ impl<'a> TypeInference<'a> {
         if let Some((var, ty)) = self.match_type_check(left_node, right_node) {
             return Some((var, ty));
         }
-        
+
         // Check reversed: "string" == type(var)
         if let Some((var, ty)) = self.match_type_check(right_node, left_node) {
             return Some((var, ty));
@@ -2095,13 +2252,13 @@ impl<'a> TypeInference<'a> {
     /// Enter an if branch with narrowing
     pub fn enter_if_branch(&mut self, condition: Node) {
         let mut ctx = NarrowingContext::new();
-        
+
         // Check for type narrowing patterns in condition
         self.extract_narrowing(condition, &mut ctx);
-        
+
         // Check for pcall success variable being checked
         self.extract_pcall_narrowing(condition, &mut ctx);
-        
+
         self.narrowing_stack.push(ctx);
     }
 
@@ -2144,7 +2301,7 @@ impl<'a> TypeInference<'a> {
                     ctx.narrow(var.clone(), ty.clone());
                     ctx.exclude(var, ty);
                 }
-                
+
                 // Check for x ~= nil patterns
                 self.extract_nil_check(condition, ctx);
             }
@@ -2204,7 +2361,7 @@ impl<'a> TypeInference<'a> {
         }
 
         let var_name = self.node_text(var_node);
-        
+
         if operator == "~=" {
             // x ~= nil -> exclude nil
             if let Some(original) = self.env.get(&var_name) {
@@ -2238,7 +2395,8 @@ impl<'a> TypeInference<'a> {
 
             // Check if this is a pcall success variable
             // Clone pcall_results to avoid borrowing issues
-            let pcall_mappings: Vec<(String, String, LuaType)> = self.narrowing_stack
+            let pcall_mappings: Vec<(String, String, LuaType)> = self
+                .narrowing_stack
                 .iter()
                 .flat_map(|c| c.pcall_results.iter())
                 .map(|(result, (success, ty))| (result.clone(), success.clone(), ty.clone()))
@@ -2277,7 +2435,8 @@ impl<'a> TypeInference<'a> {
                 // Parse and analyze the module
                 if let Some(exports) = self.extract_module_exports(&module_source) {
                     // Cache the exports
-                    Arc::make_mut(&mut self.module_cache).insert(module_name.to_string(), exports.clone());
+                    Arc::make_mut(&mut self.module_cache)
+                        .insert(module_name.to_string(), exports.clone());
                     return exports.to_table_type();
                 }
             }
@@ -2319,7 +2478,9 @@ impl<'a> TypeInference<'a> {
         use tree_sitter::Parser;
 
         let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_lua::LANGUAGE.into()).ok()?;
+        parser
+            .set_language(&tree_sitter_lua::LANGUAGE.into())
+            .ok()?;
         let tree = parser.parse(source, None)?;
 
         let mut exports = ModuleExports::new();
@@ -2334,7 +2495,8 @@ impl<'a> TypeInference<'a> {
                     let mut func_cursor = child.walk();
                     for func_child in child.children(&mut func_cursor) {
                         if func_child.kind() == "identifier" {
-                            let func_name = source[func_child.start_byte()..func_child.end_byte()].to_string();
+                            let func_name =
+                                source[func_child.start_byte()..func_child.end_byte()].to_string();
                             // Create function type
                             let func_type = FunctionType::default();
                             exports.functions.insert(func_name, func_type);
@@ -2350,7 +2512,8 @@ impl<'a> TypeInference<'a> {
                             let mut var_cursor = assign_child.walk();
                             for var in assign_child.children(&mut var_cursor) {
                                 if var.kind() == "identifier" {
-                                    let var_name = source[var.start_byte()..var.end_byte()].to_string();
+                                    let var_name =
+                                        source[var.start_byte()..var.end_byte()].to_string();
                                     // For now, just mark as Any - could infer from expression
                                     exports.bindings.insert(var_name, LuaType::Any);
                                 }
@@ -2373,7 +2536,9 @@ mod tests {
 
     fn parse(code: &str) -> (tree_sitter::Tree, String) {
         let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_lua::LANGUAGE.into()).unwrap();
+        parser
+            .set_language(&tree_sitter_lua::LANGUAGE.into())
+            .unwrap();
         let tree = parser.parse(code, None).unwrap();
         (tree, code.to_string())
     }
@@ -2388,13 +2553,13 @@ local d = nil
 "#;
         let (tree, source) = parse(code);
         let mut inf = TypeInference::new(&source);
-        
+
         // Simulate walking and processing declarations
         inf.env.set("a".to_string(), LuaType::Number);
         inf.env.set("b".to_string(), LuaType::String);
         inf.env.set("c".to_string(), LuaType::Boolean);
         inf.env.set("d".to_string(), LuaType::Nil);
-        
+
         assert_eq!(inf.env.get("a"), Some(LuaType::Number));
         assert_eq!(inf.env.get("b"), Some(LuaType::String));
         assert_eq!(inf.env.get("c"), Some(LuaType::Boolean));
@@ -2404,14 +2569,14 @@ local d = nil
     #[test]
     fn test_table_type_inference() {
         let mut inf = TypeInference::new("");
-        
+
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), LuaType::String);
         fields.insert("age".to_string(), LuaType::Number);
-        
+
         let table_type = LuaType::Table(TableType::with_fields(fields));
         inf.env.set("person".to_string(), table_type);
-        
+
         let person = inf.env.get("person").unwrap();
         if let LuaType::Table(table) = person {
             assert_eq!(table.get_field("name"), Some(&LuaType::String));
@@ -2424,7 +2589,7 @@ local d = nil
     #[test]
     fn test_param_constraint_from_property_access() {
         let mut inf = TypeInference::new("");
-        
+
         // Simulate: function foo(bar) print(bar.name) end
         inf.param_constraints.add(
             "bar",
@@ -2433,7 +2598,7 @@ local d = nil
                 field_type: LuaType::Unknown,
             },
         );
-        
+
         let resolved = inf.get_param_type("bar");
         if let LuaType::Table(table) = resolved {
             assert!(table.fields.contains_key("name"));
@@ -2445,10 +2610,11 @@ local d = nil
     #[test]
     fn test_param_constraint_from_assert() {
         let mut inf = TypeInference::new("");
-        
+
         // Simulate: function foo(bar) assert(type(bar) == "string") end
-        inf.param_constraints.add("bar", TypeConstraint::ExactType(LuaType::String));
-        
+        inf.param_constraints
+            .add("bar", TypeConstraint::ExactType(LuaType::String));
+
         let resolved = inf.get_param_type("bar");
         assert_eq!(resolved, LuaType::String);
     }
@@ -2456,10 +2622,10 @@ local d = nil
     #[test]
     fn test_narrowing_context() {
         let mut ctx = NarrowingContext::new();
-        
+
         ctx.narrow("x".to_string(), LuaType::String);
         ctx.exclude("x".to_string(), LuaType::String);
-        
+
         assert_eq!(ctx.narrowed.get("x"), Some(&LuaType::String));
         assert_eq!(ctx.excluded.get("x"), Some(&LuaType::String));
     }
@@ -2468,10 +2634,10 @@ local d = nil
     fn test_type_env_scoping() {
         let mut parent = TypeEnv::new();
         parent.set("x".to_string(), LuaType::Number);
-        
+
         let mut child = parent.child();
         child.set("y".to_string(), LuaType::String);
-        
+
         // Child can see parent's binding
         assert_eq!(child.get("x"), Some(LuaType::Number));
         // Child has its own binding
@@ -2483,7 +2649,7 @@ local d = nil
     #[test]
     fn test_stdlib_types() {
         let inf = TypeInference::new("");
-        
+
         // Check math library
         let math = inf.env.get("math").unwrap();
         if let LuaType::Table(table) = math {
@@ -2492,7 +2658,7 @@ local d = nil
         } else {
             panic!("Expected table type for math");
         }
-        
+
         // Check string library
         let string = inf.env.get("string").unwrap();
         if let LuaType::Table(table) = string {
@@ -2558,12 +2724,15 @@ local result = mymodule.process()
         // Mock module cache
         let mut cache = HashMap::new();
         let mut module_exports = ModuleExports::new();
-        module_exports.functions.insert("process".to_string(), FunctionType {
-            params: vec![],
-            returns: vec![LuaType::String],
-            vararg: false,
-            is_method: false,
-        });
+        module_exports.functions.insert(
+            "process".to_string(),
+            FunctionType {
+                params: vec![],
+                returns: vec![LuaType::String],
+                vararg: false,
+                is_method: false,
+            },
+        );
         cache.insert("mymodule".to_string(), module_exports);
 
         inf = TypeInference::with_module_cache(&source, Arc::new(cache));

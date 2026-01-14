@@ -11,7 +11,6 @@ rover-lsp = {path = "../rover-lsp"}
 rover-parser = {path = "../rover-parser"}
 colored = "2.2"
 serde_json = "1.0"
-stylua_lib = { package = "stylua", version = "2.3", default-features = false, features = ["lua54"] }
 
 [[bin]]
 name = "rover"

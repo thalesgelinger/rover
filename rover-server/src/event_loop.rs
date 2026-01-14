@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::io;
+use std::mem;
 use std::net::SocketAddr;
 use std::time::Instant;
-use std::collections::HashMap;
-use std::mem;
 
 use anyhow::Result;
 use mio::net::TcpListener;
@@ -10,12 +10,14 @@ use mio::{Events, Interest, Poll, Token};
 use mlua::{Lua, Thread, ThreadStatus};
 use slab::Slab;
 
+use crate::buffer_pool::BufferPool;
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::FastRouter;
-use crate::{HttpMethod, Route, ServerConfig};
-use crate::http_task::{execute_handler_coroutine, CoroutineResponse, ThreadPool, RequestContextPool};
-use crate::buffer_pool::BufferPool;
+use crate::http_task::{
+    CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
+};
 use crate::table_pool::LuaTablePool;
+use crate::{HttpMethod, Route, ServerConfig};
 
 fn parse_query_string_offsets(qs: &[u8]) -> Vec<(u16, u8, u16, u16)> {
     let mut result = Vec::new();
@@ -94,7 +96,8 @@ impl EventLoop {
         let poll = Poll::new()?;
         let mut listener = TcpListener::bind(addr)?;
 
-        poll.registry().register(&mut listener, LISTENER, Interest::READABLE)?;
+        poll.registry()
+            .register(&mut listener, LISTENER, Interest::READABLE)?;
 
         let router = FastRouter::from_routes(routes)?;
 
@@ -151,11 +154,9 @@ impl EventLoop {
                     let entry = self.connections.vacant_entry();
                     let token = Token(entry.key() + 1);
 
-                    self.poll.registry().register(
-                        &mut socket,
-                        token,
-                        Interest::READABLE,
-                    )?;
+                    self.poll
+                        .registry()
+                        .register(&mut socket, token, Interest::READABLE)?;
 
                     entry.insert(Connection::new(socket, token));
                 }
@@ -179,38 +180,37 @@ impl EventLoop {
             let conn = &mut self.connections[conn_idx];
 
             match conn.state {
-                ConnectionState::Reading if event.is_readable() => {
-                    match conn.try_read() {
-                        Ok(true) => (true, false, false),
-                        Ok(false) => (false, false, false),
-                        Err(_) => {
+                ConnectionState::Reading if event.is_readable() => match conn.try_read() {
+                    Ok(true) => (true, false, false),
+                    Ok(false) => (false, false, false),
+                    Err(_) => {
+                        conn.state = ConnectionState::Closed;
+                        (false, true, false)
+                    }
+                },
+                ConnectionState::Writing if event.is_writable() => match conn.try_write() {
+                    Ok(true) => {
+                        if conn.keep_alive {
+                            (false, false, true)
+                        } else {
                             conn.state = ConnectionState::Closed;
                             (false, true, false)
                         }
                     }
-                }
-                ConnectionState::Writing if event.is_writable() => {
-                    match conn.try_write() {
-                        Ok(true) => {
-                            if conn.keep_alive {
-                                (false, false, true)
-                            } else {
-                                conn.state = ConnectionState::Closed;
-                                (false, true, false)
-                            }
-                        }
-                        Ok(false) => (false, false, false),
-                        Err(_) => {
-                            conn.state = ConnectionState::Closed;
-                            (false, true, false)
-                        }
+                    Ok(false) => (false, false, false),
+                    Err(_) => {
+                        conn.state = ConnectionState::Closed;
+                        (false, true, false)
                     }
-                }
+                },
                 _ => (false, false, false),
             }
         };
 
-        let is_closed_state = matches!(self.connections.get(conn_idx).map(|c| &c.state), Some(ConnectionState::Closed));
+        let is_closed_state = matches!(
+            self.connections.get(conn_idx).map(|c| &c.state),
+            Some(ConnectionState::Closed)
+        );
         if should_close || is_closed_state {
             self.recycle_write_buf(conn_idx);
             let mut conn = self.connections.remove(conn_idx);
@@ -249,7 +249,7 @@ impl EventLoop {
         let method = conn.method_str().unwrap_or_default();
         let full_path = conn.path_str().unwrap_or_default();
         let (path, query_str) = if let Some(pos) = full_path.find('?') {
-            (&full_path[..pos], Some(&full_path[pos+1..]))
+            (&full_path[..pos], Some(&full_path[pos + 1..]))
         } else {
             (full_path, None)
         };
@@ -316,11 +316,19 @@ impl EventLoop {
         // Get header offsets (already stored in connection)
         let mut header_offsets = Vec::with_capacity(conn.header_offsets.len());
         for &(name_off, name_len, val_off, val_len) in conn.header_offsets.iter() {
-            header_offsets.push((name_off as u16, name_len as u8, val_off as u16, val_len as u16));
+            header_offsets.push((
+                name_off as u16,
+                name_len as u8,
+                val_off as u16,
+                val_len as u16,
+            ));
         }
 
         // Get body offset and length
-        let (body_off, body_len) = conn.body.map(|(off, len)| (off as u32, len as u32)).unwrap_or((0, 0));
+        let (body_off, body_len) = conn
+            .body
+            .map(|(off, len)| (off as u32, len as u32))
+            .unwrap_or((0, 0));
 
         match execute_handler_coroutine(
             &self.lua,
@@ -341,7 +349,11 @@ impl EventLoop {
             &self.table_pool,
             &mut self.buffer_pool,
         ) {
-            Ok(CoroutineResponse::Ready { status, body, content_type }) => {
+            Ok(CoroutineResponse::Ready {
+                status,
+                body,
+                content_type,
+            }) => {
                 let conn = &mut self.connections[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
@@ -351,11 +363,14 @@ impl EventLoop {
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
                 let conn = &mut self.connections[conn_idx];
                 conn.thread = Some(thread.clone());
-                self.yielded_coroutines.insert(conn_idx, PendingCoroutine {
-                    thread,
-                    started_at: Instant::now(),
-                    ctx_idx,
-                });
+                self.yielded_coroutines.insert(
+                    conn_idx,
+                    PendingCoroutine {
+                        thread,
+                        started_at: Instant::now(),
+                        ctx_idx,
+                    },
+                );
             }
             Err(_) => {
                 let conn = &mut self.connections[conn_idx];

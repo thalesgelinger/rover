@@ -209,7 +209,10 @@ mod tests {
     fn test_parse_simple_text() {
         let segments = parse_template("<h1>Hello World</h1>");
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0], Segment::Text("<h1>Hello World</h1>".to_string()));
+        assert_eq!(
+            segments[0],
+            Segment::Text("<h1>Hello World</h1>".to_string())
+        );
     }
 
     #[test]
@@ -231,14 +234,20 @@ mod tests {
     fn test_parse_nested_object_access() {
         let segments = parse_template("{{ user.profile.name }}");
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0], Segment::Expression("user.profile.name".to_string()));
+        assert_eq!(
+            segments[0],
+            Segment::Expression("user.profile.name".to_string())
+        );
     }
 
     #[test]
     fn test_parse_method_call() {
         let segments = parse_template("{{ user.name:upper() }}");
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0], Segment::Expression("user.name:upper()".to_string()));
+        assert_eq!(
+            segments[0],
+            Segment::Expression("user.name:upper()".to_string())
+        );
     }
 
     #[test]
@@ -289,7 +298,10 @@ mod tests {
     fn test_parse_for_loop() {
         let segments = parse_template("{{ for i, v in ipairs(items) do }}{{ v }}{{ end }}");
         assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0], Segment::Control("for i, v in ipairs(items) do".to_string()));
+        assert_eq!(
+            segments[0],
+            Segment::Control("for i, v in ipairs(items) do".to_string())
+        );
         assert_eq!(segments[1], Segment::Expression("v".to_string()));
         assert_eq!(segments[2], Segment::Control("end".to_string()));
     }
@@ -298,7 +310,10 @@ mod tests {
     fn test_parse_numeric_for() {
         let segments = parse_template("{{ for i = 1, 10 do }}{{ i }}{{ end }}");
         assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0], Segment::Control("for i = 1, 10 do".to_string()));
+        assert_eq!(
+            segments[0],
+            Segment::Control("for i = 1, 10 do".to_string())
+        );
     }
 
     #[test]
@@ -325,7 +340,10 @@ mod tests {
         // Component call with table argument
         let segments = parse_template("{{ card { title = \"Hello\" } }}");
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0], Segment::Expression("card { title = \"Hello\" }".to_string()));
+        assert_eq!(
+            segments[0],
+            Segment::Expression("card { title = \"Hello\" }".to_string())
+        );
     }
 
     // ==================== Escape Tests ====================
@@ -444,9 +462,9 @@ mod tests {
     fn test_render_function_call() {
         let lua = Lua::new();
         let data = lua.create_table().unwrap();
-        let greet = lua.create_function(|_, name: String| {
-            Ok(format!("Hello, {}!", name))
-        }).unwrap();
+        let greet = lua
+            .create_function(|_, name: String| Ok(format!("Hello, {}!", name)))
+            .unwrap();
         data.set("greet", greet).unwrap();
         data.set("name", "World").unwrap();
         let result = render_template(&lua, "{{ greet(name) }}", &data).unwrap();
@@ -479,8 +497,9 @@ mod tests {
         let result = render_template(
             &lua,
             "{{ if admin then }}Admin{{ else }}User{{ end }}",
-            &data
-        ).unwrap();
+            &data,
+        )
+        .unwrap();
         assert_eq!(result, "User");
     }
 
@@ -506,8 +525,9 @@ mod tests {
         let result = render_template(
             &lua,
             "{{ for _, v in ipairs(items) do }}{{ v }}{{ end }}",
-            &data
-        ).unwrap();
+            &data,
+        )
+        .unwrap();
         assert_eq!(result, "ABC");
     }
 
@@ -522,8 +542,9 @@ mod tests {
         let result = render_template(
             &lua,
             "{{ for i, v in ipairs(items) do }}{{ i }}:{{ v }} {{ end }}",
-            &data
-        ).unwrap();
+            &data,
+        )
+        .unwrap();
         assert_eq!(result, "1:A 2:B ");
     }
 
@@ -569,8 +590,9 @@ mod tests {
         let result = render_template(
             &lua,
             "<ul>{{ for _, item in ipairs(items) do }}<li>{{ item.title }}</li>{{ end }}</ul>",
-            &data
-        ).unwrap();
+            &data,
+        )
+        .unwrap();
         assert_eq!(result, "<ul><li>First</li><li>Second</li></ul>");
     }
 
@@ -578,11 +600,7 @@ mod tests {
     fn test_render_numeric_for() {
         let lua = Lua::new();
         let data = lua.create_table().unwrap();
-        let result = render_template(
-            &lua,
-            "{{ for i = 1, 3 do }}{{ i }}{{ end }}",
-            &data
-        ).unwrap();
+        let result = render_template(&lua, "{{ for i = 1, 3 do }}{{ i }}{{ end }}", &data).unwrap();
         assert_eq!(result, "123");
     }
 
@@ -695,8 +713,9 @@ mod tests {
         let result = render_template(
             &lua,
             "{{ if count > 3 then }}many{{ else }}few{{ end }}",
-            &data
-        ).unwrap();
+            &data,
+        )
+        .unwrap();
         assert_eq!(result, "many");
     }
 

@@ -1,10 +1,25 @@
+use crate::template::{generate_lua_code, parse_template};
 use mlua::{Lua, Table, Value};
-use crate::template::{parse_template, generate_lua_code};
 
 /// Standard library functions to copy into template environment
 const STD_FUNCTIONS: &[&str] = &[
-    "tostring", "tonumber", "ipairs", "pairs", "table", "string", "math", "type", "next",
-    "select", "unpack", "pcall", "error", "rawget", "rawset", "setmetatable", "getmetatable",
+    "tostring",
+    "tonumber",
+    "ipairs",
+    "pairs",
+    "table",
+    "string",
+    "math",
+    "type",
+    "next",
+    "select",
+    "unpack",
+    "pcall",
+    "error",
+    "rawget",
+    "rawset",
+    "setmetatable",
+    "getmetatable",
 ];
 
 /// Render a template with data and component functions available in the environment
@@ -48,12 +63,15 @@ pub fn render_template_with_components(
         env.set(key, value)?;
     }
 
-    lua.load(&lua_code).set_environment(env).eval().map_err(|e| {
-        mlua::Error::RuntimeError(format!(
-            "Template rendering failed: {}\nGenerated code:\n{}",
-            e, lua_code
-        ))
-    })
+    lua.load(&lua_code)
+        .set_environment(env)
+        .eval()
+        .map_err(|e| {
+            mlua::Error::RuntimeError(format!(
+                "Template rendering failed: {}\nGenerated code:\n{}",
+                e, lua_code
+            ))
+        })
 }
 
 /// Get rover.html table from globals
@@ -107,9 +125,11 @@ fn create_template_builder(lua: &Lua, data: Value, html_table: Table) -> mlua::R
             let data_table = match data {
                 Value::Table(t) => t,
                 Value::Nil => lua.create_table()?,
-                _ => return Err(mlua::Error::RuntimeError(
-                    "rover.html() data must be a table or nil".to_string(),
-                )),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "rover.html() data must be a table or nil".to_string(),
+                    ));
+                }
             };
 
             render_template_with_components(lua, &template, &data_table, &html_table)
@@ -129,7 +149,8 @@ mod tests {
         let lua = Lua::new();
         let data = lua.create_table().unwrap();
         let html_table = lua.create_table().unwrap();
-        let result = render_template_with_components(&lua, "<h1>Hello</h1>", &data, &html_table).unwrap();
+        let result =
+            render_template_with_components(&lua, "<h1>Hello</h1>", &data, &html_table).unwrap();
         assert_eq!(result, "<h1>Hello</h1>");
     }
 
@@ -139,7 +160,8 @@ mod tests {
         let data = lua.create_table().unwrap();
         data.set("name", "World").unwrap();
         let html_table = lua.create_table().unwrap();
-        let result = render_template_with_components(&lua, "Hello {{ name }}", &data, &html_table).unwrap();
+        let result =
+            render_template_with_components(&lua, "Hello {{ name }}", &data, &html_table).unwrap();
         assert_eq!(result, "Hello World");
     }
 
@@ -150,17 +172,14 @@ mod tests {
         let html_table = lua.create_table().unwrap();
 
         // Add a simple component function
-        let greet = lua.create_function(|_, name: String| {
-            Ok(format!("Hello, {}!", name))
-        }).unwrap();
+        let greet = lua
+            .create_function(|_, name: String| Ok(format!("Hello, {}!", name)))
+            .unwrap();
         html_table.set("greet", greet).unwrap();
 
-        let result = render_template_with_components(
-            &lua,
-            "{{ greet(\"World\") }}",
-            &data,
-            &html_table
-        ).unwrap();
+        let result =
+            render_template_with_components(&lua, "{{ greet(\"World\") }}", &data, &html_table)
+                .unwrap();
         assert_eq!(result, "Hello, World!");
     }
 }

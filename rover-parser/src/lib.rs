@@ -1,11 +1,11 @@
+mod analyzer;
+mod formatter;
+mod incremental;
 mod rule_runtime;
 mod rules;
-mod analyzer;
-mod incremental;
 mod symbol;
-mod formatter;
-pub mod types;
 pub mod type_inference;
+pub mod types;
 
 use tree_sitter::Parser;
 
@@ -15,14 +15,17 @@ pub use analyzer::{
     ParsingError, PathParam, QueryParam, Request, Response, Route, RoverServer, SemanticModel,
     SourcePosition, SourceRange, SymbolSpecMember, SymbolSpecMetadata, ValidationSource,
 };
-pub use symbol::{Symbol, SymbolKind, ScopeType, SymbolTable, SourceRange as SymbolSourceRange, SourcePosition as SymbolSourcePosition};
+pub use formatter::{FormatterConfig, format_code, format_code_with_config};
+pub use incremental::{CachedParse, IncrementalParser};
 pub use rule_runtime::MemberKind;
-pub use rules::lookup_spec;
 pub use rule_runtime::{SpecDoc, SpecDocMember};
-pub use incremental::{IncrementalParser, CachedParse};
-pub use formatter::{Formatter, FormatterConfig, format_code, format_code_with_config};
-pub use types::{LuaType, TableType, FunctionType, TypeError};
-pub use type_inference::{TypeInference, TypeEnv};
+pub use rules::lookup_spec;
+pub use symbol::{
+    ScopeType, SourcePosition as SymbolSourcePosition, SourceRange as SymbolSourceRange, Symbol,
+    SymbolKind, SymbolTable,
+};
+pub use type_inference::{TypeEnv, TypeInference};
+pub use types::{FunctionType, LuaType, TableType, TypeError};
 
 pub fn analyze(code: &str) -> SemanticModel {
     analyze_with_options(code, AnalyzeOptions::default())
@@ -43,42 +46,42 @@ pub fn analyze_with_options(code: &str, options: AnalyzeOptions) -> SemanticMode
         .set_language(&language.into())
         .expect("Error loading Lua parser");
     let tree = parser.parse(code, None).unwrap();
-    
+
     let mut analyzer = Analyzer::new(code.to_string());
     analyzer.walk(tree.root_node());
-    
+
     if let Some(ref mut server) = analyzer.model.server {
         server.exported = true;
     }
-    
+
     // Copy symbol table to model
     analyzer.model.symbol_table = analyzer.symbol_table.clone();
-    
+
     // Store tree for advanced language features
     analyzer.model.tree = Some(tree.clone());
-    
+
     // Run type inference if enabled
     if options.type_inference {
         run_type_inference(code, &tree, &mut analyzer.model);
     }
-    
+
     analyzer.model
 }
 
 /// Run type inference pass and update symbol types
 fn run_type_inference(code: &str, tree: &tree_sitter::Tree, model: &mut SemanticModel) {
     let mut type_inf = type_inference::TypeInference::new(code);
-    
+
     // Walk AST and infer types
     infer_types_recursive(&mut type_inf, tree.root_node(), code);
-    
+
     // Update symbol table with inferred types
     for symbol in model.symbol_table.all_symbols_mut() {
         if let Some(inferred) = type_inf.env.get(&symbol.name) {
             symbol.inferred_type = inferred;
         }
     }
-    
+
     // Collect type errors
     model.type_errors = type_inf.errors;
 }
@@ -99,7 +102,8 @@ fn infer_types_recursive<'a>(
         "function_declaration" | "function_definition" => {
             // Extract name first so we can pass it to infer_function_definition_with_name
             let func_name = extract_function_name_from_node(node, _code);
-            let func_type = type_inf.infer_function_definition_with_name(node, func_name.as_deref());
+            let func_type =
+                type_inf.infer_function_definition_with_name(node, func_name.as_deref());
 
             if let Some(name) = func_name {
                 type_inf.env.set(name, func_type);
@@ -126,7 +130,7 @@ fn infer_types_recursive<'a>(
             let mut in_condition = false;
             let mut in_consequence = false;
             let mut in_alternative = false;
-            
+
             for child in node.children(&mut cursor) {
                 match child.kind() {
                     "if" => in_condition = true,
@@ -154,7 +158,7 @@ fn infer_types_recursive<'a>(
         }
         _ => {}
     }
-    
+
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -193,15 +197,20 @@ local x = 42
 local name = "hello"
 local person = { name = name, age = 25 }
 "#;
-        let model = analyze_with_options(code, AnalyzeOptions { type_inference: true });
-        
+        let model = analyze_with_options(
+            code,
+            AnalyzeOptions {
+                type_inference: true,
+            },
+        );
+
         // Check inferred types are stored in symbols
         let x_symbol = model.symbol_table.resolve_symbol_global("x").unwrap();
         assert_eq!(x_symbol.inferred_type, LuaType::Number);
-        
+
         let name_symbol = model.symbol_table.resolve_symbol_global("name").unwrap();
         assert_eq!(name_symbol.inferred_type, LuaType::String);
-        
+
         let person_symbol = model.symbol_table.resolve_symbol_global("person").unwrap();
         if let LuaType::Table(table) = &person_symbol.inferred_type {
             assert_eq!(table.get_field("name"), Some(&LuaType::String));
@@ -563,8 +572,14 @@ end
         assert!(b_symbol.used, "b should be marked as used");
 
         // unused_param should NOT be marked as used
-        let unused_param = model.symbol_table.resolve_symbol_global("unused_param").unwrap();
-        assert!(!unused_param.used, "unused_param should NOT be marked as used");
+        let unused_param = model
+            .symbol_table
+            .resolve_symbol_global("unused_param")
+            .unwrap();
+        assert!(
+            !unused_param.used,
+            "unused_param should NOT be marked as used"
+        );
     }
 
     #[test]
@@ -583,10 +598,22 @@ print(x + y)
 
         // Should only include 'unused' (not _ignored which starts with _)
         let unused_names: Vec<&str> = unused_symbols.iter().map(|s| s.name.as_str()).collect();
-        assert!(unused_names.contains(&"unused"), "should include 'unused' variable");
-        assert!(!unused_names.contains(&"_ignored"), "should NOT include '_ignored' (underscore prefix)");
-        assert!(!unused_names.contains(&"x"), "should NOT include 'x' (used)");
-        assert!(!unused_names.contains(&"y"), "should NOT include 'y' (used)");
+        assert!(
+            unused_names.contains(&"unused"),
+            "should include 'unused' variable"
+        );
+        assert!(
+            !unused_names.contains(&"_ignored"),
+            "should NOT include '_ignored' (underscore prefix)"
+        );
+        assert!(
+            !unused_names.contains(&"x"),
+            "should NOT include 'x' (used)"
+        );
+        assert!(
+            !unused_names.contains(&"y"),
+            "should NOT include 'y' (used)"
+        );
     }
 
     #[test]

@@ -2,28 +2,30 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::Result;
-use mlua::{Function, Lua, Table, Value, Thread, ThreadStatus, UserData, UserDataMethods, RegistryKey};
+use mlua::{
+    Function, Lua, RegistryKey, Table, Thread, ThreadStatus, UserData, UserDataMethods, Value,
+};
 use tracing::{debug, info, warn};
 
-use crate::{to_json::ToJson, response::RoverResponse, Bytes};
-use crate::table_pool::LuaTablePool;
 use crate::buffer_pool::BufferPool;
+use crate::table_pool::LuaTablePool;
+use crate::{Bytes, response::RoverResponse, to_json::ToJson};
 
 pub struct RequestContext {
     buf: Bytes,
-    
+
     method_off: u16,
     method_len: u8,
-    
+
     path_off: u16,
     path_len: u16,
-    
+
     body_off: u32,
     body_len: u32,
-    
+
     headers: Vec<(u16, u8, u16, u16)>,
     query: Vec<(u16, u8, u16, u16)>,
-    
+
     params: Vec<(Bytes, Bytes)>,
 }
 
@@ -35,7 +37,8 @@ impl UserData for RequestContext {
             }
             let headers_table = lua.create_table_with_capacity(0, this.headers.len())?;
             for &(name_off, name_len, val_off, val_len) in &this.headers {
-                let name_bytes = &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
+                let name_bytes =
+                    &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
                 let val_bytes = &this.buf[val_off as usize..(val_off + val_len) as usize];
                 let k_str = unsafe { std::str::from_utf8_unchecked(name_bytes) };
                 let v_str = unsafe { std::str::from_utf8_unchecked(val_bytes) };
@@ -50,7 +53,8 @@ impl UserData for RequestContext {
             }
             let query_table = lua.create_table_with_capacity(0, this.query.len())?;
             for &(name_off, name_len, val_off, val_len) in &this.query {
-                let name_bytes = &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
+                let name_bytes =
+                    &this.buf[name_off as usize..(name_off + name_len as u16) as usize];
                 let val_bytes = &this.buf[val_off as usize..(val_off + val_len) as usize];
                 let k_str = unsafe { std::str::from_utf8_unchecked(name_bytes) };
                 let v_str = unsafe { std::str::from_utf8_unchecked(val_bytes) };
@@ -74,13 +78,13 @@ impl UserData for RequestContext {
 
         methods.add_method("body", |lua, this, ()| {
             if this.body_len > 0 {
-                let body_bytes = this.buf.slice(this.body_off as usize..(this.body_off + this.body_len) as usize);
+                let body_bytes = this
+                    .buf
+                    .slice(this.body_off as usize..(this.body_off + this.body_len) as usize);
                 let body_value = BodyValue::new(body_bytes);
                 lua.create_userdata(body_value).map(Value::UserData)
             } else {
-                Err(mlua::Error::RuntimeError(
-                    "Request has no body".to_string(),
-                ))
+                Err(mlua::Error::RuntimeError("Request has no body".to_string()))
             }
         });
     }
@@ -183,7 +187,9 @@ impl RequestContextPool {
         query: Vec<(u16, u8, u16, u16)>,
         params: &[(Bytes, Bytes)],
     ) -> mlua::Result<(Value, usize)> {
-        let idx = self.available.pop()
+        let idx = self
+            .available
+            .pop()
             .ok_or_else(|| mlua::Error::RuntimeError("RequestContextPool exhausted".to_string()))?;
 
         let key = &self.pool[idx];
@@ -252,8 +258,15 @@ impl ThreadPool {
 }
 
 pub enum CoroutineResponse {
-    Ready { status: u16, body: Bytes, content_type: Option<&'static str> },
-    Yielded { thread: Thread, ctx_idx: usize },
+    Ready {
+        status: u16,
+        body: Bytes,
+        content_type: Option<&'static str>,
+    },
+    Yielded {
+        thread: Thread,
+        ctx_idx: usize,
+    },
 }
 
 pub fn execute_handler_coroutine(
@@ -286,7 +299,19 @@ pub fn execute_handler_coroutine(
         }
     }
 
-    let (ctx, ctx_idx) = match request_pool.acquire(lua, buf.clone(), method_off, method_len, path_off, path_len, body_off, body_len, headers, query, params) {
+    let (ctx, ctx_idx) = match request_pool.acquire(
+        lua,
+        buf.clone(),
+        method_off,
+        method_len,
+        path_off,
+        path_len,
+        body_off,
+        body_len,
+        headers,
+        query,
+        params,
+    ) {
         Ok(c) => c,
         Err(e) => {
             let error_msg = e.to_string();
@@ -321,7 +346,11 @@ pub fn execute_handler_coroutine(
                     // Fast path: check for RoverResponse directly to avoid function call overhead
                     let (status, body, content_type) = if let Value::UserData(ref ud) = result {
                         if let Ok(response) = ud.borrow::<RoverResponse>() {
-                            (response.status, response.body.clone(), Some(response.content_type))
+                            (
+                                response.status,
+                                response.body.clone(),
+                                Some(response.content_type),
+                            )
                         } else {
                             convert_lua_response(lua, result, buffer_pool)
                         }
@@ -334,15 +363,39 @@ pub fn execute_handler_coroutine(
 
                     if status >= 200 && status < 300 {
                         if tracing::event_enabled!(tracing::Level::INFO) {
-                            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
-                            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
-                            info!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
+                            let method_str = unsafe {
+                                std::str::from_utf8_unchecked(
+                                    &buf[method_off as usize
+                                        ..(method_off + method_len as u16) as usize],
+                                )
+                            };
+                            let path_str = unsafe {
+                                std::str::from_utf8_unchecked(
+                                    &buf[path_off as usize..(path_off + path_len) as usize],
+                                )
+                            };
+                            info!(
+                                "{} {} - {} in {:.2}ms",
+                                method_str, path_str, status, elapsed_ms
+                            );
                         }
                     } else if status >= 400 {
                         if tracing::event_enabled!(tracing::Level::WARN) {
-                            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
-                            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
-                            warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
+                            let method_str = unsafe {
+                                std::str::from_utf8_unchecked(
+                                    &buf[method_off as usize
+                                        ..(method_off + method_len as u16) as usize],
+                                )
+                            };
+                            let path_str = unsafe {
+                                std::str::from_utf8_unchecked(
+                                    &buf[path_off as usize..(path_off + path_len) as usize],
+                                )
+                            };
+                            warn!(
+                                "{} {} - {} in {:.2}ms",
+                                method_str, path_str, status, elapsed_ms
+                            );
                         }
                     }
 
@@ -350,13 +403,26 @@ pub fn execute_handler_coroutine(
                     thread_pool.release(thread);
                     request_pool.release(ctx_idx);
 
-                    Ok(CoroutineResponse::Ready { status, body, content_type })
+                    Ok(CoroutineResponse::Ready {
+                        status,
+                        body,
+                        content_type,
+                    })
                 }
             }
         }
         Err(e) => {
             request_pool.release(ctx_idx);
-            convert_error_to_response(e, &buf, method_off, method_len, path_off, path_len, started_at, buffer_pool)
+            convert_error_to_response(
+                e,
+                &buf,
+                method_off,
+                method_len,
+                path_off,
+                path_len,
+                started_at,
+                buffer_pool,
+            )
         }
     }
 }
@@ -372,7 +438,9 @@ fn convert_error_to_response(
     _buffer_pool: &mut BufferPool,
 ) -> Result<CoroutineResponse> {
     let validation_err = match &e {
-        mlua::Error::ExternalError(arc_err) => arc_err.downcast_ref::<rover_types::ValidationErrors>(),
+        mlua::Error::ExternalError(arc_err) => {
+            arc_err.downcast_ref::<rover_types::ValidationErrors>()
+        }
         mlua::Error::CallbackError { cause, .. } => {
             if let mlua::Error::ExternalError(arc_err) = cause.as_ref() {
                 arc_err.downcast_ref::<rover_types::ValidationErrors>()
@@ -391,7 +459,13 @@ fn convert_error_to_response(
             error_str = error_str[..stack_pos].to_string();
         }
         error_str = error_str.trim_start_matches("runtime error: ").to_string();
-        (500, Bytes::from(format!("{{\"error\": \"{}\"}}", error_str.replace("\"", "\\\"").replace("\n", "\\n"))))
+        (
+            500,
+            Bytes::from(format!(
+                "{{\"error\": \"{}\"}}",
+                error_str.replace("\"", "\\\"").replace("\n", "\\n")
+            )),
+        )
     };
 
     let elapsed = started_at.elapsed();
@@ -399,16 +473,35 @@ fn convert_error_to_response(
 
     if status >= 400 {
         if tracing::event_enabled!(tracing::Level::WARN) {
-            let method_str = unsafe { std::str::from_utf8_unchecked(&buf[method_off as usize..(method_off + method_len as u16) as usize]) };
-            let path_str = unsafe { std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize]) };
-            warn!("{} {} - {} in {:.2}ms", method_str, path_str, status, elapsed_ms);
+            let method_str = unsafe {
+                std::str::from_utf8_unchecked(
+                    &buf[method_off as usize..(method_off + method_len as u16) as usize],
+                )
+            };
+            let path_str = unsafe {
+                std::str::from_utf8_unchecked(
+                    &buf[path_off as usize..(path_off + path_len) as usize],
+                )
+            };
+            warn!(
+                "{} {} - {} in {:.2}ms",
+                method_str, path_str, status, elapsed_ms
+            );
         }
     }
 
-    Ok(CoroutineResponse::Ready { status, body, content_type: None })
+    Ok(CoroutineResponse::Ready {
+        status,
+        body,
+        content_type: None,
+    })
 }
 
-fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool) -> (u16, Bytes, Option<&'static str>) {
+fn convert_lua_response(
+    _lua: &Lua,
+    result: Value,
+    buffer_pool: &mut BufferPool,
+) -> (u16, Bytes, Option<&'static str>) {
     match result {
         Value::UserData(ref ud) => {
             if let Ok(response) = ud.borrow::<RoverResponse>() {
@@ -433,9 +526,8 @@ fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool)
         ),
 
         Value::Table(table) => {
-            let json = lua_table_to_json(&table, buffer_pool).unwrap_or_else(|e| {
-                format!("{{\"error\":\"Failed to serialize: {}\"}}", e)
-            });
+            let json = lua_table_to_json(&table, buffer_pool)
+                .unwrap_or_else(|e| format!("{{\"error\":\"Failed to serialize: {}\"}}", e));
             (200, Bytes::from(json), Some("application/json"))
         }
 
@@ -444,11 +536,7 @@ fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool)
         Value::Boolean(b) => (200, Bytes::from(b.to_string()), Some("text/plain")),
         Value::Nil => (204, Bytes::new(), None),
 
-        Value::Error(e) => (
-            500,
-            Bytes::from(e.to_string()),
-            Some("text/plain"),
-        ),
+        Value::Error(e) => (500, Bytes::from(e.to_string()), Some("text/plain")),
 
         _ => (
             500,
@@ -460,7 +548,9 @@ fn convert_lua_response(_lua: &Lua, result: Value, buffer_pool: &mut BufferPool)
 
 fn lua_table_to_json(table: &Table, buffer_pool: &mut BufferPool) -> Result<String> {
     let mut buf = buffer_pool.get_json_buf();
-    table.to_json(&mut buf).map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
+    table
+        .to_json(&mut buf)
+        .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
     let json = String::from_utf8_lossy(&buf).to_string();
     buffer_pool.return_json_buf(buf);
     Ok(json)

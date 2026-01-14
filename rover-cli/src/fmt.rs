@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
+use rover_parser::format_code;
 use std::path::PathBuf;
-use stylua_lib::{format_code, CallParenType, Config, OutputVerification};
 
 pub struct FmtOptions {
     pub file: Option<PathBuf>,
@@ -54,12 +54,7 @@ fn format_file(file: &PathBuf, check: bool) -> Result<bool> {
     let code = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
-    let config = Config {
-        call_parentheses: CallParenType::None,
-        ..Config::default()
-    };
-    let formatted = format_code(&code, config, None, OutputVerification::None)
-        .map_err(|e| anyhow::anyhow!("Format error in {}: {}", file.display(), e))?;
+    let formatted = format_code(&code);
 
     if check {
         if code != formatted {

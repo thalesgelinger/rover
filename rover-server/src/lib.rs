@@ -1,15 +1,15 @@
-pub mod to_json;
-mod fast_router;
-mod response;
-pub mod http_task;
-mod event_loop;
-mod http_server;
-mod connection;
 mod buffer_pool;
-pub mod table_pool;
+mod connection;
 pub mod direct_json_parser;
+mod event_loop;
+mod fast_router;
+mod http_server;
+pub mod http_task;
+mod response;
+pub mod table_pool;
+pub mod to_json;
 
-pub use http_task::{HttpResponse, CoroutineResponse};
+pub use http_task::{CoroutineResponse, HttpResponse};
 pub use response::RoverResponse;
 use std::net::SocketAddr;
 
@@ -199,8 +199,15 @@ pub fn run(
             if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
                 if io_err.kind() == std::io::ErrorKind::AddrInUse {
                     eprintln!("\n❌ Error: Unable to start server");
-                    eprintln!("   Port {} is already in use on {}", sock_addr.port(), sock_addr.ip());
-                    eprintln!("   Please choose a different port or stop the process using port {}\n", sock_addr.port());
+                    eprintln!(
+                        "   Port {} is already in use on {}",
+                        sock_addr.port(),
+                        sock_addr.ip()
+                    );
+                    eprintln!(
+                        "   Please choose a different port or stop the process using port {}\n",
+                        sock_addr.port()
+                    );
                     std::process::exit(1);
                 }
             }

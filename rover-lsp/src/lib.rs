@@ -4,15 +4,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rover_parser::{
-    FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, MemberKind, Route, SemanticModel,
-    SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata, analyze_with_options,
-    lookup_spec, LuaType,
+    FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, LuaType, MemberKind, Route,
+    SemanticModel, SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata,
+    analyze_with_options, lookup_spec,
 };
 
 // Alias to avoid collision with rover_parser::SymbolKind
-use tower_lsp::lsp_types::SymbolKind as LspSymbolKind;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::SymbolKind as LspSymbolKind;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -20,26 +20,26 @@ const DEBOUNCE_MS: u64 = 75;
 
 // Semantic token types - order matters (index used in token data)
 const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
-    SemanticTokenType::NAMESPACE,    // 0: modules, require
-    SemanticTokenType::TYPE,         // 1: types
-    SemanticTokenType::CLASS,        // 2: rover server/guard
-    SemanticTokenType::FUNCTION,     // 3: functions
-    SemanticTokenType::METHOD,       // 4: methods
-    SemanticTokenType::PROPERTY,     // 5: table fields
-    SemanticTokenType::VARIABLE,     // 6: variables
-    SemanticTokenType::PARAMETER,    // 7: parameters
-    SemanticTokenType::STRING,       // 8: strings
-    SemanticTokenType::NUMBER,       // 9: numbers
-    SemanticTokenType::KEYWORD,      // 10: keywords
-    SemanticTokenType::COMMENT,      // 11: comments
-    SemanticTokenType::OPERATOR,     // 12: operators
+    SemanticTokenType::NAMESPACE, // 0: modules, require
+    SemanticTokenType::TYPE,      // 1: types
+    SemanticTokenType::CLASS,     // 2: rover server/guard
+    SemanticTokenType::FUNCTION,  // 3: functions
+    SemanticTokenType::METHOD,    // 4: methods
+    SemanticTokenType::PROPERTY,  // 5: table fields
+    SemanticTokenType::VARIABLE,  // 6: variables
+    SemanticTokenType::PARAMETER, // 7: parameters
+    SemanticTokenType::STRING,    // 8: strings
+    SemanticTokenType::NUMBER,    // 9: numbers
+    SemanticTokenType::KEYWORD,   // 10: keywords
+    SemanticTokenType::COMMENT,   // 11: comments
+    SemanticTokenType::OPERATOR,  // 12: operators
 ];
 
 const SEMANTIC_TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
-    SemanticTokenModifier::DECLARATION,   // 0: declaration site
-    SemanticTokenModifier::DEFINITION,    // 1: definition site
-    SemanticTokenModifier::READONLY,      // 2: constants
-    SemanticTokenModifier::STATIC,        // 3: static/global
+    SemanticTokenModifier::DECLARATION,     // 0: declaration site
+    SemanticTokenModifier::DEFINITION,      // 1: definition site
+    SemanticTokenModifier::READONLY,        // 2: constants
+    SemanticTokenModifier::STATIC,          // 3: static/global
     SemanticTokenModifier::DEFAULT_LIBRARY, // 4: stdlib
 ];
 
@@ -72,7 +72,7 @@ impl Backend {
     async fn update_document(&self, uri: Url, text: String) {
         // Assign a version to this update
         let version = self.version_counter.fetch_add(1, Ordering::SeqCst);
-        
+
         // Store the latest version for this document
         {
             let mut versions = self.update_versions.write().await;
@@ -103,7 +103,12 @@ impl Backend {
 
             // Perform the actual analysis with type inference
             use rover_parser::AnalyzeOptions;
-            let model = analyze_with_options(&text, AnalyzeOptions { type_inference: true });
+            let model = analyze_with_options(
+                &text,
+                AnalyzeOptions {
+                    type_inference: true,
+                },
+            );
             {
                 let mut docs = documents.write().await;
                 docs.insert(
@@ -126,7 +131,12 @@ impl Backend {
     /// Update document immediately without debouncing (for did_open)
     async fn update_document_immediate(&self, uri: Url, text: String) {
         use rover_parser::AnalyzeOptions;
-        let model = analyze_with_options(&text, AnalyzeOptions { type_inference: true });
+        let model = analyze_with_options(
+            &text,
+            AnalyzeOptions {
+                type_inference: true,
+            },
+        );
         {
             let mut docs = self.documents.write().await;
             docs.insert(
@@ -142,7 +152,7 @@ impl Backend {
 
     async fn publish_diagnostics(&self, uri: &Url, model: &SemanticModel) {
         let diagnostics = diagnostics_from_model(model);
-        
+
         // Debug logging
         let diag_count = diagnostics.len();
         let type_error_count = model.type_errors.len();
@@ -150,12 +160,14 @@ impl Backend {
             self.client
                 .log_message(
                     MessageType::INFO,
-                    format!("Publishing {} diagnostics (type_errors: {}) for {}", 
-                        diag_count, type_error_count, uri),
+                    format!(
+                        "Publishing {} diagnostics (type_errors: {}) for {}",
+                        diag_count, type_error_count, uri
+                    ),
                 )
                 .await;
         }
-        
+
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, None)
             .await;
@@ -193,15 +205,17 @@ impl LanguageServer for Backend {
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
-                        legend: SemanticTokensLegend {
-                            token_types: SEMANTIC_TOKEN_TYPES.to_vec(),
-                            token_modifiers: SEMANTIC_TOKEN_MODIFIERS.to_vec(),
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: SemanticTokensLegend {
+                                token_types: SEMANTIC_TOKEN_TYPES.to_vec(),
+                                token_modifiers: SEMANTIC_TOKEN_MODIFIERS.to_vec(),
+                            },
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: None,
+                            work_done_progress_options: Default::default(),
                         },
-                        full: Some(SemanticTokensFullOptions::Bool(true)),
-                        range: None,
-                        work_done_progress_options: Default::default(),
-                    }),
+                    ),
                 ),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
@@ -284,11 +298,21 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        tracing::info!("goto_definition: uri={}, line={}, col={}", uri, position.line, position.character);
+        tracing::info!(
+            "goto_definition: uri={}, line={}, col={}",
+            uri,
+            position.line,
+            position.character
+        );
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(&uri) {
-            tracing::info!("goto_definition: found doc, tree={}", doc.model.tree.is_some());
-            if let Some(location) = find_definition_cross_file(&doc.model, &doc.text, position, uri.clone(), &docs) {
+            tracing::info!(
+                "goto_definition: found doc, tree={}",
+                doc.model.tree.is_some()
+            );
+            if let Some(location) =
+                find_definition_cross_file(&doc.model, &doc.text, position, uri.clone(), &docs)
+            {
                 tracing::info!("goto_definition: found location {:?}", location.uri);
                 return Ok(Some(GotoDefinitionResponse::Scalar(location)));
             }
@@ -304,7 +328,12 @@ impl LanguageServer for Backend {
         let position = params.text_document_position.position;
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(&uri) {
-            let locations = find_references(&doc.text, position, uri.clone(), params.context.include_declaration);
+            let locations = find_references(
+                &doc.text,
+                position,
+                uri.clone(),
+                params.context.include_declaration,
+            );
             if !locations.is_empty() {
                 return Ok(Some(locations));
             }
@@ -394,10 +423,13 @@ impl LanguageServer for Backend {
                 let lines: Vec<&str> = doc.text.split('\n').collect();
                 let last_line = lines.len().saturating_sub(1);
                 let last_col = lines.last().map(|l| l.len()).unwrap_or(0);
-                
+
                 return Ok(Some(vec![TextEdit {
                     range: Range {
-                        start: Position { line: 0, character: 0 },
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
                         end: Position {
                             line: last_line as u32,
                             character: last_col as u32,
@@ -651,7 +683,7 @@ fn compute_completions(
     };
 
     let mut items = Vec::new();
-    
+
     // Table constructor completions (rover.server { ... })
     if let Some((constructor, partial)) = detect_table_constructor_context(&line_prefix) {
         if constructor == "rover.server" {
@@ -667,14 +699,23 @@ fn compute_completions(
     // Symbol spec completions (rover., ctx:, g., etc.)
     if let Some((base, partial)) = detect_member_access(&line_prefix) {
         // Check for stdlib module completions first (string., math., table., etc.)
-        let stdlib_modules = ["string", "table", "math", "io", "os", "coroutine", "debug", "package"];
+        let stdlib_modules = [
+            "string",
+            "table",
+            "math",
+            "io",
+            "os",
+            "coroutine",
+            "debug",
+            "package",
+        ];
         if stdlib_modules.contains(&base.as_str()) {
             items.extend(stdlib_module_completions(&base, &partial));
             if !items.is_empty() {
                 return items;
             }
         }
-        
+
         // Check if base is a table with known fields
         if let Some(symbol) = model.symbol_table.resolve_symbol_global(&base) {
             if matches!(symbol.inferred_type, LuaType::Table(_)) {
@@ -706,7 +747,7 @@ fn compute_completions(
 
         return items;
     }
-    
+
     // Global identifier completions (rover, etc.)
     // When user types "rov" suggest "rover"
     if !line_prefix.is_empty() && !line_prefix.contains('.') && !line_prefix.contains(':') {
@@ -768,7 +809,12 @@ fn compute_completions(
     items
 }
 
-fn build_hover(model: &SemanticModel, text: &str, position: Position, documents: &std::collections::HashMap<Url, DocumentState>) -> Option<Hover> {
+fn build_hover(
+    model: &SemanticModel,
+    text: &str,
+    position: Position,
+    documents: &std::collections::HashMap<Url, DocumentState>,
+) -> Option<Hover> {
     if let Some(hover) = build_symbol_hover(model, text, position, documents) {
         return Some(hover);
     }
@@ -782,12 +828,16 @@ fn build_symbol_hover(
     documents: &std::collections::HashMap<Url, DocumentState>,
 ) -> Option<Hover> {
     let (identifier, range) = identifier_at_position(text, position)?;
-    
+
     // Priority 1: Check symbol table for local variables/parameters
     if let Some(symbol) = model.symbol_table.resolve_symbol_global(&identifier) {
         // Show identifier with its type
         let type_str = if matches!(symbol.inferred_type, LuaType::Function(_)) {
-            format!("{}: {}", identifier, format_function_type(&symbol.inferred_type))
+            format!(
+                "{}: {}",
+                identifier,
+                format_function_type(&symbol.inferred_type)
+            )
         } else {
             format!("{}: {}", identifier, symbol.inferred_type)
         };
@@ -800,16 +850,30 @@ fn build_symbol_hover(
             range: Some(range),
         });
     }
-    
+
     // Priority 2: Search in other open documents for cross-file symbols
     for (doc_uri, doc_state) in documents.iter() {
-        if let Some(symbol) = doc_state.model.symbol_table.resolve_symbol_global(&identifier) {
+        if let Some(symbol) = doc_state
+            .model
+            .symbol_table
+            .resolve_symbol_global(&identifier)
+        {
             let type_str = if matches!(symbol.inferred_type, LuaType::Function(_)) {
-                format!("{}: {} (from {})", identifier, format_function_type(&symbol.inferred_type), get_file_name(doc_uri))
+                format!(
+                    "{}: {} (from {})",
+                    identifier,
+                    format_function_type(&symbol.inferred_type),
+                    get_file_name(doc_uri)
+                )
             } else {
-                format!("{}: {} (from {})", identifier, symbol.inferred_type, get_file_name(doc_uri))
+                format!(
+                    "{}: {} (from {})",
+                    identifier,
+                    symbol.inferred_type,
+                    get_file_name(doc_uri)
+                )
             };
-            
+
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -819,7 +883,7 @@ fn build_symbol_hover(
             });
         }
     }
-    
+
     // Priority 3: Rover symbol specs from the model
     if let Some(spec) = model.symbol_specs.get(&identifier) {
         return Some(Hover {
@@ -830,7 +894,7 @@ fn build_symbol_hover(
             range: Some(range),
         });
     }
-    
+
     // Priority 4: Check model.functions for function metadata
     for func in &model.functions {
         if func.name == identifier {
@@ -844,12 +908,16 @@ fn build_symbol_hover(
             });
         }
     }
-    
+
     // Priority 5: Check functions in other documents
     for (_doc_uri, doc_state) in documents.iter() {
         for func in &doc_state.model.functions {
             if func.name == identifier {
-                let type_str = format!("{}: function (from {})", identifier, get_file_name(_doc_uri));
+                let type_str = format!(
+                    "{}: function (from {})",
+                    identifier,
+                    get_file_name(_doc_uri)
+                );
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -860,7 +928,7 @@ fn build_symbol_hover(
             }
         }
     }
-    
+
     // Priority 6: Lua stdlib from global spec registry
     if let Some(spec_doc) = lookup_spec(&identifier) {
         return Some(Hover {
@@ -938,7 +1006,7 @@ fn find_definition(
 ) -> Option<Location> {
     let line = position.line as usize;
     let column = position.character as usize;
-    
+
     // First: Check if cursor is inside a string in a require() call
     if let Some(module_path) = get_require_string_at_position(model, text, line, column) {
         if let Some(resolved_path) = resolve_module_path(&module_path, &uri) {
@@ -946,25 +1014,35 @@ fn find_definition(
                 return Some(Location {
                     uri: module_uri,
                     range: Range {
-                        start: Position { line: 0, character: 0 },
-                        end: Position { line: 0, character: 0 },
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 0,
+                        },
                     },
                 });
             }
         }
     }
-    
+
     // Extract the identifier at the cursor position
     let (identifier, ident_range) = identifier_at_position(text, position)?;
-    
+
     // Check if this is a property access (e.g., a.b where cursor is on 'b')
     let text_before_ident = get_text_before_ident(text, position, ident_range);
     let is_property_access = text_before_ident.ends_with('.');
-    
+
     if is_property_access {
         // For property access, find the base object
         if let Some(base_object_name) = extract_base_object(text, position, ident_range) {
-            if let Some(symbol) = model.symbol_table.resolve_symbol_at_position(&base_object_name, line, column) {
+            if let Some(symbol) =
+                model
+                    .symbol_table
+                    .resolve_symbol_at_position(&base_object_name, line, column)
+            {
                 return Some(Location {
                     uri,
                     range: Range {
@@ -981,9 +1059,12 @@ fn find_definition(
             }
         }
     }
-    
+
     // Try to resolve the symbol in the symbol table
-    if let Some(symbol) = model.symbol_table.resolve_symbol_at_position(&identifier, line, column) {
+    if let Some(symbol) = model
+        .symbol_table
+        .resolve_symbol_at_position(&identifier, line, column)
+    {
         return Some(Location {
             uri,
             range: Range {
@@ -998,7 +1079,7 @@ fn find_definition(
             },
         });
     }
-    
+
     // Check model.functions for function definitions
     for func in &model.functions {
         if func.name == identifier {
@@ -1017,18 +1098,23 @@ fn find_definition(
             });
         }
     }
-    
+
     None
 }
 
 /// Check if cursor is inside a string argument of require() and return the module path
-fn get_require_string_at_position(model: &SemanticModel, text: &str, line: usize, column: usize) -> Option<String> {
+fn get_require_string_at_position(
+    model: &SemanticModel,
+    text: &str,
+    line: usize,
+    column: usize,
+) -> Option<String> {
     let tree = model.tree.as_ref()?;
     let root = tree.root_node();
-    
+
     // Find the deepest node at position
     let node = find_deepest_node_at_position(&root, line, column)?;
-    
+
     // Check if we're in a string
     if node.kind() == "string" || node.kind() == "string_content" {
         // Walk up to find a function_call parent
@@ -1047,9 +1133,12 @@ fn get_require_string_at_position(model: &SemanticModel, text: &str, line: usize
                             } else {
                                 // node is "string", find "string_content" child
                                 let mut c = node.walk();
-                                node.children(&mut c).find(|n| n.kind() == "string_content").unwrap_or(node)
+                                node.children(&mut c)
+                                    .find(|n| n.kind() == "string_content")
+                                    .unwrap_or(node)
                             };
-                            let module_path = &text[string_node.start_byte()..string_node.end_byte()];
+                            let module_path =
+                                &text[string_node.start_byte()..string_node.end_byte()];
                             return Some(module_path.to_string());
                         }
                     }
@@ -1058,23 +1147,27 @@ fn get_require_string_at_position(model: &SemanticModel, text: &str, line: usize
             current = parent;
         }
     }
-    
+
     None
 }
 
 /// Find the deepest (most specific) node at a given position
-fn find_deepest_node_at_position<'a>(root: &'a tree_sitter::Node<'a>, line: usize, column: usize) -> Option<tree_sitter::Node<'a>> {
+fn find_deepest_node_at_position<'a>(
+    root: &'a tree_sitter::Node<'a>,
+    line: usize,
+    column: usize,
+) -> Option<tree_sitter::Node<'a>> {
     let mut best_node = None;
     let mut stack = vec![*root];
-    
+
     while let Some(node) = stack.pop() {
         let start = node.start_position();
         let end = node.end_position();
-        
+
         // Check if position is within this node
         let in_range = (start.row < line || (start.row == line && start.column <= column))
             && (end.row > line || (end.row == line && end.column >= column));
-        
+
         if in_range {
             best_node = Some(node);
             // Add children to check for more specific nodes
@@ -1084,7 +1177,7 @@ fn find_deepest_node_at_position<'a>(root: &'a tree_sitter::Node<'a>, line: usiz
             }
         }
     }
-    
+
     best_node
 }
 
@@ -1098,7 +1191,7 @@ fn find_definition_cross_file(
 ) -> Option<Location> {
     let line = position.line as usize;
     let column = position.character as usize;
-    
+
     // First: Check if cursor is inside a require() string - this works even without identifier
     if let Some(module_path) = get_require_string_at_position(model, text, line, column) {
         if let Some(resolved_path) = resolve_module_path(&module_path, &uri) {
@@ -1106,26 +1199,32 @@ fn find_definition_cross_file(
                 return Some(Location {
                     uri: module_uri,
                     range: Range {
-                        start: Position { line: 0, character: 0 },
-                        end: Position { line: 0, character: 0 },
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 0,
+                        },
                     },
                 });
             }
         }
     }
-    
+
     let (identifier, ident_range) = identifier_at_position(text, position)?;
-    
+
     // Check if this is a property access (e.g., module.greet)
     let text_before_ident = get_text_before_ident(text, position, ident_range);
     let is_property_access = text_before_ident.ends_with('.');
-    
+
     if is_property_access {
         // For property access, check if the base object is a module from require()
         if let Some(base_object_name) = extract_base_object(text, position, ident_range) {
             // Search for require() assignment using AST: local module = require("...")
             let module_path = find_module_for_variable_ast(model, text, &base_object_name);
-            
+
             if let Some(module_path) = module_path {
                 // Resolve and navigate to module file
                 if let Some(resolved_path) = resolve_module_path(&module_path, &uri) {
@@ -1133,7 +1232,11 @@ fn find_definition_cross_file(
                         // First check if module is already open
                         if let Some(module_doc) = documents.get(&module_uri) {
                             // Check symbol table
-                            if let Some(symbol) = module_doc.model.symbol_table.resolve_symbol_global(&identifier) {
+                            if let Some(symbol) = module_doc
+                                .model
+                                .symbol_table
+                                .resolve_symbol_global(&identifier)
+                            {
                                 return Some(Location {
                                     uri: module_uri.clone(),
                                     range: Range {
@@ -1167,7 +1270,7 @@ fn find_definition_cross_file(
                                 }
                             }
                         }
-                        
+
                         // Module not open - parse it on demand
                         if let Some(location) = find_symbol_in_file(&resolved_path, &identifier) {
                             return Some(Location {
@@ -1175,13 +1278,19 @@ fn find_definition_cross_file(
                                 range: location,
                             });
                         }
-                        
+
                         // Fallback: just go to the file start
                         return Some(Location {
                             uri: module_uri,
                             range: Range {
-                                start: Position { line: 0, character: 0 },
-                                end: Position { line: 0, character: 0 },
+                                start: Position {
+                                    line: 0,
+                                    character: 0,
+                                },
+                                end: Position {
+                                    line: 0,
+                                    character: 0,
+                                },
                             },
                         });
                     }
@@ -1189,16 +1298,20 @@ fn find_definition_cross_file(
             }
         }
     }
-    
+
     // First try to find in current file
     if let Some(location) = find_definition(model, text, position, uri.clone()) {
         return Some(location);
     }
-    
+
     // Search in other open documents for the symbol
     for (doc_uri, doc_state) in documents.iter() {
         if doc_uri != &uri {
-            if let Some(symbol) = doc_state.model.symbol_table.resolve_symbol_global(&identifier) {
+            if let Some(symbol) = doc_state
+                .model
+                .symbol_table
+                .resolve_symbol_global(&identifier)
+            {
                 return Some(Location {
                     uri: doc_uri.clone(),
                     range: Range {
@@ -1215,25 +1328,33 @@ fn find_definition_cross_file(
             }
         }
     }
-    
+
     None
 }
 
 /// Find the module path for a variable assigned from require() using AST
-fn find_module_for_variable_ast(model: &SemanticModel, text: &str, var_name: &str) -> Option<String> {
+fn find_module_for_variable_ast(
+    model: &SemanticModel,
+    text: &str,
+    var_name: &str,
+) -> Option<String> {
     let tree = model.tree.as_ref()?;
     let root = tree.root_node();
-    
+
     find_require_for_var_recursive(&root, text, var_name)
 }
 
-fn find_require_for_var_recursive(node: &tree_sitter::Node, text: &str, var_name: &str) -> Option<String> {
+fn find_require_for_var_recursive(
+    node: &tree_sitter::Node,
+    text: &str,
+    var_name: &str,
+) -> Option<String> {
     // Check if this is a variable declaration or assignment
     if node.kind() == "variable_declaration" || node.kind() == "assignment_statement" {
         // Look for the variable name and require call
         let mut found_var = false;
         let mut module_path = None;
-        
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             // Check variable name
@@ -1243,7 +1364,7 @@ fn find_require_for_var_recursive(node: &tree_sitter::Node, text: &str, var_name
                     found_var = true;
                 }
             }
-            
+
             // Check for require() call in expression_list or function_call
             if child.kind() == "expression_list" || child.kind() == "function_call" {
                 if let Some(path) = extract_require_path_from_node(&child, text) {
@@ -1251,12 +1372,12 @@ fn find_require_for_var_recursive(node: &tree_sitter::Node, text: &str, var_name
                 }
             }
         }
-        
+
         if found_var && module_path.is_some() {
             return module_path;
         }
     }
-    
+
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -1264,7 +1385,7 @@ fn find_require_for_var_recursive(node: &tree_sitter::Node, text: &str, var_name
             return Some(path);
         }
     }
-    
+
     None
 }
 
@@ -1275,7 +1396,7 @@ fn extract_require_path_from_node(node: &tree_sitter::Node, text: &str) -> Optio
         let mut cursor = node.walk();
         let mut func_name: Option<String> = None;
         let mut args_node: Option<tree_sitter::Node> = None;
-        
+
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "identifier" => {
@@ -1287,7 +1408,7 @@ fn extract_require_path_from_node(node: &tree_sitter::Node, text: &str) -> Optio
                 _ => {}
             }
         }
-        
+
         if func_name.as_deref() == Some("require") {
             if let Some(args) = args_node {
                 let mut args_cursor = args.walk();
@@ -1302,7 +1423,7 @@ fn extract_require_path_from_node(node: &tree_sitter::Node, text: &str) -> Optio
             }
         }
     }
-    
+
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -1310,7 +1431,7 @@ fn extract_require_path_from_node(node: &tree_sitter::Node, text: &str) -> Optio
             return Some(path);
         }
     }
-    
+
     None
 }
 
@@ -1318,7 +1439,7 @@ fn extract_require_path_from_node(node: &tree_sitter::Node, text: &str) -> Optio
 fn find_symbol_in_file(file_path: &str, symbol_name: &str) -> Option<Range> {
     let content = std::fs::read_to_string(file_path).ok()?;
     let model = rover_parser::analyze(&content);
-    
+
     // First check symbol table
     if let Some(symbol) = model.symbol_table.resolve_symbol_global(symbol_name) {
         return Some(Range {
@@ -1332,7 +1453,7 @@ fn find_symbol_in_file(file_path: &str, symbol_name: &str) -> Option<Range> {
             },
         });
     }
-    
+
     // Then check functions
     for func in &model.functions {
         if func.name == symbol_name {
@@ -1348,7 +1469,7 @@ fn find_symbol_in_file(file_path: &str, symbol_name: &str) -> Option<Range> {
             });
         }
     }
-    
+
     None
 }
 
@@ -1362,32 +1483,38 @@ fn extract_base_object(text: &str, position: Position, ident_range: Range) -> Op
     let line_start = text.split('\n').nth(position.line as usize).unwrap_or("");
     let ident_start = ident_range.start.character as usize;
     let before_ident = &line_start[..ident_start];
-    
+
     // Find the last word before the dot (e.g., "a" in "a.b" or "a.b.c")
-    let parts: Vec<&str> = before_ident.split(|c: char| !c.is_alphanumeric() && c != '_').collect();
+    let parts: Vec<&str> = before_ident
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .collect();
     if parts.len() >= 1 {
         return Some(parts.last()?.to_string());
     }
-    
+
     None
 }
 
-fn find_node_at_position<'a>(root: &'a tree_sitter::Node<'a>, line: usize, column: usize) -> Option<tree_sitter::Node<'a>> {
+fn find_node_at_position<'a>(
+    root: &'a tree_sitter::Node<'a>,
+    line: usize,
+    column: usize,
+) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = root.walk();
-    
+
     for child in root.children(&mut cursor) {
         let child_row = child.start_position().row as usize;
         let child_col = child.start_position().column as usize;
         let child_end_col = child.end_position().column as usize;
         let child_end_row = child.end_position().row as usize;
-        
+
         if child_row <= line && child_end_row >= line {
             if child_col <= column && child_end_col >= column {
                 return Some(child);
             }
         }
     }
-    
+
     None
 }
 
@@ -1395,7 +1522,7 @@ fn resolve_module_path(module_path: &str, current_uri: &Url) -> Option<String> {
     // Get current file's directory
     let current_path = current_uri.to_file_path().ok()?;
     let current_dir = current_path.parent()?;
-    
+
     // Handle relative paths: "./utils" or "../utils"
     let (search_path, is_relative) = if module_path.starts_with("./") {
         (module_path.trim_start_matches("./").to_string(), true)
@@ -1404,44 +1531,48 @@ fn resolve_module_path(module_path: &str, current_uri: &Url) -> Option<String> {
     } else {
         (module_path.to_string(), false)
     };
-    
+
     let base_dir = if is_relative && module_path.starts_with("../") {
         current_dir.parent().unwrap_or(current_dir)
     } else {
         current_dir
     };
-    
+
     // Try direct .lua file: search_path.lua
     let lua_path = base_dir.join(format!("{}.lua", search_path));
     if lua_path.exists() {
         return lua_path.to_str().map(|s| s.to_string());
     }
-    
+
     // Try directory with init.lua: search_path/init.lua
     let init_path = base_dir.join(&search_path).join("init.lua");
     if init_path.exists() {
         return init_path.to_str().map(|s| s.to_string());
     }
-    
+
     // Try with dots converted to slashes for package paths: utils.string -> utils/string.lua
     let package_path = base_dir.join(search_path.replace(".", "/"));
     let package_lua = format!("{}.lua", package_path.to_str().unwrap_or(""));
     if std::path::Path::new(&package_lua).exists() {
         return Some(package_lua);
     }
-    
+
     // Try package path with init.lua: utils/string/init.lua
     let package_init = package_path.join("init.lua");
     if package_init.exists() {
         return package_init.to_str().map(|s| s.to_string());
     }
-    
+
     None
 }
 
 fn get_file_name(uri: &Url) -> String {
     uri.to_file_path()
-        .and_then(|path| path.file_name().map(|n| n.to_string_lossy().to_string()).ok_or(()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .ok_or(())
+        })
         .unwrap_or_else(|_| uri.to_string())
 }
 
@@ -1502,7 +1633,10 @@ fn build_document_symbols(model: &SemanticModel) -> Vec<DocumentSymbol> {
 
     // Sort by position
     symbols.sort_by(|a, b| {
-        a.range.start.line.cmp(&b.range.start.line)
+        a.range
+            .start
+            .line
+            .cmp(&b.range.start.line)
             .then(a.range.start.character.cmp(&b.range.start.character))
     });
 
@@ -1716,19 +1850,19 @@ fn detect_table_constructor_context(line: &str) -> Option<(String, String)> {
     if !line.contains('{') {
         return None;
     }
-    
+
     let brace_idx = line.rfind('{')?;
     let before_brace = line[..brace_idx].trim();
     let after_brace = line[brace_idx + 1..].trim();
-    
+
     // Extract the constructor call (e.g., "rover.server")
     let parts: Vec<&str> = before_brace.split_whitespace().collect();
     if parts.is_empty() {
         return None;
     }
-    
+
     let constructor = parts.last()?.to_string();
-    
+
     // Extract partial identifier after the brace
     // Handle cases like "{ p" or "{ port = 42, h"
     let partial = if let Some(comma_idx) = after_brace.rfind(',') {
@@ -1739,7 +1873,7 @@ fn detect_table_constructor_context(line: &str) -> Option<(String, String)> {
         // First field in table
         extract_field_partial(after_brace)
     };
-    
+
     Some((constructor, partial))
 }
 
@@ -1750,7 +1884,7 @@ fn extract_field_partial(segment: &str) -> String {
     } else {
         segment
     };
-    
+
     up_to_equals.trim().to_string()
 }
 
@@ -1911,10 +2045,7 @@ fn guard_property_completions(
         .collect()
 }
 
-fn symbol_spec_completions(
-    spec: &SymbolSpecMetadata,
-    partial: &str,
-) -> Vec<CompletionItem> {
+fn symbol_spec_completions(spec: &SymbolSpecMetadata, partial: &str) -> Vec<CompletionItem> {
     let mut members: Vec<&SymbolSpecMember> = spec.members.iter().collect();
     members.sort_by(|a, b| a.name.cmp(&b.name));
     members
@@ -2112,7 +2243,7 @@ fn stdlib_package_members() -> Vec<(&'static str, &'static str)> {
 
 fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    
+
     // Priority 1: Rover constructs from symbol_specs
     for (name, spec) in &model.symbol_specs {
         if partial.is_empty() || name.starts_with(partial) {
@@ -2129,19 +2260,20 @@ fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<Co
             });
         }
     }
-    
+
     // Priority 2: Local variables from symbol table
     let mut seen = std::collections::HashSet::new();
     for symbol in model.symbol_table.all_symbols() {
-        if (partial.is_empty() || symbol.name.starts_with(partial)) && !seen.contains(&symbol.name) {
+        if (partial.is_empty() || symbol.name.starts_with(partial)) && !seen.contains(&symbol.name)
+        {
             seen.insert(symbol.name.clone());
-            
+
             let kind = match symbol.kind {
                 rover_parser::SymbolKind::Function => CompletionItemKind::FUNCTION,
                 rover_parser::SymbolKind::Parameter => CompletionItemKind::VARIABLE,
                 _ => CompletionItemKind::VARIABLE,
             };
-            
+
             let kind_name = match symbol.kind {
                 rover_parser::SymbolKind::Variable => "local variable",
                 rover_parser::SymbolKind::Function => "function",
@@ -2152,14 +2284,14 @@ fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<Co
                 rover_parser::SymbolKind::RoverGuard => "rover guard",
                 rover_parser::SymbolKind::ContextParam => "context parameter",
             };
-            
+
             // Include inferred type if not Unknown
             let detail = if !matches!(symbol.inferred_type, LuaType::Unknown) {
                 format!("{}: {}", kind_name, symbol.inferred_type)
             } else {
                 kind_name.to_string()
             };
-            
+
             items.push(CompletionItem {
                 label: symbol.name.clone(),
                 kind: Some(kind),
@@ -2169,7 +2301,7 @@ fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<Co
             });
         }
     }
-    
+
     // Priority 3: Lua stdlib globals
     for (name, doc) in stdlib_globals() {
         if (partial.is_empty() || name.starts_with(partial)) && !seen.contains(name) {
@@ -2182,9 +2314,11 @@ fn global_identifier_completions(model: &SemanticModel, partial: &str) -> Vec<Co
             });
         }
     }
-    
+
     items.sort_by(|a, b| {
-        a.sort_text.as_ref().unwrap_or(&a.label)
+        a.sort_text
+            .as_ref()
+            .unwrap_or(&a.label)
             .cmp(b.sort_text.as_ref().unwrap_or(&b.label))
     });
     items
@@ -2202,8 +2336,9 @@ fn stdlib_module_completions(module: &str, partial: &str) -> Vec<CompletionItem>
         "package" => stdlib_package_members(),
         _ => return vec![],
     };
-    
-    members.into_iter()
+
+    members
+        .into_iter()
         .filter(|(name, _)| partial.is_empty() || name.starts_with(partial))
         .map(|(name, doc)| CompletionItem {
             label: name.to_string(),
@@ -2238,7 +2373,7 @@ fn table_field_completions(ty: &rover_parser::LuaType, partial: &str) -> Vec<Com
 
 fn user_defined_member_completions(members: &[String], partial: &str) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    
+
     for member in members {
         if partial.is_empty() || member.starts_with(partial) {
             items.push(CompletionItem {
@@ -2249,7 +2384,7 @@ fn user_defined_member_completions(members: &[String], partial: &str) -> Vec<Com
             });
         }
     }
-    
+
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items
 }
@@ -2257,12 +2392,16 @@ fn user_defined_member_completions(members: &[String], partial: &str) -> Vec<Com
 fn extract_partial_identifier(line: &str) -> String {
     let bytes = line.as_bytes();
     let mut end = line.len();
-    
+
     // Walk back to find start of identifier
-    while end > 0 && !bytes[end - 1].is_ascii_whitespace() && bytes[end - 1] != b'(' && bytes[end - 1] != b'{' {
+    while end > 0
+        && !bytes[end - 1].is_ascii_whitespace()
+        && bytes[end - 1] != b'('
+        && bytes[end - 1] != b'{'
+    {
         end -= 1;
     }
-    
+
     line[end..].trim().to_string()
 }
 
@@ -2383,15 +2522,20 @@ fn symbol_range_to_lsp_range(range: &rover_parser::SymbolSourceRange) -> Range {
     }
 }
 
-fn compute_rename(text: &str, position: Position, new_name: &str, uri: Url) -> Option<WorkspaceEdit> {
+fn compute_rename(
+    text: &str,
+    position: Position,
+    new_name: &str,
+    uri: Url,
+) -> Option<WorkspaceEdit> {
     let (_identifier, _) = identifier_at_position(text, position)?;
-    
+
     // Find all references to the identifier
     let locations = find_references(text, position, uri.clone(), true);
     if locations.is_empty() {
         return None;
     }
-    
+
     // Create text edits for each reference
     let edits: Vec<TextEdit> = locations
         .into_iter()
@@ -2400,10 +2544,10 @@ fn compute_rename(text: &str, position: Position, new_name: &str, uri: Url) -> O
             new_text: new_name.to_string(),
         })
         .collect();
-    
+
     let mut changes = HashMap::new();
     changes.insert(uri, edits);
-    
+
     Some(WorkspaceEdit {
         changes: Some(changes),
         document_changes: None,
@@ -2411,12 +2555,16 @@ fn compute_rename(text: &str, position: Position, new_name: &str, uri: Url) -> O
     })
 }
 
-fn compute_signature_help(text: &str, model: &SemanticModel, position: Position) -> Option<SignatureHelp> {
+fn compute_signature_help(
+    text: &str,
+    model: &SemanticModel,
+    position: Position,
+) -> Option<SignatureHelp> {
     let line_prefix = line_prefix(text, position)?;
-    
+
     // Detect function call context: find the function name before the (
     let (func_name, active_param) = detect_function_call_context(&line_prefix)?;
-    
+
     // Look up function signature
     if let Some(signature) = get_function_signature(&func_name, model) {
         return Some(SignatureHelp {
@@ -2425,7 +2573,7 @@ fn compute_signature_help(text: &str, model: &SemanticModel, position: Position)
             active_parameter: Some(active_param),
         });
     }
-    
+
     None
 }
 
@@ -2435,7 +2583,7 @@ fn detect_function_call_context(line: &str) -> Option<(String, u32)> {
     let mut paren_depth: i32 = 0;
     let mut last_open_paren = None;
     let mut comma_count: u32 = 0;
-    
+
     for (i, &b) in bytes.iter().enumerate() {
         if b == b'(' {
             paren_depth += 1;
@@ -2450,17 +2598,17 @@ fn detect_function_call_context(line: &str) -> Option<(String, u32)> {
             comma_count += 1;
         }
     }
-    
+
     // If we found an open paren, extract the function name before it
     let paren_pos = last_open_paren?;
     if paren_pos == 0 {
         return None;
     }
-    
+
     // Walk back to find the function name (handle both "func(" and "obj:method(" and "obj.method(")
     let end = paren_pos;
     let mut start = end;
-    
+
     while start > 0 {
         let b = bytes[start - 1];
         if is_ident_byte(b) || b == b'.' || b == b':' {
@@ -2469,11 +2617,11 @@ fn detect_function_call_context(line: &str) -> Option<(String, u32)> {
             break;
         }
     }
-    
+
     if start == end {
         return None;
     }
-    
+
     let func_name = line[start..end].to_string();
     Some((func_name, comma_count))
 }
@@ -2485,7 +2633,7 @@ fn get_function_signature(func_name: &str, model: &SemanticModel) -> Option<Sign
             return Some(sig);
         }
     }
-    
+
     // Check for colon methods like "ctx:json"
     if let Some((base, method)) = func_name.rsplit_once(':') {
         // Look in model's symbol specs
@@ -2506,44 +2654,92 @@ fn get_function_signature(func_name: &str, model: &SemanticModel) -> Option<Sign
             }
         }
     }
-    
+
     // Check global functions
     if let Some(sig) = get_global_function_signature(func_name) {
         return Some(sig);
     }
-    
+
     None
 }
 
 fn get_global_function_signature(name: &str) -> Option<SignatureInformation> {
     let (label, doc, params) = match name {
         "print" => ("print(...)", "Print values to stdout", vec!["..."]),
-        "assert" => ("assert(v, message?)", "Raise error if v is false/nil", vec!["v", "message?"]),
-        "error" => ("error(message, level?)", "Raise an error", vec!["message", "level?"]),
+        "assert" => (
+            "assert(v, message?)",
+            "Raise error if v is false/nil",
+            vec!["v", "message?"],
+        ),
+        "error" => (
+            "error(message, level?)",
+            "Raise an error",
+            vec!["message", "level?"],
+        ),
         "type" => ("type(v)", "Return type of value as string", vec!["v"]),
-        "tonumber" => ("tonumber(v, base?)", "Convert to number", vec!["v", "base?"]),
+        "tonumber" => (
+            "tonumber(v, base?)",
+            "Convert to number",
+            vec!["v", "base?"],
+        ),
         "tostring" => ("tostring(v)", "Convert to string", vec!["v"]),
         "ipairs" => ("ipairs(t)", "Iterator for array indices", vec!["t"]),
         "pairs" => ("pairs(t)", "Iterator for all table keys", vec!["t"]),
-        "next" => ("next(t, key?)", "Get next key-value pair", vec!["t", "key?"]),
+        "next" => (
+            "next(t, key?)",
+            "Get next key-value pair",
+            vec!["t", "key?"],
+        ),
         "pcall" => ("pcall(f, ...)", "Protected call", vec!["f", "..."]),
-        "xpcall" => ("xpcall(f, err)", "Protected call with error handler", vec!["f", "err"]),
-        "select" => ("select(index, ...)", "Select from varargs", vec!["index", "..."]),
+        "xpcall" => (
+            "xpcall(f, err)",
+            "Protected call with error handler",
+            vec!["f", "err"],
+        ),
+        "select" => (
+            "select(index, ...)",
+            "Select from varargs",
+            vec!["index", "..."],
+        ),
         "getmetatable" => ("getmetatable(obj)", "Get metatable", vec!["obj"]),
         "setmetatable" => ("setmetatable(t, mt)", "Set metatable", vec!["t", "mt"]),
         "rawget" => ("rawget(t, k)", "Get without metamethod", vec!["t", "k"]),
-        "rawset" => ("rawset(t, k, v)", "Set without metamethod", vec!["t", "k", "v"]),
+        "rawset" => (
+            "rawset(t, k, v)",
+            "Set without metamethod",
+            vec!["t", "k", "v"],
+        ),
         "rawequal" => ("rawequal(a, b)", "Equal without metamethod", vec!["a", "b"]),
         "require" => ("require(modname)", "Load module", vec!["modname"]),
-        "load" => ("load(func, chunkname?)", "Load chunk from function", vec!["func", "chunkname?"]),
-        "loadfile" => ("loadfile(filename?)", "Load chunk from file", vec!["filename?"]),
-        "loadstring" => ("loadstring(s, chunkname?)", "Load chunk from string", vec!["s", "chunkname?"]),
+        "load" => (
+            "load(func, chunkname?)",
+            "Load chunk from function",
+            vec!["func", "chunkname?"],
+        ),
+        "loadfile" => (
+            "loadfile(filename?)",
+            "Load chunk from file",
+            vec!["filename?"],
+        ),
+        "loadstring" => (
+            "loadstring(s, chunkname?)",
+            "Load chunk from string",
+            vec!["s", "chunkname?"],
+        ),
         "dofile" => ("dofile(filename?)", "Execute file", vec!["filename?"]),
-        "unpack" => ("unpack(t, i?, j?)", "Unpack table to multiple values", vec!["t", "i?", "j?"]),
-        "collectgarbage" => ("collectgarbage(opt?, arg?)", "Control garbage collector", vec!["opt?", "arg?"]),
+        "unpack" => (
+            "unpack(t, i?, j?)",
+            "Unpack table to multiple values",
+            vec!["t", "i?", "j?"],
+        ),
+        "collectgarbage" => (
+            "collectgarbage(opt?, arg?)",
+            "Control garbage collector",
+            vec!["opt?", "arg?"],
+        ),
         _ => return None,
     };
-    
+
     Some(SignatureInformation {
         label: label.to_string(),
         documentation: Some(Documentation::String(doc.to_string())),
@@ -2563,27 +2759,63 @@ fn get_global_function_signature(name: &str) -> Option<SignatureInformation> {
 fn get_stdlib_signature(lib: &str, method: &str) -> Option<SignatureInformation> {
     let (label, doc, params): (&str, &str, Vec<&str>) = match (lib, method) {
         // string library
-        ("string", "byte") => ("string.byte(s, i?, j?)", "Get byte values", vec!["s", "i?", "j?"]),
+        ("string", "byte") => (
+            "string.byte(s, i?, j?)",
+            "Get byte values",
+            vec!["s", "i?", "j?"],
+        ),
         ("string", "char") => ("string.char(...)", "Build string from bytes", vec!["..."]),
-        ("string", "find") => ("string.find(s, pattern, init?, plain?)", "Find pattern", vec!["s", "pattern", "init?", "plain?"]),
-        ("string", "format") => ("string.format(fmt, ...)", "Format string", vec!["fmt", "..."]),
-        ("string", "gmatch") => ("string.gmatch(s, pattern)", "Global pattern iterator", vec!["s", "pattern"]),
-        ("string", "gsub") => ("string.gsub(s, pattern, repl, n?)", "Global substitution", vec!["s", "pattern", "repl", "n?"]),
+        ("string", "find") => (
+            "string.find(s, pattern, init?, plain?)",
+            "Find pattern",
+            vec!["s", "pattern", "init?", "plain?"],
+        ),
+        ("string", "format") => (
+            "string.format(fmt, ...)",
+            "Format string",
+            vec!["fmt", "..."],
+        ),
+        ("string", "gmatch") => (
+            "string.gmatch(s, pattern)",
+            "Global pattern iterator",
+            vec!["s", "pattern"],
+        ),
+        ("string", "gsub") => (
+            "string.gsub(s, pattern, repl, n?)",
+            "Global substitution",
+            vec!["s", "pattern", "repl", "n?"],
+        ),
         ("string", "len") => ("string.len(s)", "String length", vec!["s"]),
         ("string", "lower") => ("string.lower(s)", "To lowercase", vec!["s"]),
         ("string", "upper") => ("string.upper(s)", "To uppercase", vec!["s"]),
-        ("string", "match") => ("string.match(s, pattern, init?)", "Pattern match", vec!["s", "pattern", "init?"]),
+        ("string", "match") => (
+            "string.match(s, pattern, init?)",
+            "Pattern match",
+            vec!["s", "pattern", "init?"],
+        ),
         ("string", "rep") => ("string.rep(s, n)", "Repeat string", vec!["s", "n"]),
         ("string", "reverse") => ("string.reverse(s)", "Reverse string", vec!["s"]),
         ("string", "sub") => ("string.sub(s, i, j?)", "Substring", vec!["s", "i", "j?"]),
-        
+
         // table library
-        ("table", "concat") => ("table.concat(t, sep?, i?, j?)", "Concatenate elements", vec!["t", "sep?", "i?", "j?"]),
-        ("table", "insert") => ("table.insert(t, pos?, value)", "Insert element", vec!["t", "pos?", "value"]),
+        ("table", "concat") => (
+            "table.concat(t, sep?, i?, j?)",
+            "Concatenate elements",
+            vec!["t", "sep?", "i?", "j?"],
+        ),
+        ("table", "insert") => (
+            "table.insert(t, pos?, value)",
+            "Insert element",
+            vec!["t", "pos?", "value"],
+        ),
         ("table", "remove") => ("table.remove(t, pos?)", "Remove element", vec!["t", "pos?"]),
-        ("table", "sort") => ("table.sort(t, comp?)", "Sort table in-place", vec!["t", "comp?"]),
+        ("table", "sort") => (
+            "table.sort(t, comp?)",
+            "Sort table in-place",
+            vec!["t", "comp?"],
+        ),
         ("table", "maxn") => ("table.maxn(t)", "Max numeric index", vec!["t"]),
-        
+
         // math library
         ("math", "abs") => ("math.abs(x)", "Absolute value", vec!["x"]),
         ("math", "acos") => ("math.acos(x)", "Arc cosine", vec!["x"]),
@@ -2607,41 +2839,61 @@ fn get_stdlib_signature(lib: &str, method: &str) -> Option<SignatureInformation>
         ("math", "sin") => ("math.sin(x)", "Sine", vec!["x"]),
         ("math", "sqrt") => ("math.sqrt(x)", "Square root", vec!["x"]),
         ("math", "tan") => ("math.tan(x)", "Tangent", vec!["x"]),
-        
+
         // io library
-        ("io", "open") => ("io.open(filename, mode?)", "Open file", vec!["filename", "mode?"]),
+        ("io", "open") => (
+            "io.open(filename, mode?)",
+            "Open file",
+            vec!["filename", "mode?"],
+        ),
         ("io", "close") => ("io.close(file?)", "Close file", vec!["file?"]),
         ("io", "read") => ("io.read(...)", "Read from stdin", vec!["..."]),
         ("io", "write") => ("io.write(...)", "Write to stdout", vec!["..."]),
-        ("io", "lines") => ("io.lines(filename?)", "File line iterator", vec!["filename?"]),
+        ("io", "lines") => (
+            "io.lines(filename?)",
+            "File line iterator",
+            vec!["filename?"],
+        ),
         ("io", "input") => ("io.input(file?)", "Set/get input file", vec!["file?"]),
         ("io", "output") => ("io.output(file?)", "Set/get output file", vec!["file?"]),
         ("io", "flush") => ("io.flush()", "Flush output", vec![]),
         ("io", "type") => ("io.type(obj)", "Check if file handle", vec!["obj"]),
-        
+
         // os library
         ("os", "clock") => ("os.clock()", "CPU time used", vec![]),
-        ("os", "date") => ("os.date(format?, time?)", "Format date/time", vec!["format?", "time?"]),
+        ("os", "date") => (
+            "os.date(format?, time?)",
+            "Format date/time",
+            vec!["format?", "time?"],
+        ),
         ("os", "difftime") => ("os.difftime(t2, t1)", "Time difference", vec!["t2", "t1"]),
         ("os", "execute") => ("os.execute(cmd?)", "Execute shell command", vec!["cmd?"]),
         ("os", "exit") => ("os.exit(code?)", "Exit program", vec!["code?"]),
-        ("os", "getenv") => ("os.getenv(varname)", "Get environment variable", vec!["varname"]),
+        ("os", "getenv") => (
+            "os.getenv(varname)",
+            "Get environment variable",
+            vec!["varname"],
+        ),
         ("os", "remove") => ("os.remove(filename)", "Delete file", vec!["filename"]),
         ("os", "rename") => ("os.rename(old, new)", "Rename file", vec!["old", "new"]),
         ("os", "time") => ("os.time(table?)", "Get time", vec!["table?"]),
         ("os", "tmpname") => ("os.tmpname()", "Temp filename", vec![]),
-        
+
         // coroutine library
         ("coroutine", "create") => ("coroutine.create(f)", "Create coroutine", vec!["f"]),
-        ("coroutine", "resume") => ("coroutine.resume(co, ...)", "Resume coroutine", vec!["co", "..."]),
+        ("coroutine", "resume") => (
+            "coroutine.resume(co, ...)",
+            "Resume coroutine",
+            vec!["co", "..."],
+        ),
         ("coroutine", "yield") => ("coroutine.yield(...)", "Yield from coroutine", vec!["..."]),
         ("coroutine", "status") => ("coroutine.status(co)", "Get status", vec!["co"]),
         ("coroutine", "wrap") => ("coroutine.wrap(f)", "Wrap as function", vec!["f"]),
         ("coroutine", "running") => ("coroutine.running()", "Get running coroutine", vec![]),
-        
+
         _ => return None,
     };
-    
+
     Some(SignatureInformation {
         label: label.to_string(),
         documentation: Some(Documentation::String(doc.to_string())),
@@ -2892,7 +3144,11 @@ fn compute_semantic_tokens(text: &str, model: &SemanticModel) -> Vec<SemanticTok
 
     for (line, col, len, token_type, modifiers) in raw_tokens {
         let delta_line = line - prev_line;
-        let delta_start = if delta_line == 0 { col - prev_char } else { col };
+        let delta_start = if delta_line == 0 {
+            col - prev_char
+        } else {
+            col
+        };
 
         tokens.push(SemanticToken {
             delta_line,
@@ -2950,7 +3206,13 @@ fn collect_semantic_tokens(
         "identifier" => {
             let name = &text[node.start_byte()..node.end_byte()];
             let (token_type, modifiers) = classify_identifier(node, name, model);
-            tokens.push((start.row as u32, start.column as u32, len, token_type, modifiers));
+            tokens.push((
+                start.row as u32,
+                start.column as u32,
+                len,
+                token_type,
+                modifiers,
+            ));
         }
 
         // Function names in declarations
@@ -2978,11 +3240,7 @@ fn collect_semantic_tokens(
     }
 }
 
-fn classify_identifier(
-    node: tree_sitter::Node,
-    name: &str,
-    model: &SemanticModel,
-) -> (u32, u32) {
+fn classify_identifier(node: tree_sitter::Node, name: &str, model: &SemanticModel) -> (u32, u32) {
     // Check parent context
     let parent = node.parent();
 
@@ -3027,9 +3285,9 @@ fn classify_identifier(
     if let Some(symbol) = model.symbol_table.resolve_symbol_global(name) {
         match symbol.kind {
             rover_parser::SymbolKind::Parameter => return (7, 0), // PARAMETER
-            rover_parser::SymbolKind::Function => return (3, 0), // FUNCTION
+            rover_parser::SymbolKind::Function => return (3, 0),  // FUNCTION
             rover_parser::SymbolKind::RoverServer | rover_parser::SymbolKind::RoverGuard => {
-                return (2, 0) // CLASS
+                return (2, 0); // CLASS
             }
             rover_parser::SymbolKind::ContextParam => return (6, 0), // VARIABLE
             _ => {}
@@ -3130,10 +3388,16 @@ fn compute_document_highlights(text: &str, position: Position) -> Vec<DocumentHi
             let end_col = col + identifier.len();
 
             // Check word boundaries
-            let before_ok =
-                col == 0 || !line.as_bytes().get(col - 1).map_or(false, |&b| is_ident_byte(b));
+            let before_ok = col == 0
+                || !line
+                    .as_bytes()
+                    .get(col - 1)
+                    .map_or(false, |&b| is_ident_byte(b));
             let after_ok = end_col >= line.len()
-                || !line.as_bytes().get(end_col).map_or(false, |&b| is_ident_byte(b));
+                || !line
+                    .as_bytes()
+                    .get(end_col)
+                    .map_or(false, |&b| is_ident_byte(b));
 
             if before_ok && after_ok {
                 // Determine if this is a write or read
@@ -3172,7 +3436,10 @@ fn is_write_position(text: &str, line: usize, col: usize) -> bool {
 
     // Skip the identifier
     let mut chars = after.chars().peekable();
-    while chars.peek().map_or(false, |c| c.is_alphanumeric() || *c == '_') {
+    while chars
+        .peek()
+        .map_or(false, |c| c.is_alphanumeric() || *c == '_')
+    {
         chars.next();
     }
 

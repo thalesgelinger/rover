@@ -1,9 +1,9 @@
-use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value};
-use std::sync::Arc;
-use serde_json;
 use bytes::Bytes;
-pub use rover_types::{ValidationError, ValidationErrors};
+use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value};
 use rover_server::direct_json_parser::json_bytes_ref_to_lua_direct;
+pub use rover_types::{ValidationError, ValidationErrors};
+use serde_json;
+use std::sync::Arc;
 
 /// Validate a single field value based on config passed from Lua
 pub fn validate_field(
@@ -364,8 +364,7 @@ impl BodyValue {
     }
 }
 
-
-    impl UserData for BodyValue {
+impl UserData for BodyValue {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("json", |lua, this, ()| {
             json_bytes_ref_to_lua_direct(lua, &this.bytes)

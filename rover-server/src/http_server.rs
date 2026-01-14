@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
 use anyhow::Result;
 use mlua::Lua;
+use std::net::SocketAddr;
 
 use crate::{Route, ServerConfig, event_loop::EventLoop};
 

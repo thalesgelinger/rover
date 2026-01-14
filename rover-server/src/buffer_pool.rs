@@ -56,11 +56,17 @@ impl BufferPool {
     #[inline]
     pub fn get_bytes_pairs(&mut self, expected_size: usize) -> Vec<(Bytes, Bytes)> {
         if expected_size <= 8 {
-            self.bytes_pairs_8.pop().unwrap_or_else(|| Vec::with_capacity(8))
+            self.bytes_pairs_8
+                .pop()
+                .unwrap_or_else(|| Vec::with_capacity(8))
         } else if expected_size <= 16 {
-            self.bytes_pairs_16.pop().unwrap_or_else(|| Vec::with_capacity(16))
+            self.bytes_pairs_16
+                .pop()
+                .unwrap_or_else(|| Vec::with_capacity(16))
         } else {
-            self.bytes_pairs_32.pop().unwrap_or_else(|| Vec::with_capacity(32))
+            self.bytes_pairs_32
+                .pop()
+                .unwrap_or_else(|| Vec::with_capacity(32))
         }
     }
 
@@ -82,7 +88,9 @@ impl BufferPool {
     /// Get a pooled response buffer
     #[inline]
     pub fn get_response_buf(&mut self) -> Vec<u8> {
-        self.response_bufs.pop().unwrap_or_else(|| Vec::with_capacity(512))
+        self.response_bufs
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(512))
     }
 
     /// Return a response buffer to the pool
@@ -98,7 +106,9 @@ impl BufferPool {
     /// Get a pooled JSON buffer
     #[inline]
     pub fn get_json_buf(&mut self) -> Vec<u8> {
-        self.json_bufs.pop().unwrap_or_else(|| Vec::with_capacity(256))
+        self.json_bufs
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(256))
     }
 
     /// Return a JSON buffer to the pool

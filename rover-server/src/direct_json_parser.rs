@@ -1,7 +1,7 @@
-use mlua::{Lua, Value};
-use serde::de::{self, DeserializeSeed, Deserializer, Visitor, SeqAccess, MapAccess};
-use std::fmt;
 use crate::Bytes;
+use mlua::{Lua, Value};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use std::fmt;
 
 struct LuaDeserializeSeed<'a> {
     lua: &'a Lua,
@@ -81,11 +81,14 @@ impl<'de, 'a> Visitor<'de> for LuaValueVisitor<'a> {
         A: SeqAccess<'de>,
     {
         let size_hint = seq.size_hint().unwrap_or(0);
-        let table = self.lua.create_table_with_capacity(size_hint, 0)
+        let table = self
+            .lua
+            .create_table_with_capacity(size_hint, 0)
             .map_err(|_| de::Error::custom("Lua table creation failed"))?;
 
         while let Some(value) = seq.next_element_seed(LuaDeserializeSeed { lua: self.lua })? {
-            table.raw_push(value)
+            table
+                .raw_push(value)
                 .map_err(|_| de::Error::custom("Lua table push failed"))?;
         }
 
@@ -97,12 +100,15 @@ impl<'de, 'a> Visitor<'de> for LuaValueVisitor<'a> {
         A: MapAccess<'de>,
     {
         let size_hint = map.size_hint().unwrap_or(0);
-        let table = self.lua.create_table_with_capacity(0, size_hint)
+        let table = self
+            .lua
+            .create_table_with_capacity(0, size_hint)
             .map_err(|_| de::Error::custom("Lua table creation failed"))?;
 
         while let Some(key) = map.next_key::<String>()? {
             let value = map.next_value_seed(LuaDeserializeSeed { lua: self.lua })?;
-            table.set(key.as_str(), value)
+            table
+                .set(key.as_str(), value)
                 .map_err(|_| de::Error::custom("Lua table set failed"))?;
         }
 

@@ -12,7 +12,7 @@ pub trait ToJson {
     }
 }
 
- impl ToJson for Table {
+impl ToJson for Table {
     fn to_json(&self, buf: &mut Vec<u8>) -> mlua::Result<()> {
         serialize_table(self, buf, 0)
     }
@@ -78,11 +78,7 @@ fn try_serialize_as_array(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlu
 }
 
 // Direct serialization - no Vec allocation, single pass through table
-fn serialize_object_direct(
-    table: &Table,
-    buf: &mut Vec<u8>,
-    depth: usize,
-) -> mlua::Result<()> {
+fn serialize_object_direct(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Result<()> {
     buf.push(b'{');
 
     let mut first = true;

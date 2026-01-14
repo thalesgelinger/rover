@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use ahash::AHasher;
 use anyhow::Result;
 use bytes::Bytes;
 use matchit::Router;
 use mlua::Function;
 use smallvec::SmallVec;
-use ahash::AHasher;
 
 use crate::{HttpMethod, Route};
 

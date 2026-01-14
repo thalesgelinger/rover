@@ -67,10 +67,7 @@ impl<C> RuleEngine<C> {
         let mut actives = Vec::new();
         for (idx, rule) in self.rules.iter().enumerate() {
             let mut captures = CaptureMap::default();
-            if rule
-                .selector
-                .matches(ctx, self, node, &mut captures)
-            {
+            if rule.selector.matches(ctx, self, node, &mut captures) {
                 if let Some(enter) = rule.enter {
                     enter(ctx, node, &captures);
                 }
@@ -171,14 +168,12 @@ impl Selector {
     }
 
     pub fn method(mut self, name: &'static str) -> Self {
-        self.filters
-            .push(SelectorFilter::Method(name));
+        self.filters.push(SelectorFilter::Method(name));
         self
     }
 
     pub fn callee(mut self, path: &'static str) -> Self {
-        self.filters
-            .push(SelectorFilter::Callee(path));
+        self.filters.push(SelectorFilter::Callee(path));
         self
     }
 
@@ -376,9 +371,7 @@ impl ApiSpecRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<&ApiSpec> {
-        self.index
-            .get(id)
-            .and_then(|idx| self.specs.get(*idx))
+        self.index.get(id).and_then(|idx| self.specs.get(*idx))
     }
 
     pub fn doc(&self, id: &str) -> Option<SpecDoc> {
@@ -448,11 +441,7 @@ impl From<&ApiSpec> for SpecDoc {
         SpecDoc {
             id: spec.id,
             doc: spec.doc,
-            members: spec
-                .members
-                .iter()
-                .map(SpecDocMember::from)
-                .collect(),
+            members: spec.members.iter().map(SpecDocMember::from).collect(),
         }
     }
 }

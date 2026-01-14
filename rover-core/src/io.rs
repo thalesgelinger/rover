@@ -1,7 +1,7 @@
 use mlua::prelude::*;
-use std::path::PathBuf;
 use std::fs::{File, OpenOptions as StdOpenOptions};
-use std::io::{BufReader, BufRead, Read, Write, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
 pub struct SyncFile {
     file: Option<File>,
@@ -15,59 +15,42 @@ impl SyncFile {
         let path_buf = PathBuf::from(&path);
 
         let file = match mode.as_str() {
-            "r" | "rb" => {
-                StdOpenOptions::new()
-                    .read(true)
-                    .open(&path_buf)
-                    .map_err(|e| LuaError::external(e))?
-            }
-            "w" | "wb" => {
-                StdOpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&path_buf)
-                    .map_err(|e| LuaError::external(e))?
-            }
-            "a" | "ab" => {
-                StdOpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .append(true)
-                    .open(&path_buf)
-                    .map_err(|e| LuaError::external(e))?
-            }
-            "r+" | "rb+" | "r+b" => {
-                StdOpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&path_buf)
-                    .map_err(|e| LuaError::external(e))?
-            }
-            "w+" | "wb+" | "w+b" => {
-                StdOpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&path_buf)
-                    .map_err(|e| LuaError::external(e))?
-            }
-            "a+" | "ab+" | "a+b" => {
-                StdOpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .append(true)
-                    .open(&path_buf)
-                    .map_err(|e| LuaError::external(e))?
-            }
-            _ => {
-                return Err(LuaError::RuntimeError(format!(
-                    "Invalid mode: {}",
-                    mode
-                )))
-            }
+            "r" | "rb" => StdOpenOptions::new()
+                .read(true)
+                .open(&path_buf)
+                .map_err(|e| LuaError::external(e))?,
+            "w" | "wb" => StdOpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path_buf)
+                .map_err(|e| LuaError::external(e))?,
+            "a" | "ab" => StdOpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(true)
+                .open(&path_buf)
+                .map_err(|e| LuaError::external(e))?,
+            "r+" | "rb+" | "r+b" => StdOpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path_buf)
+                .map_err(|e| LuaError::external(e))?,
+            "w+" | "wb+" | "w+b" => StdOpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path_buf)
+                .map_err(|e| LuaError::external(e))?,
+            "a+" | "ab+" | "a+b" => StdOpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .append(true)
+                .open(&path_buf)
+                .map_err(|e| LuaError::external(e))?,
+            _ => return Err(LuaError::RuntimeError(format!("Invalid mode: {}", mode))),
         };
 
         Ok(SyncFile {
@@ -91,11 +74,7 @@ impl LuaUserData for SyncFile {
                 Some(LuaValue::Integer(n)) => n.to_string(),
                 Some(LuaValue::Number(n)) => (n as i64).to_string(),
                 None => "*l".to_string(),
-                _ => {
-                    return Err(LuaError::RuntimeError(
-                        "Invalid read format".to_string(),
-                    ))
-                }
+                _ => return Err(LuaError::RuntimeError("Invalid read format".to_string())),
             };
 
             match format_str.as_str() {
@@ -144,9 +123,7 @@ impl LuaUserData for SyncFile {
                         .map_err(|_| LuaError::RuntimeError("Invalid byte count".to_string()))?;
 
                     let mut buffer = vec![0u8; n];
-                    let bytes_read = file
-                        .read(&mut buffer)
-                        .map_err(|e| LuaError::external(e))?;
+                    let bytes_read = file.read(&mut buffer).map_err(|e| LuaError::external(e))?;
 
                     buffer.truncate(bytes_read);
                     String::from_utf8(buffer)
@@ -168,7 +145,7 @@ impl LuaUserData for SyncFile {
                 _ => {
                     return Err(LuaError::RuntimeError(
                         "Can only write strings or numbers".to_string(),
-                    ))
+                    ));
                 }
             };
 
@@ -197,8 +174,7 @@ impl LuaUserData for SyncFile {
 
         methods.add_method("lines", |lua, this, ()| {
             let path = this.path.clone();
-            let file = File::open(&path)
-                .map_err(|e| LuaError::external(e))?;
+            let file = File::open(&path).map_err(|e| LuaError::external(e))?;
 
             let reader = BufReader::new(file);
             let results = lua.create_table()?;
@@ -225,23 +201,20 @@ impl LuaUserData for SyncFile {
                 let offset = offset.unwrap_or(0);
 
                 let pos = match whence.as_str() {
-                    "set" => {
-                        file.seek(SeekFrom::Start(offset as u64))
-                            .map_err(|e| LuaError::external(e))?
-                    }
-                    "cur" => {
-                        file.seek(SeekFrom::Current(offset))
-                            .map_err(|e| LuaError::external(e))?
-                    }
-                    "end" => {
-                        file.seek(SeekFrom::End(offset))
-                            .map_err(|e| LuaError::external(e))?
-                    }
+                    "set" => file
+                        .seek(SeekFrom::Start(offset as u64))
+                        .map_err(|e| LuaError::external(e))?,
+                    "cur" => file
+                        .seek(SeekFrom::Current(offset))
+                        .map_err(|e| LuaError::external(e))?,
+                    "end" => file
+                        .seek(SeekFrom::End(offset))
+                        .map_err(|e| LuaError::external(e))?,
                     _ => {
                         return Err(LuaError::RuntimeError(format!(
                             "Invalid whence: {}",
                             whence
-                        )))
+                        )));
                     }
                 };
 
@@ -265,8 +238,7 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
         "read",
         lua.create_function(|_lua, _format: Option<String>| {
             Err::<(), _>(LuaError::RuntimeError(
-                "io.read is not supported. Use io.open(path):read() instead"
-                    .to_string(),
+                "io.read is not supported. Use io.open(path):read() instead".to_string(),
             ))
         })?,
     )?;
@@ -275,8 +247,7 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
         "write",
         lua.create_function(|_lua, _data: LuaValue| {
             Err::<(), _>(LuaError::RuntimeError(
-                "io.write is not supported. Use io.open(path):write() instead"
-                    .to_string(),
+                "io.write is not supported. Use io.open(path):write() instead".to_string(),
             ))
         })?,
     )?;
@@ -295,8 +266,7 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
     io.set(
         "lines",
         lua.create_function(|lua, filename: String| {
-            let file = File::open(&filename)
-                .map_err(|e| LuaError::external(e))?;
+            let file = File::open(&filename).map_err(|e| LuaError::external(e))?;
 
             let reader = BufReader::new(file);
             let results = lua.create_table()?;

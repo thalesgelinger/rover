@@ -2,7 +2,8 @@ use std::sync::OnceLock;
 
 use crate::analyzer::Analyzer;
 use crate::rule_runtime::{
-    ApiMember, ApiParam, ApiSpec, MemberKind, Rule, RuleEngine, RuleEngineBuilder, Selector, SpecDoc, SpecKind,
+    ApiMember, ApiParam, ApiSpec, MemberKind, Rule, RuleEngine, RuleEngineBuilder, Selector,
+    SpecDoc, SpecKind,
 };
 
 macro_rules! selector {
@@ -157,33 +158,209 @@ pub fn lookup_spec(id: &str) -> Option<SpecDoc> {
 fn build_specs() -> Vec<ApiSpec> {
     vec![
         // Lua 5.1 Global Functions
-        api_function!("print", "Print values to stdout.", [api_param!("...", "any", "Values to print")], None),
-        api_function!("assert", "Assert condition is true.", [api_param!("condition", "boolean", "Condition"), api_param!("message", "string", "Error message")], None),
-        api_function!("error", "Raise error.", [api_param!("message", "string", "Error message"), api_param!("level", "number", "Error level")], None),
-        api_function!("ipairs", "Iterator for arrays.", [api_param!("t", "table", "Table to iterate")], Some("function")),
-        api_function!("pairs", "Iterator for tables.", [api_param!("t", "table", "Table to iterate")], Some("function")),
-        api_function!("next", "Next key/value in table.", [api_param!("t", "table", "Table"), api_param!("index", "any", "Current index")], Some("any")),
-        api_function!("pcall", "Protected call.", [api_param!("f", "function", "Function to call"), api_param!("...", "any", "Arguments")], Some("boolean")),
-        api_function!("xpcall", "Extended protected call.", [api_param!("f", "function", "Function"), api_param!("err", "function", "Error handler")], Some("boolean")),
-        api_function!("select", "Select arguments.", [api_param!("index", "any", "Index"), api_param!("...", "any", "Arguments")], Some("any")),
-        api_function!("tonumber", "Convert to number.", [api_param!("e", "any", "Value"), api_param!("base", "number", "Base")], Some("number")),
-        api_function!("tostring", "Convert to string.", [api_param!("v", "any", "Value")], Some("string")),
-        api_function!("type", "Get type of value.", [api_param!("v", "any", "Value")], Some("string")),
-        api_function!("getmetatable", "Get metatable.", [api_param!("object", "any", "Object")], Some("table")),
-        api_function!("setmetatable", "Set metatable.", [api_param!("table", "table", "Table"), api_param!("metatable", "table", "Metatable")], Some("table")),
-        api_function!("rawget", "Raw table get.", [api_param!("table", "table", "Table"), api_param!("index", "any", "Index")], Some("any")),
-        api_function!("rawset", "Raw table set.", [api_param!("table", "table", "Table"), api_param!("index", "any", "Index"), api_param!("value", "any", "Value")], Some("table")),
-        api_function!("rawequal", "Raw equality.", [api_param!("v1", "any", "Value 1"), api_param!("v2", "any", "Value 2")], Some("boolean")),
-        api_function!("require", "Load module.", [api_param!("modname", "string", "Module name")], Some("any")),
-        api_function!("load", "Load chunk.", [api_param!("chunk", "string", "Chunk"), api_param!("chunkname", "string", "Chunk name")], Some("function")),
-        api_function!("loadfile", "Load file as chunk.", [api_param!("filename", "string", "File name")], Some("function")),
-        api_function!("loadstring", "Load string as chunk.", [api_param!("string", "string", "String")], Some("function")),
-        api_function!("dofile", "Execute file.", [api_param!("filename", "string", "File name")], Some("any")),
-        api_function!("collectgarbage", "Garbage collector control.", [api_param!("opt", "string", "Option"), api_param!("arg", "any", "Argument")], Some("any")),
-        api_function!("getfenv", "Get function environment.", [api_param!("f", "any", "Function or level")], Some("table")),
-        api_function!("setfenv", "Set function environment.", [api_param!("f", "any", "Function or level"), api_param!("table", "table", "Environment")], Some("function")),
-        api_function!("unpack", "Unpack table to values.", [api_param!("list", "table", "List"), api_param!("i", "number", "Start"), api_param!("j", "number", "End")], Some("any")),
-        
+        api_function!(
+            "print",
+            "Print values to stdout.",
+            [api_param!("...", "any", "Values to print")],
+            None
+        ),
+        api_function!(
+            "assert",
+            "Assert condition is true.",
+            [
+                api_param!("condition", "boolean", "Condition"),
+                api_param!("message", "string", "Error message")
+            ],
+            None
+        ),
+        api_function!(
+            "error",
+            "Raise error.",
+            [
+                api_param!("message", "string", "Error message"),
+                api_param!("level", "number", "Error level")
+            ],
+            None
+        ),
+        api_function!(
+            "ipairs",
+            "Iterator for arrays.",
+            [api_param!("t", "table", "Table to iterate")],
+            Some("function")
+        ),
+        api_function!(
+            "pairs",
+            "Iterator for tables.",
+            [api_param!("t", "table", "Table to iterate")],
+            Some("function")
+        ),
+        api_function!(
+            "next",
+            "Next key/value in table.",
+            [
+                api_param!("t", "table", "Table"),
+                api_param!("index", "any", "Current index")
+            ],
+            Some("any")
+        ),
+        api_function!(
+            "pcall",
+            "Protected call.",
+            [
+                api_param!("f", "function", "Function to call"),
+                api_param!("...", "any", "Arguments")
+            ],
+            Some("boolean")
+        ),
+        api_function!(
+            "xpcall",
+            "Extended protected call.",
+            [
+                api_param!("f", "function", "Function"),
+                api_param!("err", "function", "Error handler")
+            ],
+            Some("boolean")
+        ),
+        api_function!(
+            "select",
+            "Select arguments.",
+            [
+                api_param!("index", "any", "Index"),
+                api_param!("...", "any", "Arguments")
+            ],
+            Some("any")
+        ),
+        api_function!(
+            "tonumber",
+            "Convert to number.",
+            [
+                api_param!("e", "any", "Value"),
+                api_param!("base", "number", "Base")
+            ],
+            Some("number")
+        ),
+        api_function!(
+            "tostring",
+            "Convert to string.",
+            [api_param!("v", "any", "Value")],
+            Some("string")
+        ),
+        api_function!(
+            "type",
+            "Get type of value.",
+            [api_param!("v", "any", "Value")],
+            Some("string")
+        ),
+        api_function!(
+            "getmetatable",
+            "Get metatable.",
+            [api_param!("object", "any", "Object")],
+            Some("table")
+        ),
+        api_function!(
+            "setmetatable",
+            "Set metatable.",
+            [
+                api_param!("table", "table", "Table"),
+                api_param!("metatable", "table", "Metatable")
+            ],
+            Some("table")
+        ),
+        api_function!(
+            "rawget",
+            "Raw table get.",
+            [
+                api_param!("table", "table", "Table"),
+                api_param!("index", "any", "Index")
+            ],
+            Some("any")
+        ),
+        api_function!(
+            "rawset",
+            "Raw table set.",
+            [
+                api_param!("table", "table", "Table"),
+                api_param!("index", "any", "Index"),
+                api_param!("value", "any", "Value")
+            ],
+            Some("table")
+        ),
+        api_function!(
+            "rawequal",
+            "Raw equality.",
+            [
+                api_param!("v1", "any", "Value 1"),
+                api_param!("v2", "any", "Value 2")
+            ],
+            Some("boolean")
+        ),
+        api_function!(
+            "require",
+            "Load module.",
+            [api_param!("modname", "string", "Module name")],
+            Some("any")
+        ),
+        api_function!(
+            "load",
+            "Load chunk.",
+            [
+                api_param!("chunk", "string", "Chunk"),
+                api_param!("chunkname", "string", "Chunk name")
+            ],
+            Some("function")
+        ),
+        api_function!(
+            "loadfile",
+            "Load file as chunk.",
+            [api_param!("filename", "string", "File name")],
+            Some("function")
+        ),
+        api_function!(
+            "loadstring",
+            "Load string as chunk.",
+            [api_param!("string", "string", "String")],
+            Some("function")
+        ),
+        api_function!(
+            "dofile",
+            "Execute file.",
+            [api_param!("filename", "string", "File name")],
+            Some("any")
+        ),
+        api_function!(
+            "collectgarbage",
+            "Garbage collector control.",
+            [
+                api_param!("opt", "string", "Option"),
+                api_param!("arg", "any", "Argument")
+            ],
+            Some("any")
+        ),
+        api_function!(
+            "getfenv",
+            "Get function environment.",
+            [api_param!("f", "any", "Function or level")],
+            Some("table")
+        ),
+        api_function!(
+            "setfenv",
+            "Set function environment.",
+            [
+                api_param!("f", "any", "Function or level"),
+                api_param!("table", "table", "Environment")
+            ],
+            Some("function")
+        ),
+        api_function!(
+            "unpack",
+            "Unpack table to values.",
+            [
+                api_param!("list", "table", "List"),
+                api_param!("i", "number", "Start"),
+                api_param!("j", "number", "End")
+            ],
+            Some("any")
+        ),
         api_object!(
             "rover",
             "Global Rover namespace.",
@@ -193,9 +370,13 @@ fn build_specs() -> Vec<ApiSpec> {
             ]
         ),
         api_function!(
-            "rover_server_constructor", 
-            "Create a Rover server instance. Pass config table with host, port, log_level.", 
-            [api_param!("config", "ServerConfig", "Server configuration table")], 
+            "rover_server_constructor",
+            "Create a Rover server instance. Pass config table with host, port, log_level.",
+            [api_param!(
+                "config",
+                "ServerConfig",
+                "Server configuration table"
+            )],
             Some("RoverServer")
         ),
         api_object!(
@@ -208,8 +389,8 @@ fn build_specs() -> Vec<ApiSpec> {
             ]
         ),
         api_object!(
-            "rover_server", 
-            "Rover server instance with route definitions and response builders.", 
+            "rover_server",
+            "Rover server instance with route definitions and response builders.",
             [
                 api_member!("json" => "rover_response_json", "Return JSON response.", method),
                 api_member!("text" => "rover_response_text", "Return text response.", method),
@@ -231,10 +412,30 @@ fn build_specs() -> Vec<ApiSpec> {
                 api_member!("object" => "rover_guard_object", "Object guard.", method)
             ]
         ),
-        api_function!("rover_guard_string", "Create string guard.", [], Some("Guard<String>")),
-        api_function!("rover_guard_integer", "Create integer guard.", [], Some("Guard<Integer>")),
-        api_function!("rover_guard_number", "Create number guard.", [], Some("Guard<Number>")),
-        api_function!("rover_guard_boolean", "Create boolean guard.", [], Some("Guard<Boolean>")),
+        api_function!(
+            "rover_guard_string",
+            "Create string guard.",
+            [],
+            Some("Guard<String>")
+        ),
+        api_function!(
+            "rover_guard_integer",
+            "Create integer guard.",
+            [],
+            Some("Guard<Integer>")
+        ),
+        api_function!(
+            "rover_guard_number",
+            "Create number guard.",
+            [],
+            Some("Guard<Number>")
+        ),
+        api_function!(
+            "rover_guard_boolean",
+            "Create boolean guard.",
+            [],
+            Some("Guard<Boolean>")
+        ),
         api_function!(
             "rover_guard_array",
             "Create array guard.",
@@ -247,12 +448,42 @@ fn build_specs() -> Vec<ApiSpec> {
             [api_param!("shape", "GuardShape", "Object shape")],
             Some("Guard<Object>")
         ),
-        api_function!("rover_response_json", "Build JSON response. Can chain :status(code, data).", [], Some("RoverResponse")),
-        api_function!("rover_response_text", "Build text response. Can chain :status(code, text).", [], Some("RoverResponse")),
-        api_function!("rover_response_html", "Build HTML response. Can chain :status(code, html).", [], Some("RoverResponse")),
-        api_function!("rover_response_error", "Build error response with status code and message.", [], Some("RoverResponse")),
-        api_function!("rover_response_redirect", "Build redirect response. Can chain :permanent() or :status().", [], Some("RoverResponse")),
-        api_function!("rover_response_no_content", "Build 204 No Content response.", [], Some("RoverResponse")),
+        api_function!(
+            "rover_response_json",
+            "Build JSON response. Can chain :status(code, data).",
+            [],
+            Some("RoverResponse")
+        ),
+        api_function!(
+            "rover_response_text",
+            "Build text response. Can chain :status(code, text).",
+            [],
+            Some("RoverResponse")
+        ),
+        api_function!(
+            "rover_response_html",
+            "Build HTML response. Can chain :status(code, html).",
+            [],
+            Some("RoverResponse")
+        ),
+        api_function!(
+            "rover_response_error",
+            "Build error response with status code and message.",
+            [],
+            Some("RoverResponse")
+        ),
+        api_function!(
+            "rover_response_redirect",
+            "Build redirect response. Can chain :permanent() or :status().",
+            [],
+            Some("RoverResponse")
+        ),
+        api_function!(
+            "rover_response_no_content",
+            "Build 204 No Content response.",
+            [],
+            Some("RoverResponse")
+        ),
         api_object!(
             "ctx",
             "Handler context parameter.",

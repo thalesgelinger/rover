@@ -1,6 +1,6 @@
-use mlua::{UserData, UserDataMethods, MetaMethod};
-use std::fmt;
+use mlua::{MetaMethod, UserData, UserDataMethods};
 use serde_json::json;
+use std::fmt;
 
 mod task;
 pub use task::*;
@@ -42,13 +42,17 @@ impl ValidationErrors {
 
     /// Convert ValidationErrors directly to JSON string (no Lua, no string parsing)
     pub fn to_json_string(&self) -> String {
-        let errors: Vec<_> = self.errors.iter().map(|err| {
-            json!({
-                "field": err.path,
-                "message": err.message,
-                "type": err.error_type
+        let errors: Vec<_> = self
+            .errors
+            .iter()
+            .map(|err| {
+                json!({
+                    "field": err.path,
+                    "message": err.message,
+                    "type": err.error_type
+                })
             })
-        }).collect();
+            .collect();
         json!({ "errors": errors }).to_string()
     }
 }
@@ -74,9 +78,7 @@ impl std::error::Error for ValidationErrors {}
 
 impl UserData for ValidationErrors {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
-            Ok(format!("{}", this))
-        });
+        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| Ok(format!("{}", this)));
 
         // Return structured error data for API responses
         methods.add_method("to_json", |lua, this, ()| {

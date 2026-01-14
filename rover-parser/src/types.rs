@@ -105,11 +105,8 @@ impl LuaType {
     pub fn exclude(&self, excluded: &LuaType) -> LuaType {
         match self {
             LuaType::Union(types) => {
-                let remaining: Vec<LuaType> = types
-                    .iter()
-                    .filter(|t| *t != excluded)
-                    .cloned()
-                    .collect();
+                let remaining: Vec<LuaType> =
+                    types.iter().filter(|t| *t != excluded).cloned().collect();
                 LuaType::union(remaining)
             }
             t if t == excluded => LuaType::Never,
@@ -520,7 +517,13 @@ pub struct TypeError {
 }
 
 impl TypeError {
-    pub fn new(message: String, expected: LuaType, actual: LuaType, line: usize, column: usize) -> Self {
+    pub fn new(
+        message: String,
+        expected: LuaType,
+        actual: LuaType,
+        line: usize,
+        column: usize,
+    ) -> Self {
         Self {
             message,
             expected,

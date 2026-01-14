@@ -5,7 +5,7 @@ use tree_sitter::Node;
 
 use crate::rule_runtime::{MemberKind, RuleContext, RuleEngine};
 use crate::rules;
-use crate::symbol::{Symbol, SymbolKind, ScopeType, SymbolTable};
+use crate::symbol::{ScopeType, Symbol, SymbolKind, SymbolTable};
 use crate::types::LuaType;
 
 #[derive(Debug, Clone)]
@@ -361,7 +361,7 @@ impl Analyzer {
         if self.is_function_declaration_context(node) {
             return;
         }
-        
+
         // Check for dot_index_expression (e.g., rover.something)
         if node.kind() == "dot_index_expression" {
             let access_info = self.extract_dot_access(node);
@@ -377,7 +377,7 @@ impl Analyzer {
             }
         }
     }
-    
+
     fn is_function_declaration_context(&self, node: Node) -> bool {
         // Check if we're inside a function_declaration node
         let mut current = Some(node);
@@ -394,7 +394,7 @@ impl Analyzer {
         }
         false
     }
-    
+
     fn assignment_has_function_value(&self, assignment: Node) -> bool {
         let mut cursor = assignment.walk();
         for child in assignment.children(&mut cursor) {
@@ -409,7 +409,7 @@ impl Analyzer {
         }
         false
     }
-    
+
     pub fn track_function_assignment(&mut self, node: Node) {
         // Called from rule when we detect function_declaration
         // Extract the dotted path (e.g., "api.users.get")
@@ -418,11 +418,11 @@ impl Analyzer {
             if child.kind() == "dot_index_expression" {
                 let full_path = self.extract_dotted_name(child);
                 let parts: Vec<&str> = full_path.split('.').collect();
-                
+
                 if parts.len() >= 2 {
                     let base = parts[0].to_string();
                     let member_path = parts[1..].join(".");
-                    
+
                     self.model
                         .dynamic_members
                         .entry(base)
@@ -453,7 +453,7 @@ impl Analyzer {
 
         let base_n = base_node?;
         let member_n = member_node?;
-        
+
         let base = self.source[base_n.start_byte()..base_n.end_byte()].to_string();
         let member = self.source[member_n.start_byte()..member_n.end_byte()].to_string();
         let range = SourceRange {
@@ -466,7 +466,7 @@ impl Analyzer {
                 column: member_n.end_position().column,
             },
         };
-        
+
         Some((base, member, range))
     }
 
@@ -489,7 +489,7 @@ impl Analyzer {
 
         let base_n = base_node?;
         let method_n = method_node?;
-        
+
         let base = self.source[base_n.start_byte()..base_n.end_byte()].to_string();
         let method = self.source[method_n.start_byte()..method_n.end_byte()].to_string();
         let range = SourceRange {
@@ -502,7 +502,7 @@ impl Analyzer {
                 column: method_n.end_position().column,
             },
         };
-        
+
         Some((base, method, range))
     }
 
@@ -511,7 +511,7 @@ impl Analyzer {
         if let Some(spec) = self.model.symbol_specs.get(base) {
             // Check if member exists in spec
             let member_exists = spec.members.iter().any(|m| m.name == member);
-            
+
             if !member_exists {
                 let valid_members: Vec<_> = spec.members.iter().map(|m| m.name.as_str()).collect();
                 let suggestion = if !valid_members.is_empty() {
@@ -519,7 +519,7 @@ impl Analyzer {
                 } else {
                     String::new()
                 };
-                
+
                 self.model.errors.push(ParsingError {
                     message: format!(
                         "Unknown member '{}' on '{}' ({}). {}",
@@ -614,7 +614,8 @@ impl Analyzer {
 
         let handler_id = self.function_counter;
         self.function_counter += 1;
-        self.function_symbol_table.insert(func_name.clone(), handler_id);
+        self.function_symbol_table
+            .insert(func_name.clone(), handler_id);
         self.current_function_name = Some(func_name.clone());
 
         // Extract path params from path
@@ -2007,12 +2008,7 @@ impl Analyzer {
     pub fn push_scope_with_range(&mut self, scope_type: ScopeType, node: Node) {
         let start = node.start_position();
         let end = node.end_position();
-        let range = crate::symbol::SourceRange::new(
-            start.row,
-            start.column,
-            end.row,
-            end.column,
-        );
+        let range = crate::symbol::SourceRange::new(start.row, start.column, end.row, end.column);
         self.symbol_table.push_scope_with_range(scope_type, range);
     }
 
@@ -2060,7 +2056,7 @@ impl Analyzer {
             }
         }
     }
-    
+
     /// Register the function name in the parent scope (for go-to-definition and hover)
     fn register_function_name(&mut self, node: Node, parent_scope_id: usize) {
         let mut cursor = node.walk();
@@ -2103,7 +2099,8 @@ impl Analyzer {
                 let mut var_cursor = child.walk();
                 for var_node in child.children(&mut var_cursor) {
                     if var_node.kind() == "identifier" {
-                        let name = self.source[var_node.start_byte()..var_node.end_byte()].to_string();
+                        let name =
+                            self.source[var_node.start_byte()..var_node.end_byte()].to_string();
                         self.register_variable(&name, SymbolKind::Variable, var_node);
                     }
                 }
@@ -2121,7 +2118,8 @@ impl Analyzer {
                         let mut var_cursor = assign_child.walk();
                         for var_node in assign_child.children(&mut var_cursor) {
                             if var_node.kind() == "identifier" {
-                                let name = self.source[var_node.start_byte()..var_node.end_byte()].to_string();
+                                let name = self.source[var_node.start_byte()..var_node.end_byte()]
+                                    .to_string();
                                 self.register_variable(&name, SymbolKind::Variable, var_node);
                             }
                         }
@@ -2146,8 +2144,9 @@ impl Analyzer {
         let name = self.source[node.start_byte()..node.end_byte()].to_string();
         let line = node.start_position().row;
         let column = node.start_position().column;
-        
-        self.symbol_table.mark_symbol_used_at_position(&name, line, column);
+
+        self.symbol_table
+            .mark_symbol_used_at_position(&name, line, column);
     }
 
     /// Check if the identifier node is in a declaration context (LHS of assignment, parameter, etc.)
@@ -2164,7 +2163,7 @@ impl Analyzer {
             "variable_list" => true,
             // Name list in local declarations
             "name_list" => true,
-            // Loop variable declarations  
+            // Loop variable declarations
             "loop_expression" | "in_clause" => true,
             // Function name in function declaration
             "function_declaration" => {
@@ -2203,8 +2202,7 @@ impl RuleContext for Analyzer {
     }
 
     fn method_name(&self, node: Node) -> Option<String> {
-        self.get_method_call_info(node)
-            .map(|(_, _, method)| method)
+        self.get_method_call_info(node).map(|(_, _, method)| method)
     }
 
     fn callee_path(&self, node: Node) -> Option<String> {

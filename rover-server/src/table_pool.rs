@@ -21,16 +21,16 @@ impl LuaTablePool {
 
     pub fn get(&self, lua: &Lua, narr: usize, nrec: usize) -> Table {
         let mut available = self.available.borrow_mut();
-        
+
         if let Some(table) = available.pop() {
             *self.total_reused.borrow_mut() += 1;
-            
+
             let _ = table.clear();
-            
+
             table
         } else {
             *self.total_created.borrow_mut() += 1;
-            
+
             lua.create_table_with_capacity(narr, nrec)
                 .expect("Failed to create Lua table")
         }
@@ -38,7 +38,7 @@ impl LuaTablePool {
 
     pub fn put(&self, table: Table) {
         let mut available = self.available.borrow_mut();
-        
+
         if available.len() < self.capacity {
             available.push(table);
         }

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
-use rover_parser::{analyze_with_options, AnalyzeOptions, ParsingError, SemanticModel};
+use rover_parser::{AnalyzeOptions, ParsingError, SemanticModel, analyze_with_options};
 use std::fs;
 use std::path::PathBuf;
 
@@ -21,7 +21,12 @@ pub fn run_check(options: CheckOptions) -> Result<()> {
         .with_context(|| format!("Failed to read file: {}", options.file.display()))?;
 
     // Analyze the code with type inference enabled
-    let model = analyze_with_options(&code, AnalyzeOptions { type_inference: true });
+    let model = analyze_with_options(
+        &code,
+        AnalyzeOptions {
+            type_inference: true,
+        },
+    );
 
     // Display results
     match options.format {
@@ -44,7 +49,12 @@ pub fn pre_run_check(file: &PathBuf) -> Result<bool> {
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
     // Analyze the code with type inference enabled
-    let model = analyze_with_options(&code, AnalyzeOptions { type_inference: true });
+    let model = analyze_with_options(
+        &code,
+        AnalyzeOptions {
+            type_inference: true,
+        },
+    );
 
     let file_display = file.display().to_string();
 
@@ -87,7 +97,12 @@ fn display_error_compact(error: &ParsingError, file: &str) {
             error.message.white()
         );
     } else {
-        println!("  {} {} - {}", "✗".red(), file.bright_white(), error.message.white());
+        println!(
+            "  {} {} - {}",
+            "✗".red(),
+            file.bright_white(),
+            error.message.white()
+        );
     }
 
     // Add suggestion if available
@@ -270,12 +285,7 @@ fn print_model_summary(model: &SemanticModel) {
         entries.sort_by(|a, b| a.0.cmp(b.0));
         let limit = 8usize;
         for (name, spec) in entries.iter().take(limit) {
-            let doc_line = spec
-                .doc
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim();
+            let doc_line = spec.doc.lines().next().unwrap_or("").trim();
             let detail = if doc_line.is_empty() {
                 "".to_string()
             } else {
