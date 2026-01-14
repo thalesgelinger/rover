@@ -5,6 +5,8 @@ use tree_sitter::Node;
 
 use crate::rule_runtime::{MemberKind, RuleContext, RuleEngine};
 use crate::rules;
+use crate::symbol::{Symbol, SymbolKind, ScopeType, SymbolTable};
+use crate::types::LuaType;
 
 #[derive(Debug, Clone)]
 pub struct SemanticModel {
@@ -13,6 +15,12 @@ pub struct SemanticModel {
     pub functions: Vec<FunctionMetadata>,
     pub symbol_specs: HashMap<String, SymbolSpecMetadata>,
     pub dynamic_members: HashMap<String, Vec<String>>, // table_name -> [member_names]
+    pub symbol_table: SymbolTable,
+    /// Type errors from type inference
+    pub type_errors: Vec<crate::types::TypeError>,
+    /// AST tree for advanced language features (optional for backward compatibility)
+    #[allow(dead_code)]
+    pub tree: Option<tree_sitter::Tree>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,7 +184,8 @@ pub struct GuardBinding {
 
 pub struct Analyzer {
     pub model: SemanticModel,
-    pub symbol_table: HashMap<String, FunctionId>,
+    pub symbol_table: SymbolTable,
+    pub function_symbol_table: HashMap<String, FunctionId>,
     pub function_counter: FunctionId,
     pub app_var_name: Option<String>,
     pub current_function_name: Option<String>,
@@ -196,8 +205,12 @@ impl Analyzer {
                 functions: Vec::new(),
                 symbol_specs: HashMap::new(),
                 dynamic_members: HashMap::new(),
+                symbol_table: SymbolTable::new(),
+                type_errors: Vec::new(),
+                tree: None,
             },
-            symbol_table: HashMap::new(),
+            symbol_table: SymbolTable::new(),
+            function_symbol_table: HashMap::new(),
             function_counter: 0,
             app_var_name: None,
             current_function_name: None,
@@ -242,6 +255,45 @@ impl Analyzer {
     }
 
     pub fn walk(&mut self, node: Node) {
+        // Track scopes with range information
+        let pushed_scope = match node.kind() {
+            "chunk" => {
+                self.push_scope_with_range(ScopeType::File, node);
+                true
+            }
+            "function_declaration" | "function_definition" => {
+                // Capture parent scope ID before pushing function scope
+                let parent_scope_id = self.symbol_table.get_current_scope().map(|s| s.id);
+                self.push_scope_with_range(ScopeType::Function, node);
+                self.register_function_params(node);
+                // Register function name in the parent scope
+                if let Some(parent_id) = parent_scope_id {
+                    self.register_function_name(node, parent_id);
+                }
+                true
+            }
+            "do_statement" | "while_statement" | "if_statement" => {
+                self.push_scope_with_range(ScopeType::Block, node);
+                true
+            }
+            "for_statement" | "repeat_statement" => {
+                self.push_scope_with_range(ScopeType::Repeat, node);
+                self.register_loop_variables(node);
+                true
+            }
+            _ => false,
+        };
+
+        // Register local variables
+        if node.kind() == "variable_declaration" {
+            self.register_local_variables(node);
+        }
+
+        // Track variable usage (reads)
+        if node.kind() == "identifier" {
+            self.track_identifier_usage(node);
+        }
+
         let matches = Self::rule_engine().apply(self, node);
 
         let mut cursor = node.walk();
@@ -250,6 +302,11 @@ impl Analyzer {
         }
 
         Self::rule_engine().finish(self, node, matches);
+
+        // Pop scope
+        if pushed_scope {
+            self.pop_scope();
+        }
     }
 
     pub fn handle_rover_server_assignment(&mut self, node: Node) {
@@ -557,7 +614,7 @@ impl Analyzer {
 
         let handler_id = self.function_counter;
         self.function_counter += 1;
-        self.symbol_table.insert(func_name.clone(), handler_id);
+        self.function_symbol_table.insert(func_name.clone(), handler_id);
         self.current_function_name = Some(func_name.clone());
 
         // Extract path params from path
@@ -919,7 +976,7 @@ impl Analyzer {
             if parent.kind() == "dot_index_expression"
                 && Self::is_first_named_child(parent, current)
             {
-                return self.extract_field_name(parent);
+                return self.extract_field_name_from_dot(parent);
             } else if parent.kind() == "bracket_index_expression"
                 && Self::is_first_named_child(parent, current)
             {
@@ -942,15 +999,21 @@ impl Analyzer {
         }
     }
 
-    fn extract_field_name(&mut self, node: Node) -> Option<String> {
-        // Extract field name from dot_index_expression
+    fn extract_field_name_from_dot(&self, node: Node) -> Option<String> {
         let mut cursor = node.walk();
+        let mut member_node: Option<Node> = None;
+
         for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                return Some(self.source[child.start_byte()..child.end_byte()].to_string());
+            match child.kind() {
+                "identifier" | "field" => {
+                    member_node = Some(child);
+                }
+                _ => {}
             }
         }
-        None
+
+        let member_n = member_node?;
+        Some(self.source[member_n.start_byte()..member_n.end_byte()].to_string())
     }
 
     fn extract_bracket_field_name(&mut self, node: Node) -> Option<String> {
@@ -1935,6 +1998,202 @@ impl Analyzer {
 
     fn nodes_equal(a: Node, b: Node) -> bool {
         a.start_byte() == b.start_byte() && a.end_byte() == b.end_byte()
+    }
+
+    pub fn push_scope(&mut self, scope_type: ScopeType) {
+        self.symbol_table.push_scope(scope_type);
+    }
+
+    pub fn push_scope_with_range(&mut self, scope_type: ScopeType, node: Node) {
+        let start = node.start_position();
+        let end = node.end_position();
+        let range = crate::symbol::SourceRange::new(
+            start.row,
+            start.column,
+            end.row,
+            end.column,
+        );
+        self.symbol_table.push_scope_with_range(scope_type, range);
+    }
+
+    pub fn pop_scope(&mut self) {
+        self.symbol_table.pop_scope();
+    }
+
+    pub fn register_variable(&mut self, name: &str, kind: SymbolKind, node: Node) {
+        let range = SourceRange::from_node(node);
+        let symbol = Symbol {
+            name: name.to_string(),
+            kind,
+            range: crate::symbol::SourceRange {
+                start: crate::symbol::SourcePosition {
+                    line: range.start.line,
+                    column: range.start.column,
+                },
+                end: crate::symbol::SourcePosition {
+                    line: range.end.line,
+                    column: range.end.column,
+                },
+            },
+            type_annotation: None,
+            used: false,
+            inferred_type: LuaType::Unknown,
+        };
+        self.symbol_table.insert_symbol(symbol);
+    }
+
+    pub fn resolve_symbol(&self, name: &str) -> Option<&Symbol> {
+        self.symbol_table.resolve_symbol(name)
+    }
+
+    fn register_function_params(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "parameters" {
+                let mut param_cursor = child.walk();
+                for param in child.children(&mut param_cursor) {
+                    if param.kind() == "identifier" {
+                        let name = self.source[param.start_byte()..param.end_byte()].to_string();
+                        self.register_variable(&name, SymbolKind::Parameter, param);
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Register the function name in the parent scope (for go-to-definition and hover)
+    fn register_function_name(&mut self, node: Node, parent_scope_id: usize) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                let name = self.source[child.start_byte()..child.end_byte()].to_string();
+                let range = SourceRange::from_node(child);
+                // Register function name in the parent scope
+                if let Some(scope) = self.symbol_table.get_scope_mut(parent_scope_id) {
+                    scope.symbols.insert(
+                        name.clone(),
+                        Symbol {
+                            name: name.clone(),
+                            kind: SymbolKind::Function,
+                            range: crate::symbol::SourceRange {
+                                start: crate::symbol::SourcePosition {
+                                    line: range.start.line,
+                                    column: range.start.column,
+                                },
+                                end: crate::symbol::SourcePosition {
+                                    line: range.end.line,
+                                    column: range.end.column,
+                                },
+                            },
+                            type_annotation: None,
+                            used: false,
+                            inferred_type: crate::types::LuaType::Unknown,
+                        },
+                    );
+                }
+                return;
+            }
+        }
+    }
+
+    fn register_loop_variables(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "loop_expression" || child.kind() == "in_clause" {
+                let mut var_cursor = child.walk();
+                for var_node in child.children(&mut var_cursor) {
+                    if var_node.kind() == "identifier" {
+                        let name = self.source[var_node.start_byte()..var_node.end_byte()].to_string();
+                        self.register_variable(&name, SymbolKind::Variable, var_node);
+                    }
+                }
+            }
+        }
+    }
+
+    fn register_local_variables(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "assignment_statement" {
+                let mut assign_cursor = child.walk();
+                for assign_child in child.children(&mut assign_cursor) {
+                    if assign_child.kind() == "variable_list" {
+                        let mut var_cursor = assign_child.walk();
+                        for var_node in assign_child.children(&mut var_cursor) {
+                            if var_node.kind() == "identifier" {
+                                let name = self.source[var_node.start_byte()..var_node.end_byte()].to_string();
+                                self.register_variable(&name, SymbolKind::Variable, var_node);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Track identifier usage - mark variables as used when they're read
+    fn track_identifier_usage(&mut self, node: Node) {
+        // Skip if not an identifier
+        if node.kind() != "identifier" {
+            return;
+        }
+
+        // Check if this identifier is in a declaration context (not a read)
+        if self.is_declaration_context(node) {
+            return;
+        }
+
+        let name = self.source[node.start_byte()..node.end_byte()].to_string();
+        let line = node.start_position().row;
+        let column = node.start_position().column;
+        
+        self.symbol_table.mark_symbol_used_at_position(&name, line, column);
+    }
+
+    /// Check if the identifier node is in a declaration context (LHS of assignment, parameter, etc.)
+    fn is_declaration_context(&self, node: Node) -> bool {
+        let parent = match node.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+
+        match parent.kind() {
+            // Parameters in function definitions
+            "parameters" => true,
+            // Variable list on LHS of assignment
+            "variable_list" => true,
+            // Name list in local declarations
+            "name_list" => true,
+            // Loop variable declarations  
+            "loop_expression" | "in_clause" => true,
+            // Function name in function declaration
+            "function_declaration" => {
+                // Check if this identifier is the function name (first identifier child)
+                let mut cursor = parent.walk();
+                for child in parent.children(&mut cursor) {
+                    if child.kind() == "identifier" {
+                        return child.start_byte() == node.start_byte();
+                    }
+                }
+                false
+            }
+            // Field name in table field (key = value)
+            "field" => {
+                // The first identifier in a field is the key (declaration), not a read
+                let mut cursor = parent.walk();
+                for child in parent.children(&mut cursor) {
+                    if child.kind() == "identifier" {
+                        return child.start_byte() == node.start_byte();
+                    }
+                    // If we hit '=' first, this is the value side
+                    if child.kind() == "=" {
+                        return false;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     }
 }
 

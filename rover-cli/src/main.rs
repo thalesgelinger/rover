@@ -1,4 +1,5 @@
 mod check;
+mod fmt;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -29,13 +30,21 @@ enum Commands {
         #[arg(short, long, default_value = "pretty")]
         format: String,
     },
+    /// Format Lua code
+    Fmt {
+        /// Path to Lua file(s) to format. If omitted, formats all .lua files in current directory
+        file: Option<PathBuf>,
+        /// Check formatting without modifying files
+        #[arg(short, long)]
+        check: bool,
+    },
     #[command(external_subcommand)]
     External(Vec<String>),
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-
+    
     match cli.command {
         Commands::Sample => {
             println!("Just a sample cmd");
@@ -60,13 +69,22 @@ fn main() -> Result<()> {
                 format: output_format,
             })
         }
+        Commands::Fmt {
+            file,
+            check,
+        } => {
+            fmt::run_fmt(fmt::FmtOptions {
+                file,
+                check,
+            })
+        }
         Commands::External(args) => {
             let path = args.first().unwrap();
             let file_path = PathBuf::from(path);
-
+            
             // Run pre-execution check
             check::pre_run_check(&file_path)?;
-
+            
             // Execute the file
             run(path)
         }

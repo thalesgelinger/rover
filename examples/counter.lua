@@ -10,7 +10,7 @@ function Counter.init(props)
 end
 
 function Counter.increase(state)
-    return state + 1
+	return state + 1
 end
 
 function Counter.render(state)
