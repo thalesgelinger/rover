@@ -376,18 +376,11 @@ impl UserData for BodyValue {
         });
 
         methods.add_method("text", |lua, this, ()| {
-            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
-            Ok(Value::String(lua.create_string(text_str)?))
+            bytes_to_lua_string(lua, &this.bytes)
         });
 
         methods.add_method("as_string", |lua, this, ()| {
-            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
-            Ok(Value::String(lua.create_string(text_str)?))
-        });
-
-        methods.add_method("echo", |lua, this, ()| {
-            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
-            Ok(Value::String(lua.create_string(text_str)?))
+            bytes_to_lua_string(lua, &this.bytes)
         });
 
         methods.add_method("bytes", |lua, this, ()| {
@@ -401,23 +394,7 @@ impl UserData for BodyValue {
         methods.add_method("expect", |lua, this, schema: Table| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let parsed = json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
-
-                let body_object = match parsed {
-                    Value::Table(table) => table,
-                    _ => {
-                        return Err(LuaError::RuntimeError(
-                            "Request body must be a JSON object".to_string(),
-                        ));
-                    }
-                };
-
-                match validate_table(lua, &body_object, &schema, "") {
-                    Ok(validated) => Ok(validated),
-                    Err(errors) => {
-                        let validation_errors = ValidationErrors::new(errors);
-                        Err(LuaError::ExternalError(Arc::new(validation_errors)))
-                    }
-                }
+                validate_body_table(lua, &parsed, &schema)
             }));
 
             match result {
@@ -430,6 +407,30 @@ impl UserData for BodyValue {
                 }
             }
         });
+    }
+}
+
+fn bytes_to_lua_string(lua: &Lua, bytes: &Bytes) -> Result<Value, LuaError> {
+    let text_str = unsafe { std::str::from_utf8_unchecked(bytes) };
+    Ok(Value::String(lua.create_string(text_str)?))
+}
+
+fn validate_body_table(lua: &Lua, value: &Value, schema: &Table) -> Result<Value, LuaError> {
+    let body_object = match value {
+        Value::Table(table) => table,
+        _ => {
+            return Err(LuaError::RuntimeError(
+                "Request body must be a JSON object".to_string(),
+            ));
+        }
+    };
+
+    match validate_table(lua, body_object, schema, "") {
+        Ok(validated) => Ok(validated),
+        Err(errors) => {
+            let validation_errors = ValidationErrors::new(errors);
+            Err(LuaError::ExternalError(Arc::new(validation_errors)))
+        }
     }
 }
 
@@ -447,22 +448,7 @@ impl UserData for ParsedJson {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("expect", |lua, this, schema: Table| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let body_object = match &this.value {
-                    Value::Table(table) => table.clone(),
-                    _ => {
-                        return Err(LuaError::RuntimeError(
-                            "Request body must be a JSON object".to_string(),
-                        ));
-                    }
-                };
-
-                match validate_table(lua, &body_object, &schema, "") {
-                    Ok(validated) => Ok(validated),
-                    Err(errors) => {
-                        let validation_errors = ValidationErrors::new(errors);
-                        Err(LuaError::ExternalError(Arc::new(validation_errors)))
-                    }
-                }
+                validate_body_table(lua, &this.value, &schema)
             }));
 
             match result {
