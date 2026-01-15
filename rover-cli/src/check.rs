@@ -79,10 +79,6 @@ pub fn pre_run_check(file: &PathBuf) -> Result<bool> {
         return Ok(false);
     }
 
-    // Show brief success message
-    println!("{} {}", "✓".green(), "Code analysis passed".dimmed());
-    println!();
-
     Ok(true)
 }
 

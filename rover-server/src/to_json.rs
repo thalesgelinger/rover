@@ -28,11 +28,9 @@ fn serialize_table(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Resu
 
     let first_key: Value = table.raw_get(1)?;
 
-    if let Value::Integer(idx) = first_key {
-        if idx == 1 {
-            if try_serialize_as_array(table, buf, depth).is_ok() {
-                return Ok(());
-            }
+    if !matches!(first_key, Value::Nil) {
+        if try_serialize_as_array(table, buf, depth).is_ok() {
+            return Ok(());
         }
     }
 
@@ -56,7 +54,7 @@ fn try_serialize_as_array(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlu
         }
     }
 
-    if i == 2 {
+    if i == 1 {
         return Err(mlua::Error::RuntimeError("Not an array".to_string()));
     }
 
@@ -304,8 +302,6 @@ mod tests {
         table.set(3, "third").unwrap();
 
         let json = table.to_json_string().unwrap();
-        assert!(json.contains("\"1\":\"first\""));
-        assert!(json.contains("\"3\":\"third\""));
-        assert!(!json.contains("\"2\""));
+        assert_eq!(json, "[\"first\"]");
     }
 }

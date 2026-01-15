@@ -1,11 +1,8 @@
-use bytes::Bytes;
-use mlua::{Error as LuaError, Lua, Table, UserData, UserDataMethods, Value};
-use rover_server::direct_json_parser::json_bytes_ref_to_lua_direct;
-pub use rover_types::{ValidationError, ValidationErrors};
-use serde_json;
-use std::sync::Arc;
+use mlua::{Lua, Table, Value};
+use std::fmt;
 
-/// Validate a single field value based on config passed from Lua
+use crate::{ValidationError, ValidationErrors};
+
 pub fn validate_field(
     lua: &Lua,
     field_name: &str,
@@ -64,7 +61,7 @@ pub fn validate_field(
                             return Err(vec![ValidationError::new(
                                 field_name,
                                 "Invalid enum value",
-                                "config",
+                                "type",
                             )]);
                         }
                     }
@@ -75,9 +72,7 @@ pub fn validate_field(
         _ => None,
     };
 
-    // Handle missing/nil values
     if matches!(value, Value::Nil) {
-        // Check for default first, then required
         if let Some(default) = default_value {
             return Ok(default);
         }
@@ -90,11 +85,9 @@ pub fn validate_field(
         return Ok(Value::Nil);
     }
 
-    // Type validation
     match validator_type.as_str() {
         "string" => {
             if let Value::String(_) = value {
-                // Enum validation
                 if let Some(allowed) = enum_values {
                     let str_val = match &value {
                         Value::String(s) => s.to_str().map_err(|_| {
@@ -275,7 +268,6 @@ pub fn validate_field(
     }
 }
 
-/// Internal table validation helper
 fn validate_table_internal(
     lua: &Lua,
     data: &Table,
@@ -332,7 +324,6 @@ fn validate_table_internal(
     }
 }
 
-/// Validate a Lua table against a schema (public API)
 pub fn validate_table(
     lua: &Lua,
     data: &Table,
@@ -340,286 +331,4 @@ pub fn validate_table(
     context: &str,
 ) -> Result<Value, Vec<ValidationError>> {
     validate_table_internal(lua, data, schema, context)
-}
-
-/// A wrapper around parsed body that can be validated with :expect()
-///
-/// Lua API methods:
-/// - `body:json()` - Parse JSON to Lua table (expensive)
-/// - `body:as_string()` - Get raw JSON string without parsing (zero-copy, fast)
-/// - `body:echo()` - Alias for :as_string(), for echoing back pre-serialized JSON
-/// - `body:text()` - Get body as plain text string
-/// - `body:bytes()` - Get body as Lua table of bytes
-/// - `body:expect(schema)` - Validate body against schema, returns validated table
-/// - `body:raw()` - DEPRECATED: Same as :json(), use :as_string() for zero-copy
-#[allow(dead_code)]
-pub struct BodyValue {
-    bytes: Bytes,
-}
-
-impl BodyValue {
-    #[allow(dead_code)]
-    pub fn new(bytes: Bytes) -> Self {
-        Self { bytes }
-    }
-}
-
-impl UserData for BodyValue {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("json", |lua, this, ()| {
-            let value = json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
-            Ok(ParsedJson::new(value))
-        });
-
-        methods.add_method("raw", |lua, this, ()| {
-            json_bytes_ref_to_lua_direct(lua, &this.bytes)
-        });
-
-        methods.add_method("text", |lua, this, ()| {
-            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
-            Ok(Value::String(lua.create_string(text_str)?))
-        });
-
-        methods.add_method("as_string", |lua, this, ()| {
-            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
-            Ok(Value::String(lua.create_string(text_str)?))
-        });
-
-        methods.add_method("echo", |lua, this, ()| {
-            let text_str = unsafe { std::str::from_utf8_unchecked(&this.bytes) };
-            Ok(Value::String(lua.create_string(text_str)?))
-        });
-
-        methods.add_method("bytes", |lua, this, ()| {
-            let table = lua.create_table_with_capacity(this.bytes.len(), 0)?;
-            for (i, byte) in this.bytes.iter().enumerate() {
-                table.set(i + 1, *byte)?;
-            }
-            Ok(Value::Table(table))
-        });
-
-        methods.add_method("expect", |lua, this, schema: Table| {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let parsed = json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
-
-                let body_object = match parsed {
-                    Value::Table(table) => table,
-                    _ => {
-                        return Err(LuaError::RuntimeError(
-                            "Request body must be a JSON object".to_string(),
-                        ));
-                    }
-                };
-
-                match validate_table(lua, &body_object, &schema, "") {
-                    Ok(validated) => Ok(validated),
-                    Err(errors) => {
-                        let validation_errors = ValidationErrors::new(errors);
-                        Err(LuaError::ExternalError(Arc::new(validation_errors)))
-                    }
-                }
-            }));
-
-            match result {
-                Ok(inner_result) => inner_result,
-                Err(panic_err) => {
-                    eprintln!("PANIC in validation: {:?}", panic_err);
-                    Err(LuaError::RuntimeError(
-                        "Internal server error occurred during validation".to_string(),
-                    ))
-                }
-            }
-        });
-    }
-}
-
-pub struct ParsedJson {
-    value: Value,
-}
-
-impl ParsedJson {
-    pub fn new(value: Value) -> Self {
-        Self { value }
-    }
-}
-
-impl UserData for ParsedJson {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("expect", |lua, this, schema: Table| {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let body_object = match &this.value {
-                    Value::Table(table) => table.clone(),
-                    _ => {
-                        return Err(LuaError::RuntimeError(
-                            "Request body must be a JSON object".to_string(),
-                        ));
-                    }
-                };
-
-                match validate_table(lua, &body_object, &schema, "") {
-                    Ok(validated) => Ok(validated),
-                    Err(errors) => {
-                        let validation_errors = ValidationErrors::new(errors);
-                        Err(LuaError::ExternalError(Arc::new(validation_errors)))
-                    }
-                }
-            }));
-
-            match result {
-                Ok(inner_result) => inner_result,
-                Err(panic_err) => {
-                    eprintln!("PANIC in validation: {:?}", panic_err);
-                    Err(LuaError::RuntimeError(
-                        "Internal server error occurred during validation".to_string(),
-                    ))
-                }
-            }
-        });
-    }
-}
-
-/// Convert serde_json::Value to mlua::Value
-#[allow(dead_code)]
-fn json_to_lua(lua: &Lua, value: &serde_json::Value) -> mlua::Result<Value> {
-    match value {
-        serde_json::Value::Null => Ok(Value::Nil),
-        serde_json::Value::Bool(b) => Ok(Value::Boolean(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(Value::Integer(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(Value::Number(f))
-            } else {
-                Err(LuaError::RuntimeError("Invalid number".to_string()))
-            }
-        }
-        serde_json::Value::String(s) => Ok(Value::String(lua.create_string(s)?)),
-        serde_json::Value::Array(arr) => {
-            let table = lua.create_table_with_capacity(arr.len(), 0)?;
-            for (i, v) in arr.iter().enumerate() {
-                table.set(i + 1, json_to_lua(lua, v)?)?;
-            }
-            Ok(Value::Table(table))
-        }
-        serde_json::Value::Object(obj) => {
-            let table = lua.create_table_with_capacity(0, obj.len())?;
-            for (k, v) in obj {
-                table.set(k.as_str(), json_to_lua(lua, v)?)?;
-            }
-            Ok(Value::Table(table))
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mlua::ObjectLike;
-
-    #[test]
-    fn test_body_value_json_method() {
-        let lua = Lua::new();
-        let body = BodyValue::new(Bytes::from(r#"{"name": "John", "age": 30}"#));
-
-        let body_value = lua.create_userdata(body).unwrap();
-
-        let parsed = body_value.call_method("json", ()).unwrap();
-
-        match parsed {
-            mlua::Value::UserData(_) => {}
-            _ => panic!("Expected UserData"),
-        }
-    }
-
-    #[test]
-    fn test_body_value_text_method() {
-        let lua = Lua::new();
-        let text = "Hello, World!";
-        let body = BodyValue::new(Bytes::from(text));
-
-        let body_value = lua.create_userdata(body).unwrap();
-
-        let result: String = body_value.call_method("text", ()).unwrap();
-
-        assert_eq!(result, "Hello, World!");
-    }
-
-    #[test]
-    fn test_body_value_bytes_method() {
-        let lua = Lua::new();
-        let bytes: Vec<u8> = vec![72, 101, 108, 108, 111];
-        let body = BodyValue::new(Bytes::from(bytes.clone()));
-
-        let body_value = lua.create_userdata(body).unwrap();
-
-        let result: mlua::Table = body_value.call_method("bytes", ()).unwrap();
-
-        let len: i64 = result.len().unwrap();
-        assert_eq!(len, 5);
-
-        let first: u8 = result.get(1).unwrap();
-        assert_eq!(first, 72);
-
-        let last: u8 = result.get(5).unwrap();
-        assert_eq!(last, 111);
-    }
-
-    #[test]
-    fn test_body_value_expect_method() {
-        let lua = Lua::new();
-        let body = BodyValue::new(Bytes::from(r#"{"name": "John", "age": 30}"#));
-
-        let body_value = lua.create_userdata(body).unwrap();
-
-        let schema = lua.create_table().unwrap();
-        schema.set("name", lua.create_table().unwrap()).unwrap();
-
-        let schema_name: Table = schema.get("name").unwrap();
-        schema_name.set("type", "string").unwrap();
-        schema_name.set("required", true).unwrap();
-
-        schema.set("age", lua.create_table().unwrap()).unwrap();
-        let schema_age: Table = schema.get("age").unwrap();
-        schema_age.set("type", "integer").unwrap();
-
-        let result: mlua::Table = body_value.call_method("expect", schema).unwrap();
-
-        let name: String = result.get("name").unwrap();
-        let age: i64 = result.get("age").unwrap();
-
-        assert_eq!(name, "John");
-        assert_eq!(age, 30);
-    }
-
-    #[test]
-    fn test_parsed_json_expect_method() {
-        let lua = Lua::new();
-        let body = BodyValue::new(Bytes::from(r#"{"name": "John", "age": 30}"#));
-
-        let body_value = lua.create_userdata(body).unwrap();
-
-        let parsed = body_value.call_method("json", ()).unwrap();
-
-        let schema = lua.create_table().unwrap();
-        schema.set("name", lua.create_table().unwrap()).unwrap();
-
-        let schema_name: Table = schema.get("name").unwrap();
-        schema_name.set("type", "string").unwrap();
-        schema_name.set("required", true).unwrap();
-
-        schema.set("age", lua.create_table().unwrap()).unwrap();
-        let schema_age: Table = schema.get("age").unwrap();
-        schema_age.set("type", "integer").unwrap();
-
-        match parsed {
-            mlua::Value::UserData(ud) => {
-                let result: mlua::Table = ud.call_method("expect", schema).unwrap();
-                let name: String = result.get("name").unwrap();
-                let age: i64 = result.get("age").unwrap();
-                assert_eq!(name, "John");
-                assert_eq!(age, 30);
-            }
-            _ => panic!("Expected UserData"),
-        }
-    }
 }

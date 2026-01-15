@@ -5,6 +5,9 @@ use std::fmt;
 mod task;
 pub use task::*;
 
+mod guard;
+pub use guard::*;
+
 /// Represents a validation error with path and message
 #[derive(Debug, Clone)]
 pub struct ValidationError {
