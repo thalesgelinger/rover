@@ -19,48 +19,6 @@ use crate::http_task::{
 use crate::table_pool::LuaTablePool;
 use crate::{HttpMethod, Route, ServerConfig};
 
-fn parse_query_string_offsets(qs: &[u8]) -> Vec<(u16, u8, u16, u16)> {
-    let mut result = Vec::new();
-    if qs.is_empty() {
-        return result;
-    }
-
-    let mut pos = 0;
-    let qs_len = qs.len();
-
-    while pos < qs_len {
-        let key_start = pos as u16;
-
-        while pos < qs_len && qs[pos] != b'=' && qs[pos] != b'&' {
-            pos += 1;
-        }
-
-        let key_len_raw = (pos - key_start as usize) as u8;
-
-        if pos >= qs_len || qs[pos] == b'&' {
-            if key_len_raw > 0 {
-                result.push((key_start, key_len_raw, key_start, key_len_raw as u16));
-            }
-            pos += 1;
-            continue;
-        }
-
-        pos += 1;
-        let val_start = pos as u16;
-
-        while pos < qs_len && qs[pos] != b'&' {
-            pos += 1;
-        }
-
-        let val_len_raw = (pos - val_start as usize) as u16;
-        result.push((key_start, key_len_raw, val_start, val_len_raw));
-
-        pos += 1;
-    }
-
-    result
-}
-
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
 
@@ -247,12 +205,22 @@ impl EventLoop {
 
         let conn = &self.connections[conn_idx];
         let method = conn.method_str().unwrap_or_default();
+        // Strip query string from path for routing
         let full_path = conn.path_str().unwrap_or_default();
         let (path, query_str) = if let Some(pos) = full_path.find('?') {
-            (&full_path[..pos], Some(&full_path[pos + 1..]))
+            (&full_path[..pos], Some(full_path[pos + 1..].to_string()))
         } else {
             (full_path, None)
         };
+
+        // Get buffer for offset calculations
+        let buf: &[u8] = if !conn.parsed_buf.is_empty() {
+            &conn.parsed_buf
+        } else {
+            &conn.read_buf
+        };
+        let (path_off, path_len) = conn.path_offset.unwrap_or((0, 0));
+
         let keep_alive = conn.keep_alive;
 
         if self.config.docs && path == "/docs" && self.openapi_spec.is_some() {
@@ -302,13 +270,67 @@ impl EventLoop {
 
         // Compute offsets for method and path
         let (method_off, method_len) = conn.method_offset.unwrap_or((0, 0));
-        let (path_off, path_len) = conn.path_offset.unwrap_or((0, 0));
 
         // Parse query string to get offsets
-        let query_offsets = if let Some(qs) = query_str {
-            let query_offset_in_buf = path_off as usize + path_len + 1;
-            let query_bytes = &buf[query_offset_in_buf..query_offset_in_buf + qs.len()];
-            parse_query_string_offsets(query_bytes)
+        let query_offsets = if let Some(qs) = &query_str {
+            // Search for "?<query>" pattern in the buffer starting from path_off
+            let search_start = path_off;
+            let search_end = (path_off + path_len).min(buf.len());
+            if let Some(q_pos) = buf[search_start..search_end]
+                .iter()
+                .position(|&b| b == b'?')
+            {
+                // q_pos is position of '?' relative to search_start
+                // Query string starts at path_off + q_pos + 1
+                let qs_start_abs = path_off + q_pos + 1;
+                let mut offsets = Vec::new();
+                let mut pos = 0usize;
+                let qs_len = qs.len();
+
+                while pos < qs_len {
+                    let key_start = pos as u16;
+
+                    while pos < qs_len && qs.as_bytes()[pos] != b'=' && qs.as_bytes()[pos] != b'&' {
+                        pos += 1;
+                    }
+
+                    let key_len_raw = (pos - key_start as usize) as u8;
+
+                    if pos >= qs_len || qs.as_bytes()[pos] == b'&' {
+                        if key_len_raw > 0 {
+                            // Key without value - use key as value too
+                            offsets.push((
+                                (qs_start_abs + key_start as usize) as u16,
+                                key_len_raw,
+                                (qs_start_abs + key_start as usize) as u16,
+                                key_len_raw as u16,
+                            ));
+                        }
+                        pos += 1;
+                        continue;
+                    }
+
+                    pos += 1; // skip '='
+                    let val_start = pos as u16;
+
+                    while pos < qs_len && qs.as_bytes()[pos] != b'&' {
+                        pos += 1;
+                    }
+
+                    let val_len_raw = (pos - val_start as usize) as u16;
+                    offsets.push((
+                        (qs_start_abs + key_start as usize) as u16,
+                        key_len_raw,
+                        (qs_start_abs + val_start as usize) as u16,
+                        val_len_raw,
+                    ));
+
+                    pos += 1; // skip '&'
+                }
+                offsets
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
