@@ -214,6 +214,7 @@ impl EventLoop {
         };
 
         // Get buffer for offset calculations
+        #[allow(unused_variables)]
         let buf: &[u8] = if !conn.parsed_buf.is_empty() {
             &conn.parsed_buf
         } else {
