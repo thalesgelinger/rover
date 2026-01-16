@@ -1495,6 +1495,7 @@ fn extract_base_object(text: &str, position: Position, ident_range: Range) -> Op
     None
 }
 
+#[allow(dead_code)]
 fn find_node_at_position<'a>(
     root: &'a tree_sitter::Node<'a>,
     line: usize,

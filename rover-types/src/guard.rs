@@ -1,7 +1,6 @@
 use mlua::{Lua, Table, Value};
-use std::fmt;
 
-use crate::{ValidationError, ValidationErrors};
+use crate::ValidationError;
 
 pub fn validate_field(
     lua: &Lua,
