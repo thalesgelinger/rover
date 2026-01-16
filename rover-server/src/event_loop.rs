@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io;
 use std::mem;
 use std::net::SocketAddr;
@@ -18,6 +17,13 @@ use crate::http_task::{
 };
 use crate::table_pool::LuaTablePool;
 use crate::{HttpMethod, Route, ServerConfig};
+
+// High-load capacity constants
+const CONNECTION_CAPACITY: usize = 8192;
+const THREAD_POOL_CAPACITY: usize = 4096;
+const REQUEST_POOL_CAPACITY: usize = 4096;
+const TABLE_POOL_CAPACITY: usize = 2048;
+const EVENTS_CAPACITY: usize = 2048;
 
 fn parse_query_string_offsets(qs: &[u8]) -> Vec<(u16, u8, u16, u16)> {
     let mut result = Vec::new();
@@ -63,11 +69,76 @@ fn parse_query_string_offsets(qs: &[u8]) -> Vec<(u16, u8, u16, u16)> {
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
+// Timer wheel constants for O(1) timeout checking
+const TIMER_WHEEL_SLOTS: usize = 64;
+const TIMER_SLOT_MS: u64 = 500; // 500ms per slot = 32 seconds total coverage
 
 struct PendingCoroutine {
     thread: Thread,
     started_at: Instant,
     ctx_idx: usize,
+    conn_idx: usize,     // Connection index for reverse lookup
+    timer_slot: usize,   // Which timer wheel slot this is in
+}
+
+/// Timer wheel for O(1) timeout management
+struct TimerWheel {
+    slots: [Vec<usize>; TIMER_WHEEL_SLOTS],
+    current_slot: usize,
+    last_advance: Instant,
+}
+
+impl TimerWheel {
+    fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| Vec::with_capacity(64)),
+            current_slot: 0,
+            last_advance: Instant::now(),
+        }
+    }
+
+    /// Calculate which slot a coroutine should be placed in based on timeout
+    #[inline]
+    fn slot_for_timeout(&self, timeout_ms: u64) -> usize {
+        let slots_ahead = (timeout_ms / TIMER_SLOT_MS) as usize;
+        (self.current_slot + slots_ahead.min(TIMER_WHEEL_SLOTS - 1)) % TIMER_WHEEL_SLOTS
+    }
+
+    /// Add a coroutine index to the appropriate slot
+    #[inline]
+    fn add(&mut self, coro_idx: usize, timeout_ms: u64) -> usize {
+        let slot = self.slot_for_timeout(timeout_ms);
+        self.slots[slot].push(coro_idx);
+        slot
+    }
+
+    /// Advance the timer wheel and return expired slots
+    fn advance(&mut self) -> Vec<usize> {
+        let elapsed = self.last_advance.elapsed().as_millis() as u64;
+        let slots_to_advance = (elapsed / TIMER_SLOT_MS) as usize;
+
+        if slots_to_advance == 0 {
+            return Vec::new();
+        }
+
+        let mut expired = Vec::new();
+
+        for _ in 0..slots_to_advance.min(TIMER_WHEEL_SLOTS) {
+            expired.append(&mut self.slots[self.current_slot]);
+            self.current_slot = (self.current_slot + 1) % TIMER_WHEEL_SLOTS;
+        }
+
+        self.last_advance = Instant::now();
+        expired
+    }
+
+    /// Remove a specific coroutine from its slot (for early completion)
+    #[inline]
+    fn remove(&mut self, slot: usize, coro_idx: usize) {
+        if let Some(pos) = self.slots[slot].iter().position(|&x| x == coro_idx) {
+            self.slots[slot].swap_remove(pos);
+        }
+    }
 }
 
 pub struct EventLoop {
@@ -78,7 +149,12 @@ pub struct EventLoop {
     router: FastRouter,
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
-    yielded_coroutines: HashMap<usize, PendingCoroutine>,
+    // Use Slab instead of HashMap for O(1) access to yielded coroutines
+    yielded_coroutines: Slab<PendingCoroutine>,
+    // Map from connection index to coroutine slab index
+    conn_to_coro: Vec<Option<usize>>,
+    // Timer wheel for efficient timeout checking
+    timer_wheel: TimerWheel,
     thread_pool: ThreadPool,
     request_pool: RequestContextPool,
     table_pool: LuaTablePool,
@@ -94,29 +170,35 @@ impl EventLoop {
         addr: SocketAddr,
     ) -> Result<Self> {
         let poll = Poll::new()?;
-        let mut listener = TcpListener::bind(addr)?;
+
+        // Create listener with SO_REUSEADDR for faster restarts
+        let listener_socket = std::net::TcpListener::bind(addr)?;
+        listener_socket.set_nonblocking(true)?;
+        let mut listener = TcpListener::from_std(listener_socket);
 
         poll.registry()
             .register(&mut listener, LISTENER, Interest::READABLE)?;
 
         let router = FastRouter::from_routes(routes)?;
 
-        let request_pool = RequestContextPool::new(&lua, 1024)?;
+        let request_pool = RequestContextPool::new(&lua, REQUEST_POOL_CAPACITY)?;
 
-        let table_pool = LuaTablePool::new(1024);
+        let table_pool = LuaTablePool::new(TABLE_POOL_CAPACITY);
 
         let buffer_pool = BufferPool::new();
 
         Ok(Self {
             poll,
             listener,
-            connections: Slab::with_capacity(1024),
+            connections: Slab::with_capacity(CONNECTION_CAPACITY),
             lua,
             router,
             config,
             openapi_spec,
-            yielded_coroutines: HashMap::with_capacity(1024),
-            thread_pool: ThreadPool::new(2048),
+            yielded_coroutines: Slab::with_capacity(REQUEST_POOL_CAPACITY),
+            conn_to_coro: vec![None; CONNECTION_CAPACITY],
+            timer_wheel: TimerWheel::new(),
+            thread_pool: ThreadPool::new(THREAD_POOL_CAPACITY),
             request_pool,
             table_pool,
             buffer_pool,
@@ -124,11 +206,13 @@ impl EventLoop {
     }
 
     pub fn run(&mut self) -> Result<()> {
-        let mut events = Events::with_capacity(1024);
+        let mut events = Events::with_capacity(EVENTS_CAPACITY);
 
         loop {
-            // Block on real events only (pure event-driven)
-            self.poll.poll(&mut events, None)?;
+            // Use short poll timeout for timer wheel advancement
+            // This balances responsiveness vs CPU usage
+            self.poll
+                .poll(&mut events, Some(std::time::Duration::from_millis(100)))?;
 
             for event in events.iter() {
                 match event.token() {
@@ -137,7 +221,7 @@ impl EventLoop {
                 }
             }
 
-            // Always check timeouts (triggered by poll timeout or I/O completion)
+            // Advance timer wheel and handle timeouts (O(slots_advanced) instead of O(n))
             self.check_timeouts()?;
 
             // Resume yielded coroutines
@@ -151,14 +235,24 @@ impl EventLoop {
         loop {
             match self.listener.accept() {
                 Ok((mut socket, _addr)) => {
+                    // CRITICAL: Set TCP_NODELAY to disable Nagle's algorithm
+                    // This reduces latency by ~40ms for small writes
+                    let _ = socket.set_nodelay(true);
+
                     let entry = self.connections.vacant_entry();
-                    let token = Token(entry.key() + 1);
+                    let conn_idx = entry.key();
+                    let token = Token(conn_idx + 1);
 
                     self.poll
                         .registry()
                         .register(&mut socket, token, Interest::READABLE)?;
 
                     entry.insert(Connection::new(socket, token));
+
+                    // Ensure conn_to_coro mapping is large enough
+                    if conn_idx >= self.conn_to_coro.len() {
+                        self.conn_to_coro.resize(conn_idx + 1024, None);
+                    }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     break;
@@ -363,14 +457,24 @@ impl EventLoop {
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
                 let conn = &mut self.connections[conn_idx];
                 conn.thread = Some(thread.clone());
-                self.yielded_coroutines.insert(
+
+                // Add to timer wheel for O(1) timeout tracking
+                let coro_entry = self.yielded_coroutines.vacant_entry();
+                let coro_idx = coro_entry.key();
+                let timer_slot = self.timer_wheel.add(coro_idx, DEFAULT_COROUTINE_TIMEOUT_MS);
+
+                coro_entry.insert(PendingCoroutine {
+                    thread,
+                    started_at: Instant::now(),
+                    ctx_idx,
                     conn_idx,
-                    PendingCoroutine {
-                        thread,
-                        started_at: Instant::now(),
-                        ctx_idx,
-                    },
-                );
+                    timer_slot,
+                });
+
+                // Map connection to coroutine for fast lookup
+                if conn_idx < self.conn_to_coro.len() {
+                    self.conn_to_coro[conn_idx] = Some(coro_idx);
+                }
             }
             Err(_) => {
                 let conn = &mut self.connections[conn_idx];
@@ -385,21 +489,50 @@ impl EventLoop {
     }
 
     fn check_timeouts(&mut self) -> Result<()> {
-        let mut to_timeout = Vec::new();
-
-        // Collect timed-out coroutines
-        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
-            if pending.started_at.elapsed().as_millis() as u64 > DEFAULT_COROUTINE_TIMEOUT_MS {
-                to_timeout.push(conn_idx);
-            }
-        }
+        // Advance timer wheel and get expired coroutine indices (O(1) amortized)
+        let expired_coro_indices = self.timer_wheel.advance();
 
         // Handle timeouts
-        for conn_idx in to_timeout {
-            self.yielded_coroutines.remove(&conn_idx);
+        for coro_idx in expired_coro_indices {
+            if !self.yielded_coroutines.contains(coro_idx) {
+                continue; // Already removed (completed early)
+            }
+
+            let pending = self.yielded_coroutines.remove(coro_idx);
+
+            // Double-check actual timeout (timer wheel has slot granularity)
+            if pending.started_at.elapsed().as_millis() as u64 <= DEFAULT_COROUTINE_TIMEOUT_MS {
+                // Not actually timed out, re-add with remaining time
+                let remaining = DEFAULT_COROUTINE_TIMEOUT_MS
+                    - pending.started_at.elapsed().as_millis() as u64;
+                let new_entry = self.yielded_coroutines.vacant_entry();
+                let new_coro_idx = new_entry.key();
+                let timer_slot = self.timer_wheel.add(new_coro_idx, remaining);
+                new_entry.insert(PendingCoroutine {
+                    timer_slot,
+                    ..pending
+                });
+                if pending.conn_idx < self.conn_to_coro.len() {
+                    self.conn_to_coro[pending.conn_idx] = Some(new_coro_idx);
+                }
+                continue;
+            }
+
+            let conn_idx = pending.conn_idx;
+
+            // Clear connection mapping
+            if conn_idx < self.conn_to_coro.len() {
+                self.conn_to_coro[conn_idx] = None;
+            }
+
+            // Release pools
+            self.thread_pool.release(pending.thread);
+            self.request_pool.release(pending.ctx_idx);
+
             if !self.connections.contains(conn_idx) {
                 continue;
             }
+
             let conn = &mut self.connections[conn_idx];
             conn.thread = None;
             conn.state = ConnectionState::Writing;
@@ -414,47 +547,60 @@ impl EventLoop {
     fn resume_yielded_coroutines(&mut self) -> Result<()> {
         let mut to_resume = Vec::new();
 
-        // Collect resumable coroutines
-        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
-            if !self.connections.contains(conn_idx) {
-                to_resume.push(conn_idx);
+        // Collect resumable coroutines (iterate Slab)
+        for (coro_idx, pending) in self.yielded_coroutines.iter() {
+            if !self.connections.contains(pending.conn_idx) {
+                to_resume.push(coro_idx);
                 continue;
             }
 
             match pending.thread.status() {
                 ThreadStatus::Resumable => {
-                    to_resume.push(conn_idx);
+                    to_resume.push(coro_idx);
                 }
                 _ => {}
             }
         }
 
         // Resume coroutines
-        for conn_idx in to_resume {
-            if let Some(pending) = self.yielded_coroutines.remove(&conn_idx) {
-                match pending.thread.resume(()) {
-                    Ok(mlua::Value::Nil) => {
-                        self.thread_pool.release(pending.thread);
-                        self.request_pool.release(pending.ctx_idx);
-                        if let Some(conn) = self.connections.get_mut(conn_idx) {
-                            conn.thread = None;
-                            conn.state = ConnectionState::Closed;
-                        }
+        for coro_idx in to_resume {
+            if !self.yielded_coroutines.contains(coro_idx) {
+                continue;
+            }
+
+            let pending = self.yielded_coroutines.remove(coro_idx);
+            let conn_idx = pending.conn_idx;
+
+            // Remove from timer wheel
+            self.timer_wheel.remove(pending.timer_slot, coro_idx);
+
+            // Clear connection mapping
+            if conn_idx < self.conn_to_coro.len() {
+                self.conn_to_coro[conn_idx] = None;
+            }
+
+            match pending.thread.resume(()) {
+                Ok(mlua::Value::Nil) => {
+                    self.thread_pool.release(pending.thread);
+                    self.request_pool.release(pending.ctx_idx);
+                    if let Some(conn) = self.connections.get_mut(conn_idx) {
+                        conn.thread = None;
+                        conn.state = ConnectionState::Closed;
                     }
-                    Ok(_) => {
-                        self.thread_pool.release(pending.thread);
-                        self.request_pool.release(pending.ctx_idx);
-                        if let Some(conn) = self.connections.get_mut(conn_idx) {
-                            conn.thread = None;
-                        }
+                }
+                Ok(_) => {
+                    self.thread_pool.release(pending.thread);
+                    self.request_pool.release(pending.ctx_idx);
+                    if let Some(conn) = self.connections.get_mut(conn_idx) {
+                        conn.thread = None;
                     }
-                    Err(_) => {
-                        self.thread_pool.release(pending.thread);
-                        self.request_pool.release(pending.ctx_idx);
-                        if let Some(conn) = self.connections.get_mut(conn_idx) {
-                            conn.thread = None;
-                            conn.state = ConnectionState::Closed;
-                        }
+                }
+                Err(_) => {
+                    self.thread_pool.release(pending.thread);
+                    self.request_pool.release(pending.ctx_idx);
+                    if let Some(conn) = self.connections.get_mut(conn_idx) {
+                        conn.thread = None;
+                        conn.state = ConnectionState::Closed;
                     }
                 }
             }
