@@ -15,9 +15,9 @@ local nil_val = nil
 -- ==========================================
 
 local person = {
-    name = "Alice",
-    age = 30,
-    email = "alice@example.com"
+	name = "Alice",
+	age = 30,
+	email = "alice@example.com",
 }
 
 -- Access properties - should infer types
@@ -32,23 +32,23 @@ person.city = "New York"
 -- ==========================================
 
 function get_string()
-    return "hello world"
+	return "hello world"
 end
 
 function get_number()
-    return 42
+	return 42
 end
 
 function add(a, b)
-    return a + b
+	return a + b
 end
 
 function get_person()
-    return {
-        id = 1,
-        name = "Bob",
-        active = true
-    }
+	return {
+		id = 1,
+		name = "Bob",
+		active = true,
+	}
 end
 
 -- ==========================================
@@ -56,17 +56,17 @@ end
 -- ==========================================
 
 function process_string(data)
-    assert(type(data) == "string")
-    -- Here data is narrowed to string
-    local len = string.len(data)
-    return len
+	assert(type(data) == "string")
+	-- Here data is narrowed to string
+	local len = string.len(data)
+	return len
 end
 
 function process_table(item)
-    assert(type(item) == "table")
-    assert(item.name ~= nil)
-    -- Here item.name is string, item is table
-    return item.name
+	assert(type(item) == "table")
+	assert(item.name ~= nil)
+	-- Here item.name is string, item is table
+	return item.name
 end
 
 -- ==========================================
@@ -76,27 +76,27 @@ end
 local maybe_string = "hello"
 
 if type(maybe_string) == "string" then
-    -- Narrowed to string inside this branch
-    local upper = string.upper(maybe_string)
+	-- Narrowed to string inside this branch
+	local upper = string.upper(maybe_string)
 end
 
 local maybe_nil = nil
 
 if maybe_nil ~= nil then
-    -- Narrowed to exclude nil
-    local value = maybe_string .. "!"
+	-- Narrowed to exclude nil
+	local value = maybe_string .. "!"
 end
 
 local truthy_value = "test"
 
 if truthy_value then
-    -- Narrowed to truthy type (not nil, not false)
-    local processed = truthy_value
+	-- Narrowed to truthy type (not nil, not false)
+	local processed = truthy_value
 end
 
 if not truthy_value then
-    -- Narrowed to falsy (nil or false)
-    local is_empty = false
+	-- Narrowed to falsy (nil or false)
+	local is_empty = false
 end
 
 -- ==========================================
@@ -104,31 +104,31 @@ end
 -- ==========================================
 
 local success = function()
-    return "operation completed"
+	return "operation completed"
 end
 
 local ok, result = pcall(success)
 
 if ok then
-    -- result is narrowed to string (success return type)
-    local output = result
+	-- result is narrowed to string (success return type)
+	local output = result
 else
-    -- result is narrowed to string (error type)
-    local error_msg = result
+	-- result is narrowed to string (error type)
+	local error_msg = result
 end
 
 function get_error()
-    error("something went wrong")
+	error "something went wrong"
 end
 
 local ok2, result2 = pcall(get_error)
 
 if ok2 then
-    -- Should never reach here
-    local success_val = result2
+	-- Should never reach here
+	local success_val = result2
 else
-    -- result2 is error string
-    local err = result2
+	-- result2 is error string
+	local err = result2
 end
 
 -- ==========================================
@@ -150,14 +150,14 @@ local concatenated = str1 .. " " .. str2
 -- ==========================================
 
 local config = {
-    enabled = true,
-    port = 8080,
-    host = "localhost",
-    debug = false
+	enabled = true,
+	port = 8080,
+	host = "localhost",
+	debug = false,
 }
 
 -- Array-like table
-local items = {1, 2, 3, 4, 5}
+local items = { 1, 2, 3, 4, 5 }
 local first = items[1]
 
 -- ==========================================
@@ -174,14 +174,14 @@ local lower = string.lower(text)
 -- ==========================================
 
 local user = {
-    profile = {
-        name = "Charlie",
-        age = 25
-    },
-    settings = {
-        notifications = true,
-        theme = "dark"
-    }
+	profile = {
+		name = "Charlie",
+		age = 25,
+	},
+	settings = {
+		notifications = true,
+		theme = "dark",
+	},
 }
 
 local profile = user.profile
@@ -192,7 +192,7 @@ local theme = user.settings.theme
 -- ==========================================
 
 function get_coords()
-    return 10, 20
+	return 10, 20
 end
 
 local x, y = get_coords()
@@ -202,12 +202,12 @@ local x, y = get_coords()
 -- ==========================================
 
 function sum_all(...)
-    local total = 0
-    local args = {...}
-    for i, v in ipairs(args) do
-        total = total + v
-    end
-    return total
+	local total = 0
+	local args = { ... }
+	for i, v in ipairs(args) do
+		total = total + v
+	end
+	return total
 end
 
 local total = sum_all(1, 2, 3, 4, 5)
@@ -220,21 +220,21 @@ local flag1 = true
 local flag2 = false
 
 if flag1 and flag2 then
-    -- This block won't execute
+	-- This block won't execute
 end
 
 if flag1 or flag2 then
-    -- This will execute
+	-- This will execute
 end
 
 -- ==========================================
 -- 14. Table Methods
 -- ==========================================
 
-local numbers = {5, 2, 8, 1, 9}
+local numbers = { 5, 2, 8, 1, 9 }
 table.sort(numbers)
 
-local fruits = {"apple", "banana", "cherry"}
+local fruits = { "apple", "banana", "cherry" }
 table.insert(fruits, "date")
 
 -- ==========================================
@@ -251,36 +251,36 @@ local abs = math.abs(-10)
 -- ==========================================
 
 function check_type(value)
-    local t = type(value)
-    if t == "string" then
-        return "is string"
-    elseif t == "number" then
-        return "is number"
-    elseif t == "table" then
-        return "is table"
-    elseif t == "boolean" then
-        return "is boolean"
-    else
-        return "is unknown"
-    end
+	local t = type(value)
+	if t == "string" then
+		return "is string"
+	elseif t == "number" then
+		return "is number"
+	elseif t == "table" then
+		return "is table"
+	elseif t == "boolean" then
+		return "is boolean"
+	else
+		return "is unknown"
+	end
 end
 
-local type_result = check_type("test")
+local type_result = check_type "test"
 
 -- ==========================================
 -- 17. Error Handling with xpcall
 -- ==========================================
 
 local handler = function(err)
-    return "handled: " .. err
+	return "handled: " .. err
 end
 
 local ok3, result3 = xpcall(function()
-    return "success"
+	return "success"
 end, handler)
 
 if ok3 then
-    local val = result3
+	local val = result3
 end
 
 -- ==========================================
@@ -290,9 +290,9 @@ end
 local optional = "value"
 
 if optional ~= nil then
-    local has_value = optional
+	local has_value = optional
 else
-    local no_value = optional
+	local no_value = optional
 end
 
 -- ==========================================
@@ -310,12 +310,12 @@ config.url = "https://api.example.com"
 -- ==========================================
 
 function get_data()
-    return {data = "important", count = 10}
+	return { data = "important", count = 10 }
 end
 
 function process_data()
-    local d = get_data()
-    return d.data
+	local d = get_data()
+	return d.data
 end
 
 local processed = process_data()
@@ -327,22 +327,22 @@ local processed = process_data()
 -- IO functions
 local file, err = io.open("test.txt", "r")
 if file ~= nil then
-    -- file is a table (file handle)
+	-- file is a table (file handle)
 end
 
 -- OS functions
 local timestamp = os.time()
-local date_str = os.date("%Y-%m-%d")
+local date_str = os.date "%Y-%m-%d"
 
 -- Pairs/ipairs
-local settings = {key1 = "val1", key2 = "val2"}
+local settings = { key1 = "val1", key2 = "val2" }
 for k, v in pairs(settings) do
-    -- k and v are inferred
+	-- k and v are inferred
 end
 
-local array = {10, 20, 30}
+local array = { 10, 20, 30 }
 for i, v in ipairs(array) do
-    -- i is number, v is number
+	-- i is number, v is number
 end
 
 -- ==========================================
@@ -352,10 +352,10 @@ end
 -- Note: This tests require() type inference
 -- In a real LSP, the module would be loaded and typed
 
-local test_module = require("test_module")
+local test_module = require "test_module"
 
 -- Access exported function
-local greeting = test_module.greet("World")
+local greeting = test_module.greet "World"
 
 -- Access exported variable
 local module_version = test_module.version
@@ -364,4 +364,4 @@ local module_version = test_module.version
 local config = test_module.get_config()
 local is_enabled = config.enabled
 
-print("Test file loaded successfully")
+print "Test file loaded successfully"

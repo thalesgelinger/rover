@@ -6,10 +6,10 @@
 -- ==========================================
 
 function add_number_and_string()
-    local num = 10
-    local str = "hello"
-    -- ERROR: Cannot add number and string
-    return num + str
+	local num = 10
+	local str = "hello"
+	-- ERROR: Cannot add number and string
+	return num + str
 end
 
 -- ==========================================
@@ -17,13 +17,13 @@ end
 -- ==========================================
 
 function process_string(text)
-    return text:upper()
+	return text:upper()
 end
 
 function wrong_call()
-    local num = 42
-    -- ERROR: process_string expects string, got number
-    return process_string(num)
+	local num = 42
+	-- ERROR: process_string expects string, got number
+	return process_string(num)
 end
 
 -- ==========================================
@@ -33,18 +33,18 @@ end
 -- Hovering over bar should show: bar: number (from assert)
 -- Hovering over baz should show: baz: string (from assert)
 function constrained_params(bar, baz)
-    assert(type(bar) == "number")
-    assert(type(baz) == "string")
+	assert(type(bar) == "number")
+	assert(type(baz) == "string")
 
-    -- ERROR: baz is constrained to string, can't use in string.len
-    -- Actually this is OK - baz IS a string
-    return string.len(baz)
+	-- ERROR: baz is constrained to string, can't use in string.len
+	-- Actually this is OK - baz IS a string
+	return string.len(baz)
 end
 
 function wrong_after_assert(data)
-    assert(type(data) == "table")
-    -- ERROR: data is constrained to table, can't use as number
-    return data + 10
+	assert(type(data) == "table")
+	-- ERROR: data is constrained to table, can't use as number
+	return data + 10
 end
 
 -- ==========================================
@@ -52,12 +52,12 @@ end
 -- ==========================================
 
 function inconsistent_returns(flag)
-    if flag then
-        return "string"
-    else
-        -- ERROR: Inconsistent return types (string vs number)
-        return 42
-    end
+	if flag then
+		return "string"
+	else
+		-- ERROR: Inconsistent return types (string vs number)
+		return 42
+	end
 end
 
 -- ==========================================
@@ -65,14 +65,14 @@ end
 -- ==========================================
 
 function nested_narrowing(value)
-    if type(value) == "string" then
-        if value ~= "" then
-            -- value is narrowed to string (not empty)
-            local len = string.len(value)
-            return len
-        end
-    end
-    return 0
+	if type(value) == "string" then
+		if value ~= "" then
+			-- value is narrowed to string (not empty)
+			local len = string.len(value)
+			return len
+		end
+	end
+	return 0
 end
 
 -- ==========================================
@@ -80,7 +80,7 @@ end
 -- ==========================================
 
 function multiple_returns()
-    return "first", "second", 42
+	return "first", "second", 42
 end
 
 -- Using only first return
@@ -94,9 +94,9 @@ local a, b, c = multiple_returns()
 -- ==========================================
 
 function access_nonexistent_field()
-    local obj = {name = "Alice", age = 30}
-    -- ERROR: field 'email' doesn't exist
-    return obj.email
+	local obj = { name = "Alice", age = 30 }
+	-- ERROR: field 'email' doesn't exist
+	return obj.email
 end
 
 -- ==========================================
@@ -104,10 +104,10 @@ end
 -- ==========================================
 
 function wrong_field_type()
-    local obj = {name = "Bob"}
-    -- ERROR: name is string, assigning number
-    obj.name = 42
-    return obj
+	local obj = { name = "Bob" }
+	-- ERROR: name is string, assigning number
+	obj.name = 42
+	return obj
 end
 
 -- ==========================================
@@ -115,9 +115,9 @@ end
 -- ==========================================
 
 function invalid_method_call()
-    local num = 42
-    -- ERROR: calling :upper() on number
-    return num:upper()
+	local num = 42
+	-- ERROR: calling :upper() on number
+	return num:upper()
 end
 
 -- ==========================================
@@ -127,9 +127,9 @@ end
 local x = "global"
 
 function shadow_test()
-    local x = "local"
-    -- x is "local", not "global"
-    return x
+	local x = "local"
+	-- x is "local", not "global"
+	return x
 end
 
 -- ==========================================
@@ -137,9 +137,9 @@ end
 -- ==========================================
 
 function pcall_invalid()
-    -- ERROR: pcall first arg must be function
-    local ok, result = pcall("not a function")
-    return result
+	-- ERROR: pcall first arg must be function
+	local ok, result = pcall "not a function"
+	return result
 end
 
 -- ==========================================
@@ -147,12 +147,12 @@ end
 -- ==========================================
 
 function xpcall_wrong_handler()
-    local handler = "not a function"
-    -- ERROR: xpcall handler must be function
-    local ok, result = xpcall(function()
-        return "success"
-    end, handler)
-    return result
+	local handler = "not a function"
+	-- ERROR: xpcall handler must be function
+	local ok, result = xpcall(function()
+		return "success"
+	end, handler)
+	return result
 end
 
 -- ==========================================
@@ -160,10 +160,10 @@ end
 -- ==========================================
 
 function compare_types()
-    local str = "hello"
-    local num = 10
-    -- ERROR: Cannot compare string and number with <
-    return str < num
+	local str = "hello"
+	local num = 10
+	-- ERROR: Cannot compare string and number with <
+	return str < num
 end
 
 -- ==========================================
@@ -171,11 +171,11 @@ end
 -- ==========================================
 
 function optional_params(required, optional)
-    -- Hovering should show: required: any, optional: any | nil
-    if optional ~= nil then
-        return required + optional
-    end
-    return required
+	-- Hovering should show: required: any, optional: any | nil
+	if optional ~= nil then
+		return required + optional
+	end
+	return required
 end
 
 -- ==========================================
@@ -183,10 +183,10 @@ end
 -- ==========================================
 
 function empty_table_operations()
-    local empty = {}
-    -- Accessing non-existent field in empty table
-    -- ERROR or should be nil/unknown
-    return empty.field
+	local empty = {}
+	-- Accessing non-existent field in empty table
+	-- ERROR or should be nil/unknown
+	return empty.field
 end
 
 -- ==========================================
@@ -194,10 +194,10 @@ end
 -- ==========================================
 
 function array_index_error()
-    local arr = {1, 2, 3}
-    -- ERROR: arr only has 3 elements, index 4 out of bounds
-    -- (Lua allows this but LSP should warn/show type issue)
-    return arr[4]
+	local arr = { 1, 2, 3 }
+	-- ERROR: arr only has 3 elements, index 4 out of bounds
+	-- (Lua allows this but LSP should warn/show type issue)
+	return arr[4]
 end
 
 -- ==========================================
@@ -205,14 +205,14 @@ end
 -- ==========================================
 
 function string_indexing()
-    local text = "hello"
-    -- OK: returns 'h'
-    local first = text[1]
-    -- OK: returns 'e'
-    local fifth = text[5]
-    -- ERROR: string only has 5 chars, index 6 out of bounds
-    local sixth = text[6]
-    return first
+	local text = "hello"
+	-- OK: returns 'h'
+	local first = text[1]
+	-- OK: returns 'e'
+	local fifth = text[5]
+	-- ERROR: string only has 5 chars, index 6 out of bounds
+	local sixth = text[6]
+	return first
 end
 
 -- ==========================================
@@ -220,14 +220,14 @@ end
 -- ==========================================
 
 function truthy_edge_cases(value)
-    -- After this check, value is narrowed to truthy (not nil, not false)
-    if value then
-        -- value could be: number, string, table, function, userdata, thread
-        -- Hovering should show type union of truthy types
-        local is_string = type(value) == "string"
-        return is_string
-    end
-    return false
+	-- After this check, value is narrowed to truthy (not nil, not false)
+	if value then
+		-- value could be: number, string, table, function, userdata, thread
+		-- Hovering should show type union of truthy types
+		local is_string = type(value) == "string"
+		return is_string
+	end
+	return false
 end
 
 -- ==========================================
@@ -235,12 +235,12 @@ end
 -- ==========================================
 
 function apply(func, value)
-    -- Hovering over func: function(any) -> any
-    return func(value)
+	-- Hovering over func: function(any) -> any
+	return func(value)
 end
 
 function double(x)
-    return x * 2
+	return x * 2
 end
 
 -- ERROR/WARNING: double expects number, passing string
@@ -252,10 +252,10 @@ local result = apply(double, "not a number")
 
 -- Hovering over factorial: (number) -> number
 function factorial(n)
-    if n <= 1 then
-        return 1
-    end
-    return n * factorial(n - 1)
+	if n <= 1 then
+		return 1
+	end
+	return n * factorial(n - 1)
 end
 
 local fact5 = factorial(5)
@@ -265,10 +265,10 @@ local fact5 = factorial(5)
 -- ==========================================
 
 function circular_reference()
-    local obj = {}
-    obj.parent = obj
-    -- ERROR: circular reference - LSP should handle this gracefully
-    return obj.parent
+	local obj = {}
+	obj.parent = obj
+	-- ERROR: circular reference - LSP should handle this gracefully
+	return obj.parent
 end
 
 -- ==========================================
@@ -276,9 +276,9 @@ end
 -- ==========================================
 
 function boolean_arithmetic()
-    local flag = true
-    -- ERROR: Cannot use boolean in arithmetic
-    return flag + 10
+	local flag = true
+	-- ERROR: Cannot use boolean in arithmetic
+	return flag + 10
 end
 
 -- ==========================================
@@ -286,9 +286,9 @@ end
 -- ==========================================
 
 function nil_arithmetic()
-    local nothing = nil
-    -- ERROR: Cannot use nil in arithmetic
-    return nothing + 10
+	local nothing = nil
+	-- ERROR: Cannot use nil in arithmetic
+	return nothing + 10
 end
 
 -- ==========================================
@@ -296,12 +296,12 @@ end
 -- ==========================================
 
 function multiple_constraints(param)
-    assert(type(param) == "string")
-    assert(type(param) == "string")
-    assert(string.len(param) > 0)
+	assert(type(param) == "string")
+	assert(type(param) == "string")
+	assert(string.len(param) > 0)
 
-    -- param is definitely string
-    return param:upper()
+	-- param is definitely string
+	return param:upper()
 end
 
 -- ==========================================
@@ -309,14 +309,14 @@ end
 -- ==========================================
 
 function chained_methods(text)
-    -- OK: chaining string methods
-    return text:upper():sub(1, 3)
+	-- OK: chaining string methods
+	return text:upper():sub(1, 3)
 end
 
 function invalid_chain()
-    local num = 42
-    -- ERROR: chaining on non-object
-    return num:upper():sub(1, 3)
+	local num = 42
+	-- ERROR: chaining on non-object
+	return num:upper():sub(1, 3)
 end
 
 -- ==========================================
@@ -324,9 +324,9 @@ end
 -- ==========================================
 
 function mixed_table()
-    -- ERROR or WARNING: array elements should have consistent type
-    local mixed = {1, "two", 3, "four"}
-    return mixed
+	-- ERROR or WARNING: array elements should have consistent type
+	local mixed = { 1, "two", 3, "four" }
+	return mixed
 end
 
 -- ==========================================
@@ -334,9 +334,9 @@ end
 -- ==========================================
 
 function no_return_value(x)
-    local y = x * 2
-    -- No return statement - returns nil
-    -- Hovering should show: (number) -> nil
+	local y = x * 2
+	-- No return statement - returns nil
+	-- Hovering should show: (number) -> nil
 end
 
 local result = no_return_value(10)
@@ -346,11 +346,11 @@ local result = no_return_value(10)
 -- ==========================================
 
 function create_counter()
-    local count = 0
-    return function()
-        count = count + 1
-        return count
-    end
+	local count = 0
+	return function()
+		count = count + 1
+		return count
+	end
 end
 
 local counter = create_counter()
@@ -363,11 +363,11 @@ local second = counter()
 -- ==========================================
 
 function implicit_coercion()
-    local num = 10
-    local str = "10"
-    -- Lua allows this (coerces to number)
-    -- LSP should warn or show as comparison of any types
-    return num == str
+	local num = 10
+	local str = "10"
+	-- Lua allows this (coerces to number)
+	-- LSP should warn or show as comparison of any types
+	return num == str
 end
 
 -- ==========================================
@@ -375,7 +375,7 @@ end
 -- ==========================================
 
 function two_params(a, b)
-    return a + b
+	return a + b
 end
 
 -- ERROR: two_params expects 2 args, got 1
@@ -396,19 +396,19 @@ local too_many = two_params(10, 20, 30)
 -- ==========================================
 
 function pcall_else_test()
-    local ok, result = pcall(function()
-        return "success value"
-    end)
+	local ok, result = pcall(function()
+		return "success value"
+	end)
 
-    if ok then
-        -- result is "success value" (string)
-        local success_value = result
-        return success_value
-    else
-        -- result is error message (string)
-        local error_msg = result
-        return error_msg
-    end
+	if ok then
+		-- result is "success value" (string)
+		local success_value = result
+		return success_value
+	else
+		-- result is error message (string)
+		local error_msg = result
+		return error_msg
+	end
 end
 
 -- ==========================================
@@ -416,10 +416,10 @@ end
 -- ==========================================
 
 function dynamic_require(module_name)
-    -- ERROR: require expects string literal for static analysis
-    -- Hovering over module_name should show it's a string
-    local m = require(module_name)
-    return m
+	-- ERROR: require expects string literal for static analysis
+	-- Hovering over module_name should show it's a string
+	local m = require(module_name)
+	return m
 end
 
 -- ==========================================
@@ -427,13 +427,13 @@ end
 -- ==========================================
 
 function table_ambiguity()
-    -- Is this an array or object with numeric keys?
-    local t = {1, 2, 3}
-    -- Valid: array access
-    local first = t[1]
-    -- Valid: accessing numeric key (same as array access)
-    local one = t[1]
-    return first
+	-- Is this an array or object with numeric keys?
+	local t = { 1, 2, 3 }
+	-- Valid: array access
+	local first = t[1]
+	-- Valid: accessing numeric key (same as array access)
+	local one = t[1]
+	return first
 end
 
 -- ==========================================
@@ -441,16 +441,16 @@ end
 -- ==========================================
 
 function concat_mixed()
-    local num = 42
-    local str = "value: "
-    -- OK: coerces num to string
-    return str .. num
+	local num = 42
+	local str = "value: "
+	-- OK: coerces num to string
+	return str .. num
 end
 
 function concat_nil()
-    local nothing = nil
-    -- ERROR: Cannot concatenate nil
-    return "value: " .. nothing
+	local nothing = nil
+	-- ERROR: Cannot concatenate nil
+	return "value: " .. nothing
 end
 
 -- ==========================================
@@ -458,13 +458,13 @@ end
 -- ==========================================
 
 function logical_short_circuit()
-    local a = nil
-    local b = "value"
-    -- OK: returns b because a is falsy
-    local result = a and b
-    -- OK: returns a (truthy)
-    local result2 = a or b
-    return result
+	local a = nil
+	local b = "value"
+	-- OK: returns b because a is falsy
+	local result = a and b
+	-- OK: returns a (truthy)
+	local result2 = a or b
+	return result
 end
 
 -- ==========================================
@@ -472,11 +472,11 @@ end
 -- ==========================================
 
 function table_method_test()
-    local list = {1, 2, 3}
-    -- OK: table.insert is a method, but Lua uses table.insert(list, val)
-    -- In OOP style this would be list:insert(val)
-    -- Hovering over list should show: {number}
-    return #list
+	local list = { 1, 2, 3 }
+	-- OK: table.insert is a method, but Lua uses table.insert(list, val)
+	-- In OOP style this would be list:insert(val)
+	-- Hovering over list should show: {number}
+	return #list
 end
 
 -- ==========================================
@@ -484,22 +484,22 @@ end
 -- ==========================================
 
 function loop_iterator_types()
-    local obj = {a = 1, b = 2, c = 3}
+	local obj = { a = 1, b = 2, c = 3 }
 
-    for k, v in pairs(obj) do
-        -- k: string, v: number
-        -- Hovering over k should show: string
-        -- Hovering over v should show: number
-    end
+	for k, v in pairs(obj) do
+		-- k: string, v: number
+		-- Hovering over k should show: string
+		-- Hovering over v should show: number
+	end
 
-    local arr = {10, 20, 30}
-    for i, v in ipairs(arr) do
-        -- i: number, v: number
-        -- Hovering over i should show: number
-        -- Hovering over v should show: number
-    end
+	local arr = { 10, 20, 30 }
+	for i, v in ipairs(arr) do
+		-- i: number, v: number
+		-- Hovering over i should show: number
+		-- Hovering over v should show: number
+	end
 
-    return obj
+	return obj
 end
 
 -- ==========================================
@@ -507,11 +507,11 @@ end
 -- ==========================================
 
 function with_optional(param)
-    if param == nil then
-        param = "default"
-    end
-    -- param is now definitely string
-    return param
+	if param == nil then
+		param = "default"
+	end
+	-- param is now definitely string
+	return param
 end
 
 -- ==========================================
@@ -519,15 +519,15 @@ end
 -- ==========================================
 
 function type_guard(value)
-    if type(value) == "number" then
-        return value * 2
-    elseif type(value) == "string" then
-        return string.len(value)
-    elseif type(value) == "table" then
-        return #value
-    else
-        return 0
-    end
+	if type(value) == "number" then
+		return value * 2
+	elseif type(value) == "string" then
+		return string.len(value)
+	elseif type(value) == "table" then
+		return #value
+	else
+		return 0
+	end
 end
 
 -- Hovering over value in each branch shows narrowed type
@@ -537,8 +537,8 @@ end
 -- ==========================================
 
 function never_returns()
-    error("This function never returns normally")
-    -- Hovering should show: () -> never
+	error "This function never returns normally"
+	-- Hovering should show: () -> never
 end
 
 -- ==========================================
@@ -546,33 +546,33 @@ end
 -- ==========================================
 
 function complex_nested()
-    local config = {
-        server = {
-            host = "localhost",
-            port = 8080,
-            ssl = {
-                enabled = true,
-                cert = "/path/to/cert.pem"
-            }
-        },
-        database = {
-            name = "mydb",
-            pool = {
-                min = 1,
-                max = 10
-            }
-        }
-    }
+	local config = {
+		server = {
+			host = "localhost",
+			port = 8080,
+			ssl = {
+				enabled = true,
+				cert = "/path/to/cert.pem",
+			},
+		},
+		database = {
+			name = "mydb",
+			pool = {
+				min = 1,
+				max = 10,
+			},
+		},
+	}
 
-    -- Access nested fields
-    local host = config.server.host
-    local cert = config.server.ssl.cert
-    local max_pool = config.database.pool.max
+	-- Access nested fields
+	local host = config.server.host
+	local cert = config.server.ssl.cert
+	local max_pool = config.database.pool.max
 
-    -- ERROR: Accessing non-existent field
-    local invalid = config.server.ssl.invalid_field
+	-- ERROR: Accessing non-existent field
+	local invalid = config.server.ssl.invalid_field
 
-    return config
+	return config
 end
 
 -- ==========================================
@@ -580,17 +580,17 @@ end
 -- ==========================================
 
 function compose(f, g)
-    return function(x)
-        return f(g(x))
-    end
+	return function(x)
+		return f(g(x))
+	end
 end
 
 function add_one(x)
-    return x + 1
+	return x + 1
 end
 
 function double(x)
-    return x * 2
+	return x * 2
 end
 
 local add_then_double = compose(double, add_one)
@@ -601,14 +601,14 @@ local add_then_double = compose(double, add_one)
 -- ==========================================
 
 function sum_all(...)
-    local total = 0
-    local args = {...}
+	local total = 0
+	local args = { ... }
 
-    for i, v in ipairs(args) do
-        total = total + v
-    end
+	for i, v in ipairs(args) do
+		total = total + v
+	end
 
-    return total
+	return total
 end
 
 -- Hovering over sum_all should show: (number, ...) -> number
@@ -618,20 +618,20 @@ end
 -- ==========================================
 
 function with_metamethod()
-    local mt = {
-        __add = function(a, b)
-            return {value = a.value + b.value}
-        end
-    }
+	local mt = {
+		__add = function(a, b)
+			return { value = a.value + b.value }
+		end,
+	}
 
-    local num1 = {value = 10, __metatable = mt}
-    local num2 = {value = 20, __metatable = mt}
+	local num1 = { value = 10, __metatable = mt }
+	local num2 = { value = 20, __metatable = mt }
 
-    -- Uses __add metamethod
-    local result = num1 + num2
+	-- Uses __add metamethod
+	local result = num1 + num2
 
-    -- Hovering over num1, num2 should show type info
-    return result.value
+	-- Hovering over num1, num2 should show type info
+	return result.value
 end
 
 -- ==========================================
@@ -646,11 +646,11 @@ end
 -- ==========================================
 
 function double_constrained(x)
-    assert(type(x) == "number")
-    assert(x > 0)
+	assert(type(x) == "number")
+	assert(x > 0)
 
-    -- x is now: number and > 0
-    return x * 2
+	-- x is now: number and > 0
+	return x * 2
 end
 
 -- ==========================================
@@ -658,9 +658,9 @@ end
 -- ==========================================
 
 function string_method_wrong_type()
-    local num = 42
-    -- ERROR: calling string method on number
-    return string.len(num)
+	local num = 42
+	-- ERROR: calling string method on number
+	return string.len(num)
 end
 
 -- ==========================================
@@ -668,9 +668,9 @@ end
 -- ==========================================
 
 function math_wrong_type()
-    local str = "hello"
-    -- ERROR: math functions expect number
-    return math.floor(str)
+	local str = "hello"
+	-- ERROR: math functions expect number
+	return math.floor(str)
 end
 
 -- ==========================================
@@ -678,16 +678,16 @@ end
 -- ==========================================
 
 function time_functions()
-    local time_val = os.time()
-    -- Hovering over time_val: number
+	local time_val = os.time()
+	-- Hovering over time_val: number
 
-    local date_str = os.date("%Y-%m-%d", time_val)
-    -- Hovering over date_str: string
+	local date_str = os.date("%Y-%m-%d", time_val)
+	-- Hovering over date_str: string
 
-    local env_var = os.getenv("PATH")
-    -- Hovering over env_var: string | nil
+	local env_var = os.getenv "PATH"
+	-- Hovering over env_var: string | nil
 
-    return date_str
+	return date_str
 end
 
 -- ==========================================
@@ -695,18 +695,18 @@ end
 -- ==========================================
 
 function io_types()
-    local file, err = io.open("test.txt", "r")
+	local file, err = io.open("test.txt", "r")
 
-    if file ~= nil then
-        -- file is a table (file handle)
-        -- Hovering over file: table with methods: close, read, write, etc.
-        local content = file:read("*all")
-        file:close()
-        return content
-    else
-        -- err is string | nil
-        return nil
-    end
+	if file ~= nil then
+		-- file is a table (file handle)
+		-- Hovering over file: table with methods: close, read, write, etc.
+		local content = file:read "*all"
+		file:close()
+		return content
+	else
+		-- err is string | nil
+		return nil
+	end
 end
 
 -- ==========================================
@@ -714,19 +714,19 @@ end
 -- ==========================================
 
 function coroutine_test()
-    local co = coroutine.create(function()
-        return "coroutine result"
-    end)
+	local co = coroutine.create(function()
+		return "coroutine result"
+	end)
 
-    -- Hovering over co: thread (coroutine)
-    local success, result = coroutine.resume(co)
+	-- Hovering over co: thread (coroutine)
+	local success, result = coroutine.resume(co)
 
-    if success then
-        -- result is the return value from coroutine
-        return result
-    end
+	if success then
+		-- result is the return value from coroutine
+		return result
+	end
 
-    return nil
+	return nil
 end
 
 -- ==========================================
@@ -734,13 +734,13 @@ end
 -- ==========================================
 
 function weak_table_test()
-    -- Weak tables are valid but have special semantics
-    local weak = {__mode = "v"}
-    weak[1] = "first"
-    weak[2] = "second"
+	-- Weak tables are valid but have special semantics
+	local weak = { __mode = "v" }
+	weak[1] = "first"
+	weak[2] = "second"
 
-    -- Hovering over weak should still work
-    return weak
+	-- Hovering over weak should still work
+	return weak
 end
 
 -- ==========================================
@@ -748,12 +748,12 @@ end
 -- ==========================================
 
 local callbacks = {
-    on_success = function(data)
-        return "processed: " .. data
-    end,
-    on_error = function(msg)
-        return "error: " .. msg
-    end
+	on_success = function(data)
+		return "processed: " .. data
+	end,
+	on_error = function(msg)
+		return "error: " .. msg
+	end,
 }
 
 -- Hovering over callbacks.on_success: (string) -> string
@@ -764,17 +764,17 @@ local callbacks = {
 -- ==========================================
 
 function pattern_matching()
-    local text = "hello world 123"
+	local text = "hello world 123"
 
-    -- Extract number
-    local num_str = string.match(text, "%d+")
-    -- Hovering over num_str: string | nil
+	-- Extract number
+	local num_str = string.match(text, "%d+")
+	-- Hovering over num_str: string | nil
 
-    -- Extract word
-    local word = string.match(text, "%a+")
-    -- Hovering over word: string | nil
+	-- Extract word
+	local word = string.match(text, "%a+")
+	-- Hovering over word: string | nil
 
-    return num_str or word
+	return num_str or word
 end
 
-print("Edge case test file loaded")
+print "Edge case test file loaded"
