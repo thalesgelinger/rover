@@ -1418,9 +1418,13 @@ impl<'a> TypeInference<'a> {
 
         if let (Some(base_node), Some(method_name)) = (base, method) {
             let base_type = self.infer_expression(base_node);
+            let resolved_base_type = match &base_type {
+                LuaType::Function(func) => func.return_type().clone(),
+                _ => base_type.clone(),
+            };
 
             // Check if method exists on the base type
-            match &base_type {
+            match &resolved_base_type {
                 LuaType::String => {
                     // String methods
                     if let Some(string_type) = self.env.get("string") {
@@ -1834,7 +1838,14 @@ impl<'a> TypeInference<'a> {
                 ty
             };
 
-            self.env.set(name.clone(), final_ty);
+            let should_override = match self.env.get(&name) {
+                Some(existing) => matches!(existing, LuaType::Unknown),
+                None => true,
+            };
+
+            if should_override {
+                self.env.set(name.clone(), final_ty);
+            }
 
             // Track pcall result mapping: local ok, result = pcall(...)
             if let Some((success_var, result_var)) = &names_for_pcall {
@@ -1903,18 +1914,30 @@ impl<'a> TypeInference<'a> {
 
                 // Check for type conflicts
                 if let Some(existing) = self.env.get(&name) {
-                    if !matches!(existing, LuaType::Unknown) && existing != value_type {
-                        // Type conflict - existing type is known and different
-                        self.errors.push(TypeError {
-                            message: format!(
-                                "Cannot assign '{}' to variable '{}' of type '{}'",
-                                value_type, name, existing
-                            ),
-                            expected: existing,
-                            actual: value_type.clone(),
-                            line: target.start_position().row,
-                            column: target.start_position().column,
-                        });
+                    let value_is_open_table = matches!(
+                        value_type,
+                        LuaType::Table(ref table)
+                            if table.fields.is_empty() && table.open && table.array_element.is_none()
+                    );
+                    let value_is_unknown = matches!(value_type, LuaType::Unknown);
+
+                    if !matches!(existing, LuaType::Unknown) {
+                        if existing != value_type && !(value_is_open_table || value_is_unknown) {
+                            // Type conflict - existing type is known and different
+                            self.errors.push(TypeError {
+                                message: format!(
+                                    "Cannot assign '{}' to variable '{}' of type '{}'",
+                                    value_type, name, existing
+                                ),
+                                expected: existing,
+                                actual: value_type.clone(),
+                                line: target.start_position().row,
+                                column: target.start_position().column,
+                            });
+                        }
+                        if value_is_open_table || value_is_unknown {
+                            return;
+                        }
                     }
                 }
 
@@ -2551,7 +2574,7 @@ local b = "hello"
 local c = true
 local d = nil
 "#;
-        let (tree, source) = parse(code);
+        let (_tree, source) = parse(code);
         let mut inf = TypeInference::new(&source);
 
         // Simulate walking and processing declarations
@@ -2717,7 +2740,6 @@ local mymodule = require("mymodule")
 local result = mymodule.process()
 "#;
         let (tree, source) = parse(code);
-        let mut inf = TypeInference::new(&source);
 
         let root = tree.root_node();
 
@@ -2735,7 +2757,7 @@ local result = mymodule.process()
         );
         cache.insert("mymodule".to_string(), module_exports);
 
-        inf = TypeInference::with_module_cache(&source, Arc::new(cache));
+        let mut inf = TypeInference::with_module_cache(&source, Arc::new(cache));
 
         // Process declarations
         for child in root.children(&mut root.walk()) {

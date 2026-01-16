@@ -1,12 +1,12 @@
 mod analyzer;
 mod formatter;
 mod incremental;
-mod rule_runtime;
-mod rules;
+mod specs;
 mod symbol;
 pub mod type_inference;
 pub mod types;
 
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Parser;
 
 use crate::analyzer::Analyzer;
@@ -17,9 +17,7 @@ pub use analyzer::{
 };
 pub use formatter::{FormatterConfig, format_code, format_code_with_config};
 pub use incremental::{CachedParse, IncrementalParser};
-pub use rule_runtime::MemberKind;
-pub use rule_runtime::{SpecDoc, SpecDocMember};
-pub use rules::lookup_spec;
+pub use specs::{MemberKind, SpecDoc, SpecDocMember, lookup_spec};
 pub use symbol::{
     ScopeType, SourcePosition as SymbolSourcePosition, SourceRange as SymbolSourceRange, Symbol,
     SymbolKind, SymbolTable,
@@ -71,6 +69,7 @@ pub fn analyze_with_options(code: &str, options: AnalyzeOptions) -> SemanticMode
 /// Run type inference pass and update symbol types
 fn run_type_inference(code: &str, tree: &tree_sitter::Tree, model: &mut SemanticModel) {
     let mut type_inf = type_inference::TypeInference::new(code);
+    seed_symbol_spec_types(&mut type_inf, &model.symbol_specs);
 
     // Walk AST and infer types
     infer_types_recursive(&mut type_inf, tree.root_node(), code);
@@ -84,6 +83,112 @@ fn run_type_inference(code: &str, tree: &tree_sitter::Tree, model: &mut Semantic
 
     // Collect type errors
     model.type_errors = type_inf.errors;
+}
+
+fn seed_symbol_spec_types(
+    type_inf: &mut type_inference::TypeInference<'_>,
+    specs: &HashMap<String, SymbolSpecMetadata>,
+) {
+    for (name, spec) in specs {
+        let ty = lua_type_for_spec_id(&spec.spec_id);
+        type_inf.env.set(name.clone(), ty);
+    }
+}
+
+fn lua_type_for_spec_id(spec_id: &str) -> LuaType {
+    let mut seen = HashSet::new();
+    lua_type_for_spec_id_inner(spec_id, &mut seen)
+}
+
+fn lua_type_for_spec_id_inner(spec_id: &str, seen: &mut HashSet<String>) -> LuaType {
+    if !seen.insert(spec_id.to_string()) {
+        return LuaType::Any;
+    }
+
+    let ty = match spec_id {
+        "string" | "lua_string" => LuaType::String,
+        "number" => LuaType::Number,
+        "boolean" => LuaType::Boolean,
+        "nil" => LuaType::Nil,
+        "function" => LuaType::Function(Box::new(FunctionType::default())),
+        "any" => LuaType::Any,
+        id if is_response_builder_spec(id) => rover_response_builder_type(),
+        _ => {
+            if let Some(doc) = lookup_spec(spec_id) {
+                let mut fields = HashMap::new();
+                for member in doc.members {
+                    let field_type = match member.kind {
+                        MemberKind::Method => {
+                            let return_type = lua_type_for_spec_id_inner(member.target, seen);
+                            LuaType::Function(Box::new(FunctionType {
+                                params: vec![("...".to_string(), LuaType::Any)],
+                                returns: vec![return_type],
+                                vararg: true,
+                                is_method: true,
+                            }))
+                        }
+                        MemberKind::Field => lua_type_for_spec_id_inner(member.target, seen),
+                    };
+                    fields.insert(member.name.to_string(), field_type);
+                }
+                LuaType::Table(TableType {
+                    fields,
+                    open: true,
+                    array_element: None,
+                    metatable: None,
+                })
+            } else {
+                LuaType::Table(TableType::open())
+            }
+        }
+    };
+
+    seen.remove(spec_id);
+    ty
+}
+
+fn is_response_builder_spec(spec_id: &str) -> bool {
+    matches!(
+        spec_id,
+        "rover_response_json"
+            | "rover_response_text"
+            | "rover_response_html"
+            | "rover_response_error"
+            | "rover_response_redirect"
+            | "rover_response_no_content"
+            | "RoverResponse"
+    )
+}
+
+fn rover_response_builder_type() -> LuaType {
+    let mut fields = HashMap::new();
+    fields.insert(
+        "status".to_string(),
+        LuaType::Function(Box::new(FunctionType {
+            params: vec![
+                ("code".to_string(), LuaType::Number),
+                ("payload".to_string(), LuaType::Any),
+            ],
+            returns: vec![LuaType::Table(TableType::open())],
+            vararg: false,
+            is_method: true,
+        })),
+    );
+    fields.insert(
+        "permanent".to_string(),
+        LuaType::Function(Box::new(FunctionType {
+            params: vec![],
+            returns: vec![LuaType::Table(TableType::open())],
+            vararg: false,
+            is_method: true,
+        })),
+    );
+    LuaType::Table(TableType {
+        fields,
+        open: true,
+        array_element: None,
+        metatable: None,
+    })
 }
 
 /// Recursively walk AST and infer types
@@ -219,6 +324,8 @@ local person = { name = name, age = 25 }
             panic!("Expected table type for person");
         }
     }
+
+    #[test]
     fn should_parse_rest_api_basic() {
         let code = include_str!("../../examples/rest_api_basic.lua");
         let model = analyze(code);
@@ -226,56 +333,44 @@ local person = { name = name, age = 25 }
         assert!(model.server.is_some(), "Server should be parsed");
         let server = model.server.unwrap();
         assert!(server.exported, "Server should be exported");
-        assert_eq!(server.routes.len(), 4, "Should have 4 routes");
+        assert_eq!(server.routes.len(), 5, "Should have 5 routes");
 
-        // Route 1: GET /hello
-        let route = &server.routes[0];
-        assert_eq!(route.method, "GET");
-        assert_eq!(route.path, "/hello");
-        assert_eq!(route.responses[0].schema["message"], "Hello World");
+        let find_route = |path: &str| {
+            server
+                .routes
+                .iter()
+                .find(|route| route.path == path)
+                .unwrap_or_else(|| panic!("missing route {}", path))
+        };
 
-        // Route 2: GET /hello/{id}
-        let route = &server.routes[1];
-        assert_eq!(route.method, "GET");
-        assert_eq!(route.path, "/hello/{id}");
-        assert!(!route.responses.is_empty());
-        // Check path params tracking
-        assert_eq!(route.request.path_params.len(), 1);
-        assert_eq!(route.request.path_params[0].name, "id");
-        assert!(
-            route.request.path_params[0].used,
-            "id param should be marked as used"
-        );
+        let hello = find_route("/hello");
+        assert_eq!(hello.method, "GET");
+        assert_eq!(hello.responses[0].schema["message"], "Hello World");
 
-        // Route 3: GET /users/{id}/posts/{postId}
-        let route = &server.routes[2];
-        assert_eq!(route.method, "GET");
-        assert_eq!(route.path, "/users/{id}/posts/{postId}");
-        assert!(!route.responses.is_empty());
-        // Check multiple path params
-        assert_eq!(route.request.path_params.len(), 2);
-        assert_eq!(route.request.path_params[0].name, "id");
-        assert_eq!(route.request.path_params[1].name, "postId");
-        assert!(
-            route.request.path_params[0].used,
-            "id param should be marked as used"
-        );
-        assert!(
-            route.request.path_params[1].used,
-            "postId param should be marked as used"
-        );
+        let hello_param = find_route("/hello/{id}");
+        assert_eq!(hello_param.method, "GET");
+        assert_eq!(hello_param.request.path_params.len(), 1);
+        assert_eq!(hello_param.request.path_params[0].name, "id");
+        assert!(hello_param.request.path_params[0].used);
 
-        // Route 4: GET /greet/{name}
-        let route = &server.routes[3];
-        assert_eq!(route.method, "GET");
-        assert_eq!(route.path, "/greet/{name}");
-        assert!(!route.responses.is_empty());
-        assert_eq!(route.request.path_params.len(), 1);
-        assert_eq!(route.request.path_params[0].name, "name");
-        assert!(
-            route.request.path_params[0].used,
-            "name param should be marked as used"
-        );
+        let write_route = find_route("/write/{name}");
+        assert_eq!(write_route.method, "GET");
+        assert_eq!(write_route.request.path_params.len(), 1);
+        assert_eq!(write_route.request.path_params[0].name, "name");
+
+        let posts = find_route("/users/{id}/posts/{postId}");
+        assert_eq!(posts.method, "GET");
+        assert_eq!(posts.request.path_params.len(), 2);
+        assert_eq!(posts.request.path_params[0].name, "id");
+        assert_eq!(posts.request.path_params[1].name, "postId");
+        assert!(posts.request.path_params[0].used);
+        assert!(posts.request.path_params[1].used);
+
+        let greet = find_route("/greet/{name}");
+        assert_eq!(greet.method, "GET");
+        assert_eq!(greet.request.path_params.len(), 1);
+        assert_eq!(greet.request.path_params[0].name, "name");
+        assert!(greet.request.path_params[0].used);
     }
 
     #[test]
@@ -493,6 +588,63 @@ return api
         let ctx_spec = model.symbol_specs.get("ctx").unwrap();
         assert_eq!(ctx_spec.spec_id, "ctx");
         assert!(!ctx_spec.members.is_empty(), "ctx should have members");
+    }
+
+    #[test]
+    fn should_support_custom_server_variable_names() {
+        let code = r#"
+local server = rover.server {}
+
+function server.hello.p_name.get(ctx)
+    local name = ctx:params().name
+    return server.json {
+        message = name,
+    }
+end
+
+return server
+        "#;
+
+        let model = analyze(code);
+        assert!(
+            model.errors.is_empty(),
+            "unexpected errors: {:?}",
+            model.errors
+        );
+
+        let server = model.server.expect("server parsed");
+        assert_eq!(server.routes.len(), 1);
+        let route = &server.routes[0];
+        assert_eq!(route.method, "GET");
+        assert_eq!(route.path, "/hello/{name}");
+        assert_eq!(route.context_param.as_deref(), Some("ctx"));
+        assert_eq!(route.responses.len(), 1);
+        assert_eq!(route.responses[0].content_type, "application/json");
+
+        assert!(
+            model.symbol_specs.contains_key("server"),
+            "server symbol spec should be registered"
+        );
+        assert!(
+            model.symbol_specs.contains_key("ctx"),
+            "ctx spec should remain registered"
+        );
+    }
+
+    #[test]
+    fn main_lua_should_not_report_ctx_errors() {
+        let code = include_str!("../../main.lua");
+        let model = analyze_with_options(
+            code,
+            AnalyzeOptions {
+                type_inference: true,
+            },
+        );
+        assert!(
+            model.errors.is_empty(),
+            "main.lua errors: {:?}",
+            model.errors
+        );
     }
 
     #[test]

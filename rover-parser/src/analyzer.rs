@@ -1,10 +1,8 @@
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
-use crate::rule_runtime::{MemberKind, RuleContext, RuleEngine};
-use crate::rules;
+use crate::specs::{MemberKind, lookup_spec};
 use crate::symbol::{ScopeType, Symbol, SymbolKind, SymbolTable};
 use crate::types::LuaType;
 
@@ -187,7 +185,7 @@ pub struct Analyzer {
     pub symbol_table: SymbolTable,
     pub function_symbol_table: HashMap<String, FunctionId>,
     pub function_counter: FunctionId,
-    pub app_var_name: Option<String>,
+    pub server_vars: HashSet<String>,
     pub current_function_name: Option<String>,
     pub current_context_param: Option<String>,
     pub current_function_index: Option<usize>,
@@ -212,7 +210,7 @@ impl Analyzer {
             symbol_table: SymbolTable::new(),
             function_symbol_table: HashMap::new(),
             function_counter: 0,
-            app_var_name: None,
+            server_vars: HashSet::new(),
             current_function_name: None,
             current_context_param: None,
             current_function_index: None,
@@ -226,7 +224,7 @@ impl Analyzer {
     }
 
     fn register_symbol_spec<S: Into<String>>(&mut self, name: S, spec_id: &str) {
-        if let Some(spec) = rules::lookup_spec(spec_id) {
+        if let Some(spec) = lookup_spec(spec_id) {
             let members = spec
                 .members
                 .iter()
@@ -249,24 +247,16 @@ impl Analyzer {
         }
     }
 
-    fn rule_engine() -> &'static RuleEngine<Analyzer> {
-        static RULE_ENGINE: OnceLock<RuleEngine<Analyzer>> = OnceLock::new();
-        RULE_ENGINE.get_or_init(|| rules::build_rule_engine())
-    }
-
     pub fn walk(&mut self, node: Node) {
-        // Track scopes with range information
         let pushed_scope = match node.kind() {
             "chunk" => {
                 self.push_scope_with_range(ScopeType::File, node);
                 true
             }
             "function_declaration" | "function_definition" => {
-                // Capture parent scope ID before pushing function scope
                 let parent_scope_id = self.symbol_table.get_current_scope().map(|s| s.id);
                 self.push_scope_with_range(ScopeType::Function, node);
                 self.register_function_params(node);
-                // Register function name in the parent scope
                 if let Some(parent_id) = parent_scope_id {
                     self.register_function_name(node, parent_id);
                 }
@@ -284,26 +274,44 @@ impl Analyzer {
             _ => false,
         };
 
-        // Register local variables
-        if node.kind() == "variable_declaration" {
-            self.register_local_variables(node);
+        match node.kind() {
+            "variable_declaration" => {
+                self.register_local_variables(node);
+                self.inspect_special_assignment(node);
+            }
+            "assignment_statement" => {
+                self.inspect_special_assignment(node);
+            }
+            _ => {}
         }
 
-        // Track variable usage (reads)
         if node.kind() == "identifier" {
             self.track_identifier_usage(node);
         }
 
-        let matches = Self::rule_engine().apply(self, node);
+        let mut handler_entered = false;
+        match node.kind() {
+            "function_declaration" => {
+                self.track_function_assignment(node);
+                handler_entered = self.enter_handler_function(node);
+            }
+            "return_statement" => self.handle_return(node),
+            "function_call" => self.process_function_call(node),
+            "dot_index_expression" | "method_index_expression" => {
+                self.validate_member_access(node);
+            }
+            _ => {}
+        }
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.walk(child);
         }
 
-        Self::rule_engine().finish(self, node, matches);
+        if handler_entered {
+            self.exit_handler_function();
+        }
 
-        // Pop scope
         if pushed_scope {
             self.pop_scope();
         }
@@ -311,12 +319,14 @@ impl Analyzer {
 
     pub fn handle_rover_server_assignment(&mut self, node: Node) {
         if let Some(name) = self.extract_var_name_from_assignment(node) {
-            self.app_var_name = Some(name.clone());
-            self.model.server = Some(RoverServer {
-                id: 0,
-                exported: false,
-                routes: Vec::new(),
-            });
+            self.server_vars.insert(name.clone());
+            if self.model.server.is_none() {
+                self.model.server = Some(RoverServer {
+                    id: 0,
+                    exported: false,
+                    routes: Vec::new(),
+                });
+            }
             self.register_symbol_spec(name, "rover_server");
         }
     }
@@ -328,17 +338,106 @@ impl Analyzer {
     }
 
     pub fn handle_potential_guard_assignment(&mut self, node: Node) {
-        // Check if this assignment contains rover.guard (direct reference)
-        if self.contains_rover_guard_reference(node) {
+        if self.assignment_contains_guard_reference(node) {
             if let Some(name) = self.extract_var_name_from_assignment(node) {
                 self.register_symbol_spec(name, "rover_guard");
             }
         }
     }
 
-    fn contains_rover_guard_reference(&self, node: Node) -> bool {
-        let source = &self.source[node.start_byte()..node.end_byte()];
-        source.contains("rover.guard") && !source.contains("rover.guard(")
+    fn inspect_special_assignment(&mut self, node: Node) {
+        if self.assignment_contains_call(node, &["rover", "server"]) {
+            self.handle_rover_server_assignment(node);
+        }
+
+        if self.assignment_contains_guard_constructor(node) {
+            self.handle_rover_guard_assignment(node);
+        } else if self.assignment_contains_guard_reference(node) {
+            self.handle_potential_guard_assignment(node);
+        }
+    }
+
+    fn assignment_contains_guard_reference(&self, node: Node) -> bool {
+        self.assignment_expressions(node).into_iter().any(|expr| {
+            expr.kind() == "dot_index_expression" && self.extract_dotted_name(expr) == "rover.guard"
+        })
+    }
+
+    fn assignment_contains_guard_constructor(&self, node: Node) -> bool {
+        self.assignment_expressions(node).into_iter().any(|expr| {
+            if expr.kind() != "function_call" {
+                return false;
+            }
+            if let Some(parts) = self.call_path_segments(expr) {
+                parts.get(0).map(|s| s.as_str()) == Some("rover")
+                    && parts.get(1).map(|s| s.as_str()) == Some("guard")
+            } else {
+                false
+            }
+        })
+    }
+
+    fn assignment_contains_call(&self, node: Node, expected: &[&str]) -> bool {
+        self.assignment_expressions(node).into_iter().any(|expr| {
+            if expr.kind() != "function_call" {
+                return false;
+            }
+            if let Some(parts) = self.call_path_segments(expr) {
+                if parts.len() != expected.len() {
+                    return false;
+                }
+                parts
+                    .iter()
+                    .map(|s| s.as_str())
+                    .zip(expected.iter().copied())
+                    .all(|(left, right)| left == right)
+            } else {
+                false
+            }
+        })
+    }
+
+    fn assignment_expressions<'a>(&self, node: Node<'a>) -> Vec<Node<'a>> {
+        let mut expressions = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "expression_list" {
+                let mut expr_cursor = child.walk();
+                for expr in child.children(&mut expr_cursor) {
+                    if expr.is_named() {
+                        expressions.push(expr);
+                    }
+                }
+            }
+        }
+        expressions
+    }
+
+    fn call_path_segments(&self, call_node: Node) -> Option<Vec<String>> {
+        let raw = self.get_callee_path(call_node)?;
+        let head = raw.split(':').next().unwrap_or(&raw);
+        let segments: Vec<String> = head.split('.').map(|part| part.to_string()).collect();
+        if segments.is_empty() {
+            None
+        } else {
+            Some(segments)
+        }
+    }
+
+    fn call_from_server(&self, call_node: Node, method: &str) -> bool {
+        if call_node.kind() != "function_call" {
+            return false;
+        }
+        if let Some(parts) = self.call_path_segments(call_node) {
+            if parts.len() < 2 {
+                return false;
+            }
+            let base = &parts[0];
+            let member = parts.last().unwrap();
+            self.server_vars.contains(base) && member == method
+        } else {
+            false
+        }
     }
 
     fn extract_var_name_from_assignment(&self, node: Node) -> Option<String> {
@@ -543,6 +642,19 @@ impl Analyzer {
                 "dot_index_expression" => {
                     return Some(self.extract_dotted_name(child));
                 }
+                "method_index_expression" => {
+                    if let Some((object_node, method_name)) = self.extract_method_target(child) {
+                        let object_path = match object_node.kind() {
+                            "identifier" => self.source
+                                [object_node.start_byte()..object_node.end_byte()]
+                                .to_string(),
+                            "dot_index_expression" => self.extract_dotted_name(object_node),
+                            _ => self.source[object_node.start_byte()..object_node.end_byte()]
+                                .to_string(),
+                        };
+                        return Some(format!("{}:{}", object_path, method_name));
+                    }
+                }
                 "arguments" => break,
                 _ => {}
             }
@@ -550,7 +662,7 @@ impl Analyzer {
         None
     }
 
-    pub fn enter_handler_function(&mut self, node: Node) {
+    pub fn enter_handler_function(&mut self, node: Node) -> bool {
         // Extract function name from dot_index_expression
         let mut cursor = node.walk();
         let children: Vec<Node> = node.children(&mut cursor).collect();
@@ -566,26 +678,26 @@ impl Analyzer {
             }
         }
 
+        if self.model.server.is_none() {
+            return false;
+        }
+
         if func_name_node.is_none() {
-            return;
+            return false;
         }
 
         let func_name = self.extract_dotted_name(func_name_node.unwrap());
         if func_name.is_empty() {
-            return;
-        }
-
-        if let Some(ref app_var) = self.app_var_name {
-            if !func_name.starts_with(app_var) {
-                return;
-            }
-        } else {
-            return;
+            return false;
         }
 
         let parts: Vec<&str> = func_name.split('.').collect();
         if parts.len() < 2 {
-            return;
+            return false;
+        }
+
+        if !self.server_vars.contains(parts[0]) {
+            return false;
         }
 
         let method = parts[parts.len() - 1].to_uppercase();
@@ -607,7 +719,7 @@ impl Analyzer {
         };
 
         if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str()) {
-            return;
+            return false;
         }
 
         let function_range = SourceRange::from_node(node);
@@ -672,7 +784,7 @@ impl Analyzer {
             param_types: HashMap::new(),
         });
 
-        // Track context usage in the function body
+        true
     }
 
     pub fn exit_handler_function(&mut self) {
@@ -755,18 +867,15 @@ impl Analyzer {
     }
 
     fn parse_response_call(&mut self, node: Node) -> Option<Response> {
-        let source = self.source[node.start_byte()..node.end_byte()].to_string();
-
-        // Check for :status() modifier first
         let status = self.extract_status_code(node);
 
-        if source.contains("api.json") {
+        if self.call_from_server(node, "json") {
             self.parse_json_response(node, status)
-        } else if source.contains("api.text") {
+        } else if self.call_from_server(node, "text") {
             self.parse_text_response(status)
-        } else if source.contains("api.html") {
+        } else if self.call_from_server(node, "html") {
             self.parse_html_response(status)
-        } else if source.contains("api.error") || source.contains("api:error") {
+        } else if self.call_from_server(node, "error") {
             self.parse_error_response(status)
         } else {
             None
@@ -2001,10 +2110,6 @@ impl Analyzer {
         a.start_byte() == b.start_byte() && a.end_byte() == b.end_byte()
     }
 
-    pub fn push_scope(&mut self, scope_type: ScopeType) {
-        self.symbol_table.push_scope(scope_type);
-    }
-
     pub fn push_scope_with_range(&mut self, scope_type: ScopeType, node: Node) {
         let start = node.start_position();
         let end = node.end_position();
@@ -2036,10 +2141,6 @@ impl Analyzer {
             inferred_type: LuaType::Unknown,
         };
         self.symbol_table.insert_symbol(symbol);
-    }
-
-    pub fn resolve_symbol(&self, name: &str) -> Option<&Symbol> {
-        self.symbol_table.resolve_symbol(name)
     }
 
     fn register_function_params(&mut self, node: Node) {
@@ -2193,35 +2294,6 @@ impl Analyzer {
             }
             _ => false,
         }
-    }
-}
-
-impl RuleContext for Analyzer {
-    fn source(&self) -> &str {
-        &self.source
-    }
-
-    fn method_name(&self, node: Node) -> Option<String> {
-        self.get_method_call_info(node).map(|(_, _, method)| method)
-    }
-
-    fn callee_path(&self, node: Node) -> Option<String> {
-        if node.kind() != "function_call" {
-            return None;
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "identifier" => {
-                    return Some(self.source[child.start_byte()..child.end_byte()].to_string());
-                }
-                "dot_index_expression" => {
-                    return Some(self.extract_dotted_name(child));
-                }
-                _ => {}
-            }
-        }
-        None
     }
 }
 
