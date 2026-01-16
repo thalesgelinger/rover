@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -6,6 +5,7 @@ use anyhow::Result;
 use mlua::{
     Function, Lua, RegistryKey, Table, Thread, ThreadStatus, UserData, UserDataMethods, Value,
 };
+
 use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
@@ -104,12 +104,11 @@ impl BodyValue {
 impl UserData for BodyValue {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("json", |lua, this, ()| {
-            let value = crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
-            Ok(ParsedJson::new(value))
+            parse_json_with_expect(lua, &this.bytes)
         });
 
         methods.add_method("raw", |lua, this, ()| {
-            crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)
+            parse_json_with_expect(lua, &this.bytes)
         });
 
         methods.add_method("text", |lua, this, ()| {
@@ -134,39 +133,12 @@ impl UserData for BodyValue {
             }
             Ok(Value::Table(table))
         });
-    }
-}
 
-pub struct ParsedJson {
-    value: Value,
-}
-
-impl ParsedJson {
-    pub fn new(value: Value) -> Self {
-        Self { value }
-    }
-}
-
-impl UserData for ParsedJson {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("expect", |lua, this, schema: Table| {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let body_object = match &this.value {
-                    Value::Table(table) => table.clone(),
-                    _ => {
-                        return Err(mlua::Error::RuntimeError(
-                            "Request body must be a JSON object".to_string(),
-                        ));
-                    }
-                };
-
-                match rover_types::validate_table(lua, &body_object, &schema, "") {
-                    Ok(validated) => Ok(validated),
-                    Err(errors) => {
-                        let validation_errors = rover_types::ValidationErrors::new(errors);
-                        Err(mlua::Error::ExternalError(Arc::new(validation_errors)))
-                    }
-                }
+                let parsed =
+                    crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
+                validate_body_table(lua, &parsed, &schema)
             }));
 
             match result {
@@ -179,6 +151,63 @@ impl UserData for ParsedJson {
                 }
             }
         });
+    }
+}
+
+fn parse_json_with_expect(lua: &Lua, bytes: &Bytes) -> mlua::Result<Value> {
+    let value = crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, bytes)?;
+    if let Value::Table(table) = &value {
+        attach_expect_metatable(lua, table.clone())?;
+    }
+    Ok(value)
+}
+
+fn attach_expect_metatable(lua: &Lua, table: Table) -> mlua::Result<()> {
+    if table.metatable().is_some() {
+        return Ok(());
+    }
+
+    let meta = lua.create_table()?;
+    let methods = lua.create_table()?;
+    let expect_fn = lua.create_function(|lua, (data, schema): (Table, Table)| {
+        let body_value = Value::Table(data.clone());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validate_body_table(lua, &body_value, &schema)
+        }));
+
+        match result {
+            Ok(inner_result) => inner_result,
+            Err(panic_err) => {
+                eprintln!("PANIC in validation: {:?}", panic_err);
+                Err(mlua::Error::RuntimeError(
+                    "Internal server error occurred during validation".to_string(),
+                ))
+            }
+        }
+    })?;
+
+    methods.set("expect", expect_fn)?;
+    meta.set("__index", methods)?;
+    table.set_metatable(Some(meta))?;
+    Ok(())
+}
+
+fn validate_body_table(lua: &Lua, value: &Value, schema: &Table) -> mlua::Result<Value> {
+    let body_object = match value {
+        Value::Table(table) => table.clone(),
+        _ => {
+            return Err(mlua::Error::RuntimeError(
+                "Request body must be a JSON object".to_string(),
+            ));
+        }
+    };
+
+    match rover_types::validate_table(lua, &body_object, schema, "") {
+        Ok(validated) => Ok(validated),
+        Err(errors) => {
+            let validation_errors = rover_types::ValidationErrors::new(errors);
+            Err(mlua::Error::ExternalError(Arc::new(validation_errors)))
+        }
     }
 }
 

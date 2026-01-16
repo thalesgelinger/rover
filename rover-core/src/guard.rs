@@ -367,12 +367,11 @@ impl BodyValue {
 impl UserData for BodyValue {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("json", |lua, this, ()| {
-            let value = json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
-            Ok(ParsedJson::new(value))
+            parse_json_with_expect(lua, &this.bytes)
         });
 
         methods.add_method("raw", |lua, this, ()| {
-            json_bytes_ref_to_lua_direct(lua, &this.bytes)
+            parse_json_with_expect(lua, &this.bytes)
         });
 
         methods.add_method("text", |lua, this, ()| {
@@ -410,6 +409,44 @@ impl UserData for BodyValue {
     }
 }
 
+fn parse_json_with_expect(lua: &Lua, bytes: &Bytes) -> mlua::Result<Value> {
+    let value = json_bytes_ref_to_lua_direct(lua, bytes)?;
+    if let Value::Table(table) = &value {
+        attach_expect_metatable(lua, table.clone())?;
+    }
+    Ok(value)
+}
+
+fn attach_expect_metatable(lua: &Lua, table: Table) -> mlua::Result<()> {
+    if table.metatable().is_some() {
+        return Ok(());
+    }
+
+    let meta = lua.create_table()?;
+    let methods = lua.create_table()?;
+    let expect_fn = lua.create_function(|lua, (data, schema): (Table, Table)| {
+        let body_value = Value::Table(data.clone());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validate_body_table(lua, &body_value, &schema)
+        }));
+
+        match result {
+            Ok(inner_result) => inner_result,
+            Err(panic_err) => {
+                eprintln!("PANIC in validation: {:?}", panic_err);
+                Err(LuaError::RuntimeError(
+                    "Internal server error occurred during validation".to_string(),
+                ))
+            }
+        }
+    })?;
+
+    methods.set("expect", expect_fn)?;
+    meta.set("__index", methods)?;
+    table.set_metatable(Some(meta))?;
+    Ok(())
+}
+
 fn bytes_to_lua_string(lua: &Lua, bytes: &Bytes) -> Result<Value, LuaError> {
     let text_str = unsafe { std::str::from_utf8_unchecked(bytes) };
     Ok(Value::String(lua.create_string(text_str)?))
@@ -431,36 +468,6 @@ fn validate_body_table(lua: &Lua, value: &Value, schema: &Table) -> Result<Value
             let validation_errors = ValidationErrors::new(errors);
             Err(LuaError::ExternalError(Arc::new(validation_errors)))
         }
-    }
-}
-
-pub struct ParsedJson {
-    value: Value,
-}
-
-impl ParsedJson {
-    pub fn new(value: Value) -> Self {
-        Self { value }
-    }
-}
-
-impl UserData for ParsedJson {
-    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("expect", |lua, this, schema: Table| {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                validate_body_table(lua, &this.value, &schema)
-            }));
-
-            match result {
-                Ok(inner_result) => inner_result,
-                Err(panic_err) => {
-                    eprintln!("PANIC in validation: {:?}", panic_err);
-                    Err(LuaError::RuntimeError(
-                        "Internal server error occurred during validation".to_string(),
-                    ))
-                }
-            }
-        });
     }
 }
 
@@ -500,7 +507,7 @@ fn json_to_lua(lua: &Lua, value: &serde_json::Value) -> mlua::Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mlua::ObjectLike;
+    use mlua::{Function, ObjectLike};
 
     #[test]
     fn test_body_value_json_method() {
@@ -509,11 +516,16 @@ mod tests {
 
         let body_value = lua.create_userdata(body).unwrap();
 
-        let parsed = body_value.call_method("json", ()).unwrap();
+        let parsed = body_value.call_method::<Value>("json", ()).unwrap();
 
         match parsed {
-            mlua::Value::UserData(_) => {}
-            _ => panic!("Expected UserData"),
+            Value::Table(table) => {
+                let name: String = table.get("name").unwrap();
+                let age: i64 = table.get("age").unwrap();
+                assert_eq!(name, "John");
+                assert_eq!(age, 30);
+            }
+            _ => panic!("Expected Table"),
         }
     }
 
@@ -578,13 +590,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parsed_json_expect_method() {
+    fn test_body_json_expect_chaining() {
         let lua = Lua::new();
         let body = BodyValue::new(Bytes::from(r#"{"name": "John", "age": 30}"#));
 
         let body_value = lua.create_userdata(body).unwrap();
-
-        let parsed = body_value.call_method("json", ()).unwrap();
+        let parsed = body_value.call_method::<Value>("json", ()).unwrap();
 
         let schema = lua.create_table().unwrap();
         schema.set("name", lua.create_table().unwrap()).unwrap();
@@ -597,15 +608,15 @@ mod tests {
         let schema_age: Table = schema.get("age").unwrap();
         schema_age.set("type", "integer").unwrap();
 
-        match parsed {
-            mlua::Value::UserData(ud) => {
-                let result: mlua::Table = ud.call_method("expect", schema).unwrap();
-                let name: String = result.get("name").unwrap();
-                let age: i64 = result.get("age").unwrap();
-                assert_eq!(name, "John");
-                assert_eq!(age, 30);
-            }
-            _ => panic!("Expected UserData"),
-        }
+        let expect_call: Function = lua
+            .load("return function(body, schema) return body:expect(schema) end")
+            .eval()
+            .unwrap();
+
+        let result: Table = expect_call.call((parsed, schema)).unwrap();
+        let name: String = result.get("name").unwrap();
+        let age: i64 = result.get("age").unwrap();
+        assert_eq!(name, "John");
+        assert_eq!(age, 30);
     }
 }
