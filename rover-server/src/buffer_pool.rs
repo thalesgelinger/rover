@@ -1,10 +1,12 @@
 use crate::Bytes;
 
-const POOL_SIZE_SMALL: usize = 64;
-const POOL_SIZE_MEDIUM: usize = 32;
-const POOL_SIZE_LARGE: usize = 16;
-const RESPONSE_POOL_SIZE: usize = 64;
-const JSON_POOL_SIZE: usize = 128;
+// Increased pool sizes for high-load scenarios (2000+ connections)
+const POOL_SIZE_SMALL: usize = 256;
+const POOL_SIZE_MEDIUM: usize = 128;
+const POOL_SIZE_LARGE: usize = 64;
+const RESPONSE_POOL_SIZE: usize = 512;
+const JSON_POOL_SIZE: usize = 512;
+const OFFSET_POOL_SIZE: usize = 256;
 
 pub struct BufferPool {
     /// Pool for query/header pairs with capacity 8
@@ -17,6 +19,8 @@ pub struct BufferPool {
     response_bufs: Vec<Vec<u8>>,
     /// Pool for JSON serialization buffers (256 bytes typical)
     json_bufs: Vec<Vec<u8>>,
+    /// Pool for query/header offset vectors (tuple of offsets)
+    offset_vecs: Vec<Vec<(u16, u8, u16, u16)>>,
 }
 
 impl BufferPool {
@@ -26,6 +30,7 @@ impl BufferPool {
         let mut bytes_pairs_32 = Vec::with_capacity(POOL_SIZE_LARGE);
         let mut response_bufs = Vec::with_capacity(RESPONSE_POOL_SIZE);
         let mut json_bufs = Vec::with_capacity(JSON_POOL_SIZE);
+        let mut offset_vecs = Vec::with_capacity(OFFSET_POOL_SIZE);
 
         for _ in 0..POOL_SIZE_SMALL {
             bytes_pairs_8.push(Vec::with_capacity(8));
@@ -42,6 +47,9 @@ impl BufferPool {
         for _ in 0..JSON_POOL_SIZE {
             json_bufs.push(Vec::with_capacity(256));
         }
+        for _ in 0..OFFSET_POOL_SIZE {
+            offset_vecs.push(Vec::with_capacity(16));
+        }
 
         Self {
             bytes_pairs_8,
@@ -49,6 +57,7 @@ impl BufferPool {
             bytes_pairs_32,
             response_bufs,
             json_bufs,
+            offset_vecs,
         }
     }
 
@@ -117,6 +126,24 @@ impl BufferPool {
         buf.clear();
         if self.json_bufs.len() < JSON_POOL_SIZE {
             self.json_bufs.push(buf);
+        }
+        // Drop if pool is full
+    }
+
+    /// Get a pooled offset vector for query/header parsing
+    #[inline]
+    pub fn get_offset_vec(&mut self) -> Vec<(u16, u8, u16, u16)> {
+        self.offset_vecs
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(16))
+    }
+
+    /// Return an offset vector to the pool
+    #[inline]
+    pub fn return_offset_vec(&mut self, mut vec: Vec<(u16, u8, u16, u16)>) {
+        vec.clear();
+        if self.offset_vecs.len() < OFFSET_POOL_SIZE {
+            self.offset_vecs.push(vec);
         }
         // Drop if pool is full
     }

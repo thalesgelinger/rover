@@ -6,8 +6,9 @@ use mlua::Thread;
 use std::io::{IoSlice, Read, Write};
 use std::time::Instant;
 
-const READ_BUF_SIZE: usize = 4096;
-const MAX_HEADERS: usize = 32;
+// Larger initial buffer to reduce reallocations for typical HTTP requests
+const READ_BUF_SIZE: usize = 8192;
+const MAX_HEADERS: usize = 48;
 
 #[derive(Debug, PartialEq)]
 pub enum ConnectionState {
