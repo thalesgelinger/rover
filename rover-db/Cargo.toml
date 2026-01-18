@@ -1,0 +1,18 @@
+[package]
+name = "rover_db"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mlua = { version = "0.11.5", features = ["anyhow", "vendored", "luajit52", "send", "serialize"] }
+libsql = "0.6"
+tokio = { version = "1", features = ["rt", "sync"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[lib]
+bench = false

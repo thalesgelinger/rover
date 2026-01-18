@@ -9,6 +9,7 @@ mod server;
 pub mod template;
 
 use html::create_html_module;
+use rover_db::create_db_module;
 use server::{AppServer, Server};
 
 use anyhow::Result;
@@ -105,6 +106,10 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
     // Add rover.html global templating function
     let html_module = create_html_module(&lua)?;
     rover.set("html", html_module)?;
+
+    // Add rover.db database module
+    let db_module = create_db_module(&lua)?;
+    rover.set("db", db_module)?;
 
     let _ = lua.globals().set("rover", rover);
 
