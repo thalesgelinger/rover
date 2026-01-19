@@ -965,7 +965,7 @@ end
 function DB._insert(db_instance, table_name, data)
     local sql = DB._generate_insert_sql(table_name, data)
     -- The actual execution is handled by Rust
-    return db_instance._executor("insert", sql, data, table_name)
+    return db_instance._executor("insert", sql, table_name, data)
 end
 
 function DB._execute_query(db_instance, query, mode)
