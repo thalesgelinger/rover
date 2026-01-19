@@ -1,234 +1,133 @@
--- rover-db Integration Example
--- Demonstrates the Intent-Based Query Builder & ORM DSL
-
 local db = rover.db.connect()
 
--- ============================================================================
--- Phase 1: Basic Insert & Query
--- ============================================================================
+print("=== CRUD Operations ===\n")
 
-print("--- Basic Insert & Query ---")
+local user1 = db.users:insert({ name = "Alice", age = 30, email = "alice@example.com", status = "active" })
+debug.print(user1, "Alice inserted")
 
--- Insert creates table if it doesn't exist (schema inference)
-local result = db.users:insert({
-    name = "Alice",
-    age = 30,
-    email = "alice@example.com",
-    status = "active"
-})
-print("Inserted user with id:", result.id)
+local user2 = db.users:insert({ name = "Bob", age = 25, email = "bob@example.com", status = "active" })
+local user3 = db.users:insert({ name = "Charlie", age = 17, email = "charlie@example.com", status = "inactive" })
+local user4 = db.users:insert({ name = "Diana", age = 35, email = "diana@example.com", status = "active" })
 
-db.users:insert({ name = "Bob", age = 17, email = "bob@example.com", status = "active" })
-db.users:insert({ name = "Charlie", age = 45, email = "charlie@example.com", status = "inactive" })
-db.users:insert({ name = "Diana", age = 25, email = "diana@example.com", status = "active" })
+print("\n=== Basic Filters ===\n")
 
--- Simple query
-local active_users = db.users:find():by_status("active"):all()
-print("Active users count:", #active_users)
+local active = db.users:find():by_status("active"):all()
+debug.print(active, "Active users")
 
--- Query with comparison
 local adults = db.users:find():by_age_bigger_than(18):all()
-print("Adults count:", #adults)
+debug.print(adults, "Adults (age > 18)")
 
--- ============================================================================
--- Phase 2: Complex Filters
--- ============================================================================
+print("\n=== String Filters ===\n")
 
-print("\n--- Complex Filters ---")
+local contains_a = db.users:find():by_name_contains("a"):all()
+debug.print(contains_a, "Names containing 'a'")
 
--- Contains filter
-local users_with_a = db.users:find():by_name_contains("a"):all()
-print("Users with 'a' in name:", #users_with_a)
+local emails_com = db.users:find():by_email_ends_with(".com"):all()
+debug.print(emails_com, "Email ending with .com")
 
--- Multiple filters (AND)
-local active_adults = db.users:find()
-    :by_status("active")
-    :by_age_bigger_than(18)
-    :all()
-print("Active adults:", #active_adults)
+print("\n=== Range & List Filters ===\n")
 
--- In list filter
-local specific_statuses = db.users:find()
-    :by_status_in_list({"active", "pending"})
-    :all()
-print("Active or pending users:", #specific_statuses)
+local age_range = db.users:find():by_age_between({ 20, 35 }):all()
+debug.print(age_range, "Users aged 20-35")
 
--- Between filter
-local age_range = db.users:find()
-    :by_age_between({20, 40})
-    :all()
-print("Users aged 20-40:", #age_range)
+local statuses = db.users:find():by_status_in_list({ "active", "pending" }):all()
+debug.print(statuses, "Active or pending users")
 
--- ============================================================================
--- Phase 3: Orders & Relations
--- ============================================================================
+print("\n=== Insert Orders (using user IDs) ===\n")
 
-print("\n--- Orders & Relations ---")
+local order1 = db.orders:insert({ user_id = user1.id, amount = 100.50, status = "paid" })
+local order2 = db.orders:insert({ user_id = user1.id, amount = 50.25, status = "pending" })
+local order3 = db.orders:insert({ user_id = user2.id, amount = 200.00, status = "paid" })
+local order4 = db.orders:insert({ user_id = user4.id, amount = 75.99, status = "paid" })
 
--- Create orders table
-db.orders:insert({ user_id = 1, amount = 100.00, status = "paid" })
-db.orders:insert({ user_id = 1, amount = 50.00, status = "pending" })
-db.orders:insert({ user_id = 2, amount = 75.00, status = "paid" })
-db.orders:insert({ user_id = 4, amount = 200.00, status = "paid" })
+debug.print(order1, "Order 1 created")
 
--- Subquery: users with paid orders
-local paid_order_user_ids = db.orders:find()
-    :by_status("paid")
-    :select(db.orders.user_id)
+print("\n=== OR Composition (merge) ===\n")
 
-local users_with_paid = db.users:find()
-    :by_id_in_list(paid_order_user_ids)
-local sql = users_with_paid:inspect().candidate_sql
-print("Users with paid orders SQL:", sql)
-
--- EXISTS: users who have paid orders
-local users_with_paid_orders = db.users:find()
-    :exists(db.orders:find():by_status("paid"))
-    :on(db.orders.user_id, db.users.id)
-print("EXISTS query SQL:", users_with_paid_orders:inspect().candidate_sql)
-
--- ============================================================================
--- Phase 4: OR Composition (merge)
--- ============================================================================
-
-print("\n--- OR Composition ---")
-
-local admins = db.users:find():by_status("active")
+local active_users = db.users:find():by_status("active")
 local minors = db.users:find():by_age_smaller_than(18)
+local active_or_minors = db.users:find():merge(active_users, minors):all()
+debug.print(active_or_minors, "Active users OR minors")
 
-local admins_or_minors = db.users:find():merge(admins, minors)
-print("OR query SQL:", admins_or_minors:inspect().candidate_sql)
+print("\n=== Aggregates & Grouping ===\n")
 
--- Complex OR with EXISTS
-local has_high_orders = db.users:find()
-    :exists(db.orders:find():by_amount_bigger_than(100))
-    :on(db.orders.user_id, db.users.id)
-
-local is_inactive = db.users:find():by_status("inactive")
-
-local special_users = db.users:find():merge(has_high_orders, is_inactive)
-print("Complex OR SQL:", special_users:inspect().candidate_sql)
-
--- ============================================================================
--- Phase 5: Grouping & Aggregates
--- ============================================================================
-
-print("\n--- Grouping & Aggregates ---")
-
-local order_totals = db.orders:find()
+local order_summary = db.orders:find()
     :group_by(db.orders.user_id)
     :agg({
         total = rover.db.sum(db.orders.amount),
-        order_count = rover.db.count(db.orders.id)
+        count = rover.db.count(db.orders.id)
     })
+    :all()
 
-print("Aggregate query SQL:", order_totals:inspect().candidate_sql)
+debug.print(order_summary, "Orders grouped by user")
 
--- With HAVING
+print("\n=== HAVING (Aggregate Filters) ===\n")
+
 local big_spenders = db.orders:find()
     :group_by(db.orders.user_id)
     :agg({
         total = rover.db.sum(db.orders.amount),
-        order_count = rover.db.count(db.orders.id)
+        count = rover.db.count(db.orders.id)
     })
     :having_total_bigger_than(100)
+    :all()
 
-print("HAVING query SQL:", big_spenders:inspect().candidate_sql)
+debug.print(big_spenders, "Users with orders total > 100")
 
--- ============================================================================
--- Phase 6: Ordering, Limit, Offset
--- ============================================================================
+print("\n=== Pagination ===\n")
 
-print("\n--- Ordering, Limit, Offset ---")
+local first_two = db.users:find()
+    :order_by(db.users.name, "ASC")
+    :limit(2)
+    :all()
 
-local recent_users = db.users:find()
+debug.print(first_two, "First 2 users (alphabetical)")
+
+local page_two = db.users:find()
     :order_by(db.users.id, "DESC")
     :limit(2)
+    :offset(2)
+    :all()
 
-print("Paginated query SQL:", recent_users:inspect().candidate_sql)
+debug.print(page_two, "Page 2 (2 users per page, DESC)")
 
--- Pagination
-local page2 = db.users:find()
-    :order_by(db.users.id, "ASC")
-    :limit(10)
-    :offset(10)
+print("\n=== Update ===\n")
 
-print("Page 2 SQL:", page2:inspect().candidate_sql)
+db.users:update()
+    :by_id(user3.id)
+    :set({ status = "active", age = 18 })
+    :exec()
 
--- ============================================================================
--- Phase 7: Preloads (with_*)
--- ============================================================================
+local updated_user = db.users:find():by_id(user3.id):first()
+debug.print(updated_user, "Charlie after update")
 
-print("\n--- Preloads ---")
+print("\n=== Delete ===\n")
 
--- Create posts table for demo
-db.posts:insert({ author_id = 1, title = "Hello World", published = true })
-db.posts:insert({ author_id = 2, title = "My First Post", published = false })
+db.orders:delete():by_status("pending"):exec()
+local remaining_orders = db.orders:find():all()
+debug.print(remaining_orders, "Orders after deleting pending")
 
-local posts_with_author = db.posts:find()
-    :by_published(true)
-    :with_author()
+print("\n=== Raw SQL Escape Hatch ===\n")
 
-local info = posts_with_author:inspect()
-print("Preload strategy:", table.concat(info.lowering_strategy, ", "))
-print("Preloads:", table.concat(info.preloads, ", "))
-
--- ============================================================================
--- Phase 8: Update & Delete
--- ============================================================================
-
-print("\n--- Update & Delete ---")
-
--- Update
-local update_sql = db.users:update()
-    :by_id(1)
-    :set({ status = "premium" })
-print("UPDATE SQL:", update_sql:inspect and "not available" or "N/A")
-
--- Delete
-local delete_sql = db.users:delete():by_status("banned")
-print("DELETE (banned users) would execute")
-
--- ============================================================================
--- Phase 9: Raw SQL Escape Hatch
--- ============================================================================
-
-print("\n--- Raw SQL Escape Hatch ---")
-
-local raw_query = db.users:sql():raw([[
-    SELECT u.*, COUNT(o.id) as order_count
+local raw_result = db.users:sql():raw([[
+    SELECT name, COUNT(o.id) as order_count
     FROM users u
     LEFT JOIN orders o ON o.user_id = u.id
     GROUP BY u.id
-    HAVING order_count > 0
-]])
+    ORDER BY order_count DESC
+]]):all()
 
-local raw_info = raw_query:inspect()
-print("Raw SQL intent:", raw_info.intent)
-print("Raw SQL:", raw_info.sql:sub(1, 50) .. "...")
+debug.print(raw_result, "Users with order counts (raw SQL)")
 
--- ============================================================================
--- Phase 10: inspect() Deep Dive
--- ============================================================================
+print("\n=== Query Inspection ===\n")
 
-print("\n--- Query Inspection ---")
-
-local complex_query = db.users:find()
+local query = db.users:find()
     :by_status("active")
     :by_age_bigger_than(18)
-    :exists(db.orders:find():by_status("paid"))
-    :on(db.orders.user_id, db.users.id)
     :order_by(db.users.name, "ASC")
     :limit(10)
 
-local inspection = complex_query:inspect()
+local inspection = query:inspect()
+debug.print(inspection.candidate_sql, "Generated SQL")
 
-print("Intent:", inspection.intent)
-print("Table:", inspection.table)
-print("Filters:", #inspection.filters)
-print("EXISTS clauses:", #inspection.exists_clauses)
-print("Limit:", inspection.limit)
-print("Candidate SQL:", inspection.candidate_sql:sub(1, 80) .. "...")
-print("Lowering strategies:", table.concat(inspection.lowering_strategy, ", "))
-
-print("\n--- All Examples Complete ---")
+print("\n=== Complete ===\n")

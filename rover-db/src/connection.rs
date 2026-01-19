@@ -143,7 +143,8 @@ impl Connection {
 
     /// Get the last inserted row ID
     pub fn last_insert_rowid(&self) -> i64 {
-        self.runtime.block_on(async { self.conn.last_insert_rowid() })
+        self.runtime
+            .block_on(async { self.conn.last_insert_rowid() })
     }
 
     /// Check if a table exists
@@ -157,10 +158,7 @@ impl Connection {
     }
 
     /// Get table schema (column info)
-    pub fn get_table_schema(
-        &self,
-        table_name: &str,
-    ) -> Result<Vec<ColumnInfo>, ConnectionError> {
+    pub fn get_table_schema(&self, table_name: &str) -> Result<Vec<ColumnInfo>, ConnectionError> {
         let sql = format!("PRAGMA table_info({})", table_name);
         let rows = self.query(&sql)?;
 

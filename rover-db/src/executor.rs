@@ -37,14 +37,12 @@ impl QueryExecutor {
             _ => {
                 return Err(LuaError::RuntimeError(
                     "Insert data must be a table".to_string(),
-                ))
+                ));
             }
         };
 
         // Check if table exists, if not infer schema and create it
-        let conn = self
-            .conn
-            .blocking_lock();
+        let conn = self.conn.blocking_lock();
 
         if !table_name.is_empty() && !conn.table_exists(table_name).unwrap_or(false) {
             // Infer schema from data
@@ -54,7 +52,9 @@ impl QueryExecutor {
                 .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
 
             // Generate and execute CREATE TABLE
-            let create_sql = self.schema_manager.generate_create_table(table_name, &schema);
+            let create_sql = self
+                .schema_manager
+                .generate_create_table(table_name, &schema);
 
             conn.execute(&create_sql)
                 .map_err(|e| LuaError::RuntimeError(format!("Failed to create table: {}", e)))?;

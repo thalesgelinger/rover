@@ -37,7 +37,10 @@ impl SchemaManager {
     }
 
     /// Infer schema from a Lua table
-    pub fn infer_schema_from_lua(&self, data: &LuaTable) -> Result<Vec<InferredColumn>, SchemaError> {
+    pub fn infer_schema_from_lua(
+        &self,
+        data: &LuaTable,
+    ) -> Result<Vec<InferredColumn>, SchemaError> {
         let mut columns = Vec::new();
 
         // Check if 'id' field exists, if not we'll add it as auto-increment primary key
@@ -148,7 +151,11 @@ impl SchemaManager {
                 table_name,
                 col.name,
                 col.sql_type,
-                if col.nullable { "" } else { " NOT NULL DEFAULT ''" }
+                if col.nullable {
+                    ""
+                } else {
+                    " NOT NULL DEFAULT ''"
+                }
             );
 
             conn.execute(&sql)
@@ -178,7 +185,7 @@ fn infer_sql_type(value: &LuaValue) -> String {
             "TEXT".to_string()
         }
         LuaValue::Table(_) => "TEXT".to_string(), // JSON-serialize tables
-        LuaValue::Nil => "TEXT".to_string(),       // Default to TEXT for nil
+        LuaValue::Nil => "TEXT".to_string(),      // Default to TEXT for nil
         _ => "TEXT".to_string(),
     }
 }

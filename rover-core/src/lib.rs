@@ -99,6 +99,90 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
     let io_module = io::create_io_module(&lua)?;
     lua.globals().set("io", io_module)?;
 
+    // Create/extend debug global with print function
+    let debug_print_code = r#"
+        local debug = debug or {}
+        debug.print = function(value, label)
+            -- Format value with indentation
+            local function format_val(v, depth, seen)
+                depth = depth or 0
+                seen = seen or {}
+                
+                if depth > 5 then
+                    return "<max_depth>"
+                end
+                
+                local t = type(v)
+                if t == "nil" then
+                    return "nil"
+                elseif t == "boolean" then
+                    return tostring(v)
+                elseif t == "number" then
+                    return tostring(v)
+                elseif t == "string" then
+                    return '"' .. v:gsub('"', '\\"') .. '"'
+                elseif t == "table" then
+                    -- Check for circular reference
+                    if seen[v] then
+                        return "<circular>"
+                    end
+                    seen[v] = true
+                    
+                    local indent = string.rep("  ", depth)
+                    local next_indent = string.rep("  ", depth + 1)
+                    local lines = {"{"}
+                    
+                    -- Check if array-like
+                    local is_array = true
+                    local max_idx = 0
+                    for k in pairs(v) do
+                        if type(k) == "number" then
+                            if k > 0 then max_idx = math.max(max_idx, k) end
+                        else
+                            is_array = false
+                        end
+                    end
+                    
+                    if is_array and max_idx > 0 then
+                        -- Array format
+                        for i = 1, max_idx do
+                            if v[i] ~= nil then
+                                table.insert(lines, next_indent .. format_val(v[i], depth + 1, seen) .. ",")
+                            end
+                        end
+                    else
+                        -- Key-value format
+                        for k, val in pairs(v) do
+                            local key_str = type(k) == "string" and k or tostring(k)
+                            table.insert(lines, next_indent .. key_str .. " = " .. format_val(val, depth + 1, seen) .. ",")
+                        end
+                    end
+                    
+                    table.insert(lines, indent .. "}")
+                    return table.concat(lines, "\n")
+                else
+                    return "<" .. t .. ">"
+                end
+            end
+            
+            local formatted = format_val(value)
+            local output
+            if label then
+                output = string.format("[debug.print] %s: %s", label, formatted)
+            else
+                output = string.format("[debug.print] %s", formatted)
+            end
+            
+            print(output)
+            return value
+        end
+        
+        return debug
+    "#;
+
+    let debug_module: Table = lua.load(debug_print_code).eval()?;
+    lua.globals().set("debug", debug_module)?;
+
     // Add HTTP client module
     let http_module = http::create_http_module(&lua)?;
     rover.set("http", http_module)?;
@@ -112,6 +196,9 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
     rover.set("db", db_module)?;
 
     let _ = lua.globals().set("rover", rover);
+
+    // Make migration global via Lua (accessing rover.db.migration)
+    let _ = lua.load("_G.migration = rover.db.migration").eval::<()>();
 
     let app: Value = match lua.load(&content).set_name(path).eval() {
         Ok(app) => app,

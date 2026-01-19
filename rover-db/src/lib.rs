@@ -49,10 +49,19 @@ fn yield_to_event_loop(lua: &Lua) -> LuaResult<()> {
 
 /// Create the rover.db module
 pub fn create_db_module(lua: &Lua) -> LuaResult<LuaTable> {
-    // Load the Lua DSL module
-    let db_lua: LuaTable = lua
-        .load(include_str!("db.lua"))
-        .set_name("db.lua")
+    // Load the Lua DSL modules
+    let db_lua: LuaTable = lua.load(include_str!("db.lua")).set_name("db.lua").eval()?;
+    let schema_dsl: LuaTable = lua
+        .load(include_str!("schema_dsl.lua"))
+        .set_name("schema_dsl.lua")
+        .eval()?;
+    let migration_dsl: LuaTable = lua
+        .load(include_str!("migration_dsl.lua"))
+        .set_name("migration_dsl.lua")
+        .eval()?;
+    let analyzer: LuaTable = lua
+        .load(include_str!("analyzer.lua"))
+        .set_name("analyzer.lua")
         .eval()?;
 
     // Create the main db table that will be returned
@@ -65,7 +74,13 @@ pub fn create_db_module(lua: &Lua) -> LuaResult<LuaTable> {
         }
     }
 
-    // Store reference to the DSL module for creating instances
+    // Add schema DSL
+    db.set("schema", schema_dsl)?;
+
+    // Add migration DSL
+    db.set("migration", migration_dsl.clone())?;
+
+    // Store reference to the DSL modules for creating instances
     let db_lua_ref = lua.create_registry_value(db_lua)?;
 
     // Create the connect function
@@ -78,9 +93,10 @@ pub fn create_db_module(lua: &Lua) -> LuaResult<LuaTable> {
 
         // Extract connection path from config
         let db_path = if let Some(ref cfg) = config {
-            cfg.get::<String>("path").unwrap_or_else(|_| ":memory:".to_string())
+            cfg.get::<String>("path")
+                .unwrap_or_else(|_| "rover.sqlite".to_string())
         } else {
-            ":memory:".to_string()
+            "rover.sqlite".to_string()
         };
 
         // Create executor function that will handle all DB operations
@@ -124,7 +140,7 @@ fn create_executor(lua: &Lua, db_path: String) -> LuaResult<LuaFunction> {
             _ => {
                 return Err(LuaError::RuntimeError(
                     "First argument must be operation type".to_string(),
-                ))
+                ));
             }
         };
 

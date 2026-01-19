@@ -11,9 +11,17 @@ local function create_validator(validator_type)
 		enum = nil,
 		element = nil,
 		schema = nil,
+		-- Schema/migration modifiers
+		primary = false,
+		auto = false,
+		unique = false,
+		nullable = true,
+		references_table = nil,
+		index_flag = false,
 
 		required = function(self, msg)
 			self.required = true
+			self.nullable = false
 			self.required_msg = msg
 			return self
 		end,
@@ -25,6 +33,39 @@ local function create_validator(validator_type)
 
 		enum = function(self, values)
 			self.enum = values
+			return self
+		end,
+
+		-- Schema modifiers
+		primary = function(self)
+			self.primary = true
+			self.nullable = false
+			return self
+		end,
+
+		auto = function(self)
+			self.auto = true
+			return self
+		end,
+
+		unique = function(self)
+			self.unique = true
+			return self
+		end,
+
+		nullable = function(self)
+			self.nullable = true
+			self.required = false
+			return self
+		end,
+
+		references = function(self, table_col)
+			self.references_table = table_col
+			return self
+		end,
+
+		index = function(self)
+			self.index_flag = true
 			return self
 		end,
 	}

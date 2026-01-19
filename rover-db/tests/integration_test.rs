@@ -21,14 +21,18 @@ fn setup_lua() -> Lua {
 fn test_connect_and_insert() {
     let lua = setup_lua();
 
-    let result: LuaResult<LuaTable> = lua.load(r#"
+    let result: LuaResult<LuaTable> = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local result = db.users:insert({
             name = "Alice",
             age = 30
         })
         return result
-    "#).eval();
+    "#,
+        )
+        .eval();
 
     assert!(result.is_ok(), "Insert should succeed");
     let table = result.unwrap();
@@ -40,7 +44,9 @@ fn test_connect_and_insert() {
 fn test_find_and_filters() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
 
         -- Build a query
@@ -50,7 +56,10 @@ fn test_find_and_filters() {
 
         -- Get the generated SQL via inspect
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("SELECT *"));
     assert!(sql.contains("FROM users"));
@@ -62,11 +71,16 @@ fn test_find_and_filters() {
 fn test_contains_filter() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:find():by_name_contains("ana")
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("LIKE '%ana%'"));
 }
@@ -75,11 +89,16 @@ fn test_contains_filter() {
 fn test_in_list_filter() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:find():by_status_in_list({"active", "pending", "paid"})
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("status IN"));
     assert!(sql.contains("'active'"));
@@ -91,11 +110,16 @@ fn test_in_list_filter() {
 fn test_between_filter() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:find():by_age_between({18, 65})
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("BETWEEN 18 AND 65"));
 }
@@ -104,11 +128,16 @@ fn test_between_filter() {
 fn test_is_null_filter() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:find():by_deleted_at_is_null()
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("deleted_at IS NULL"));
 }
@@ -117,13 +146,18 @@ fn test_is_null_filter() {
 fn test_exists_subquery() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:find()
             :exists(db.orders:find():by_status("paid"))
             :on(db.orders.user_id, db.users.id)
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("EXISTS"));
     assert!(sql.contains("orders.user_id = users.id"));
@@ -134,13 +168,18 @@ fn test_exists_subquery() {
 fn test_or_composition_merge() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local admins = db.users:find():by_role("admin")
         local mods = db.users:find():by_role("moderator")
         local query = db.users:find():merge(admins, mods)
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("OR"));
     assert!(sql.contains("role = 'admin'"));
@@ -151,7 +190,9 @@ fn test_or_composition_merge() {
 fn test_group_by_and_aggregates() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.orders:find()
             :group_by(db.orders.user_id)
@@ -160,7 +201,10 @@ fn test_group_by_and_aggregates() {
                 order_count = rover.db.count(db.orders.id)
             })
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("GROUP BY orders.user_id"));
     assert!(sql.contains("SUM(orders.amount)"));
@@ -171,7 +215,9 @@ fn test_group_by_and_aggregates() {
 fn test_having_clause() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.orders:find()
             :group_by(db.orders.user_id)
@@ -180,7 +226,10 @@ fn test_having_clause() {
             })
             :having_order_count_bigger_than(5)
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("HAVING order_count > 5"));
 }
@@ -189,14 +238,19 @@ fn test_having_clause() {
 fn test_order_by_limit_offset() {
     let lua = setup_lua();
 
-    let sql: String = lua.load(r#"
+    let sql: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:find()
             :order_by(db.users.created_at, "DESC")
             :limit(10)
             :offset(20)
         return query:inspect().candidate_sql
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert!(sql.contains("ORDER BY users.created_at DESC"));
     assert!(sql.contains("LIMIT 10"));
@@ -208,7 +262,9 @@ fn test_update_query() {
     let lua = setup_lua();
 
     // Just verify the DSL works (can't easily test SQL generation for update without exposing it)
-    let result: LuaResult<LuaTable> = lua.load(r#"
+    let result: LuaResult<LuaTable> = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:update()
             :by_id(1)
@@ -219,7 +275,9 @@ fn test_update_query() {
             filter_count = #query._filters,
             has_set_values = query._set_values.status ~= nil
         }
-    "#).eval();
+    "#,
+        )
+        .eval();
 
     assert!(result.is_ok());
     let table = result.unwrap();
@@ -232,7 +290,9 @@ fn test_update_query() {
 fn test_delete_query() {
     let lua = setup_lua();
 
-    let result: LuaResult<LuaTable> = lua.load(r#"
+    let result: LuaResult<LuaTable> = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:delete():by_status("banned")
 
@@ -240,7 +300,9 @@ fn test_delete_query() {
             type = query._type,
             filter_count = #query._filters
         }
-    "#).eval();
+    "#,
+        )
+        .eval();
 
     assert!(result.is_ok());
     let table = result.unwrap();
@@ -252,28 +314,42 @@ fn test_delete_query() {
 fn test_raw_sql_escape_hatch() {
     let lua = setup_lua();
 
-    let info: LuaTable = lua.load(r#"
+    let info: LuaTable = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.users:sql():raw("SELECT * FROM users WHERE age > 18")
         return query:inspect()
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert_eq!(info.get::<String>("intent").unwrap(), "RAW SQL");
-    assert!(info.get::<String>("sql").unwrap().contains("SELECT * FROM users"));
+    assert!(
+        info.get::<String>("sql")
+            .unwrap()
+            .contains("SELECT * FROM users")
+    );
 }
 
 #[test]
 fn test_preloads() {
     let lua = setup_lua();
 
-    let preloads: LuaTable = lua.load(r#"
+    let preloads: LuaTable = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query = db.posts:find()
             :by_published(true)
             :with_author()
             :with_comments()
         return query:inspect().preloads
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert_eq!(preloads.len().unwrap(), 2);
     assert_eq!(preloads.get::<String>(1).unwrap(), "author");
@@ -284,7 +360,9 @@ fn test_preloads() {
 fn test_query_immutability() {
     let lua = setup_lua();
 
-    let result: LuaTable = lua.load(r#"
+    let result: LuaTable = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         local query1 = db.users:find()
         local query2 = query1:by_age(25)
@@ -295,7 +373,10 @@ fn test_query_immutability() {
             q2_filters = #query2._filters,
             q3_filters = #query3._filters
         }
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     // Query1 should remain unchanged
     assert_eq!(result.get::<i64>("q1_filters").unwrap(), 0);
@@ -308,10 +389,15 @@ fn test_query_immutability() {
 fn test_column_ref_tostring() {
     let lua = setup_lua();
 
-    let col_str: String = lua.load(r#"
+    let col_str: String = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         return tostring(db.users.id)
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert_eq!(col_str, "users.id");
 }
@@ -320,7 +406,9 @@ fn test_column_ref_tostring() {
 fn test_aggregate_functions() {
     let lua = setup_lua();
 
-    let result: LuaTable = lua.load(r#"
+    let result: LuaTable = lua
+        .load(
+            r#"
         local db = rover.db.connect()
         return {
             sum_type = rover.db.sum(db.orders.amount)._type,
@@ -330,7 +418,10 @@ fn test_aggregate_functions() {
             min_func = rover.db.min(db.orders.amount)._func,
             max_func = rover.db.max(db.orders.amount)._func
         }
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert_eq!(result.get::<String>("sum_type").unwrap(), "aggregate");
     assert_eq!(result.get::<String>("sum_func").unwrap(), "SUM");
@@ -344,7 +435,9 @@ fn test_aggregate_functions() {
 fn test_inspect_lowering_strategy() {
     let lua = setup_lua();
 
-    let strategies: LuaTable = lua.load(r#"
+    let strategies: LuaTable = lua
+        .load(
+            r#"
         local db = rover.db.connect()
 
         -- Query with EXISTS
@@ -353,7 +446,10 @@ fn test_inspect_lowering_strategy() {
             :on(db.orders.user_id, db.users.id)
 
         return q1:inspect().lowering_strategy
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     let first_strategy: String = strategies.get(1).unwrap();
     assert!(first_strategy.contains("EXISTS"));
@@ -363,7 +459,9 @@ fn test_inspect_lowering_strategy() {
 fn test_insert_and_query_roundtrip() {
     let lua = setup_lua();
 
-    let count: i64 = lua.load(r#"
+    let count: i64 = lua
+        .load(
+            r#"
         local db = rover.db.connect()
 
         -- Insert test data
@@ -374,7 +472,10 @@ fn test_insert_and_query_roundtrip() {
         -- Query and count
         local results = db.test_users:find():by_score_bigger_than(120):all()
         return #results
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert_eq!(count, 2); // Test2 (200) and Test3 (150)
 }
@@ -383,7 +484,9 @@ fn test_insert_and_query_roundtrip() {
 fn test_first_returns_single_record() {
     let lua = setup_lua();
 
-    let result: LuaTable = lua.load(r#"
+    let result: LuaTable = lua
+        .load(
+            r#"
         local db = rover.db.connect()
 
         -- Insert test data
@@ -393,7 +496,10 @@ fn test_first_returns_single_record() {
         -- Get first record
         local first = db.first_test:find():order_by(db.first_test.value, "ASC"):first()
         return first
-    "#).eval().unwrap();
+    "#,
+        )
+        .eval()
+        .unwrap();
 
     assert_eq!(result.get::<String>("name").unwrap(), "First");
     assert_eq!(result.get::<i64>("value").unwrap(), 1);
