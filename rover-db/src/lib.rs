@@ -21,8 +21,8 @@ pub use executor::QueryExecutor;
 pub use file_analyzer::{AnalysisResult, analyze_db_usage, analyze_file_with_db};
 pub use intent_handler::{
     IntentComparison, TableDiff, TableStatus, compare_intent_with_schemas,
-    generate_migration_content, generate_schema_content, prompt_yes_no,
-    update_schema_file, write_migration_file, write_schema_file,
+    generate_migration_content, generate_schema_content, prompt_yes_no, update_schema_file,
+    write_migration_file, write_schema_file,
 };
 pub use migration::{
     MigrationExecutor, MigrationStatus, rollback_migrations, run_pending_migrations,
@@ -46,21 +46,26 @@ pub fn create_db_module(lua: &Lua) -> LuaResult<LuaTable> {
         .set_name("migration_dsl.lua")
         .eval()?;
 
-    // Create main db table that will be returned
     let db = lua.create_table()?;
-
-    // Copy aggregate functions from DSL
-    for func_name in &["sum", "count", "avg", "min", "max"] {
-        if let Ok(func) = db_lua.get::<LuaFunction>(*func_name) {
-            db.set(*func_name, func)?;
-        }
-    }
-
-    // Add schema DSL
     db.set("schema", schema_dsl)?;
-
-    // Add migration DSL
     db.set("migration", migration_dsl)?;
+
+    // Expose aggregate functions from db.lua (sum, count, avg, min, max)
+    if let Ok(sum_fn) = db_lua.get::<LuaFunction>("sum") {
+        db.set("sum", sum_fn)?;
+    }
+    if let Ok(count_fn) = db_lua.get::<LuaFunction>("count") {
+        db.set("count", count_fn)?;
+    }
+    if let Ok(avg_fn) = db_lua.get::<LuaFunction>("avg") {
+        db.set("avg", avg_fn)?;
+    }
+    if let Ok(min_fn) = db_lua.get::<LuaFunction>("min") {
+        db.set("min", min_fn)?;
+    }
+    if let Ok(max_fn) = db_lua.get::<LuaFunction>("max") {
+        db.set("max", max_fn)?;
+    }
 
     // Store reference to the DSL modules for creating instances
     let db_lua_ref = lua.create_registry_value(db_lua)?;
@@ -191,6 +196,10 @@ pub fn run_migrations(db_path: &str, migrations_dir: &Path) -> Result<usize, Str
     let conn = Arc::new(Mutex::new(conn));
     let executor = MigrationExecutor::new(conn);
 
+    executor
+        .ensure_migrations_table()
+        .map_err(|e| e.to_string())?;
+
     run_pending_migrations(&executor, migrations_dir).map_err(|e| e.to_string())
 }
 
@@ -201,6 +210,10 @@ pub fn rollback(db_path: &str, migrations_dir: &Path, steps: usize) -> Result<us
     let conn = Arc::new(Mutex::new(conn));
     let executor = MigrationExecutor::new(conn);
 
+    executor
+        .ensure_migrations_table()
+        .map_err(|e| e.to_string())?;
+
     rollback_migrations(&executor, migrations_dir, steps).map_err(|e| e.to_string())
 }
 
@@ -210,6 +223,10 @@ pub fn migration_status(db_path: &str, migrations_dir: &Path) -> Result<Migratio
 
     let conn = Arc::new(Mutex::new(conn));
     let executor = MigrationExecutor::new(conn);
+
+    executor
+        .ensure_migrations_table()
+        .map_err(|e| e.to_string())?;
 
     executor
         .get_status(migrations_dir)

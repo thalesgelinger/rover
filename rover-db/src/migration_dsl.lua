@@ -20,6 +20,73 @@ function MigrationDSL.clear_operations()
     migration_operations = {}
 end
 
+-- Check if all operations are invertible for change()
+function MigrationDSL.is_invertible(ops)
+    for _, op in ipairs(ops) do
+        if op.type == "raw" then
+            return false
+        end
+    end
+    return true
+end
+
+-- Alter table chain context for fluent API
+local function create_alter_chain(table_name)
+    local chain = {
+        _table_name = table_name,
+    }
+
+    function chain:add_column(column_name, column_type)
+        MigrationDSL.record_operation({
+            type = "add_column",
+            table = table_name,
+            column = column_name,
+            column_type = column_type,
+        })
+        return self
+    end
+
+    function chain:remove_column(column_name)
+        MigrationDSL.record_operation({
+            type = "remove_column",
+            table = table_name,
+            column = column_name,
+        })
+        return self
+    end
+
+    function chain:rename_column(old_name, new_name)
+        MigrationDSL.record_operation({
+            type = "rename_column",
+            table = table_name,
+            old_column = old_name,
+            new_column = new_name,
+        })
+        return self
+    end
+
+    function chain:create_index(index_name, columns)
+        MigrationDSL.record_operation({
+            type = "create_index",
+            table = table_name,
+            index = index_name,
+            columns = columns,
+        })
+        return self
+    end
+
+    function chain:drop_index(index_name)
+        MigrationDSL.record_operation({
+            type = "drop_index",
+            table = table_name,
+            index = index_name,
+        })
+        return self
+    end
+
+    return chain
+end
+
 -- Table operations context
 local function create_table_context(table_name)
     return {
@@ -40,6 +107,11 @@ local function create_table_context(table_name)
                 table = table_name,
             })
             return self
+        end,
+
+        -- Fluent alter_table() chain API
+        alter_table = function(self)
+            return create_alter_chain(table_name)
         end,
 
         add_column = function(self, column_name, column_type)

@@ -92,24 +92,28 @@ pub fn generate_schema_content(table: &InferredTable) -> String {
         } else {
             ""
         };
-        lines.push(format!("    {} = guard:{}(){},", field.name, guard_type, modifiers));
+        lines.push(format!(
+            "    {} = guard:{}(){},",
+            field.name, guard_type, modifiers
+        ));
     }
 
     lines.push("}".to_string());
     lines.join("\n")
 }
 
-pub fn generate_migration_content(table_name: &str, fields: &[InferredField], is_create: bool) -> String {
+pub fn generate_migration_content(
+    table_name: &str,
+    fields: &[InferredField],
+    is_create: bool,
+) -> String {
     let mut lines = Vec::new();
 
     if is_create {
         lines.push(format!("-- Create {} table", table_name));
-        lines.push("return {".to_string());
-        lines.push("    up = function(db)".to_string());
-        lines.push(format!("        db:execute([["));
-        lines.push(format!("            CREATE TABLE {} (", table_name));
+        lines.push("function change()".to_string());
+        lines.push(format!("    migration.{}:create({{", table_name));
 
-        let mut field_lines = Vec::new();
         let mut sorted_fields: Vec<_> = fields.iter().collect();
         sorted_fields.sort_by(|a, b| {
             if a.name == "id" {
@@ -122,53 +126,47 @@ pub fn generate_migration_content(table_name: &str, fields: &[InferredField], is
         });
 
         for field in sorted_fields {
-            let sql_type = inferred_to_sql_type(&field.field_type);
-            let constraints = if field.name == "id" {
-                " PRIMARY KEY AUTOINCREMENT"
+            let guard_type = inferred_to_guard_type(&field.field_type);
+            let modifiers = if field.name == "id" {
+                ":primary():auto()"
             } else {
                 ""
             };
-            field_lines.push(format!("                {} {}{}", field.name, sql_type, constraints));
-        }
-
-        lines.push(field_lines.join(",\n"));
-        lines.push("            )".to_string());
-        lines.push("        ]])".to_string());
-        lines.push("    end,".to_string());
-        lines.push("".to_string());
-        lines.push("    down = function(db)".to_string());
-        lines.push(format!("        db:execute(\"DROP TABLE IF EXISTS {}\")", table_name));
-        lines.push("    end".to_string());
-        lines.push("}".to_string());
-    } else {
-        lines.push(format!("-- Add fields to {}", table_name));
-        lines.push("return {".to_string());
-        lines.push("    up = function(db)".to_string());
-        for field in fields {
-            let sql_type = inferred_to_sql_type(&field.field_type);
             lines.push(format!(
-                "        db:execute(\"ALTER TABLE {} ADD COLUMN {} {}\")",
-                table_name, field.name, sql_type
+                "        {} = rover.guard:{}(){},",
+                field.name, guard_type, modifiers
             ));
         }
-        lines.push("    end,".to_string());
-        lines.push("".to_string());
-        lines.push("    down = function(db)".to_string());
-        lines.push("        -- SQLite doesn't support DROP COLUMN easily".to_string());
-        lines.push("    end".to_string());
-        lines.push("}".to_string());
+
+        lines.push("    })".to_string());
+        lines.push("end".to_string());
+    } else {
+        lines.push(format!("-- Add fields to {}", table_name));
+        lines.push("function change()".to_string());
+        lines.push(format!("    migration.{}:alter_table()", table_name));
+
+        for (i, field) in fields.iter().enumerate() {
+            let guard_type = inferred_to_guard_type(&field.field_type);
+            let prefix = if i == 0 { "        " } else { "        " };
+            lines.push(format!(
+                "{}:add_column(\"{}\", rover.guard:{}())",
+                prefix, field.name, guard_type
+            ));
+        }
+
+        lines.push("end".to_string());
     }
 
     lines.join("\n")
 }
 
-fn inferred_to_sql_type(t: &InferredType) -> &'static str {
+fn inferred_to_guard_type(t: &InferredType) -> &'static str {
     match t {
-        InferredType::Integer => "INTEGER",
-        InferredType::Number => "REAL",
-        InferredType::String => "TEXT",
-        InferredType::Boolean => "INTEGER",
-        InferredType::Unknown => "TEXT",
+        InferredType::Integer => "integer",
+        InferredType::Number => "number",
+        InferredType::String => "string",
+        InferredType::Boolean => "boolean",
+        InferredType::Unknown => "string",
     }
 }
 
@@ -178,7 +176,11 @@ pub fn write_schema_file(schemas_dir: &Path, table_name: &str, content: &str) ->
     fs::write(path, content)
 }
 
-pub fn write_migration_file(migrations_dir: &Path, name: &str, content: &str) -> io::Result<String> {
+pub fn write_migration_file(
+    migrations_dir: &Path,
+    name: &str,
+    content: &str,
+) -> io::Result<String> {
     fs::create_dir_all(migrations_dir)?;
 
     let existing: Vec<_> = fs::read_dir(migrations_dir)?
@@ -213,7 +215,11 @@ pub fn prompt_yes_no(message: &str) -> io::Result<bool> {
     Ok(answer == "y" || answer == "yes")
 }
 
-pub fn update_schema_file(schemas_dir: &Path, table_name: &str, new_fields: &[InferredField]) -> io::Result<()> {
+pub fn update_schema_file(
+    schemas_dir: &Path,
+    table_name: &str,
+    new_fields: &[InferredField],
+) -> io::Result<()> {
     let path = schemas_dir.join(format!("{}.lua", table_name));
     let content = fs::read_to_string(&path)?;
 

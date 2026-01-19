@@ -1,38 +1,33 @@
 use crate::connection::Connection;
 use mlua::prelude::*;
-use mlua::{Lua, LuaError, LuaFunction, LuaTable};
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::connection::Connection;
 
 /// Migration tracking table
 const MIGRATIONS_TABLE: &str = "_rover_migrations";
 
-/// Migration executor
-pub struct MigrationExecutor {
-    conn: Arc<Mutex<Connection>>,
-    executor: Arc<Mutex<Connection>>,
+/// Migration status
+#[derive(Debug, Clone)]
+pub struct MigrationStatus {
+    pub applied: BTreeSet<String>,
+    pub available: Vec<String>,
+    pub pending: Vec<String>,
 }
 
-impl MigrationExecutor {
-    pub fn new(conn: Arc<Mutex<Connection>>, executor: Arc<Mutex<Connection>>) -> Self {
-        Self { conn, executor }
-    }
-
-impl MigrationExecutor {
-    pub fn new(conn: Arc<Mutex<Connection>>, executor: Arc<Mutex<Connection>>) -> Self {
-        Self { conn, executor }
-    }
+/// Migration executor handles running and tracking migrations
+pub struct MigrationExecutor {
+    conn: Arc<Mutex<Connection>>,
+}
 
 impl MigrationExecutor {
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
     }
 
-    /// Ensure migrations table exists
-    pub fn ensure_migrations_table(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn ensure_migrations_table(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.conn.blocking_lock();
         let check_sql = format!(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='{}'",
@@ -61,8 +56,9 @@ impl MigrationExecutor {
         Ok(())
     }
 
-    /// Get all applied migrations
-    pub fn get_applied_migrations(&self) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
+    pub fn get_applied_migrations(
+        &self,
+    ) -> Result<BTreeSet<String>, Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.conn.blocking_lock();
         let sql = format!("SELECT name FROM {} ORDER BY id ASC", MIGRATIONS_TABLE);
 
@@ -72,156 +68,486 @@ impl MigrationExecutor {
 
         let applied: BTreeSet<String> = rows
             .into_iter()
-            .filter_map(|row| row.get(1).and_then(|v| v.as_str().map(|s| s.to_string())))
+            .filter_map(|row| {
+                row.iter()
+                    .find(|(col_name, _)| col_name == "name")
+                    .and_then(|(_, v)| match v {
+                        libsql::Value::Text(s) => Some(s.to_string()),
+                        _ => None,
+                    })
+            })
             .collect();
 
         Ok(applied)
     }
 
-    /// Record a migration as applied
-    pub fn record_migration(&self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn get_status(
+        &self,
+        migrations_dir: &Path,
+    ) -> Result<MigrationStatus, Box<dyn std::error::Error + Send + Sync>> {
+        let applied = self.get_applied_migrations()?;
+
+        let mut available = Vec::new();
+        if migrations_dir.exists() {
+            let entries = fs::read_dir(migrations_dir)
+                .map_err(|e| format!("Failed to read migrations directory: {}", e))?;
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("lua") {
+                    if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
+                        available.push(name.to_string());
+                    }
+                }
+            }
+        }
+
+        available.sort();
+
+        let pending: Vec<String> = available
+            .iter()
+            .filter(|name| !applied.contains(*name))
+            .cloned()
+            .collect();
+
+        Ok(MigrationStatus {
+            applied,
+            available,
+            pending,
+        })
+    }
+
+    pub fn record_migration(
+        &self,
+        name: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.conn.blocking_lock();
         let sql = format!(
-            "INSERT INTO {} (name, applied_at) VALUES (?, datetime('now'))",
-            MIGRATIONS_TABLE
+            "INSERT INTO {} (name, applied_at) VALUES ('{}', datetime('now'))",
+            MIGRATIONS_TABLE, name
         );
 
         conn.execute(&sql)
             .map_err(|e| format!("Failed to record migration: {}", e))?;
 
-        println!("✅ Applied migration: {}", name);
         Ok(())
     }
 
-    /// Remove a migration from applied list
-    pub fn remove_migration(&self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn remove_migration(
+        &self,
+        name: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.conn.blocking_lock();
-        let sql = format!("DELETE FROM {} WHERE name = ?", MIGRATIONS_TABLE);
+        let sql = format!("DELETE FROM {} WHERE name = '{}'", MIGRATIONS_TABLE, name);
 
         conn.execute(&sql)
             .map_err(|e| format!("Failed to remove migration: {}", e))?;
 
-        println!("✅ Rolled back migration: {}", name);
         Ok(())
     }
+}
 
-    /// Generate reverse SQL for an operation
-    fn generate_reverse(op: &MigrationOperation) -> Result<Vec<String>, String> {
-        match op.r#type.as_str() {
+/// Recorded migration operation (used in tests + future rollback enhancements)
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct MigrationOperation {
+    pub r#type: String,
+    pub table: Option<String>,
+    pub column: Option<String>,
+    pub column_type: Option<String>,
+    pub name: Option<String>,
+    pub old_column: Option<String>,
+    pub new_column: Option<String>,
+    pub old_table: Option<String>,
+    pub new_table: Option<String>,
+    pub columns: Option<Vec<String>>,
+    pub sql: Option<String>,
+}
+
+/// Setup Lua VM with migration DSL and guard types
+fn setup_migration_lua(
+    lua: &Lua,
+    is_rollback: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let guard_lua = include_str!("../../rover-core/src/guard.lua");
+    let guard: LuaTable = lua.load(guard_lua).set_name("guard.lua").eval()?;
+
+    let migration_dsl = include_str!("migration_dsl.lua");
+    let migration_table: LuaTable = lua
+        .load(migration_dsl)
+        .set_name("migration_dsl.lua")
+        .eval()?;
+
+    let globals = lua.globals();
+
+    let rover = lua.create_table()?;
+    rover.set("guard", guard)?;
+    globals.set("rover", rover)?;
+    globals.set("migration", migration_table)?;
+    globals.set("_rollback_mode", is_rollback)?;
+
+    Ok(())
+}
+
+/// Execute migration Lua code and return SQL statements
+fn execute_migration_lua(
+    lua: &Lua,
+    content: &str,
+    _name: &str,
+    is_rollback: bool,
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let globals = lua.globals();
+    let migration: LuaTable = globals.get("migration")?;
+
+    // Clear any previous operations
+    let clear_fn: LuaFunction = migration.get("clear_operations")?;
+    clear_fn.call::<()>(())?;
+
+    // Load the migration file (defines functions but doesn't execute them)
+    lua.load(content).set_name(_name).exec()?;
+
+    // Check which functions are defined
+    let has_change = globals.get::<LuaFunction>("change").is_ok();
+    let has_up = globals.get::<LuaFunction>("up").is_ok();
+    let has_down = globals.get::<LuaFunction>("down").is_ok();
+
+    // Call the appropriate function
+    if has_change {
+        let change_fn: LuaFunction = globals.get("change")?;
+        change_fn.call::<()>(())?;
+    } else if is_rollback && has_down {
+        let down_fn: LuaFunction = globals.get("down")?;
+        down_fn.call::<()>(())?;
+    } else if !is_rollback && has_up {
+        let up_fn: LuaFunction = globals.get("up")?;
+        up_fn.call::<()>(())?;
+    }
+    // If no functions defined, assume DSL calls are at top-level (legacy/test support)
+
+    // Get recorded operations
+    let operations: LuaTable = migration
+        .get::<LuaFunction>("get_operations")?
+        .call::<LuaTable>(())?;
+
+    // Check invertibility for change() migrations
+    if has_change && !is_rollback {
+        let check_invertible: LuaFunction = migration.get::<LuaFunction>("is_invertible")?;
+        let invertible: bool = check_invertible.call(operations.clone())?;
+        if !invertible {
+            return Err("migration change() contains non-invertible operations (raw SQL). Use up() and down() functions instead.".into());
+        }
+    }
+
+    // Collect operations into a vec for potential reversal
+    let mut ops: Vec<LuaTable> = Vec::new();
+    for pair in operations.pairs::<i64, LuaTable>() {
+        let (_, op) = pair?;
+        ops.push(op);
+    }
+
+    // If rolling back a change() migration, reverse the operations
+    if has_change && is_rollback {
+        ops = reverse_lua_operations(lua, &ops)?;
+    }
+
+    // Convert operations to SQL
+    let mut sql_statements = Vec::new();
+    for op in &ops {
+        if let Some(sql) = operation_to_sql(op)? {
+            sql_statements.push(sql);
+        }
+    }
+
+    Ok(sql_statements)
+}
+
+/// Reverse operations for change() rollback
+fn reverse_lua_operations(
+    lua: &Lua,
+    ops: &[LuaTable],
+) -> Result<Vec<LuaTable>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut reversed = Vec::new();
+
+    // Process in reverse order
+    for op in ops.iter().rev() {
+        let op_type: String = op.get("type")?;
+        let reversed_op = lua.create_table()?;
+
+        match op_type.as_str() {
             "create_table" => {
-                let table = op.table.as_ref().unwrap_or(&String::new());
-                Ok(vec![format!("DROP TABLE {}", table)])
+                reversed_op.set("type", "drop_table")?;
+                reversed_op.set("table", op.get::<String>("table")?)?;
+            }
+            "drop_table" => {
+                // Can't auto-reverse drop_table without schema info
+                // This shouldn't happen in change() - it's not invertible
+                return Err("Cannot auto-reverse drop_table in change()".into());
             }
             "add_column" => {
-                let table = op.table.as_ref().unwrap_or(&String::new());
-                let col = op.column.as_ref().unwrap_or(&String::new());
-                Ok(vec![format!("ALTER TABLE {} DROP COLUMN {}", table, col)])
+                reversed_op.set("type", "remove_column")?;
+                reversed_op.set("table", op.get::<String>("table")?)?;
+                reversed_op.set("column", op.get::<String>("column")?)?;
             }
-            "create_index" => Ok(vec![format!(
-                "DROP INDEX {}",
-                op.name.as_ref().unwrap_or(&String::new())
-            )]),
-            _ => Err(format!("Cannot auto-reverse operation: {}", op.r#type)),
-        }
-    }
-
-    /// Execute SQL migration (handles SQLite limitations)
-    pub fn execute_sql_migration(&self, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let conn = self.conn.blocking_lock();
-        conn.execute(sql)
-            .map_err(|e| format!("Migration failed: {}", e))?;
-        Ok(())
-    }
-}
-
-/// Recorded migration operation
-#[derive(Debug, Clone)]
-pub struct MigrationOperation {
-    r#type: String,
-    table: Option<String>,
-    column: Option<String>,
-    name: Option<String>,
-    old_column: Option<String>,
-    new_column: Option<String>,
-    old_table: Option<String>,
-    new_table: Option<String>,
-    columns: Option<Vec<String>>,
-    sql: Option<String>,
-}
-
-/// Load and execute a migration file
-pub fn load_and_run_migration(
-    lua: &Lua,
-    executor: Arc<Mutex<Connection>>,
-    path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read migration file: {}", e))?;
-
-    // Extract filename for display
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("migration");
-
-    // Load the migration and call change/up/down functions
-    lua.load(&content)
-        .set_name(filename)
-        .eval::<()>()
-        .map_err(|e| format!("Migration error: {}", e))?;
-
-    Ok(())
-}
-
-/// Execute auto-reverse of operations
-pub fn execute_auto_reverse(
-    lua: &Lua,
-    executor: Arc<Mutex<Connection>>,
-    operations: Vec<MigrationOperation>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reversed_operations = Vec::new();
-
-    for op in operations.into_iter().rev() {
-        let reverse_sqls = MigrationExecutor::new(executor.clone()).generate_reverse(&op)?;
-
-        let conn = executor.clone().blocking_lock();
-        for sql in reverse_sqls {
-            conn.execute(&sql)
-                .map_err(|e| format!("Rollback failed: {}", e))?;
+            "remove_column" => {
+                // Can't auto-reverse remove_column without type info
+                return Err("Cannot auto-reverse remove_column in change()".into());
+            }
+            "rename_column" => {
+                reversed_op.set("type", "rename_column")?;
+                reversed_op.set("table", op.get::<String>("table")?)?;
+                reversed_op.set("old_column", op.get::<String>("new_column")?)?;
+                reversed_op.set("new_column", op.get::<String>("old_column")?)?;
+            }
+            "create_index" => {
+                reversed_op.set("type", "drop_index")?;
+                reversed_op.set("table", op.get::<String>("table")?)?;
+                reversed_op.set("index", op.get::<String>("index")?)?;
+            }
+            "drop_index" => {
+                // Can't auto-reverse drop_index without column info
+                return Err("Cannot auto-reverse drop_index in change()".into());
+            }
+            "rename_table" => {
+                reversed_op.set("type", "rename_table")?;
+                reversed_op.set("table", op.get::<String>("new_table")?)?;
+                reversed_op.set("new_table", op.get::<String>("table")?)?;
+            }
+            "raw" => {
+                return Err("Cannot auto-reverse raw SQL in change()".into());
+            }
+            _ => {
+                // Unknown op type, skip
+                continue;
+            }
         }
 
-        reversed_operations.push(op.clone());
+        reversed.push(reversed_op);
     }
 
-    Ok(())
+    Ok(reversed)
+}
+
+/// Convert a migration operation to SQL
+fn operation_to_sql(
+    op: &LuaTable,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let op_type: String = op.get("type")?;
+
+    match op_type.as_str() {
+        "create_table" => {
+            let table: String = op.get("table")?;
+            let definition: LuaTable = op.get("definition")?;
+
+            let mut columns = Vec::new();
+            let mut constraints = Vec::new();
+            let mut has_id_column = false;
+
+            for pair in definition.pairs::<String, LuaValue>() {
+                let (col_name, col_def) = pair?;
+
+                // Check if user defined an 'id' column
+                if col_name == "id" {
+                    has_id_column = true;
+                }
+
+                let col_sql = parse_column_definition(&col_name, &col_def)?;
+                columns.push(col_sql);
+
+                // Check for explicit references via guard:references("table")
+                if let LuaValue::Table(t) = &col_def {
+                    if let Ok(ref_table) = t.get::<String>("_references_table") {
+                        constraints.push(format!(
+                            "FOREIGN KEY ({}) REFERENCES {}(id)",
+                            col_name, ref_table
+                        ));
+                    }
+                }
+            }
+
+            // Only auto-add id column if user didn't define one
+            if !has_id_column {
+                columns.insert(0, "id INTEGER PRIMARY KEY AUTOINCREMENT".to_string());
+            }
+
+            columns.sort_by(|a, b| {
+                if a.contains("PRIMARY KEY") {
+                    std::cmp::Ordering::Less
+                } else if b.contains("PRIMARY KEY") {
+                    std::cmp::Ordering::Greater
+                } else {
+                    a.cmp(b)
+                }
+            });
+
+            columns.extend(constraints);
+
+            Ok(Some(format!(
+                "CREATE TABLE IF NOT EXISTS {} (\n  {}\n)",
+                table,
+                columns.join(",\n  ")
+            )))
+        }
+        "drop_table" => {
+            let table: String = op.get("table")?;
+            Ok(Some(format!("DROP TABLE IF EXISTS {}", table)))
+        }
+        "add_column" => {
+            let table: String = op.get("table")?;
+            let column: String = op.get("column")?;
+            let column_type: LuaValue = op.get("column_type")?;
+            let col_sql = parse_column_definition(&column, &column_type)?;
+            Ok(Some(format!(
+                "ALTER TABLE {} ADD COLUMN {}",
+                table, col_sql
+            )))
+        }
+        "remove_column" => {
+            let table: String = op.get("table")?;
+            let column: String = op.get("column")?;
+            Ok(Some(format!(
+                "ALTER TABLE {} DROP COLUMN {}",
+                table, column
+            )))
+        }
+        "rename_column" => {
+            let table: String = op.get("table")?;
+            let old_column: String = op.get("old_column")?;
+            let new_column: String = op.get("new_column")?;
+
+            Ok(Some(format!(
+                "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                table, old_column, new_column
+            )))
+        }
+        "create_index" => {
+            let table: String = op.get("table")?;
+            let index: String = op.get("index")?;
+            let columns: LuaTable = op.get("columns")?;
+
+            let mut col_list = Vec::new();
+            for pair in columns.pairs::<i64, String>() {
+                let (_, col) = pair?;
+                col_list.push(col);
+            }
+
+            Ok(Some(format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
+                index,
+                table,
+                col_list.join(", ")
+            )))
+        }
+        "drop_index" => {
+            let index: String = op.get("index")?;
+            Ok(Some(format!("DROP INDEX IF EXISTS {}", index)))
+        }
+        "rename_table" => {
+            let table: String = op.get("table")?;
+            let new_table: String = op.get("new_table")?;
+            Ok(Some(format!(
+                "ALTER TABLE {} RENAME TO {}",
+                table, new_table
+            )))
+        }
+        "raw" => {
+            let sql: String = op.get("sql")?;
+            Ok(Some(sql))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Parse column definition from Lua guard type
+fn parse_column_definition(
+    name: &str,
+    value: &LuaValue,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut col_type = "TEXT".to_string();
+    let mut modifiers = Vec::new();
+
+    match value {
+        LuaValue::Table(t) => {
+            // "type" is the type field (not a method, so no underscore prefix)
+            let type_str = t.get::<String>("type").ok();
+
+            if let Some(type_str) = type_str {
+                col_type = match type_str.as_str() {
+                    "integer" | "int" => "INTEGER".to_string(),
+                    "real" | "float" | "number" => "REAL".to_string(),
+                    "boolean" | "bool" => "INTEGER".to_string(),
+                    "blob" => "BLOB".to_string(),
+                    _ => "TEXT".to_string(),
+                };
+            }
+
+            // Use underscore-prefixed fields (set by methods like :primary())
+            let is_primary = t.get::<bool>("_primary").unwrap_or(false);
+            if is_primary {
+                modifiers.push("PRIMARY KEY");
+            }
+
+            let is_auto = t.get::<bool>("_auto").unwrap_or(false);
+            if is_auto && col_type == "INTEGER" {
+                modifiers.push("AUTOINCREMENT");
+            }
+
+            let is_unique = t.get::<bool>("_unique").unwrap_or(false);
+            if is_unique {
+                modifiers.push("UNIQUE");
+            }
+
+            let is_required = t.get::<bool>("_required").unwrap_or(false);
+            if is_required {
+                modifiers.push("NOT NULL");
+            }
+
+            // Check nullable (false means NOT NULL)
+            let is_nullable = t.get::<bool>("_nullable").unwrap_or(true);
+            if !is_nullable && !modifiers.contains(&"NOT NULL") {
+                modifiers.push("NOT NULL");
+            }
+        }
+        LuaValue::String(s) => {
+            if let Ok(type_str) = s.to_str() {
+                col_type = match type_str.as_ref() {
+                    "integer" | "int" => "INTEGER".to_string(),
+                    "real" | "float" | "number" => "REAL".to_string(),
+                    "boolean" | "bool" => "INTEGER".to_string(),
+                    "blob" => "BLOB".to_string(),
+                    _ => "TEXT".to_string(),
+                };
+            }
+        }
+        _ => {}
+    }
+
+    if modifiers.is_empty() {
+        Ok(format!("{} {}", name, col_type))
+    } else {
+        Ok(format!("{} {} {}", name, col_type, modifiers.join(" ")))
+    }
 }
 
 /// Run all pending migrations
 pub fn run_pending_migrations(
-    lua: &Lua,
-    executor: Arc<Mutex<Connection>>,
+    executor: &MigrationExecutor,
     migrations_dir: &Path,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let applied = MigrationExecutor::new(executor.clone()).get_applied_migrations()?;
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let conn = executor.conn.clone();
 
-    let mut pending: Vec<String> = Vec::new();
+    let mut pending: Vec<(String, std::path::PathBuf)> = Vec::new();
 
-    // Load migration files
     if migrations_dir.exists() {
         let entries = fs::read_dir(migrations_dir)
             .map_err(|e| format!("Failed to read migrations directory: {}", e))?;
 
-        for entry in entries {
-            let path = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-
+        for entry in entries.flatten() {
+            let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("lua") {
-                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-                // Extract migration name (without .lua)
-                let migration_name = filename.strip_suffix(".lua").unwrap_or(filename);
-
-                if !applied.contains(migration_name) {
-                    pending.push(migration_name.to_string());
+                if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
+                    if !executor.get_applied_migrations()?.contains(name) {
+                        pending.push((name.to_string(), path));
+                    }
                 }
             }
         }
@@ -232,15 +558,28 @@ pub fn run_pending_migrations(
         return Ok(0);
     }
 
-    // Sort pending by filename
-    pending.sort();
-    pending.dedup();
+    pending.sort_by(|a, b| a.0.cmp(&b.0));
 
-    println!("📋 {} pending migration(s):", pending.len());
+    println!("📋 Running {} pending migration(s):", pending.len());
 
-    for migration_name in &pending {
-        let path = migrations_dir.join(format!("{}.lua", migration_name));
-        load_and_run_migration(lua, executor.clone(), &path)?;
+    let lua = Lua::new();
+    setup_migration_lua(&lua, false)?;
+
+    for (name, path) in &pending {
+        println!("  → {}", name);
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read migration {}: {}", name, e))?;
+
+        let sql_statements = execute_migration_lua(&lua, &content, name, false)?;
+
+        for sql in &sql_statements {
+            conn.blocking_lock()
+                .execute(&sql)
+                .map_err(|e| format!("Migration SQL failed: {}", e))?;
+        }
+
+        executor.record_migration(name)?;
+        println!("    ✓ Applied");
     }
 
     Ok(pending.len())
@@ -248,46 +587,207 @@ pub fn run_pending_migrations(
 
 /// Rollback last N migrations
 pub fn rollback_migrations(
-    lua: &Lua,
-    executor: Arc<Mutex<Connection>>,
+    executor: &MigrationExecutor,
     migrations_dir: &Path,
     steps: usize,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let executor_inst = MigrationExecutor::new(conn, executor);
-    let applied = executor_inst.get_applied_migrations()?;
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let conn = executor.conn.clone();
+
+    let applied: Vec<String> = executor.get_applied_migrations()?.into_iter().collect();
 
     if applied.is_empty() {
         println!("✓ No migrations to rollback");
         return Ok(0);
     }
 
-    let mut to_rollback: Vec<String> = applied.into_iter().rev().take(steps).collect();
+    let to_rollback: Vec<&String> = applied.iter().rev().take(steps).collect();
 
     println!("🔄 Rolling back {} migration(s):", to_rollback.len());
 
-    for migration_name in &to_rollback {
-        let path = migrations_dir.join(format!("{}.lua", migration_name));
+    let lua = Lua::new();
+    setup_migration_lua(&lua, true)?;
 
-        // Load migration to get operations
-        let content = fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read migration file: {}", e))?;
+    for name in &to_rollback {
+        println!("  ← {}", name);
+        let path = migrations_dir.join(format!("{}.lua", name));
 
-        // Call migration.change() to get recorded operations
-        let operations: LuaTable = lua
-            .load(&content)
-            .set_name(migration_name)
-            .call::<LuaTable>(LuaFunction::named("change"))?;
+        if path.exists() {
+            let content = fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read migration {}: {}", name, e))?;
 
-        // Extract operations array
-        let ops_list: Vec<MigrationOperation> = operations
-            .get("get_operations")
-            .and_then(|f| f.call::<LuaTable>(LuaFunction::named("get_operations")))
-            .map_err(|e| format!("Failed to get operations: {}", e))?;
+            let sql_statements = execute_migration_lua(&lua, &content, name, true)?;
 
-        execute_auto_reverse(lua, executor.clone(), ops_list)?;
+            for sql in &sql_statements {
+                conn.blocking_lock()
+                    .execute(&sql)
+                    .map_err(|e| format!("Rollback SQL failed: {}", e))?;
+            }
 
-        executor_inst.remove_migration(migration_name)?;
+            executor.remove_migration(&name)?;
+            println!("    ✓ Rolled back");
+        }
     }
 
     Ok(to_rollback.len())
+}
+
+/// Generate reverse operations for rollback (used in tests + future rollback enhancements)
+#[allow(dead_code)]
+fn generate_reverse_ops(ops: &[MigrationOperation]) -> Vec<MigrationOperation> {
+    ops.iter()
+        .rev()
+        .map(|op| match op.r#type.as_str() {
+            "create_table" => MigrationOperation {
+                r#type: "drop_table".to_string(),
+                table: op.table.clone(),
+                column: None,
+                column_type: None,
+                name: None,
+                old_column: None,
+                new_column: None,
+                old_table: None,
+                new_table: None,
+                columns: None,
+                sql: None,
+            },
+            "drop_table" => MigrationOperation {
+                r#type: "create_table".to_string(),
+                table: op.table.clone(),
+                column: None,
+                column_type: None,
+                name: None,
+                old_column: None,
+                new_column: None,
+                old_table: None,
+                new_table: None,
+                columns: None,
+                sql: None,
+            },
+            "add_column" => MigrationOperation {
+                r#type: "remove_column".to_string(),
+                table: op.table.clone(),
+                column: op.column.clone(),
+                column_type: None,
+                name: None,
+                old_column: None,
+                new_column: None,
+                old_table: None,
+                new_table: None,
+                columns: None,
+                sql: None,
+            },
+            "remove_column" => MigrationOperation {
+                r#type: "add_column".to_string(),
+                table: op.table.clone(),
+                column: op.column.clone(),
+                column_type: None,
+                name: None,
+                old_column: None,
+                new_column: None,
+                old_table: None,
+                new_table: None,
+                columns: None,
+                sql: None,
+            },
+            "rename_column" => MigrationOperation {
+                r#type: "rename_column".to_string(),
+                table: op.table.clone(),
+                column: None,
+                column_type: None,
+                name: None,
+                old_column: op.new_column.clone(),
+                new_column: op.old_column.clone(),
+                old_table: None,
+                new_table: None,
+                columns: None,
+                sql: None,
+            },
+            "create_index" => MigrationOperation {
+                r#type: "drop_index".to_string(),
+                table: op.table.clone(),
+                column: None,
+                column_type: None,
+                name: op.name.clone(),
+                old_column: None,
+                new_column: None,
+                old_table: None,
+                new_table: None,
+                columns: None,
+                sql: None,
+            },
+            "drop_index" => MigrationOperation {
+                r#type: "create_index".to_string(),
+                table: op.table.clone(),
+                column: None,
+                column_type: None,
+                name: op.name.clone(),
+                old_column: None,
+                new_column: None,
+                old_table: None,
+                new_table: None,
+                columns: None,
+                sql: None,
+            },
+            "rename_table" => MigrationOperation {
+                r#type: "rename_table".to_string(),
+                table: op.new_table.clone(),
+                column: None,
+                column_type: None,
+                name: None,
+                old_column: None,
+                new_column: None,
+                old_table: None,
+                new_table: op.table.clone(),
+                columns: None,
+                sql: None,
+            },
+            "raw" => op.clone(),
+            _ => MigrationOperation::default(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_reverse_ops() {
+        let create_op = MigrationOperation {
+            r#type: "create_table".to_string(),
+            table: Some("users".to_string()),
+            column: None,
+            column_type: None,
+            name: None,
+            old_column: None,
+            new_column: None,
+            old_table: None,
+            new_table: None,
+            columns: None,
+            sql: None,
+        };
+
+        let reversed = generate_reverse_ops(&[create_op]);
+        assert_eq!(reversed[0].r#type, "drop_table");
+        assert_eq!(reversed[0].table, Some("users".to_string()));
+
+        let add_op = MigrationOperation {
+            r#type: "add_column".to_string(),
+            table: Some("users".to_string()),
+            column: Some("email".to_string()),
+            column_type: None,
+            name: None,
+            old_column: None,
+            new_column: None,
+            old_table: None,
+            new_table: None,
+            columns: None,
+            sql: None,
+        };
+
+        let reversed = generate_reverse_ops(&[add_op]);
+        assert_eq!(reversed[0].r#type, "remove_column");
+        assert_eq!(reversed[0].table, Some("users".to_string()));
+        assert_eq!(reversed[0].column, Some("email".to_string()));
+    }
 }
