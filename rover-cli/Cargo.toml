@@ -9,8 +9,10 @@ clap = { version = "4.5.53", features = ["derive"] }
 rover_core = {path = "../rover-core"}
 rover-lsp = {path = "../rover-lsp"}
 rover-parser = {path = "../rover-parser"}
+rover_db = {path = "../rover-db"}
 colored = "2.2"
 serde_json = "1.0"
+tokio = { version = "1", features = ["sync"] }
 
 [[bin]]
 name = "rover"

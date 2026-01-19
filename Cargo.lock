@@ -2021,7 +2021,9 @@ dependencies = [
  "rover-lsp",
  "rover-parser",
  "rover_core",
+ "rover_db",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2052,10 +2054,13 @@ dependencies = [
  "anyhow",
  "libsql",
  "mlua",
+ "rover-parser",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tree-sitter",
+ "tree-sitter-lua",
 ]
 
 [[package]]
