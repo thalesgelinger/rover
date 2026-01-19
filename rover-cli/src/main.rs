@@ -9,14 +9,16 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "rover")]
 struct Cli {
+    /// Show verbose output including stack traces
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// its just a sample for other commands
-    Sample,
     /// Start the Rover LSP server
     Lsp,
     /// Analyze and check Rover Lua code for errors and warnings
@@ -46,10 +48,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sample => {
-            println!("Just a sample cmd");
-            Ok(())
-        }
         Commands::Lsp => {
             rover_lsp::start_server();
             Ok(())
@@ -78,7 +76,12 @@ fn main() -> Result<()> {
             check::pre_run_check(&file_path)?;
 
             // Execute the file
-            run(path)
+            match run(path, cli.verbose) {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }

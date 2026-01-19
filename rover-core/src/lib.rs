@@ -1,5 +1,6 @@
 mod app_type;
 mod auto_table;
+mod error_reporter;
 mod guard;
 pub mod html;
 mod http;
@@ -10,7 +11,7 @@ pub mod template;
 use html::create_html_module;
 use server::{AppServer, Server};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use mlua::{Error, FromLua, Lua, Table, Value};
 
 use crate::app_type::AppType;
@@ -28,7 +29,7 @@ impl RoverApp for Table {
     }
 }
 
-pub fn run(path: &str) -> Result<()> {
+pub fn run(path: &str, verbose: bool) -> Result<()> {
     let lua = Lua::new();
     let content = std::fs::read_to_string(path)?;
 
@@ -107,11 +108,21 @@ pub fn run(path: &str) -> Result<()> {
 
     let _ = lua.globals().set("rover", rover);
 
-    let app: Value = lua
-        .load(&content)
-        .set_name(path)
-        .eval()
-        .context("Failed to execute Lua script")?;
+    let app: Value = match lua.load(&content).set_name(path).eval() {
+        Ok(app) => app,
+        Err(err) => {
+            let error_str = err.to_string();
+            let (error_info, stack_trace) = error_reporter::parse_lua_error(&error_str, path);
+
+            if verbose {
+                error_reporter::display_error_with_stack(&error_info, stack_trace.as_deref());
+            } else {
+                error_reporter::display_error(&error_info);
+            }
+
+            return Err(err.into());
+        }
+    };
 
     match app {
         Value::Table(table) => {
@@ -155,7 +166,7 @@ mod tests {
 
     #[test]
     fn should_read_and_print_lua_file() {
-        let result = run("../examples/starter.lua");
+        let result = run("../examples/starter.lua", false);
         assert_eq!(result.unwrap(), ());
     }
 
