@@ -299,9 +299,17 @@ fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
 
         match diff.status {
             TableStatus::New => {
-                println!("\n{}", format!("📋 Table '{}' - inferred from code:", diff.table_name).yellow());
+                println!(
+                    "\n{}",
+                    format!("📋 Table '{}' - inferred from code:", diff.table_name).yellow()
+                );
                 for field in table.fields.values() {
-                    println!("   • {}: {} ({})", field.name, field.field_type.to_guard_type(), field.source);
+                    println!(
+                        "   • {}: {} ({})",
+                        field.name,
+                        field.field_type.to_guard_type(),
+                        field.source
+                    );
                 }
                 println!("\n   {}", "⚠️  No schema found".yellow());
 
@@ -309,14 +317,20 @@ fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
                     println!("   {}", "Creating schema (--yolo)".cyan());
                     true
                 } else {
-                    prompt_yn(&format!("   Create schema db/schemas/{}.lua?", diff.table_name))?
+                    prompt_yn(&format!(
+                        "   Create schema db/schemas/{}.lua?",
+                        diff.table_name
+                    ))?
                 };
 
                 if create_schema {
                     let content = rover_db::generate_schema_content(table);
                     rover_db::write_schema_file(&schemas_dir, &diff.table_name, &content)
                         .map_err(|e| anyhow::anyhow!("Failed to write schema: {}", e))?;
-                    println!("   {}", format!("✓ Created db/schemas/{}.lua", diff.table_name).green());
+                    println!(
+                        "   {}",
+                        format!("✓ Created db/schemas/{}.lua", diff.table_name).green()
+                    );
 
                     let create_migration = if yolo_mode {
                         true
@@ -326,20 +340,43 @@ fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
 
                     if create_migration {
                         let fields: Vec<_> = table.fields.values().cloned().collect();
-                        let mig_content = rover_db::generate_migration_content(&diff.table_name, &fields, true);
-                        let mig_name = rover_db::write_migration_file(&migrations_dir, &format!("create_{}", diff.table_name), &mig_content)
-                            .map_err(|e| anyhow::anyhow!("Failed to write migration: {}", e))?;
-                        println!("   {}", format!("✓ Created db/migrations/{}", mig_name).green());
+                        let mig_content =
+                            rover_db::generate_migration_content(&diff.table_name, &fields, true);
+                        let mig_name = rover_db::write_migration_file(
+                            &migrations_dir,
+                            &format!("create_{}", diff.table_name),
+                            &mig_content,
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to write migration: {}", e))?;
+                        println!(
+                            "   {}",
+                            format!("✓ Created db/migrations/{}", mig_name).green()
+                        );
                         needs_migration = true;
                     }
                 } else {
-                    return Err(anyhow::anyhow!("Aborted - schema not created for '{}'", diff.table_name));
+                    return Err(anyhow::anyhow!(
+                        "Aborted - schema not created for '{}'",
+                        diff.table_name
+                    ));
                 }
             }
             TableStatus::NeedsUpdate => {
-                println!("\n{}", format!("📋 Table '{}' - schema exists but code suggests new fields:", diff.table_name).yellow());
+                println!(
+                    "\n{}",
+                    format!(
+                        "📋 Table '{}' - schema exists but code suggests new fields:",
+                        diff.table_name
+                    )
+                    .yellow()
+                );
                 for field in &diff.new_fields {
-                    println!("   + {}: {} ({})", field.name, field.field_type.to_guard_type(), field.source);
+                    println!(
+                        "   + {}: {} ({})",
+                        field.name,
+                        field.field_type.to_guard_type(),
+                        field.source
+                    );
                 }
 
                 let update = if yolo_mode {
@@ -352,7 +389,10 @@ fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
                 if update {
                     rover_db::update_schema_file(&schemas_dir, &diff.table_name, &diff.new_fields)
                         .map_err(|e| anyhow::anyhow!("Failed to update schema: {}", e))?;
-                    println!("   {}", format!("✓ Updated db/schemas/{}.lua", diff.table_name).green());
+                    println!(
+                        "   {}",
+                        format!("✓ Updated db/schemas/{}.lua", diff.table_name).green()
+                    );
 
                     let create_migration = if yolo_mode {
                         true
@@ -361,16 +401,30 @@ fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
                     };
 
                     if create_migration {
-                        let mig_content = rover_db::generate_migration_content(&diff.table_name, &diff.new_fields, false);
-                        let mig_name = rover_db::write_migration_file(&migrations_dir, &format!("add_{}_fields", diff.table_name), &mig_content)
-                            .map_err(|e| anyhow::anyhow!("Failed to write migration: {}", e))?;
-                        println!("   {}", format!("✓ Created db/migrations/{}", mig_name).green());
+                        let mig_content = rover_db::generate_migration_content(
+                            &diff.table_name,
+                            &diff.new_fields,
+                            false,
+                        );
+                        let mig_name = rover_db::write_migration_file(
+                            &migrations_dir,
+                            &format!("add_{}_fields", diff.table_name),
+                            &mig_content,
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to write migration: {}", e))?;
+                        println!(
+                            "   {}",
+                            format!("✓ Created db/migrations/{}", mig_name).green()
+                        );
                         needs_migration = true;
                     }
                 }
             }
             TableStatus::Exists => {
-                println!("\n{}", format!("✅ Table '{}' - schema up to date", diff.table_name).green());
+                println!(
+                    "\n{}",
+                    format!("✅ Table '{}' - schema up to date", diff.table_name).green()
+                );
             }
         }
     }
@@ -386,7 +440,12 @@ fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
         if run_mig {
             let conn = rover_db::Connection::new(db_path)
                 .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
-            let executor = rover_db::MigrationExecutor::new(std::sync::Arc::new(tokio::sync::Mutex::new(conn)));
+            let executor = rover_db::MigrationExecutor::new(std::sync::Arc::new(
+                tokio::sync::Mutex::new(conn),
+            ));
+            executor
+                .ensure_migrations_table()
+                .map_err(|e| anyhow::anyhow!("Failed to create migrations table: {}", e))?;
             match run_pending_migrations(&executor, &migrations_dir) {
                 Ok(count) => println!("{}", format!("✅ Ran {} migration(s)", count).green()),
                 Err(e) => return Err(anyhow::anyhow!("Migration failed: {}", e)),

@@ -8,7 +8,9 @@ use std::fs;
 use std::path::Path;
 
 /// Load all schema files from a directory (creates its own Lua instance)
-pub fn load_schemas_from_dir(schemas_dir: &Path) -> Result<HashMap<String, TableDefinition>, String> {
+pub fn load_schemas_from_dir(
+    schemas_dir: &Path,
+) -> Result<HashMap<String, TableDefinition>, String> {
     let lua = Lua::new();
     load_schemas(&lua, schemas_dir)
 }

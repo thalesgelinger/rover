@@ -135,7 +135,8 @@ impl DbIntent {
 
     pub fn get_or_create_table(&mut self, name: &str) -> &mut InferredTable {
         if !self.tables.contains_key(name) {
-            self.tables.insert(name.to_string(), InferredTable::new(name));
+            self.tables
+                .insert(name.to_string(), InferredTable::new(name));
         }
         self.tables.get_mut(name).unwrap()
     }
@@ -438,8 +439,17 @@ impl<'a> IntentAnalyzer<'a> {
 }
 
 const FILTER_SUFFIXES: &[&str] = &[
-    "_ends_with", "_starts_with", "_contains", "_bigger_than", "_smaller_than",
-    "_between", "_in_list", "_not_in", "_is_null", "_is_not_null", "_like",
+    "_ends_with",
+    "_starts_with",
+    "_contains",
+    "_bigger_than",
+    "_smaller_than",
+    "_between",
+    "_in_list",
+    "_not_in",
+    "_is_null",
+    "_is_not_null",
+    "_like",
 ];
 
 fn extract_field_from_filter(raw: &str) -> Option<String> {
@@ -481,9 +491,18 @@ mod tests {
         let intent = analyze_db_intent(code);
 
         let users = intent.tables.get("users").unwrap();
-        assert_eq!(users.fields.get("name").unwrap().field_type, FieldType::String);
-        assert_eq!(users.fields.get("age").unwrap().field_type, FieldType::Integer);
-        assert_eq!(users.fields.get("active").unwrap().field_type, FieldType::Boolean);
+        assert_eq!(
+            users.fields.get("name").unwrap().field_type,
+            FieldType::String
+        );
+        assert_eq!(
+            users.fields.get("age").unwrap().field_type,
+            FieldType::Integer
+        );
+        assert_eq!(
+            users.fields.get("active").unwrap().field_type,
+            FieldType::Boolean
+        );
     }
 
     #[test]
@@ -493,7 +512,10 @@ mod tests {
 
         let users = intent.tables.get("users").unwrap();
         assert!(users.fields.contains_key("status"));
-        assert_eq!(users.fields.get("status").unwrap().field_type, FieldType::String);
+        assert_eq!(
+            users.fields.get("status").unwrap().field_type,
+            FieldType::String
+        );
     }
 
     #[test]
@@ -512,7 +534,10 @@ mod tests {
 
         let products = intent.tables.get("products").unwrap();
         assert!(products.fields.contains_key("id"));
-        assert_eq!(products.fields.get("id").unwrap().field_type, FieldType::Integer);
+        assert_eq!(
+            products.fields.get("id").unwrap().field_type,
+            FieldType::Integer
+        );
     }
 
     #[test]
@@ -521,7 +546,13 @@ mod tests {
         let intent = analyze_db_intent(code);
 
         let orders = intent.tables.get("orders").unwrap();
-        assert_eq!(orders.fields.get("count").unwrap().field_type, FieldType::Integer);
-        assert_eq!(orders.fields.get("amount").unwrap().field_type, FieldType::Number);
+        assert_eq!(
+            orders.fields.get("count").unwrap().field_type,
+            FieldType::Integer
+        );
+        assert_eq!(
+            orders.fields.get("amount").unwrap().field_type,
+            FieldType::Number
+        );
     }
 }
