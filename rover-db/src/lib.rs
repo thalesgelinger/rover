@@ -46,6 +46,10 @@ pub fn create_db_module(lua: &Lua) -> LuaResult<LuaTable> {
         .set_name("migration_dsl.lua")
         .eval()?;
 
+    // Inject schema_dsl into db_lua for schema-aware query methods
+    let set_schema_dsl: LuaFunction = db_lua.get("_set_schema_dsl")?;
+    set_schema_dsl.call::<()>(schema_dsl.clone())?;
+
     let db = lua.create_table()?;
     db.set("schema", schema_dsl)?;
     db.set("migration", migration_dsl)?;

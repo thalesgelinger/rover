@@ -3,6 +3,14 @@
 
 local DB = {}
 
+-- Reference to SchemaDSL (injected from Rust via db_lua._schema_dsl)
+local SchemaDSL = nil
+
+-- Set the schema DSL reference (called from Rust)
+function DB._set_schema_dsl(dsl)
+    SchemaDSL = dsl
+end
+
 -- ============================================================================
 -- Internal: Deep copy utility
 -- ============================================================================
@@ -112,12 +120,24 @@ function Query.new(db_instance, table_name)
     self._offset_val = nil
     self._preloads = {}
     self._select_cols = nil -- nil means SELECT *
+    self._generated_having_methods = {} -- methods generated after :agg()
     return self
 end
 
 -- Clone to maintain immutability
 function Query:_clone()
     return deep_copy(self)
+end
+
+-- Add a filter (used by schema-generated methods)
+function Query:_add_filter(field, operator, value)
+    local new_query = self:_clone()
+    table.insert(new_query._filters, {
+        field = field,
+        operator = operator,
+        value = value,
+    })
+    return new_query
 end
 
 -- ============================================================================
@@ -210,26 +230,36 @@ end
 -- Dynamic method handler for Query
 local query_mt = {
     __index = function(self, key)
-        -- Check for existing methods first
+        -- 1. Check Query class methods first
         if Query[key] then
             return Query[key]
         end
 
-        -- Check for by_<field>_<operator> pattern
-        local field, operator = parse_filter_method(key)
-        if field then
-            return function(_, value)
-                local new_query = self:_clone()
-                table.insert(new_query._filters, {
-                    field = field,
-                    operator = operator,
-                    value = value,
-                })
-                return new_query
+        -- 2. Check instance-specific generated having methods (from :agg())
+        if self._generated_having_methods and self._generated_having_methods[key] then
+            return self._generated_having_methods[key]
+        end
+
+        -- 3. Check table-specific generated methods (from schema)
+        if SchemaDSL then
+            local get_query_methods = SchemaDSL.get_query_methods
+            if get_query_methods then
+                local table_methods = get_query_methods(self._table)
+                if table_methods and table_methods[key] then
+                    return table_methods[key]
+                end
             end
         end
 
-        -- Check for having_<agg>_<op> pattern
+        -- 4. Fallback: parse by_<field>_<operator> pattern dynamically
+        local field, operator = parse_filter_method(key)
+        if field then
+            return function(_, value)
+                return self:_add_filter(field, operator, value)
+            end
+        end
+
+        -- 5. Fallback: parse having_<agg>_<op> pattern dynamically
         local agg_name, having_op = parse_having_method(key)
         if agg_name then
             return function(_, value)
@@ -243,7 +273,7 @@ local query_mt = {
             end
         end
 
-        -- Check for with_<relation> pattern (preloads)
+        -- 6. Fallback: parse with_<relation> pattern for preloads
         local relation = parse_preload_method(key)
         if relation then
             return function(_)
@@ -333,6 +363,24 @@ end
 function Query:agg(aggregates)
     local new_query = self:_clone()
     new_query._aggregates = aggregates
+
+    -- Generate having methods for these aggregates
+    new_query._generated_having_methods = {}
+    for agg_name, _ in pairs(aggregates) do
+        for op_name, _ in pairs(OPERATORS) do
+            local method_name = "having_" .. agg_name .. "_" .. op_name
+            new_query._generated_having_methods[method_name] = function(q, value)
+                local nq = q:_clone()
+                table.insert(nq._having_filters, {
+                    aggregate = agg_name,
+                    operator = op_name,
+                    value = value,
+                })
+                return nq
+            end
+        end
+    end
+
     return new_query
 end
 
@@ -475,6 +523,17 @@ function UpdateQuery:_clone()
     return deep_copy(self)
 end
 
+-- Add a filter (used by schema-generated methods)
+function UpdateQuery:_add_filter(field, operator, value)
+    local new_query = self:_clone()
+    table.insert(new_query._filters, {
+        field = field,
+        operator = operator,
+        value = value,
+    })
+    return new_query
+end
+
 function UpdateQuery:set(values)
     local new_query = self:_clone()
     for k, v in pairs(values) do
@@ -494,16 +553,31 @@ local update_query_mt = {
             return UpdateQuery[key]
         end
 
+        -- Check table-specific generated methods (from schema)
+        if SchemaDSL then
+            local get_query_methods = SchemaDSL.get_query_methods
+            if get_query_methods then
+                local table_methods = get_query_methods(self._table)
+                if table_methods and table_methods[key] then
+                    -- Rebind the method to use UpdateQuery's _add_filter
+                    local schema_method = table_methods[key]
+                    return function(_, value)
+                        -- Extract field and operator from the method name
+                        local field, operator = parse_filter_method(key)
+                        if field then
+                            return self:_add_filter(field, operator, value)
+                        end
+                        return schema_method(self, value)
+                    end
+                end
+            end
+        end
+
+        -- Fallback: parse dynamically
         local field, operator = parse_filter_method(key)
         if field then
             return function(_, value)
-                local new_query = self:_clone()
-                table.insert(new_query._filters, {
-                    field = field,
-                    operator = operator,
-                    value = value,
-                })
-                return new_query
+                return self:_add_filter(field, operator, value)
             end
         end
 
@@ -537,6 +611,17 @@ function DeleteQuery:_clone()
     return deep_copy(self)
 end
 
+-- Add a filter (used by schema-generated methods)
+function DeleteQuery:_add_filter(field, operator, value)
+    local new_query = self:_clone()
+    table.insert(new_query._filters, {
+        field = field,
+        operator = operator,
+        value = value,
+    })
+    return new_query
+end
+
 function DeleteQuery:exec()
     return DB._execute_delete(self._db, self)
 end
@@ -548,16 +633,28 @@ local delete_query_mt = {
             return DeleteQuery[key]
         end
 
+        -- Check table-specific generated methods (from schema)
+        if SchemaDSL then
+            local get_query_methods = SchemaDSL.get_query_methods
+            if get_query_methods then
+                local table_methods = get_query_methods(self._table)
+                if table_methods and table_methods[key] then
+                    -- Rebind the method to use DeleteQuery's _add_filter
+                    local field, operator = parse_filter_method(key)
+                    if field then
+                        return function(_, value)
+                            return self:_add_filter(field, operator, value)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Fallback: parse dynamically
         local field, operator = parse_filter_method(key)
         if field then
             return function(_, value)
-                local new_query = self:_clone()
-                table.insert(new_query._filters, {
-                    field = field,
-                    operator = operator,
-                    value = value,
-                })
-                return new_query
+                return self:_add_filter(field, operator, value)
             end
         end
 
@@ -692,6 +789,11 @@ local function generate_filter_sql(filter)
     local value = filter.value
     local sql_op = OPERATORS[op]
 
+    -- Handle correlation filters (column = column references)
+    if filter.is_correlation then
+        return field .. " = " .. tostring(value)
+    end
+
     if op == "is_null" or op == "is_not_null" then
         return field .. " " .. sql_op
     elseif op == "contains" then
@@ -707,6 +809,22 @@ local function generate_filter_sql(filter)
     else
         return field .. " " .. sql_op .. " " .. escape_value(value)
     end
+end
+
+-- Generate SQL for a subquery with correlation built-in
+local function generate_correlated_subquery_sql(subquery, correlation)
+    -- Clone the subquery and add correlation as a filter
+    local correlated_query = deep_copy(subquery)
+
+    -- Add correlation filter at the beginning
+    table.insert(correlated_query._filters, 1, {
+        field = tostring(correlation[1]),
+        operator = "equals",
+        value = correlation[2],
+        is_correlation = true,
+    })
+
+    return DB._generate_sql(correlated_query)
 end
 
 function DB._generate_sql(query)
@@ -748,20 +866,12 @@ function DB._generate_sql(query)
         table.insert(where_conditions, generate_filter_sql(filter))
     end
 
-    -- EXISTS clauses
+    -- EXISTS clauses with proper correlation (no string replacement)
     for _, exists_clause in ipairs(query._exists_clauses) do
-        local subquery = exists_clause.subquery
-        local corr = exists_clause.correlation
-        -- Add correlation to subquery filters
-        local corr_filter =
-            tostring(corr[1]) .. " = " .. tostring(corr[2])
-        local subquery_sql = DB._generate_sql(subquery)
-        -- Insert correlation into WHERE of subquery
-        if subquery_sql:find("WHERE") then
-            subquery_sql = subquery_sql:gsub("WHERE", "WHERE " .. corr_filter .. " AND")
-        else
-            subquery_sql = subquery_sql .. " WHERE " .. corr_filter
-        end
+        local subquery_sql = generate_correlated_subquery_sql(
+            exists_clause.subquery,
+            exists_clause.correlation
+        )
         table.insert(where_conditions, "EXISTS (" .. subquery_sql .. ")")
     end
 
@@ -775,15 +885,10 @@ function DB._generate_sql(query)
                 table.insert(mq_conditions, generate_filter_sql(filter))
             end
             for _, exists_clause in ipairs(mq._exists_clauses) do
-                local subquery = exists_clause.subquery
-                local corr = exists_clause.correlation
-                local corr_filter = tostring(corr[1]) .. " = " .. tostring(corr[2])
-                local subquery_sql = DB._generate_sql(subquery)
-                if subquery_sql:find("WHERE") then
-                    subquery_sql = subquery_sql:gsub("WHERE", "WHERE " .. corr_filter .. " AND")
-                else
-                    subquery_sql = subquery_sql .. " WHERE " .. corr_filter
-                end
+                local subquery_sql = generate_correlated_subquery_sql(
+                    exists_clause.subquery,
+                    exists_clause.correlation
+                )
                 table.insert(mq_conditions, "EXISTS (" .. subquery_sql .. ")")
             end
             if #mq_conditions > 0 then

@@ -93,7 +93,7 @@ pub fn generate_schema_content(table: &InferredTable) -> String {
             ""
         };
         lines.push(format!(
-            "    {} = guard:{}(){},",
+            "    {} = rover.guard:{}(){},",
             field.name, guard_type, modifiers
         ));
     }
@@ -111,7 +111,7 @@ pub fn generate_migration_content(
 
     if is_create {
         lines.push(format!("-- Create {} table", table_name));
-        lines.push("function change()".to_string());
+        lines.push("function migration.change()".to_string());
         lines.push(format!("    migration.{}:create({{", table_name));
 
         let mut sorted_fields: Vec<_> = fields.iter().collect();
@@ -142,7 +142,7 @@ pub fn generate_migration_content(
         lines.push("end".to_string());
     } else {
         lines.push(format!("-- Add fields to {}", table_name));
-        lines.push("function change()".to_string());
+        lines.push("function migration.change()".to_string());
         lines.push(format!("    migration.{}:alter_table()", table_name));
 
         for (i, field) in fields.iter().enumerate() {
@@ -228,7 +228,7 @@ pub fn update_schema_file(
     if let Some(close_idx) = lines.iter().rposition(|l| l.trim() == "}") {
         for field in new_fields {
             let guard_type = field.field_type.to_guard_type();
-            let new_line = format!("    {} = guard:{}(),", field.name, guard_type);
+            let new_line = format!("    {} = rover.guard:{}(),", field.name, guard_type);
             lines.insert(close_idx, new_line);
         }
     }

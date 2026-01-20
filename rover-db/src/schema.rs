@@ -3,6 +3,7 @@
 //! Infers database schema from Lua data and handles automatic migrations.
 
 use crate::connection::Connection;
+use chrono::{NaiveDate, NaiveDateTime};
 use mlua::prelude::*;
 use std::sync::Arc;
 use thiserror::Error;
@@ -190,36 +191,23 @@ fn infer_sql_type(value: &LuaValue) -> String {
     }
 }
 
-/// Check if string looks like a datetime
+/// Check if string looks like a datetime using chrono for proper parsing
 fn is_datetime_string(s: &str) -> bool {
-    // ISO 8601 datetime pattern: YYYY-MM-DDTHH:MM:SS
-    let parts: Vec<&str> = s.split(['T', ' ']).collect();
-    if parts.len() >= 2 {
-        return is_date_string(parts[0]) && is_time_string(parts[1]);
-    }
-    false
+    // Try common datetime formats
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").is_ok()
+        || NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").is_ok()
+        || NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").is_ok()
+        || NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").is_ok()
+        // Handle timezone-aware formats by stripping the timezone suffix
+        || s.ends_with('Z')
+            && NaiveDateTime::parse_from_str(&s[..s.len() - 1], "%Y-%m-%dT%H:%M:%S").is_ok()
+        || s.ends_with('Z')
+            && NaiveDateTime::parse_from_str(&s[..s.len() - 1], "%Y-%m-%dT%H:%M:%S%.f").is_ok()
 }
 
-/// Check if string looks like a date
+/// Check if string looks like a date using chrono for proper parsing
 fn is_date_string(s: &str) -> bool {
-    // Simple date pattern: YYYY-MM-DD
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() == 3 {
-        return parts[0].len() == 4
-            && parts[1].len() == 2
-            && parts[2].len() >= 2
-            && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()));
-    }
-    false
-}
-
-/// Check if string looks like a time
-fn is_time_string(s: &str) -> bool {
-    // Simple time pattern: HH:MM:SS or HH:MM
-    let s = s.split('.').next().unwrap_or(s); // Remove milliseconds
-    let s = s.split(['+', '-', 'Z']).next().unwrap_or(s); // Remove timezone
-    let parts: Vec<&str> = s.split(':').collect();
-    parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }
 
 #[cfg(test)]
@@ -244,7 +232,11 @@ mod tests {
     fn test_is_datetime_string() {
         assert!(is_datetime_string("2024-01-15T10:30:00"));
         assert!(is_datetime_string("2024-01-15 10:30:00"));
+        assert!(is_datetime_string("2024-01-15T10:30:00Z"));
+        assert!(is_datetime_string("2024-01-15T10:30:00.123"));
+        assert!(is_datetime_string("2024-01-15 10:30:00.123456"));
         assert!(!is_datetime_string("2024-01-15"));
+        assert!(!is_datetime_string("not-a-datetime"));
     }
 
     #[test]
