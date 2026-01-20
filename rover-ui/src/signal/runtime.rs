@@ -3,6 +3,7 @@ use super::derived::DerivedSignal;
 use super::effect::Effect;
 use super::graph::{DerivedId, EffectId, SubscriberGraph, SubscriberId};
 use super::value::SignalValue;
+use crate::node::{NodeArena, NodeId, RenderCommand, SignalOrDerived};
 use mlua::{Function, Lua, RegistryKey, Value};
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -30,7 +31,9 @@ struct BatchState {
     depth: u32,
     dirty_derived: Vec<DerivedId>,
     pending_effects: Vec<EffectId>,
+    pending_node_updates: Vec<NodeId>,
     propagation_stack: Vec<SubscriberId>,
+    render_commands: Vec<RenderCommand>,
 }
 
 /// The main signal runtime that coordinates everything
@@ -43,6 +46,8 @@ pub struct SignalRuntime {
     effects_free: RefCell<Vec<u32>>,
     tracking: RefCell<TrackingState>,
     batch: RefCell<BatchState>,
+    node_bindings: RefCell<Vec<(SignalOrDerived, NodeId)>>,
+    pub node_arena: RefCell<NodeArena>,
 }
 
 impl SignalRuntime {
@@ -62,8 +67,12 @@ impl SignalRuntime {
                 depth: 0,
                 dirty_derived: Vec::new(),
                 pending_effects: Vec::new(),
+                pending_node_updates: Vec::new(),
                 propagation_stack: Vec::new(),
+                render_commands: Vec::new(),
             }),
+            node_bindings: RefCell::new(Vec::new()),
+            node_arena: RefCell::new(NodeArena::new()),
         }
     }
 
@@ -313,6 +322,7 @@ impl SignalRuntime {
             match subscriber {
                 SubscriberId::Derived(id) => self.mark_derived_dirty(id),
                 SubscriberId::Effect(id) => self.schedule_effect(id),
+                SubscriberId::Node(node) => self.schedule_node_update(node),
             }
         }
     }
@@ -360,6 +370,7 @@ impl SignalRuntime {
                         }
                     }
                     SubscriberId::Effect(effect_id) => self.schedule_effect(effect_id),
+                    SubscriberId::Node(_) => {}
                 }
             }
         }
@@ -375,6 +386,32 @@ impl SignalRuntime {
         } else {
             batch.pending_effects.push(id);
         }
+    }
+
+    pub fn subscribe_node(&self, source: SignalOrDerived, node: NodeId) {
+        let subscriber = SubscriberId::Node(node);
+        match source {
+            SignalOrDerived::Signal(signal_id) => {
+                self.graph.borrow_mut().subscribe(signal_id, subscriber);
+            }
+            SignalOrDerived::Derived(_) => {}
+        }
+        self.node_bindings.borrow_mut().push((source, node));
+    }
+
+    pub fn schedule_node_update(&self, node: NodeId) {
+        let mut batch = self.batch.borrow_mut();
+        if !batch.pending_node_updates.contains(&node) {
+            batch.pending_node_updates.push(node);
+        }
+    }
+
+    pub fn push_render_command(&self, command: RenderCommand) {
+        self.batch.borrow_mut().render_commands.push(command);
+    }
+
+    pub fn take_render_commands(&self) -> Vec<RenderCommand> {
+        std::mem::take(&mut self.batch.borrow_mut().render_commands)
     }
 }
 

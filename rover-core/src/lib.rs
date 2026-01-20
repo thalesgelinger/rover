@@ -32,7 +32,7 @@ impl RoverApp for Table {
     }
 }
 
-pub fn run(path: &str, verbose: bool) -> Result<()> {
+pub fn run(path: &str, verbose: bool, platform: Option<&str>) -> Result<()> {
     let lua = Lua::new();
     let content = std::fs::read_to_string(path)?;
 
@@ -157,7 +157,23 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
             }
             Ok(())
         }
-        _ => Ok(()),
+        Value::UserData(ud) => {
+            let result = ud.borrow::<rover_ui::lua::node::LuaNode>();
+            match result {
+                Ok(root_node) => {
+                    if platform == Some("tui") {
+                        let runtime = lua.app_data_ref::<rover_ui::SharedSignalRuntime>().unwrap();
+                        rover_ui::renderer::run_tui(root_node.id, &runtime)?;
+                    }
+                    Ok(())
+                }
+                Err(_) => Ok(()),
+            }
+        }
+        other => {
+            eprintln!("Got value: {:?}", other);
+            Ok(())
+        }
     }
 }
 
@@ -190,7 +206,7 @@ mod tests {
 
     #[test]
     fn should_read_and_print_lua_file() {
-        let result = run("../examples/starter.lua", false);
+        let result = run("../examples/starter.lua", false, None);
         assert_eq!(result.unwrap(), ());
     }
 

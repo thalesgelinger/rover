@@ -1,4 +1,5 @@
 use super::arena::SignalId;
+use crate::node::NodeId;
 use smallvec::SmallVec;
 
 /// Unique identifier for a derived signal
@@ -14,7 +15,7 @@ pub struct EffectId(pub(crate) u32);
 pub enum SubscriberId {
     Derived(DerivedId),
     Effect(EffectId),
-    // Node(NodeId), // Phase 2
+    Node(NodeId),
 }
 
 /// Tracks dependencies between signals and their subscribers

@@ -1,30 +1,33 @@
+local ru = rover.ui
 
-require "rover.ui"
+local count = rover.signal(0)
+local show_details = rover.signal(true)
 
-local api = rover.server {}
+local items = rover.signal {
+	{ id = "a", label = "Alpha" },
+	{ id = "b", label = "Beta" },
+}
 
-local Counter = rover.component()
-
-function Counter.init(props)
-    return props.value
+local function add_item()
+	local list = items.val
+	local next_id = string.char(97 + #list)
+	local new = { id = next_id, label = "Item " .. next_id }
+	local updated = {}
+	for i = 1, #list do
+		updated[i] = list[i]
+	end
+	updated[#list + 1] = new
+	items.val = updated
 end
 
-function Counter.increase(state)
-	return state + 1
-end
-
-function Counter.render(state)
-    return div {
-        class = "", 
-        h1 { "Counter " .. state },
-        button { "Increase", onclick = self:increase }
-    }
-end
-
-function api.get()
-    return api.html_render({
-        Counter { value = 0 }
-    })
-end
-
-return api
+return ru.column {
+	ru.text { "Counter Demo" },
+	ru.text { "Count: " .. count },
+	ru.when(show_details, ru.text { "Details visible" }),
+	ru.column {
+		ru.text { "List" },
+		ru.each(items, function(item)
+			return ru.text { key = item.id, item.label }
+		end),
+	},
+}

@@ -2,7 +2,9 @@ pub mod derived;
 pub mod effect;
 pub mod helpers;
 pub mod metamethods;
+pub mod node;
 pub mod signal;
+pub mod ui;
 pub mod utils;
 
 use crate::signal::SignalValue;
@@ -40,6 +42,11 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     // rover.effect(fn) - create an effect
     let effect_fn = effect::create_effect_fn(lua)?;
     rover_table.set("effect", effect_fn)?;
+
+    // rover.ui namespace
+    let ui_table = lua.create_table()?;
+    ui::register_ui_functions(lua, &ui_table)?;
+    rover_table.set("ui", ui_table)?;
 
     // rover.any(...) - utility
     let any_fn = utils::create_any_fn(lua)?;

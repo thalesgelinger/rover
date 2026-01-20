@@ -123,11 +123,11 @@ fn main() -> Result<()> {
         Commands::Fmt { file, check } => fmt::run_fmt(fmt::FmtOptions { file, check }),
         Commands::Db { action } => handle_db_command(action),
         Commands::External(args) => {
-            // Parse args for --yolo flag
-            let (file_args, yolo_mode) = parse_external_args(&args);
+            // Parse args for --yolo and --platform flags
+            let (file_args, yolo_mode, platform) = parse_external_args(&args);
 
             let raw_path = file_args.first().ok_or_else(|| {
-                anyhow::anyhow!("No file specified. Usage: rover @<file.lua> [--yolo]")
+                anyhow::anyhow!("No file specified. Usage: rover <file.lua> [--yolo] [--platform tui|web|native]")
             })?;
             // Strip @ prefix if present (external_subcommand includes it)
             let path = raw_path.strip_prefix('@').unwrap_or(raw_path);
@@ -140,7 +140,7 @@ fn main() -> Result<()> {
             pre_run_db_analysis(&file_path, yolo_mode)?;
 
             // Execute the file
-            match run(path, cli.verbose) {
+            match run(path, cli.verbose, platform.as_deref()) {
                 Ok(()) => Ok(()),
                 Err(_) => {
                     std::process::exit(1);
@@ -258,19 +258,30 @@ fn handle_db_command(action: DbAction) -> Result<()> {
 }
 
 /// Parse external command args, extracting --yolo flag
-fn parse_external_args(args: &[String]) -> (Vec<String>, bool) {
+fn parse_external_args(args: &[String]) -> (Vec<String>, bool, Option<String>) {
     let mut file_args = Vec::new();
     let mut yolo_mode = false;
+    let mut platform = None;
+    let mut expect_platform = false;
 
     for arg in args {
-        if arg == "--yolo" || arg == "-y" {
+        if expect_platform {
+            platform = Some(arg.clone());
+            expect_platform = false;
+        } else if arg == "--yolo" || arg == "-y" {
             yolo_mode = true;
+        } else if arg == "--platform" || arg == "-p" {
+            expect_platform = true;
+        } else if arg.starts_with("--platform=") {
+            platform = arg.split('=').nth(1).map(|s| s.to_string());
+        } else if arg.starts_with("-p=") {
+            platform = arg.split('=').nth(1).map(|s| s.to_string());
         } else {
             file_args.push(arg.clone());
         }
     }
 
-    (file_args, yolo_mode)
+    (file_args, yolo_mode, platform)
 }
 
 fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {

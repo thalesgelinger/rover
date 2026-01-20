@@ -1,0 +1,209 @@
+{
+  "version": "1.0",
+  "lastUpdated": "2026-01-20",
+  "totalPhases": 10,
+  "completedPhases": 1,
+  "phases": [
+    {
+      "id": 1,
+      "name": "Signal System (Rust Core)",
+      "filename": "phases/phase-1.md",
+      "pass": true,
+      "duration": "2-3 semanas",
+      "deliverables": [
+        {
+          "id": "1.1",
+          "name": "Signal Arena (Storage)",
+          "pass": true,
+          "checklist": [
+            { "item": "Criar signal com valor inicial", "pass": true },
+            { "item": "Ler valor via .val", "pass": true },
+            { "item": "Escrever valor via .val =", "pass": true },
+            { "item": "Zero allocation em read/write", "pass": true }
+          ]
+        },
+        {
+          "id": "1.2",
+          "name": "Subscriber Graph",
+          "pass": true,
+          "checklist": [
+            { "item": "Registrar dependência signal → subscriber", "pass": true },
+            { "item": "Notificar subscribers quando signal muda", "pass": true },
+            { "item": "Propagação em cascata (A → B → C)", "pass": true },
+            { "item": "Sem notificação se valor não mudou", "pass": true }
+          ]
+        },
+        {
+          "id": "1.3",
+          "name": "Derived Signals",
+          "pass": true,
+          "checklist": [
+            { "item": "derive(fn) cria signal computado", "pass": true },
+            { "item": "Recomputa quando dependências mudam", "pass": true },
+            { "item": "Lazy evaluation (só computa quando lido)", "pass": true },
+            { "item": "Cache de valor (não recomputa se limpo)", "pass": true }
+          ]
+        },
+        {
+          "id": "1.4",
+          "name": "Magic Metamethods (Lua Bindings)",
+          "pass": true,
+          "checklist": [
+            { "item": "__add, __sub, __mul, __div, __mod, __unm", "pass": true },
+            { "item": "__concat", "pass": true },
+            { "item": "__eq, __lt, __le", "pass": true },
+            { "item": "__tostring", "pass": true }
+          ]
+        },
+        {
+          "id": "1.5",
+          "name": "Effects",
+          "pass": true,
+          "checklist": [
+            { "item": "Effect roda uma vez no registro", "pass": true },
+            { "item": "Effect re-roda quando dependências mudam", "pass": true },
+            { "item": "Tracking automático de dependências", "pass": true },
+            { "item": "Cleanup function opcional", "pass": true }
+          ]
+        },
+        {
+          "id": "1.6",
+          "name": "Utilities (any, all, none)",
+          "pass": true,
+          "checklist": []
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "UI Core + TUI Renderer",
+      "filename": "phases/phase-2.md",
+      "pass": false,
+      "duration": "2-3 semanas",
+      "dependencies": "Fase 1",
+      "deliverables": [
+        { "id": "2.1", "name": "Node System", "pass": false },
+        { "id": "2.2", "name": "Render Commands", "pass": false },
+        { "id": "2.3", "name": "Signal → Node Binding", "pass": false },
+        { "id": "2.4", "name": "Componentes Lua Básicos", "pass": false },
+        { "id": "2.5", "name": "TUI Renderer", "pass": false },
+        { "id": "2.6", "name": "Layout Básico (Column/Row)", "pass": false }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Web Renderer (DOM)",
+      "filename": "phases/phase-3.md",
+      "pass": false,
+      "duration": "2 semanas",
+      "dependencies": "Fase 2",
+      "deliverables": [
+        { "id": "3.1", "name": "WASM Build Setup", "pass": false },
+        { "id": "3.2", "name": "Web Renderer Implementation", "pass": false },
+        { "id": "3.3", "name": "Event Handling (Web)", "pass": false }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Styling Modifiers",
+      "filename": "phases/phase-4.md",
+      "pass": false,
+      "duration": "2-3 semanas",
+      "dependencies": "Fase 3",
+      "deliverables": [
+        { "id": "4.1", "name": "Modifier Chain System", "pass": false },
+        { "id": "4.2", "name": "Lua Chainable API", "pass": false },
+        { "id": "4.3", "name": "Token → Platform Value Mapping", "pass": false },
+        { "id": "4.4", "name": "Modifier → RenderCommand", "pass": false },
+        { "id": "4.5", "name": "Conditional Modifiers (:when)", "pass": false }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Events e Interatividade",
+      "filename": "phases/phase-5.md",
+      "pass": false,
+      "duration": "1-2 semanas",
+      "dependencies": "Fase 4",
+      "deliverables": [
+        { "id": "5.1", "name": "Event Types", "pass": false },
+        { "id": "5.2", "name": "Event → Modifier Trigger", "pass": false },
+        { "id": "5.3", "name": "Input Components", "pass": false },
+        { "id": "5.4", "name": "Two-Way Binding", "pass": false }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "iOS Renderer (UIKit)",
+      "filename": "phases/phase-6.md",
+      "pass": false,
+      "duration": "3-4 semanas",
+      "dependencies": "Fase 5",
+      "deliverables": [
+        { "id": "6.1", "name": "Rust → Swift/ObjC Bridge", "pass": false },
+        { "id": "6.2", "name": "iOS Renderer Implementation", "pass": false },
+        { "id": "6.3", "name": "Layout (Auto Layout/Manual)", "pass": false },
+        { "id": "6.4", "name": "Token Resolver iOS", "pass": false }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Android Renderer",
+      "filename": "phases/phase-7.md",
+      "pass": false,
+      "duration": "2-3 semanas",
+      "dependencies": "Fase 5",
+      "deliverables": [
+        { "id": "7.1", "name": "Rust → JNI Bridge", "pass": false },
+        { "id": "7.2", "name": "Android Renderer Implementation", "pass": false }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "Animation Modifiers",
+      "filename": "phases/phase-8.md",
+      "pass": false,
+      "duration": "3-4 semanas",
+      "dependencies": "Fase 6, Fase 7",
+      "deliverables": [
+        { "id": "8.1", "name": "Timing Modifiers", "pass": false },
+        { "id": "8.2", "name": "Animated Properties", "pass": false },
+        { "id": "8.3", "name": "Animation Loop", "pass": false },
+        { "id": "8.4", "name": "Platform Animation Integration", "pass": false },
+        { "id": "8.5", "name": "Lua API", "pass": false }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "HTTP e Async",
+      "filename": "phases/phase-9.md",
+      "pass": false,
+      "duration": "2 semanas",
+      "dependencies": "Fase 5",
+      "deliverables": [
+        { "id": "9.1", "name": "Async Runtime Integration", "pass": false },
+        { "id": "9.2", "name": "Lua HTTP API", "pass": false },
+        { "id": "9.3", "name": "Effect + HTTP", "pass": false }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "Polish e Otimizações",
+      "filename": "phases/phase-10.md",
+      "pass": false,
+      "duration": "Contínua",
+      "dependencies": "Nenhuma",
+      "deliverables": [
+        { "id": "10.1", "name": "List Virtualization", "pass": false },
+        { "id": "10.2", "name": "Batch Updates", "pass": false },
+        { "id": "10.3", "name": "DevTools", "pass": false },
+        { "id": "10.4", "name": "Error Boundaries", "pass": false }
+      ]
+    }
+  ],
+  "notes": {
+    "importantLimitation": "Comparison operators cannot create reactive signals. Use rover.derive() instead.",
+    "estimatedTotalDuration": "5-7 meses para MVP",
+    "threadingNote": "Multi-threading (Lynx-Style) planned for future phases"
+  }
+}

@@ -68,18 +68,14 @@ fn get_signal_value(lua: &Lua, value: Value) -> Result<Value> {
     match value {
         Value::UserData(ref ud) => {
             if let Ok(signal) = ud.borrow::<LuaSignal>() {
-                let runtime = lua
-                    .app_data_ref::<SharedSignalRuntime>()
-                    .ok_or_else(|| {
-                        mlua::Error::RuntimeError("Signal runtime not initialized".into())
-                    })?;
+                let runtime = lua.app_data_ref::<SharedSignalRuntime>().ok_or_else(|| {
+                    mlua::Error::RuntimeError("Signal runtime not initialized".into())
+                })?;
                 runtime.get_signal(lua, signal.id)
             } else if let Ok(derived) = ud.borrow::<LuaDerived>() {
-                let runtime = lua
-                    .app_data_ref::<SharedSignalRuntime>()
-                    .ok_or_else(|| {
-                        mlua::Error::RuntimeError("Signal runtime not initialized".into())
-                    })?;
+                let runtime = lua.app_data_ref::<SharedSignalRuntime>().ok_or_else(|| {
+                    mlua::Error::RuntimeError("Signal runtime not initialized".into())
+                })?;
                 runtime
                     .get_derived(lua, derived.id)
                     .map_err(|e| mlua::Error::RuntimeError(e.to_string()))

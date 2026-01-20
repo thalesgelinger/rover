@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mlua = { version = "0.11.5", features = ["anyhow", "vendored", "luajit52"] }
+mlua = { version = "0.11.5", default-features = false, features = ["anyhow", "vendored", "luajit52"] }
 smallvec = "1.15"
 thiserror = "1.0"
 parking_lot = "0.12"
 smartstring = "1.0"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [dev-dependencies]
