@@ -10,10 +10,12 @@ pub mod template;
 
 use html::create_html_module;
 use rover_db::create_db_module;
+use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module};
 use server::{AppServer, Server};
 
 use anyhow::Result;
 use mlua::{Error, FromLua, Lua, Table, Value};
+use std::rc::Rc;
 
 use crate::app_type::AppType;
 
@@ -33,6 +35,10 @@ impl RoverApp for Table {
 pub fn run(path: &str, verbose: bool) -> Result<()> {
     let lua = Lua::new();
     let content = std::fs::read_to_string(path)?;
+
+    // Initialize signal runtime (interior mutability now handled by runtime itself)
+    let runtime: SharedSignalRuntime = Rc::new(SignalRuntime::new());
+    lua.set_app_data(runtime);
 
     let rover = lua.create_table()?;
 
@@ -117,6 +123,9 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
     // Add rover.db database module
     let db_module = create_db_module(&lua)?;
     rover.set("db", db_module)?;
+
+    // Register UI module (signals, effects, derive)
+    register_ui_module(&lua, &rover)?;
 
     let _ = lua.globals().set("rover", rover);
 
