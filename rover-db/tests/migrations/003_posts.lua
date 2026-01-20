@@ -1,0 +1,1 @@
+migration.posts:create({title = rover.guard:string()})

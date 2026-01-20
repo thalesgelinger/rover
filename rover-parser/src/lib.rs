@@ -1,4 +1,5 @@
 mod analyzer;
+pub mod db_intent;
 mod formatter;
 mod incremental;
 mod specs;

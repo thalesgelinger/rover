@@ -1,65 +1,10 @@
 -- Rover Guard - Zod-inspired validator for Lua
 local Guard = {}
 
--- Methods for chainable validators (shared via metatable)
-local ValidatorMethods = {
-	required = function(self, msg)
-		self._required = true
-		self._nullable = false
-		self._required_msg = msg
-		return self
-	end,
-
-	default = function(self, value)
-		self._default = value
-		return self
-	end,
-
-	enum = function(self, values)
-		self._enum = values
-		return self
-	end,
-
-	-- Schema modifiers
-	primary = function(self)
-		self._primary = true
-		self._nullable = false
-		return self
-	end,
-
-	auto = function(self)
-		self._auto = true
-		return self
-	end,
-
-	unique = function(self)
-		self._unique = true
-		return self
-	end,
-
-	nullable = function(self)
-		self._nullable = true
-		self._required = false
-		return self
-	end,
-
-	references = function(self, table_col)
-		self._references_table = table_col
-		return self
-	end,
-
-	index = function(self)
-		self._index_flag = true
-		return self
-	end,
-}
-
-local ValidatorMT = { __index = ValidatorMethods }
-
 -- Helper to create chainable validator
 local function create_validator(validator_type)
-	local v = {
-		type = validator_type,
+	return {
+		_type = validator_type,
 		_required = false,
 		_required_msg = nil,
 		_default = nil,
@@ -71,11 +16,59 @@ local function create_validator(validator_type)
 		_auto = false,
 		_unique = false,
 		_nullable = true,
-		_references_table = nil,
-		_index_flag = false,
+		_references = nil,
+		_index = false,
+
+		required = function(self, msg)
+			self._required = true
+			self._nullable = false
+			self._required_msg = msg
+			return self
+		end,
+
+		default = function(self, value)
+			self._default = value
+			return self
+		end,
+
+		enum = function(self, values)
+			self._enum = values
+			return self
+		end,
+
+		-- Schema modifiers
+		primary = function(self)
+			self._primary = true
+			self._nullable = false
+			return self
+		end,
+
+		auto = function(self)
+			self._auto = true
+			return self
+		end,
+
+		unique = function(self)
+			self._unique = true
+			return self
+		end,
+
+		nullable = function(self)
+			self._nullable = true
+			self._required = false
+			return self
+		end,
+
+		references = function(self, table_col)
+			self._references = table_col
+			return self
+		end,
+
+		index = function(self)
+			self._index = true
+			return self
+		end,
 	}
-	setmetatable(v, ValidatorMT)
-	return v
 end
 
 function Guard:string()
@@ -96,13 +89,13 @@ end
 
 function Guard:array(element_validator)
 	local v = create_validator "array"
-	v.element = element_validator
+	v._element = element_validator
 	return v
 end
 
 function Guard:object(schema)
 	local v = create_validator "object"
-	v.schema = schema
+	v._schema = schema
 	return v
 end
 

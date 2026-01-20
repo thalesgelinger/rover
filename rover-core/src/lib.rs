@@ -9,6 +9,7 @@ mod server;
 pub mod template;
 
 use html::create_html_module;
+use rover_db::create_db_module;
 use server::{AppServer, Server};
 
 use anyhow::Result;
@@ -98,6 +99,13 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
     let io_module = io::create_io_module(&lua)?;
     lua.globals().set("io", io_module)?;
 
+    // Load debug module from embedded Lua file
+    let debug_module: Table = lua
+        .load(include_str!("debug.lua"))
+        .set_name("debug.lua")
+        .eval()?;
+    lua.globals().set("debug", debug_module)?;
+
     // Add HTTP client module
     let http_module = http::create_http_module(&lua)?;
     rover.set("http", http_module)?;
@@ -106,7 +114,14 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
     let html_module = create_html_module(&lua)?;
     rover.set("html", html_module)?;
 
+    // Add rover.db database module
+    let db_module = create_db_module(&lua)?;
+    rover.set("db", db_module)?;
+
     let _ = lua.globals().set("rover", rover);
+
+    // Make migration global via Lua (accessing rover.db.migration)
+    let _ = lua.load("_G.migration = rover.db.migration").eval::<()>();
 
     let app: Value = match lua.load(&content).set_name(path).eval() {
         Ok(app) => app,

@@ -7,3 +7,4 @@ docs/.docusaurus/
 docs/.cache-loader/
 docs/.env
 
+*.sqlite
