@@ -1,8 +1,35 @@
 {
-  "version": "1.0",
-  "lastUpdated": "2026-01-20",
+  "version": "2.0",
+  "lastUpdated": "2026-01-21",
   "totalPhases": 11,
   "completedPhases": 2,
+  "focusAreas": ["TUI (Phase 2)", "Web/WASM (Phase 3)", "Modifiers (Phase 4)", "Events (Phase 5)", "Performance/GC (Phase 10)"],
+  "excludedFromCurrentScope": ["iOS Renderer (Phase 6)", "Android Renderer (Phase 7)", "Animations (Phase 8)"],
+  "agentInstructions": {
+    "overview": "Rover is a cross-platform UI framework with Lua scripting and Rust core. The reactive system uses signals (NOT virtual DOM diffing). Changes flow: Signal → Subscribers notified → Derived marked dirty → Effects scheduled → Nodes updated → RenderCommands emitted → Platform applies commands.",
+    "architecture": {
+      "signalRuntime": "rover-ui/src/signal/runtime.rs - Central reactive coordinator with arena, graph, derived, effects, batching, node bindings",
+      "nodeArena": "rover-ui/src/node/arena.rs - Tree structure storage (Text, Column, Row, Conditional, Each)",
+      "renderCommands": "rover-ui/src/node/commands.rs - Declarative mutations (UpdateText, Show, Hide, InsertChild, etc.)",
+      "platformHandler": "rover-ui/src/platform/ - Trait for platform abstraction (TUI implemented, Web pending)",
+      "renderer": "rover-ui/src/renderer/ - Renderer trait + TUI implementation using ratatui",
+      "layoutEngine": "rover-ui/src/layout/engine.rs - Simple flexbox-style layout (Column=vertical, Row=horizontal)",
+      "luaBindings": "rover-ui/src/lua/ - signal.rs, derived.rs, effect.rs, ui.rs for Lua API"
+    },
+    "keyLimitation": "Lua comparison operators (__lt, __le, __eq) MUST return boolean. Use rover.derive() for reactive comparisons, NOT direct comparison operators.",
+    "testingStrategy": {
+      "tui": "Use sandbox mode to test TUI without actual terminal. Mock terminal output, verify RenderCommands.",
+      "web": "Use wasm-pack test --headless --chrome for WASM testing. Verify DOM operations via web-sys."
+    },
+    "currentImplementationState": {
+      "phase0": "COMPLETE - Platform abstractions, generic event loop, TUI platform handler",
+      "phase1": "COMPLETE - Signal arena, subscriber graph, derived signals, effects, Lua bindings with metamethods",
+      "phase2": "PARTIAL - Node system exists (Text, Column, Row, Conditional, Each). TuiRenderer exists with ratatui. Layout engine is basic. Need: ui.button, input handling, proper command flow, tests",
+      "phase3": "NOT STARTED - Need rover-web crate, wasm-bindgen setup, WebRenderer",
+      "phase4": "NOT STARTED - Need ModifierChain, tokens, TokenResolver trait",
+      "phase5": "NOT STARTED - Need EventType enum, input components, two-way binding"
+    }
+  },
   "phases": [
     {
       "id": 0,
@@ -42,10 +69,10 @@
           "name": "Subscriber Graph",
           "pass": true,
           "checklist": [
-            { "item": "Registrar dependência signal → subscriber", "pass": true },
+            { "item": "Registrar dependencia signal → subscriber", "pass": true },
             { "item": "Notificar subscribers quando signal muda", "pass": true },
-            { "item": "Propagação em cascata (A → B → C)", "pass": true },
-            { "item": "Sem notificação se valor não mudou", "pass": true }
+            { "item": "Propagacao em cascata (A → B → C)", "pass": true },
+            { "item": "Sem notificacao se valor nao mudou", "pass": true }
           ]
         },
         {
@@ -54,9 +81,9 @@
           "pass": true,
           "checklist": [
             { "item": "derive(fn) cria signal computado", "pass": true },
-            { "item": "Recomputa quando dependências mudam", "pass": true },
-            { "item": "Lazy evaluation (só computa quando lido)", "pass": true },
-            { "item": "Cache de valor (não recomputa se limpo)", "pass": true }
+            { "item": "Recomputa quando dependencias mudam", "pass": true },
+            { "item": "Lazy evaluation (so computa quando lido)", "pass": true },
+            { "item": "Cache de valor (nao recomputa se limpo)", "pass": true }
           ]
         },
         {
@@ -76,8 +103,8 @@
           "pass": true,
           "checklist": [
             { "item": "Effect roda uma vez no registro", "pass": true },
-            { "item": "Effect re-roda quando dependências mudam", "pass": true },
-            { "item": "Tracking automático de dependências", "pass": true },
+            { "item": "Effect re-roda quando dependencias mudam", "pass": true },
+            { "item": "Tracking automatico de dependencias", "pass": true },
             { "item": "Cleanup function opcional", "pass": true }
           ]
         },
@@ -96,14 +123,15 @@
       "pass": false,
       "duration": "2-3 semanas",
       "dependencies": "Phase 1, Phase 0",
+      "implementationNotes": "Node system and basic TuiRenderer exist. Need to complete: input handling, button component, proper command flow, layout improvements, comprehensive tests.",
       "deliverables": [
-        { "id": "2.1", "name": "Node System", "pass": false },
-        { "id": "2.2", "name": "Render Commands", "pass": false },
-        { "id": "2.3", "name": "Signal → Node Binding", "pass": false },
-        { "id": "2.4", "name": "Componentes Lua Básicos", "pass": false },
-        { "id": "2.5", "name": "TUI Renderer", "pass": false },
-        { "id": "2.6", "name": "Layout Básico (Column/Row)", "pass": false },
-        { "id": "2.7", "name": "Verify & Test", "pass": false }
+        { "id": "2.1", "name": "Node System", "pass": true, "notes": "NodeArena with Text, Column, Row, Conditional, Each implemented" },
+        { "id": "2.2", "name": "Render Commands", "pass": true, "notes": "UpdateText, Show, Hide, InsertChild, RemoveChild, MountTree, ReplaceEach" },
+        { "id": "2.3", "name": "Signal → Node Binding", "pass": true, "notes": "subscribe_node() and schedule_node_update() in SignalRuntime" },
+        { "id": "2.4", "name": "Componentes Lua Basicos", "pass": true, "notes": "ui.text, ui.column, ui.row, ui.when, ui.each registered" },
+        { "id": "2.5", "name": "TUI Renderer", "pass": true, "notes": "TuiRenderer with ratatui, handles commands, renders tree" },
+        { "id": "2.6", "name": "Layout Basico (Column/Row)", "pass": true, "notes": "LayoutEngine with simple divide-equally strategy" },
+        { "id": "2.7", "name": "Verify & Test", "pass": false, "notes": "Need sandbox tests, input handling tests, granular update verification" }
       ]
     },
     {
@@ -113,6 +141,7 @@
       "pass": false,
       "duration": "2 semanas",
       "dependencies": "Fase 2",
+      "implementationNotes": "Create rover-web crate with wasm-bindgen. Implement WebRenderer using web-sys. Same Lua code should work on both TUI and Web.",
       "deliverables": [
         { "id": "3.1", "name": "WASM Build Setup", "pass": false },
         { "id": "3.2", "name": "Web Renderer Implementation", "pass": false },
@@ -155,6 +184,7 @@
       "pass": false,
       "duration": "3-4 semanas",
       "dependencies": "Fase 5",
+      "excludedFromCurrentScope": true,
       "deliverables": [
         { "id": "6.1", "name": "Rust → Swift/ObjC Bridge", "pass": false },
         { "id": "6.2", "name": "iOS Renderer Implementation", "pass": false },
@@ -169,6 +199,7 @@
       "pass": false,
       "duration": "2-3 semanas",
       "dependencies": "Fase 5",
+      "excludedFromCurrentScope": true,
       "deliverables": [
         { "id": "7.1", "name": "Rust → JNI Bridge", "pass": false },
         { "id": "7.2", "name": "Android Renderer Implementation", "pass": false }
@@ -181,6 +212,7 @@
       "pass": false,
       "duration": "3-4 semanas",
       "dependencies": "Fase 6, Fase 7",
+      "excludedFromCurrentScope": true,
       "deliverables": [
         { "id": "8.1", "name": "Timing Modifiers", "pass": false },
         { "id": "8.2", "name": "Animated Properties", "pass": false },
@@ -204,22 +236,24 @@
     },
     {
       "id": 10,
-      "name": "Polish e Otimizações",
+      "name": "Polish e Otimizacoes",
       "filename": "phases/phase-10.md",
       "pass": false,
-      "duration": "Contínua",
+      "duration": "Continua",
       "dependencies": "Nenhuma",
       "deliverables": [
         { "id": "10.1", "name": "List Virtualization", "pass": false },
         { "id": "10.2", "name": "Batch Updates", "pass": false },
         { "id": "10.3", "name": "DevTools", "pass": false },
-        { "id": "10.4", "name": "Error Boundaries", "pass": false }
+        { "id": "10.4", "name": "Error Boundaries", "pass": false },
+        { "id": "10.5", "name": "RegistryKey Cleanup", "pass": false }
       ]
     }
   ],
   "notes": {
     "importantLimitation": "Comparison operators cannot create reactive signals. Use rover.derive() instead.",
     "estimatedTotalDuration": "5-7 meses para MVP",
-    "threadingNote": "Multi-threading (Lynx-Style) planned for future phases"
+    "threadingNote": "Multi-threading (Lynx-Style) planned for future phases",
+    "branchInfo": "Development on ui/tui branch, targeting main via PRs"
   }
 }
