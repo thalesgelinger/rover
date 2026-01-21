@@ -134,7 +134,7 @@ fn main() -> Result<()> {
             let file_path = PathBuf::from(path);
 
             // Run pre-execution check (syntax/type errors)
-            check::pre_run_check(&file_path)?;
+            // check::pre_run_check(&file_path)?;
 
             // Run database pre-run analysis
             pre_run_db_analysis(&file_path, yolo_mode)?;

@@ -18,6 +18,72 @@ use mlua::{Error, FromLua, Lua, Table, Value};
 use std::rc::Rc;
 
 use crate::app_type::AppType;
+use rover_ui::platform::tui::{PlatformEvent, PlatformHandler, TuiPlatform};
+use rover_ui::signal::SignalId;
+use rover_ui::signal::SignalValue;
+use std::collections::HashMap;
+
+#[derive(Debug)]
+pub enum Platform {
+    Http,
+    Tui,
+    Web,
+    Native,
+}
+
+pub struct GenericEventLoop {
+    platform: Box<dyn PlatformHandler>,
+    key_bindings: HashMap<String, SignalId>,
+    lua: mlua::Lua,
+}
+
+impl GenericEventLoop {
+    pub fn new(platform: Box<dyn PlatformHandler>, lua: mlua::Lua) -> Self {
+        Self {
+            platform,
+            key_bindings: HashMap::new(),
+            lua,
+        }
+    }
+
+    pub fn bind_key(&mut self, key: String, signal: SignalId) {
+        self.key_bindings.insert(key, signal);
+    }
+
+    pub fn unbind_key(&mut self, key: &str) {
+        self.key_bindings.remove(key);
+    }
+
+    pub fn run(&mut self) -> std::io::Result<()> {
+        self.platform.init()?;
+
+        loop {
+            match self
+                .platform
+                .wait_for_event(std::time::Duration::from_millis(16))?
+            {
+                Some(PlatformEvent::Quit) => break,
+                Some(PlatformEvent::KeyDown { key, .. }) => {
+                    if let Some(signal_id) = self.key_bindings.get(&key) {
+                        if let Some(runtime) =
+                            self.lua.app_data_ref::<rover_ui::SharedSignalRuntime>()
+                        {
+                            runtime
+                                .set_signal(*signal_id, rover_ui::signal::SignalValue::Bool(true));
+                        }
+                    }
+                }
+                Some(PlatformEvent::Tick { .. }) => {
+                    self.platform.render()?;
+                }
+                _ => {}
+            }
+        }
+
+        self.platform.cleanup()?;
+        Ok(())
+    }
+}
 
 trait RoverApp {
     fn app_type(&self) -> Option<AppType>;
@@ -161,9 +227,26 @@ pub fn run(path: &str, verbose: bool, platform: Option<&str>) -> Result<()> {
             let result = ud.borrow::<rover_ui::lua::node::LuaNode>();
             match result {
                 Ok(root_node) => {
-                    if platform == Some("tui") {
-                        let runtime = lua.app_data_ref::<rover_ui::SharedSignalRuntime>().unwrap();
-                        rover_ui::renderer::run_tui(root_node.id, &runtime)?;
+                    let platform_type = match platform {
+                        Some("http") => Platform::Http,
+                        Some("tui") => Platform::Tui,
+                        Some("web") => Platform::Web,
+                        Some("native") => Platform::Native,
+                        _ => Platform::Tui,
+                    };
+
+                    match platform_type {
+                        Platform::Tui => {
+                            let runtime = lua
+                                .app_data_ref::<rover_ui::SharedSignalRuntime>()
+                                .unwrap()
+                                .clone();
+                            let platform =
+                                rover_ui::platform::tui::TuiPlatform::new(root_node.id, runtime)?;
+                            let mut event_loop = GenericEventLoop::new(Box::new(platform), lua);
+                            event_loop.run()?;
+                        }
+                        _ => unimplemented!("Platform {:?} not yet implemented", platform_type),
                     }
                     Ok(())
                 }

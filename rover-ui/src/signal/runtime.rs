@@ -4,6 +4,7 @@ use super::effect::Effect;
 use super::graph::{DerivedId, EffectId, SubscriberGraph, SubscriberId};
 use super::value::SignalValue;
 use crate::node::{NodeArena, NodeId, RenderCommand, SignalOrDerived};
+use crate::platform::tui::PlatformEvent;
 use mlua::{Function, Lua, RegistryKey, Value};
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -89,6 +90,27 @@ impl SignalRuntime {
         }
         let arena = self.arena.borrow();
         arena.get(id).to_lua(lua)
+    }
+
+    pub fn read_signal_display(&self, id: SignalId) -> Option<String> {
+        let arena = self.arena.borrow();
+        Some(arena.get(id).to_display_string())
+    }
+
+    pub fn read_signal_bool(&self, id: SignalId) -> Option<bool> {
+        let arena = self.arena.borrow();
+        arena.get(id).as_boolean()
+    }
+
+    pub fn tick(&self) -> bool {
+        false
+    }
+
+    pub fn read_derived_display(&self, id: DerivedId) -> Option<String> {
+        let derived = self.derived.borrow();
+        derived
+            .get(id.0 as usize)
+            .map(|d| d.cached_value().to_display_string())
     }
 
     pub fn set_signal(&self, id: SignalId, value: SignalValue) {

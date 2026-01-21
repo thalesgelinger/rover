@@ -9,5 +9,6 @@ pub trait Renderer {
         root: NodeId,
         arena: &NodeArena,
         layout: &LayoutEngine,
+        runtime: &crate::SharedSignalRuntime,
     ) -> io::Result<()>;
 }

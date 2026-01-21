@@ -1,8 +1,17 @@
 # Fase 2: UI Core + TUI Renderer
 
-**Status:** 🔲 Não Iniciado  
-**Duration:** 2-3 semanas  
-**Dependencies:** Fase 1
+**Status:** 🟡 Ready to Start (Phase 0 Complete)
+**Duration:** 2-3 semanas
+**Dependencies:** Fase 1, Phase 0 (Event Loop Refactoring)
+
+## Notes
+
+Phase 0 completed the platform abstractions and event loop foundation. Now ready to implement:
+- Node system for UI tree structure
+- Render commands for reactive updates
+- Signal → Node bindings
+- Lua UI components
+- Full TUI renderer implementation
 
 ## Objetivo
 
@@ -148,6 +157,27 @@ impl Renderer for TuiRenderer {
 ```
 
 ### 2.6 Layout Básico (Column/Row)
+
+```rust
+pub struct LayoutEngine {
+    constraints: HashMap<NodeId, Constraints>,
+    computed: HashMap<NodeId, ComputedLayout>,
+}
+
+impl LayoutEngine {
+    fn compute(&mut self, root: NodeId, available: Size) {
+        // Flexbox simplificado pra TUI
+        // Column: empilha vertical
+        // Row: empilha horizontal
+    }
+}
+```
+
+### 2.7 Verify & Test
+
+1. `cargo build -p rover_ui` - Confirm compilation
+2. `cargo run -p rover_cli -- examples/counter.lua -p tui` - Test basic TUI
+3. Fix runtime issues
 
 ```rust
 pub struct LayoutEngine {

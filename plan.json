@@ -1,9 +1,24 @@
 {
   "version": "1.0",
   "lastUpdated": "2026-01-20",
-  "totalPhases": 10,
-  "completedPhases": 1,
+  "totalPhases": 11,
+  "completedPhases": 2,
   "phases": [
+    {
+      "id": 0,
+      "name": "Event Loop Refactoring + Platform Abstractions",
+      "filename": "phases/phase-0.md",
+      "pass": true,
+      "duration": "1 semana",
+      "dependencies": "Nenhuma",
+      "deliverables": [
+        { "id": "0.1", "name": "Platform Abstractions", "pass": true },
+        { "id": "0.2", "name": "Generic Event Loop", "pass": true },
+        { "id": "0.3", "name": "TUI Renderer Refactoring", "pass": true },
+        { "id": "0.4", "name": "Signal Runtime Extensions", "pass": true },
+        { "id": "0.5", "name": "Signal Value Fix", "pass": true }
+      ]
+    },
     {
       "id": 1,
       "name": "Signal System (Rust Core)",
@@ -80,14 +95,15 @@
       "filename": "phases/phase-2.md",
       "pass": false,
       "duration": "2-3 semanas",
-      "dependencies": "Fase 1",
+      "dependencies": "Phase 1, Phase 0",
       "deliverables": [
         { "id": "2.1", "name": "Node System", "pass": false },
         { "id": "2.2", "name": "Render Commands", "pass": false },
         { "id": "2.3", "name": "Signal → Node Binding", "pass": false },
         { "id": "2.4", "name": "Componentes Lua Básicos", "pass": false },
         { "id": "2.5", "name": "TUI Renderer", "pass": false },
-        { "id": "2.6", "name": "Layout Básico (Column/Row)", "pass": false }
+        { "id": "2.6", "name": "Layout Básico (Column/Row)", "pass": false },
+        { "id": "2.7", "name": "Verify & Test", "pass": false }
       ]
     },
     {
