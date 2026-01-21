@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["rover-cli" , "rover-core", "rover-server", "rover-lsp", "rover-parser", "rover-types", "rover-db", "rover-ui"]
+members = ["rover-cli" , "rover-core", "rover-server", "rover-lsp", "rover-parser", "rover-types", "rover-db", "rover-ui", "rover-web"]
 
 [profile.release]
 opt-level = 3

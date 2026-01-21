@@ -5,6 +5,7 @@ use smartstring::{LazyCompact, SmartString};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub(crate) u32);
 
+#[derive(Clone)]
 pub enum TextContent {
     Static(SmartString<LazyCompact>),
     Signal(SignalId),

@@ -72,6 +72,30 @@ impl TuiRenderer {
     }
 
     pub fn render(&mut self) -> io::Result<()> {
+        // Process pending node updates and generate render commands
+        self.runtime.process_node_updates();
+
+        // Apply all pending render commands
+        let commands = self.runtime.take_render_commands();
+        for cmd in commands {
+            // Apply command directly without the Renderer trait to avoid borrow issues
+            match &cmd {
+                RenderCommand::UpdateText { node, value } => {
+                    self.node_text.insert(*node, value.clone());
+                }
+                RenderCommand::Show { node } => {
+                    self.visible_nodes.insert(*node, true);
+                }
+                RenderCommand::Hide { node } => {
+                    self.visible_nodes.insert(*node, false);
+                }
+                RenderCommand::InsertChild { .. } | RenderCommand::RemoveChild { .. } => {}
+                RenderCommand::MountTree { .. } => {}
+                RenderCommand::ReplaceEach { .. } => {}
+            }
+        }
+
+        // Render the updated UI
         self.terminal.draw(|f| {
             Self::render_node_static(
                 &self.visible_nodes,

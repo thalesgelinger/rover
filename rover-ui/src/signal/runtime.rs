@@ -3,7 +3,7 @@ use super::derived::DerivedSignal;
 use super::effect::Effect;
 use super::graph::{DerivedId, EffectId, SubscriberGraph, SubscriberId};
 use super::value::SignalValue;
-use crate::node::{NodeArena, NodeId, RenderCommand, SignalOrDerived};
+use crate::node::{Node, NodeArena, NodeId, RenderCommand, SignalOrDerived, TextContent};
 use crate::platform::tui::PlatformEvent;
 use mlua::{Function, Lua, RegistryKey, Value};
 use smallvec::SmallVec;
@@ -102,8 +102,11 @@ impl SignalRuntime {
         arena.get(id).as_boolean()
     }
 
+    /// Check if there are pending updates that need processing
+    /// Returns true if the platform should call process_node_updates() and take_render_commands()
     pub fn tick(&self) -> bool {
-        false
+        let batch = self.batch.borrow();
+        !batch.pending_node_updates.is_empty() || !batch.render_commands.is_empty()
     }
 
     pub fn read_derived_display(&self, id: DerivedId) -> Option<String> {
@@ -416,9 +419,15 @@ impl SignalRuntime {
             SignalOrDerived::Signal(signal_id) => {
                 self.graph.borrow_mut().subscribe(signal_id, subscriber);
             }
-            SignalOrDerived::Derived(_) => {}
+            SignalOrDerived::Derived(derived_id) => {
+                // Derived signals use SignalId in the graph (using DerivedId.0 as SignalId.0)
+                self.graph.borrow_mut().subscribe(SignalId(derived_id.0), subscriber);
+            }
         }
         self.node_bindings.borrow_mut().push((source, node));
+
+        // Schedule initial update for the node
+        self.schedule_node_update(node);
     }
 
     pub fn schedule_node_update(&self, node: NodeId) {
@@ -430,6 +439,93 @@ impl SignalRuntime {
 
     pub fn push_render_command(&self, command: RenderCommand) {
         self.batch.borrow_mut().render_commands.push(command);
+    }
+
+    /// Process all pending node updates and generate render commands
+    pub fn process_node_updates(&self) {
+        let pending = {
+            let mut batch = self.batch.borrow_mut();
+            std::mem::take(&mut batch.pending_node_updates)
+        };
+
+        for node_id in pending {
+            // First, read the node info we need
+            let node_info = {
+                let arena = self.node_arena.borrow();
+                arena.get(node_id).map(|node| match node {
+                    Node::Text(text_node) => {
+                        let content = text_node.content.clone();
+                        (0, content, None, None, None, false)
+                    }
+                    Node::Conditional(cond_node) => {
+                        (1, TextContent::Static("".into()), Some(cond_node.condition_signal), cond_node.true_branch, cond_node.false_branch, cond_node.visible)
+                    }
+                    Node::Each(_) => (2, TextContent::Static("".into()), None, None, None, false),
+                    Node::Column(_) | Node::Row(_) => (3, TextContent::Static("".into()), None, None, None, false),
+                })
+            };
+
+            if let Some((node_type, content, condition_signal, true_branch, false_branch, old_visible)) = node_info {
+                match node_type {
+                    0 => {
+                        // Text node
+                        let value = match &content {
+                            TextContent::Static(s) => s.to_string(),
+                            TextContent::Signal(signal_id) => {
+                                self.read_signal_display(*signal_id).unwrap_or_default()
+                            }
+                            TextContent::Derived(derived_id) => {
+                                self.read_derived_display(*derived_id).unwrap_or_default()
+                            }
+                        };
+                        self.push_render_command(RenderCommand::UpdateText {
+                            node: node_id,
+                            value,
+                        });
+                    }
+                    1 => {
+                        // Conditional node
+                        if let Some(signal_id) = condition_signal {
+                            let new_visible = self.read_signal_bool(signal_id).unwrap_or(false);
+
+                            if new_visible != old_visible {
+                                // Update the node's visible state
+                                {
+                                    let mut arena = self.node_arena.borrow_mut();
+                                    if let Some(Node::Conditional(cond)) = arena.get_mut(node_id) {
+                                        cond.visible = new_visible;
+                                    }
+                                }
+
+                                // Generate render commands
+                                if new_visible {
+                                    if let Some(true_branch) = true_branch {
+                                        self.push_render_command(RenderCommand::Show { node: true_branch });
+                                    }
+                                    if let Some(false_branch) = false_branch {
+                                        self.push_render_command(RenderCommand::Hide { node: false_branch });
+                                    }
+                                } else {
+                                    if let Some(true_branch) = true_branch {
+                                        self.push_render_command(RenderCommand::Hide { node: true_branch });
+                                    }
+                                    if let Some(false_branch) = false_branch {
+                                        self.push_render_command(RenderCommand::Show { node: false_branch });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    2 => {
+                        // Each node - TODO
+                    }
+                    3 => {
+                        // Container nodes don't need direct updates
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     pub fn take_render_commands(&self) -> Vec<RenderCommand> {
@@ -486,5 +582,234 @@ mod tests {
 
         let _ = rt.end_batch(&lua);
         assert_eq!(rt.batch.borrow().depth, 1);
+    }
+
+    #[test]
+    fn test_granular_update_only_affected_nodes() {
+        let rt = SignalRuntime::new();
+
+        // Create two signals - one that will change, one that won't
+        let count = rt.create_signal(SignalValue::Int(0));
+        let static_val = rt.create_signal(SignalValue::Int(999));
+
+        // Create text nodes bound to each signal
+        let dynamic_text = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Signal(count)))
+        };
+
+        let static_text = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Signal(static_val)))
+        };
+
+        let _unbound_text = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Static("Always Static".into())))
+        };
+
+        // Subscribe nodes to their signals
+        rt.subscribe_node(SignalOrDerived::Signal(count), dynamic_text);
+        rt.subscribe_node(SignalOrDerived::Signal(static_val), static_text);
+        // _unbound_text is not subscribed to anything
+
+        // Process any initial updates
+        rt.process_node_updates();
+        rt.take_render_commands();
+
+        // Now change only the count signal
+        rt.set_signal(count, SignalValue::Int(42));
+
+        // Process updates
+        rt.process_node_updates();
+
+        // Should only have update for dynamic_text, not static_text or unbound_text
+        let commands = rt.take_render_commands();
+        assert_eq!(commands.len(), 1, "Expected exactly 1 render command");
+
+        match &commands[0] {
+            RenderCommand::UpdateText { node, value } => {
+                assert_eq!(*node, dynamic_text, "Expected update for dynamic_text node");
+                assert_eq!(value, "42", "Expected value to be '42'");
+            }
+            _ => panic!("Expected UpdateText command"),
+        }
+    }
+
+    #[test]
+    fn test_conditional_visibility() {
+        let rt = SignalRuntime::new();
+
+        // Create a boolean signal for the condition
+        let show = rt.create_signal(SignalValue::Bool(true));
+
+        // Create text nodes for true and false branches
+        let true_text = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Static("Visible!".into())))
+        };
+
+        let false_text = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Static("Hidden!".into())))
+        };
+
+        // Create conditional node
+        let cond_node = {
+            let mut arena = rt.node_arena.borrow_mut();
+            let node_id = arena.create(Node::conditional(show));
+            if let Some(Node::Conditional(cond)) = arena.get_mut(node_id) {
+                cond.true_branch = Some(true_text);
+                cond.false_branch = Some(false_text);
+                cond.visible = false; // Start with false so first update triggers
+            }
+            node_id
+        };
+
+        // Subscribe the conditional node to the signal
+        rt.subscribe_node(SignalOrDerived::Signal(show), cond_node);
+
+        // Initial state: signal is true
+        rt.process_node_updates();
+        let commands = rt.take_render_commands();
+
+        // Should show true branch and hide false branch
+        assert_eq!(commands.len(), 2);
+        assert!(commands.iter().any(|c| matches!(c, RenderCommand::Show { node } if *node == true_text)));
+        assert!(commands.iter().any(|c| matches!(c, RenderCommand::Hide { node } if *node == false_text)));
+
+        // Now toggle to false
+        rt.set_signal(show, SignalValue::Bool(false));
+        rt.process_node_updates();
+        let commands = rt.take_render_commands();
+
+        // Should hide true branch and show false branch
+        assert_eq!(commands.len(), 2);
+        assert!(commands.iter().any(|c| matches!(c, RenderCommand::Hide { node } if *node == true_text)));
+        assert!(commands.iter().any(|c| matches!(c, RenderCommand::Show { node } if *node == false_text)));
+    }
+
+    #[test]
+    fn test_text_node_with_derived_signal() {
+        use std::rc::Rc;
+        let lua = Lua::new();
+        let rt = Rc::new(SignalRuntime::new());
+
+        // Create a signal
+        let count = rt.create_signal(SignalValue::Int(5));
+
+        // Create a derived that doubles the count
+        let doubled = {
+            let derived_fn = lua
+                .create_function({
+                    let rt_clone = rt.clone();
+                    move |lua: &Lua, ()| {
+                        let val = rt_clone.get_signal(lua, count)?;
+                        match val {
+                            Value::Integer(n) => Ok(Value::Integer(n * 2)),
+                            _ => Ok(Value::Nil),
+                        }
+                    }
+                })
+                .unwrap();
+            let key = lua.create_registry_value(derived_fn).unwrap();
+            rt.create_derived(key)
+        };
+
+        // Create a text node bound to the derived
+        let text_node = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Derived(doubled)))
+        };
+
+        // Subscribe node to derived
+        rt.subscribe_node(SignalOrDerived::Derived(doubled), text_node);
+
+        // Initial computation
+        let _ = rt.get_derived(&lua, doubled);
+        rt.process_node_updates();
+        let commands = rt.take_render_commands();
+
+        // Should have initial update
+        if !commands.is_empty() {
+            match &commands[0] {
+                RenderCommand::UpdateText { node, value } => {
+                    assert_eq!(*node, text_node);
+                    assert_eq!(value, "10");
+                }
+                _ => {}
+            }
+        }
+
+        // Change the source signal
+        rt.set_signal(count, SignalValue::Int(10));
+
+        // Recompute derived
+        let _ = rt.get_derived(&lua, doubled);
+        rt.process_node_updates();
+        let commands = rt.take_render_commands();
+
+        // Should have update with new value
+        assert!(!commands.is_empty());
+        match &commands[0] {
+            RenderCommand::UpdateText { node, value } => {
+                assert_eq!(*node, text_node);
+                assert_eq!(value, "20");
+            }
+            _ => panic!("Expected UpdateText command"),
+        }
+    }
+
+    #[test]
+    fn test_multiple_nodes_same_signal() {
+        let rt = SignalRuntime::new();
+
+        let count = rt.create_signal(SignalValue::Int(0));
+
+        // Create multiple nodes bound to the same signal
+        let text1 = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Signal(count)))
+        };
+
+        let text2 = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Signal(count)))
+        };
+
+        let text3 = {
+            let mut arena = rt.node_arena.borrow_mut();
+            arena.create(Node::text(TextContent::Signal(count)))
+        };
+
+        rt.subscribe_node(SignalOrDerived::Signal(count), text1);
+        rt.subscribe_node(SignalOrDerived::Signal(count), text2);
+        rt.subscribe_node(SignalOrDerived::Signal(count), text3);
+
+        // Process initial updates
+        rt.process_node_updates();
+        rt.take_render_commands();
+
+        // Change the signal
+        rt.set_signal(count, SignalValue::Int(100));
+        rt.process_node_updates();
+
+        let commands = rt.take_render_commands();
+
+        // All three nodes should be updated
+        assert_eq!(commands.len(), 3, "Expected 3 UpdateText commands");
+
+        for cmd in &commands {
+            match cmd {
+                RenderCommand::UpdateText { node, value } => {
+                    assert!(
+                        *node == text1 || *node == text2 || *node == text3,
+                        "Unexpected node in command"
+                    );
+                    assert_eq!(value, "100");
+                }
+                _ => panic!("Expected UpdateText command"),
+            }
+        }
     }
 }

@@ -649,3 +649,133 @@ wasm-pack build --target bundler
 2. Increment counter 100x rapidly
 3. Verify NO "Recalculate Style" cascades
 4. Verify only the affected text span changes
+
+## Phase 3.4: CLI Dev Server Integration (TODO)
+
+### Goal: Seamless Developer Experience
+
+Running `rover examples/counter.lua --platform web` should "just work" like the TUI version:
+
+```bash
+# User runs this:
+rover examples/counter.lua --platform web
+
+# System automatically:
+# 1. Compiles WASM (cached in .rover/)
+# 2. Starts dev server on localhost:4242
+# 3. Opens browser automatically
+# 4. Hot-reloads on file changes
+# 5. NO generated files in project directory
+```
+
+### Implementation Requirements
+
+1. **Auto WASM Compilation**
+   - Detect `--platform web` flag in rover-cli
+   - Run `wasm-pack build` automatically
+   - Cache output in `.rover/wasm-cache/`
+   - Rebuild only when rover-web or lua file changes
+
+2. **Embedded Dev Server**
+   - **Reuse rover-server infrastructure** (already battle-tested!)
+   - Serve on `localhost:4242` by default
+   - Add static file serving for WASM assets
+   - Auto-generate HTML wrapper that:
+     - Loads WASM module from `.rover/wasm-cache/`
+     - Calls `run_app(lua_code, "root")`
+     - Injects the Lua file content
+
+3. **Zero Config Philosophy**
+   - No `index.html` needed
+   - No `Cargo.toml` in user project
+   - No webpack/bundler setup
+   - Just `rover file.lua --platform web` and it works
+
+4. **File Watching (Optional)**
+   - Watch lua file for changes
+   - Trigger WASM rebuild if needed
+   - WebSocket for browser refresh
+
+### Example User Flow
+
+```bash
+# User writes counter.lua
+local count = rover.signal(0)
+return ui.column {
+    ui.text { "Count: " .. count },
+    ui.button { text = "+", on_press = function() count.val = count.val + 1 end }
+}
+
+# User runs:
+$ rover counter.lua --platform web
+
+# Output:
+🚀 Compiling WASM...
+✅ Compiled successfully
+🌐 Server running at http://localhost:4242
+   Press Ctrl+C to stop
+
+# Browser auto-opens with the counter app running
+# No files generated in user's directory
+```
+
+### Hidden .rover/ Structure
+
+```
+project/
+├── counter.lua          # User's file (clean!)
+└── .rover/              # Hidden cache (gitignored)
+    ├── wasm-cache/
+    │   ├── rover_web_bg.wasm
+    │   ├── rover_web.js
+    │   └── build-hash.txt
+    └── server/
+        └── generated-index.html
+```
+
+### Implementation Strategy
+
+**Leverage existing rover-server infrastructure:**
+
+1. **rover-cli detects `--platform web`**
+   ```rust
+   // In rover-cli/src/main.rs
+   match args.platform {
+       Platform::Web => {
+           // 1. Compile WASM to .rover/wasm-cache/
+           compile_wasm(&lua_file)?;
+
+           // 2. Start rover-server in dev mode
+           let config = ServerConfig {
+               port: 4242,
+               static_files: ".rover/wasm-cache/",
+               lua_file: lua_file.clone(),
+               dev_mode: true,
+           };
+           start_dev_server(config)?;
+       }
+       Platform::Tui => { /* existing TUI logic */ }
+   }
+   ```
+
+2. **Extend rover-server for static file serving**
+   - Add route for `/_rover/wasm/*` → serves from `.rover/wasm-cache/`
+   - Add route for `/` → serves auto-generated HTML
+   - Reuse existing event loop, routing, and logging infrastructure
+
+3. **Benefits of reusing rover-server**
+   - ✅ No new HTTP server dependencies
+   - ✅ Consistent architecture across TUI and Web
+   - ✅ Easy to add hot-reload (already has event loop)
+   - ✅ Reuse existing request/response handling
+   - ✅ Battle-tested production code
+
+### Priority
+
+This is **Phase 3.4** and should be implemented after Phase 3.1-3.3 are stable. For now, users can manually use wasm-pack, but the goal is to hide all complexity.
+
+### Related Work
+
+- Multi-page apps (routing, navigation) → Later phase
+- Production builds → `rover build --platform web --release`
+- Static site generation → Future consideration
