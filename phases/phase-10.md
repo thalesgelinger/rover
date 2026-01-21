@@ -1,8 +1,29 @@
 # Fase 10: Polish e Otimizações
 
-**Status:** 🔲 Não Iniciado  
-**Duration:** Contínua  
+**Status:** Not Started
+**Duration:** Contínua
 **Dependencies:** Nenhuma
+
+## Agent Context
+
+### Prerequisites
+- Can be worked on incrementally alongside other phases
+- RegistryKey cleanup is critical for long-running apps
+- Batch updates improve perceived performance
+
+### Key Focus Areas
+
+1. **RegistryKey Cleanup**: Prevent memory leaks from Lua registry accumulation
+2. **Batch Updates**: Group signal changes into single render pass
+3. **List Virtualization**: Only render visible items for large lists
+4. **DevTools**: Signal inspector, graph visualization
+
+### Current Known Issue
+
+In Phase 1 implementation, `RegistryKey` values (functions stored in signals/derived/effects) are NOT properly disposed. This causes:
+- Memory growth over time as registry accumulates
+- Impact is acceptable for short-lived TUI/Web sessions
+- Must be fixed for production mobile apps (Phase 6+)
 
 ## Objetivo
 
