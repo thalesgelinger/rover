@@ -14,7 +14,7 @@ use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module};
 use server::{AppServer, Server};
 
 use anyhow::Result;
-use mlua::{Error, FromLua, Lua, Table, Value};
+use mlua::{Error, FromLua, Function, Lua, Table, Value};
 use std::rc::Rc;
 
 use crate::app_type::AppType;
@@ -155,6 +155,16 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
                     AppType::Server => table.run_server(&lua, &content)?,
                 }
             }
+
+            if let Some(render) = rover.get::<Value>("render") {
+                let _ = match render {
+                    Value::Function(render_fn) => render_fn.call::<rover_ui::ui::UiTree>(()),
+                    _ => Err(mlua::Error::RuntimeError(
+                        "rover.render should be a function ".to_string(),
+                    )),
+                };
+            }
+
             Ok(())
         }
         _ => Ok(()),

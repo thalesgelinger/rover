@@ -5,7 +5,7 @@ pub mod metamethods;
 pub mod signal;
 pub mod utils;
 
-use crate::signal::SignalValue;
+use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
 use mlua::{Function, Lua, Result, Table, Value};
 use signal::LuaSignal;
@@ -52,6 +52,9 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     // rover.none(...) - utility
     let none_fn = utils::create_none_fn(lua)?;
     rover_table.set("none", none_fn)?;
+
+    let lua_ui = LuaUi::new();
+    rover_table.set("ui", lua_ui)?;
 
     Ok(())
 }

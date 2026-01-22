@@ -1,5 +1,6 @@
 pub mod lua;
 pub mod signal;
+pub mod ui;
 
 use std::rc::Rc;
 
