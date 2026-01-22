@@ -2127,6 +2127,7 @@ dependencies = [
  "mlua",
  "rover-openapi",
  "rover_types",
+ "rover_ui",
  "ryu",
  "serde",
  "serde_json",
