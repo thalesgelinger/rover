@@ -30,9 +30,8 @@ impl UserData for LuaSignal {
             |lua, this, (key, value): (String, Value)| {
                 if key == "val" {
                     let runtime = crate::lua::helpers::get_runtime(lua)?;
-
                     let signal_value = SignalValue::from_lua(lua, value)?;
-                    runtime.set_signal(this.id, signal_value);
+                    runtime.set_signal(lua, this.id, signal_value);
                     Ok(())
                 } else {
                     Err(mlua::Error::RuntimeError(format!(

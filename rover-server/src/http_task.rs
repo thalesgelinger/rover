@@ -8,6 +8,7 @@ use mlua::{
 
 use tracing::{debug, info, warn};
 
+use rover_ui::SharedSignalRuntime;
 use crate::buffer_pool::BufferPool;
 use crate::table_pool::LuaTablePool;
 use crate::{Bytes, response::RoverResponse, to_json::ToJson};
@@ -408,7 +409,20 @@ pub fn execute_handler_coroutine(
     // The coroutine may complete immediately (fast path) or yield for I/O (slow path)
     let thread = thread_pool.acquire(lua, handler)?;
 
-    match thread.resume::<Value>(ctx) {
+    // Get signal runtime if available and begin batch
+    let runtime_opt = lua.app_data_ref::<SharedSignalRuntime>();
+    if let Some(ref runtime) = runtime_opt {
+        runtime.begin_batch();
+    }
+
+    let resume_result = thread.resume::<Value>(ctx);
+
+    // End batch and run pending effects
+    if let Some(runtime) = runtime_opt {
+        let _ = runtime.end_batch(lua);
+    }
+
+    match resume_result {
         Ok(result) => {
             // Check if the coroutine yielded or completed
             use mlua::ThreadStatus;

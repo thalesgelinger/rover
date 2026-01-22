@@ -82,10 +82,10 @@ impl SignalRuntime {
         arena.get(id).to_lua(lua)
     }
 
-    pub fn set_signal(&self, id: SignalId, value: SignalValue) {
+    pub fn set_signal(&self, lua: &Lua, id: SignalId, value: SignalValue) {
         let changed = self.arena.borrow_mut().set(id, value);
         if changed {
-            self.notify_subscribers(id);
+            self.notify_subscribers(lua, id);
         }
     }
 
@@ -306,18 +306,18 @@ impl SignalRuntime {
         Ok(())
     }
 
-    fn notify_subscribers(&self, signal: SignalId) {
+    fn notify_subscribers(&self, lua: &Lua, signal: SignalId) {
         let subscribers = self.graph.borrow().get_subscribers(signal).to_vec();
 
         for subscriber in subscribers {
             match subscriber {
-                SubscriberId::Derived(id) => self.mark_derived_dirty(id),
-                SubscriberId::Effect(id) => self.schedule_effect(id),
+                SubscriberId::Derived(id) => self.mark_derived_dirty(lua, id),
+                SubscriberId::Effect(id) => self.schedule_effect(lua, id),
             }
         }
     }
 
-    fn mark_derived_dirty(&self, id: DerivedId) {
+    fn mark_derived_dirty(&self, lua: &Lua, id: DerivedId) {
         {
             let mut batch = self.batch.borrow_mut();
             if batch.propagation_stack.contains(&SubscriberId::Derived(id)) {
@@ -356,10 +356,10 @@ impl SignalRuntime {
                         };
 
                         if !already_dirty {
-                            self.mark_derived_dirty(child_id);
+                            self.mark_derived_dirty(lua, child_id);
                         }
                     }
-                    SubscriberId::Effect(effect_id) => self.schedule_effect(effect_id),
+                    SubscriberId::Effect(effect_id) => self.schedule_effect(lua, effect_id),
                 }
             }
         }
@@ -368,13 +368,8 @@ impl SignalRuntime {
         batch.propagation_stack.pop();
     }
 
-    fn schedule_effect(&self, id: EffectId) {
-        let mut batch = self.batch.borrow_mut();
-        if batch.depth > 0 {
-            batch.pending_effects.push(id);
-        } else {
-            batch.pending_effects.push(id);
-        }
+    fn schedule_effect(&self, _lua: &Lua, id: EffectId) {
+        self.batch.borrow_mut().pending_effects.push(id);
     }
 }
 
@@ -407,7 +402,7 @@ mod tests {
         let rt = SignalRuntime::new();
         let id = rt.create_signal(SignalValue::Int(42));
 
-        rt.set_signal(id, SignalValue::Int(100));
+        rt.set_signal(&lua, id, SignalValue::Int(100));
 
         let value = rt.get_signal(&lua, id).unwrap();
         match value {
