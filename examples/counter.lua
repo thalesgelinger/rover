@@ -1,30 +1,16 @@
+local ru = rover.ui
 
-require "rover.ui"
-
-local api = rover.server {}
-
-local Counter = rover.component()
-
-function Counter.init(props)
-    return props.value
+function App()
+	return ru.view {
+		ru.column {
+			ru.text { "Hello" },
+			ru.row {
+				ru.text { "Rover" },
+				ru.text { "Row" },
+			},
+			ru.text { "Column" },
+		},
+	}
 end
 
-function Counter.increase(state)
-	return state + 1
-end
-
-function Counter.render(state)
-    return div {
-        class = "", 
-        h1 { "Counter " .. state },
-        button { "Increase", onclick = self:increase }
-    }
-end
-
-function api.get()
-    return api.html_render({
-        Counter { value = 0 }
-    })
-end
-
-return api
+return ru.render(App())
