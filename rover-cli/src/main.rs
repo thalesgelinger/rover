@@ -123,11 +123,31 @@ fn main() -> Result<()> {
         Commands::Fmt { file, check } => fmt::run_fmt(fmt::FmtOptions { file, check }),
         Commands::Db { action } => handle_db_command(action),
         Commands::External(args) => {
-            // Parse args for --yolo flag
-            let (file_args, yolo_mode) = parse_external_args(&args);
+            // Parse args for --yolo and --platform flags
+            let (file_args, yolo_mode, platform) = parse_external_args(&args);
+
+            // Check platform availability
+            match platform {
+                Platform::Stub => {
+                    // Default - debug renderer
+                }
+                Platform::Tui => {
+                    println!("Platform 'tui' coming soon!");
+                    std::process::exit(0);
+                }
+                Platform::Web
+                | Platform::Ios
+                | Platform::Android
+                | Platform::Macos
+                | Platform::Windows
+                | Platform::Linux => {
+                    println!("Platform '{:?}' coming soon!", platform);
+                    std::process::exit(0);
+                }
+            }
 
             let raw_path = file_args.first().ok_or_else(|| {
-                anyhow::anyhow!("No file specified. Usage: rover @<file.lua> [--yolo]")
+                anyhow::anyhow!("No file specified. Usage: rover @<file.lua> [--yolo] [--platform <platform>]")
             })?;
             // Strip @ prefix if present (external_subcommand includes it)
             let path = raw_path.strip_prefix('@').unwrap_or(raw_path);
@@ -257,20 +277,72 @@ fn handle_db_command(action: DbAction) -> Result<()> {
     }
 }
 
-/// Parse external command args, extracting --yolo flag
-fn parse_external_args(args: &[String]) -> (Vec<String>, bool) {
+/// Platform selection for rendering
+#[derive(Clone, Debug, PartialEq)]
+enum Platform {
+    Stub,   // Debug renderer (prints updates)
+    Tui,    // Terminal UI (ratatui)
+    Web,
+    Ios,
+    Android,
+    Macos,
+    Windows,
+    Linux,
+}
+
+impl Default for Platform {
+    fn default() -> Self {
+        Platform::Stub
+    }
+}
+
+impl std::str::FromStr for Platform {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "stub" => Ok(Platform::Stub),
+            "tui" => Ok(Platform::Tui),
+            "web" => Ok(Platform::Web),
+            "ios" => Ok(Platform::Ios),
+            "android" => Ok(Platform::Android),
+            "macos" => Ok(Platform::Macos),
+            "windows" => Ok(Platform::Windows),
+            "linux" => Ok(Platform::Linux),
+            _ => Err(anyhow::anyhow!("Unknown platform: {}", s)),
+        }
+    }
+}
+
+/// Parse external command args, extracting --yolo and --platform flags
+fn parse_external_args(args: &[String]) -> (Vec<String>, bool, Platform) {
     let mut file_args = Vec::new();
     let mut yolo_mode = false;
+    let mut platform = Platform::default();
+    let mut skip_next = false;
 
-    for arg in args {
+    for (i, arg) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
         if arg == "--yolo" || arg == "-y" {
             yolo_mode = true;
+        } else if arg == "--platform" || arg == "-p" {
+            // Next arg should be the platform value
+            if let Some(platform_str) = args.get(i + 1) {
+                if let Ok(p) = platform_str.parse() {
+                    platform = p;
+                }
+                skip_next = true;
+            }
         } else {
             file_args.push(arg.clone());
         }
     }
 
-    (file_args, yolo_mode)
+    (file_args, yolo_mode, platform)
 }
 
 fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {

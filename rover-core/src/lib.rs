@@ -10,11 +10,12 @@ pub mod template;
 
 use html::create_html_module;
 use rover_db::create_db_module;
-use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module};
+use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module, ui::UiRegistry};
 use server::{AppServer, Server};
+use std::cell::RefCell;
 
 use anyhow::Result;
-use mlua::{Error, FromLua, Function, Lua, Table, Value};
+use mlua::{AnyUserData, Error, FromLua, Function, Lua, Table, Value};
 use std::rc::Rc;
 
 use crate::app_type::AppType;
@@ -39,6 +40,10 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
     // Initialize signal runtime (interior mutability now handled by runtime itself)
     let runtime: SharedSignalRuntime = Rc::new(SignalRuntime::new());
     lua.set_app_data(runtime);
+
+    // Initialize UI registry for reactive UI (wrapped in Rc<RefCell> for interior mutability)
+    let ui_registry = Rc::new(RefCell::new(UiRegistry::new()));
+    lua.set_app_data(ui_registry);
 
     let rover = lua.create_table()?;
 
@@ -156,18 +161,34 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
                 }
             }
 
-            if let Some(render) = rover.get::<Value>("render") {
-                let _ = match render {
-                    Value::Function(render_fn) => render_fn.call::<rover_ui::ui::UiTree>(()),
-                    _ => Err(mlua::Error::RuntimeError(
-                        "rover.render should be a function ".to_string(),
-                    )),
-                };
+            Ok(())
+        }
+        _ => {
+            let rover_table = lua.globals().get::<Table>("rover")?;
+            if let Ok(ui_ud) = rover_table.get::<AnyUserData>("ui") {
+                if let Ok(user_value) = ui_ud.user_value::<Table>() {
+                    if let Ok(render_fn) = user_value.get::<Function>("render") {
+                        match render_fn.call::<Value>(()) {
+                            Ok(Value::UserData(node_ud)) => {
+                                if let Ok(node) =
+                                    node_ud.borrow::<rover_ui::ui::lua_node::LuaNode>()
+                                {
+                                    let registry_rc = lua
+                                        .app_data_ref::<Rc<RefCell<UiRegistry>>>()
+                                        .expect("UiRegistry not found");
+                                    registry_rc.borrow_mut().set_root(node.id());
+                                    println!("UI mounted with root node {:?}", node.id());
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => eprintln!("Error in rover.ui.render(): {}", e),
+                        }
+                    }
+                }
             }
 
             Ok(())
         }
-        _ => Ok(()),
     }
 }
 

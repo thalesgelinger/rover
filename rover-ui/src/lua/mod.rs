@@ -53,7 +53,8 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     let none_fn = utils::create_none_fn(lua)?;
     rover_table.set("none", none_fn)?;
 
-    let lua_ui = LuaUi::new();
+    let lua_ui = lua.create_userdata(LuaUi::new())?;
+    lua_ui.set_user_value(lua.create_table()?)?;
     rover_table.set("ui", lua_ui)?;
 
     Ok(())
