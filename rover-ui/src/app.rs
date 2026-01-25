@@ -1,0 +1,384 @@
+use crate::coroutine::{run_coroutine_with_delay, CoroutineResult};
+use crate::events::{EventQueue, UiEvent};
+use crate::scheduler::{Scheduler, SharedScheduler};
+use crate::signal::SignalRuntime;
+use crate::ui::renderer::Renderer;
+use crate::ui::registry::UiRegistry;
+use mlua::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+/// Main application struct combining all systems
+pub struct App<R: Renderer> {
+    /// Lua interpreter (owned)
+    lua: Lua,
+    /// Signal runtime (shared with Lua app_data)
+    runtime: Rc<SignalRuntime>,
+    /// UI registry (shared with Lua app_data)
+    registry: Rc<RefCell<UiRegistry>>,
+    /// Coroutine scheduler (shared with Lua app_data)
+    scheduler: SharedScheduler,
+    /// Event queue
+    events: EventQueue,
+    /// Renderer
+    renderer: R,
+    /// Running state
+    running: bool,
+}
+
+impl<R: Renderer> App<R> {
+    /// Create a new App with the given renderer
+    pub fn new(renderer: R) -> mlua::Result<Self> {
+        let lua = Lua::new();
+        let runtime = Rc::new(SignalRuntime::new());
+        let registry = Rc::new(RefCell::new(UiRegistry::new()));
+        let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
+
+        // Store runtime, registry, and scheduler in Lua app_data for access from Lua
+        lua.set_app_data(runtime.clone());
+        lua.set_app_data(registry.clone());
+        lua.set_app_data(scheduler.clone());
+
+        // Register rover module
+        let rover_table = lua.create_table()?;
+        crate::register_ui_module(&lua, &rover_table)?;
+        lua.globals().set("rover", rover_table)?;
+
+        Ok(Self {
+            lua,
+            runtime,
+            registry,
+            scheduler,
+            events: EventQueue::new(),
+            renderer,
+            running: false,
+        })
+    }
+
+    /// Get a reference to the Lua interpreter
+    pub fn lua(&self) -> &Lua {
+        &self.lua
+    }
+
+    /// Get the signal runtime
+    pub fn runtime(&self) -> &Rc<SignalRuntime> {
+        &self.runtime
+    }
+
+    /// Get the UI registry
+    pub fn registry(&self) -> &Rc<RefCell<UiRegistry>> {
+        &self.registry
+    }
+
+    /// Get the scheduler
+    pub fn scheduler(&self) -> SharedScheduler {
+        self.scheduler.clone()
+    }
+
+    /// Get the event queue
+    pub fn events(&mut self) -> &mut EventQueue {
+        &mut self.events
+    }
+
+    /// Get the renderer
+    pub fn renderer(&mut self) -> &mut R {
+        &mut self.renderer
+    }
+
+    /// Run a Lua script to set up the UI
+    pub fn run_script(&mut self, script: &str) -> mlua::Result<()> {
+        self.lua.load(script).exec()?;
+        Ok(())
+    }
+
+    /// Push an event to the event queue
+    pub fn push_event(&mut self, event: UiEvent) {
+        self.events.push(event);
+    }
+
+    /// Process one tick of the application loop
+    pub fn tick(&mut self) -> mlua::Result<bool> {
+        // Auto-mount on first tick (for testing convenience)
+        // In production, run() calls mount() explicitly
+        if !self.running {
+            let registry = self.registry.clone();
+            self.renderer.mount(&registry.borrow());
+            self.running = true;
+        }
+
+        let now = Instant::now();
+
+        // 1. Resume ready timers
+        let ready_ids = self.scheduler.borrow_mut().tick(now);
+        for id in ready_ids {
+            let pending = self.scheduler.borrow_mut().take_pending(id)?;
+            match run_coroutine_with_delay(&self.lua, &self.runtime, &pending.thread, LuaValue::Nil)? {
+                CoroutineResult::Completed => {
+                    // Coroutine finished, nothing more to do
+                }
+                CoroutineResult::YieldedDelay { delay_ms } => {
+                    // Re-schedule with delay
+                    let _new_id = self.scheduler.borrow_mut().schedule_delay(pending.thread, delay_ms);
+                }
+                CoroutineResult::YieldedOther => {
+                    // Unknown yield - could be an error
+                }
+            }
+        }
+
+        // 2. Process events (in signal batch)
+        self.process_events()?;
+
+        // 3. Render dirty nodes
+        let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
+        if !dirty_set.is_empty() {
+            let dirty: Vec<_> = dirty_set.into_iter().collect();
+            self.renderer.update(&self.registry.borrow(), &dirty);
+        }
+
+        Ok(self.running)
+    }
+
+    /// Run ticks for a specified duration (for testing)
+    /// This processes all timers that are ready within the time window
+    pub fn tick_ms(&mut self, duration_ms: u64) -> mlua::Result<()> {
+        // Auto-mount on first call (for testing convenience)
+        if !self.running {
+            let registry = self.registry.clone();
+            self.renderer.mount(&registry.borrow());
+            self.running = true;
+        }
+
+        let start = Instant::now();
+        let target = start + Duration::from_millis(duration_ms);
+
+        while Instant::now() < target {
+            let now = Instant::now();
+
+            // Resume ready timers
+            let ready_ids = self.scheduler.borrow_mut().tick(now);
+            for id in ready_ids {
+                let pending = self.scheduler.borrow_mut().take_pending(id)?;
+                match run_coroutine_with_delay(&self.lua, &self.runtime, &pending.thread, LuaValue::Nil)? {
+                    CoroutineResult::Completed => {}
+                    CoroutineResult::YieldedDelay { delay_ms } => {
+                        let _new_id = self.scheduler.borrow_mut().schedule_delay(pending.thread, delay_ms);
+                    }
+                    CoroutineResult::YieldedOther => {}
+                }
+            }
+
+            // Process events and render
+            self.process_events()?;
+            let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
+            if !dirty_set.is_empty() {
+                let dirty: Vec<_> = dirty_set.into_iter().collect();
+                self.renderer.update(&self.registry.borrow(), &dirty);
+            }
+
+            // Sleep a bit if there's pending work
+            if self.scheduler.borrow().has_pending() {
+                let sleep_dur = self.scheduler.borrow().next_wake_time()
+                    .map(|wake| wake.saturating_duration_since(now))
+                    .unwrap_or_else(|| Duration::from_millis(1))
+                    .min(Duration::from_millis(10));
+                std::thread::sleep(sleep_dur);
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process all pending events
+    fn process_events(&mut self) -> mlua::Result<()> {
+        let events: Vec<_> = self.events.drain().collect();
+
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        // Begin batch for all event processing
+        self.runtime.begin_batch();
+
+        for event in events {
+            self.dispatch_event(event)?;
+        }
+
+        // End batch and run effects
+        self.runtime
+            .end_batch(&self.lua)
+            .map_err(|e| LuaError::RuntimeError(format!("Effect error: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    /// Dispatch a single event to its target node
+    fn dispatch_event(&mut self, event: UiEvent) -> mlua::Result<()> {
+        let node_id = event.node_id();
+        let registry = self.registry.borrow();
+
+        // Get effects attached to this node
+        let effect_ids = registry.get_effects_for_node(node_id);
+        drop(registry);
+
+        // For each effect, call it with the event data
+        for effect_id in effect_ids {
+            // Call the effect with appropriate arguments
+            let args = match &event {
+                UiEvent::Click { .. } => LuaValue::Nil,
+                UiEvent::Change { value, .. } => LuaValue::String(self.lua.create_string(value)?),
+                UiEvent::Toggle { checked, .. } => LuaValue::Boolean(*checked),
+            };
+
+            // Call the effect
+            if let Err(e) = self
+                .runtime
+                .call_effect(&self.lua, effect_id, args)
+                .map_err(|e| LuaError::RuntimeError(format!("Effect error: {:?}", e)))
+            {
+                eprintln!("Event handler error: {:?}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the duration until the next timer fires
+    pub fn next_wake_time(&self) -> Option<Instant> {
+        self.scheduler.borrow().next_wake_time()
+    }
+
+    /// Check if the app is running
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// Stop the application
+    pub fn stop(&mut self) {
+        self.running = false;
+    }
+
+    /// Run the application loop (blocking)
+    ///
+    /// This will keep ticking until `stop()` is called or there are no more pending coroutines.
+    pub fn run(&mut self) -> mlua::Result<()> {
+        self.running = true;
+
+        // Mount initial UI
+        self.renderer.mount(&self.registry.borrow());
+
+        while self.running {
+            self.tick()?;
+
+            // Sleep until next timer or poll at 60fps
+            let sleep_duration = self
+                .next_wake_time()
+                .map(|wake| {
+                    let now = Instant::now();
+                    if wake > now {
+                        wake.saturating_duration_since(now)
+                    } else {
+                        Duration::ZERO
+                    }
+                })
+                .unwrap_or_else(|| Duration::from_millis(16)); // ~60 FPS
+
+            std::thread::sleep(sleep_duration);
+
+            // Exit if no more pending work
+            if !self.scheduler.borrow().has_pending() && self.events.is_empty() {
+                // Could exit here, but for now keep running
+                // In a real app, we might want to keep running for events
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<R: Renderer> Drop for App<R> {
+    fn drop(&mut self) {
+        // Run cleanup callbacks
+        let callbacks = self.registry.borrow_mut().take_on_destroy_callbacks();
+        for key in callbacks {
+            // Call the cleanup function
+            if let Ok(func) = self.lua.registry_value::<mlua::Function>(&key) {
+                if let Err(e) = func.call::<()>(()) {
+                    eprintln!("Error in on_destroy callback: {:?}", e);
+                }
+            }
+            // Remove from registry
+            let _ = self.lua.remove_registry_value(key);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::stub::StubRenderer;
+
+    #[test]
+    fn test_app_creation() {
+        let renderer = StubRenderer::new();
+        let app = App::new(renderer);
+        assert!(app.is_ok());
+    }
+
+    #[test]
+    fn test_app_run_simple_script() {
+        let renderer = StubRenderer::new();
+        let mut app = App::new(renderer).unwrap();
+
+        let script = r#"
+            local count = rover.signal(0)
+            return count.val
+        "#;
+
+        let result: LuaValue = app.lua.load(script).eval().unwrap();
+        if let LuaValue::Integer(n) = result {
+            assert_eq!(n, 0);
+        } else {
+            panic!("Expected integer");
+        }
+    }
+
+    #[test]
+    fn test_app_tick_no_errors() {
+        let renderer = StubRenderer::new();
+        let mut app = App::new(renderer).unwrap();
+
+        // Tick should not error even with nothing to do
+        let result = app.tick();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_app_push_event() {
+        let renderer = StubRenderer::new();
+        let mut app = App::new(renderer).unwrap();
+
+        // Create a simple UI with a button
+        let script = r#"
+            local button = rover.ui.button({ label = "Click me" })
+            return button.id
+        "#;
+
+        let node_id: u32 = app.lua.load(script).eval().unwrap();
+
+        // Push an event
+        app.push_event(UiEvent::Click {
+            node_id: crate::ui::node::NodeId::from_u32(node_id),
+        });
+
+        assert_eq!(app.events.len(), 1);
+
+        // Tick should process the event
+        let result = app.tick();
+        assert!(result.is_ok());
+        assert_eq!(app.events.len(), 0);
+    }
+}
