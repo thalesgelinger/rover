@@ -1,5 +1,9 @@
-use super::node::{NodeArena, NodeId, TextContent, UiNode};
+use super::node::{NodeArena, NodeId, UiNode};
+
+#[cfg(test)]
+use super::node::TextContent;
 use super::super::signal::graph::EffectId;
+use mlua::RegistryKey;
 use std::collections::{HashMap, HashSet};
 
 /// Central registry for UI nodes with dirty tracking
@@ -12,6 +16,8 @@ pub struct UiRegistry {
     node_to_effects: HashMap<NodeId, Vec<EffectId>>,
     /// Set of nodes that have been modified and need re-rendering
     dirty_nodes: HashSet<NodeId>,
+    /// Cleanup callbacks to run on destroy
+    on_destroy_callbacks: Vec<RegistryKey>,
 }
 
 impl UiRegistry {
@@ -22,7 +28,18 @@ impl UiRegistry {
             effect_to_node: HashMap::new(),
             node_to_effects: HashMap::new(),
             dirty_nodes: HashSet::new(),
+            on_destroy_callbacks: Vec::new(),
         }
+    }
+
+    /// Add a cleanup callback to be run on destroy
+    pub fn add_on_destroy_callback(&mut self, key: RegistryKey) {
+        self.on_destroy_callbacks.push(key);
+    }
+
+    /// Take all on_destroy callbacks (for use by app cleanup)
+    pub fn take_on_destroy_callbacks(&mut self) -> Vec<RegistryKey> {
+        std::mem::take(&mut self.on_destroy_callbacks)
     }
 
     /// Create a new node directly
@@ -57,6 +74,11 @@ impl UiRegistry {
             .entry(node_id)
             .or_insert_with(Vec::new)
             .push(effect_id);
+    }
+
+    /// Get all effects attached to a node
+    pub fn get_effects_for_node(&self, node_id: NodeId) -> Vec<EffectId> {
+        self.node_to_effects.get(&node_id).cloned().unwrap_or_default()
     }
 
     /// Mark a node as dirty (needs re-rendering)

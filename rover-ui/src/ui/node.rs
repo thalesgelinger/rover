@@ -4,6 +4,13 @@ use super::super::signal::graph::EffectId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub(crate) u32);
 
+impl NodeId {
+    /// Create a NodeId from a u32 (for testing purposes)
+    pub fn from_u32(id: u32) -> Self {
+        NodeId(id)
+    }
+}
+
 /// Arena-based storage for UI nodes
 pub struct NodeArena {
     nodes: Vec<Option<UiNode>>,
@@ -84,6 +91,29 @@ pub enum UiNode {
         children: Vec<NodeId>,
     },
     View {
+        children: Vec<NodeId>,
+    },
+    Button {
+        label: String,
+        on_click: Option<EffectId>,
+    },
+    Input {
+        value: TextContent,
+        on_change: Option<EffectId>,
+    },
+    Checkbox {
+        checked: bool,
+        on_toggle: Option<EffectId>,
+    },
+    Image {
+        src: String,
+    },
+    Conditional {
+        condition_effect: EffectId,
+        child: Option<NodeId>,
+    },
+    List {
+        items_effect: EffectId,
         children: Vec<NodeId>,
     },
 }
