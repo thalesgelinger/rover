@@ -215,6 +215,29 @@ impl SignalRuntime {
         Ok(())
     }
 
+    /// Call an effect directly (for event handling)
+    pub fn call_effect(&self, lua: &Lua, id: EffectId, args: Value) -> Result<()> {
+        let effects = self.effects.borrow();
+        if id.0 as usize >= effects.len() {
+            return Ok(());
+        }
+        if self.effects_free.borrow().contains(&id.0) {
+            return Ok(());
+        }
+
+        let callback_key = &effects[id.0 as usize].callback;
+        let callback: Function = lua
+            .registry_value(callback_key)
+            .map_err(|e| RuntimeError::LuaError(e))?;
+
+        // Drop the borrow before calling the function
+        drop(effects);
+
+        callback.call::<Value>(args)
+            .map_err(|e| RuntimeError::LuaError(e))?;
+        Ok(())
+    }
+
     fn run_effect(&self, lua: &Lua, id: EffectId) -> Result<()> {
         // Run cleanup if present
         {

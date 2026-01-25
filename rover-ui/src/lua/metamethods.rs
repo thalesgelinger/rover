@@ -1,7 +1,25 @@
 use crate::SharedSignalRuntime;
 use crate::lua::derived::LuaDerived;
 use crate::lua::signal::LuaSignal;
-use mlua::{Lua, MetaMethod, Result, UserDataMethods, Value};
+use mlua::{Lua, MetaMethod, Result, UserData, UserDataMethods, Value};
+
+/// Trait for reactive types (Signal and Derived) that can have metamethods
+pub trait ReactiveUserdata: UserData + Copy + 'static {
+    /// Convert this reactive value to a Lua Value (wrapped in UserData)
+    fn to_value(&self, lua: &Lua) -> Result<Value>;
+}
+
+impl ReactiveUserdata for LuaSignal {
+    fn to_value(&self, lua: &Lua) -> Result<Value> {
+        Ok(Value::UserData(lua.create_userdata(LuaSignal::new(self.id))?))
+    }
+}
+
+impl ReactiveUserdata for LuaDerived {
+    fn to_value(&self, lua: &Lua) -> Result<Value> {
+        Ok(Value::UserData(lua.create_userdata(LuaDerived::new(self.id))?))
+    }
+}
 
 /// Helper to create a derived signal from a binary operation
 fn create_binary_op_derived(
@@ -236,187 +254,50 @@ fn perform_le(lhs: Value, rhs: Value) -> Result<Value> {
     }
 }
 
-/// Add metamethods to LuaSignal
-pub fn add_signal_metamethods<M: UserDataMethods<LuaSignal>>(methods: &mut M) {
+/// Generic metamethods for reactive types (Signal and Derived)
+pub fn add_reactive_metamethods<T, M>(methods: &mut M)
+where
+    T: ReactiveUserdata,
+    M: UserDataMethods<T>,
+{
     // Arithmetic
     methods.add_meta_method(MetaMethod::Add, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "add",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "add")
     });
 
     methods.add_meta_method(MetaMethod::Sub, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "sub",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "sub")
     });
 
     methods.add_meta_method(MetaMethod::Mul, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "mul",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "mul")
     });
 
     methods.add_meta_method(MetaMethod::Div, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "div",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "div")
     });
 
     methods.add_meta_method(MetaMethod::Mod, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "mod",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "mod")
     });
 
     methods.add_meta_method(MetaMethod::Pow, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "pow",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "pow")
     });
 
     // Unary
     methods.add_meta_method(MetaMethod::Unm, |lua, this, ()| {
-        create_unary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            "unm",
-        )
+        create_unary_op_derived(lua, this.to_value(lua)?, "unm")
     });
 
     // Concatenation
     methods.add_meta_function(MetaMethod::Concat, |lua, (lhs, rhs): (Value, Value)| {
         let lhs_val = match &lhs {
             Value::UserData(ud) => {
+                // Try to extract as T (Signal or Derived)
                 if let Ok(signal) = ud.borrow::<LuaSignal>() {
                     Value::UserData(lua.create_userdata(LuaSignal::new(signal.id))?)
-                } else {
-                    lhs
-                }
-            }
-            _ => lhs,
-        };
-        create_binary_op_derived(lua, lhs_val, rhs, "concat")
-    });
-
-    // Comparison
-    methods.add_meta_method(MetaMethod::Eq, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "eq",
-        )
-    });
-
-    methods.add_meta_method(MetaMethod::Lt, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "lt",
-        )
-    });
-
-    methods.add_meta_method(MetaMethod::Le, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaSignal::new(this.id))?),
-            other,
-            "le",
-        )
-    });
-}
-
-/// Add metamethods to LuaDerived
-pub fn add_derived_metamethods<M: UserDataMethods<LuaDerived>>(methods: &mut M) {
-    // Same metamethods as LuaSignal
-    methods.add_meta_method(MetaMethod::Add, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "add",
-        )
-    });
-
-    methods.add_meta_method(MetaMethod::Sub, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "sub",
-        )
-    });
-
-    methods.add_meta_method(MetaMethod::Mul, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "mul",
-        )
-    });
-
-    methods.add_meta_method(MetaMethod::Div, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "div",
-        )
-    });
-
-    methods.add_meta_method(MetaMethod::Mod, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "mod",
-        )
-    });
-
-    methods.add_meta_method(MetaMethod::Pow, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "pow",
-        )
-    });
-
-    // Unary
-    methods.add_meta_method(MetaMethod::Unm, |lua, this, ()| {
-        create_unary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            "unm",
-        )
-    });
-
-    // Concatenation
-    methods.add_meta_function(MetaMethod::Concat, |lua, (lhs, rhs): (Value, Value)| {
-        let lhs_val = match &lhs {
-            Value::UserData(ud) => {
-                if let Ok(derived) = ud.borrow::<LuaDerived>() {
+                } else if let Ok(derived) = ud.borrow::<LuaDerived>() {
                     Value::UserData(lua.create_userdata(LuaDerived::new(derived.id))?)
                 } else {
                     lhs
@@ -429,29 +310,24 @@ pub fn add_derived_metamethods<M: UserDataMethods<LuaDerived>>(methods: &mut M) 
 
     // Comparison
     methods.add_meta_method(MetaMethod::Eq, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "eq",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "eq")
     });
 
     methods.add_meta_method(MetaMethod::Lt, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "lt",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "lt")
     });
 
     methods.add_meta_method(MetaMethod::Le, |lua, this, other: Value| {
-        create_binary_op_derived(
-            lua,
-            Value::UserData(lua.create_userdata(LuaDerived::new(this.id))?),
-            other,
-            "le",
-        )
+        create_binary_op_derived(lua, this.to_value(lua)?, other, "le")
     });
+}
+
+/// Add metamethods to LuaSignal
+pub fn add_signal_metamethods<M: UserDataMethods<LuaSignal>>(methods: &mut M) {
+    add_reactive_metamethods(methods);
+}
+
+/// Add metamethods to LuaDerived
+pub fn add_derived_metamethods<M: UserDataMethods<LuaDerived>>(methods: &mut M) {
+    add_reactive_metamethods(methods);
 }

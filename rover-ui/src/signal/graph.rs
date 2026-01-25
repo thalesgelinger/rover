@@ -7,7 +7,7 @@ pub struct DerivedId(pub(crate) u32);
 
 /// Unique identifier for an effect
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct EffectId(pub(crate) u32);
+pub struct EffectId(pub u32);
 
 /// Identifies a subscriber to signal changes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

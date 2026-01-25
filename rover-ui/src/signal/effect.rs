@@ -29,6 +29,10 @@ impl Effect {
         self.cleanup.as_ref()
     }
 
+    pub fn callback(&self) -> &RegistryKey {
+        &self.callback
+    }
+
     pub fn dependencies(&self) -> &[SignalId] {
         &self.dependencies
     }
