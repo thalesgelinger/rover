@@ -1,16 +1,16 @@
 local ru = rover.ui
 
-rover.render(function()
+function rover.render()
 	local value = rover.signal(0)
 
 	local tick = rover.task(function()
 		while true do
 			value.val = value.val + 1
-			coroutine.yield(rover.delay(1000))
+			rover.delay(1000)  -- No coroutine.yield() needed!
 		end
 	end)
 
 	tick()
 
 	return ru.text { value }
-end)
+end

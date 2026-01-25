@@ -175,9 +175,57 @@ pub fn cancel_task(_lua: &Lua, task_ud: AnyUserData) -> mlua::Result<()> {
 }
 
 /// Create a new task from a Lua function
+///
+/// This wraps the user's function in a pure Lua wrapper that overrides
+/// rover.delay() to yield directly. This allows users to write natural code
+/// like `rover.delay(1000)` without needing explicit `coroutine.yield()`.
 pub fn create_task(lua: &Lua, func: mlua::Function) -> mlua::Result<AnyUserData> {
+    // Create a wrapped function that overrides rover.delay locally
+    // The wrapper creates a closure where rover.delay yields directly
+    let wrapped_code = r#"
+        return function(user_fn)
+            -- Override rover.delay to yield directly
+            local old_delay = rover.delay
+
+            local task_delay = function(ms)
+                -- Call the original _delay_ms to get the marker
+                local marker = rover._delay_ms(ms)
+                -- Yield immediately from Lua (not Rust, so no C-call boundary issue)
+                return coroutine.yield(marker)
+            end
+
+            -- Return a function that uses the overridden delay
+            return function(...)
+                -- Temporarily override rover.delay in the global scope
+                rover.delay = task_delay
+
+                -- Call user function
+                local results = {pcall(user_fn, ...)}
+
+                -- Restore original delay
+                rover.delay = old_delay
+
+                -- Check for errors
+                if not results[1] then
+                    error(results[2], 0)
+                end
+
+                -- Remove pcall status and return results
+                table.remove(results, 1)
+                return table.unpack(results)
+            end
+        end
+    "#;
+
+    let wrapper_factory: mlua::Function = lua.load(wrapped_code).eval().map_err(|e| {
+        mlua::Error::RuntimeError(format!("Failed to create wrapper factory: {}", e))
+    })?;
+
+    // Create the wrapper and apply it to the user function
+    let wrapped_func: mlua::Function = wrapper_factory.call(func)?;
+
     let scheduler = crate::lua::helpers::get_scheduler(lua)?;
-    let thread = lua.create_thread(func)?;
+    let thread = lua.create_thread(wrapped_func)?;
     let task_id = scheduler.borrow_mut().next_task_id();
     let task = Task::new(thread, scheduler.clone(), task_id);
     lua.create_userdata(task)

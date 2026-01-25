@@ -18,13 +18,13 @@ fn test_counter_style_ui() {
     let script = r#"
         local ru = rover.ui
 
-        -- rover.render() returns a LuaNode, we can get its id
-        local node = rover.render(function()
+        -- Define rover.render() function
+        function rover.render()
             local value = rover.signal(0)
 
             -- Create a task that updates the value
             local tick = rover.task(function()
-                rover.delay(10)
+                rover.delay(10)  -- No coroutine.yield() needed!
                 value.val = value.val + 1
             end)
 
@@ -32,12 +32,10 @@ fn test_counter_style_ui() {
             tick()
 
             return ru.text { value }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick for 20ms to let the task run (10ms delay + margin)
     app.tick_ms(20).unwrap();
@@ -80,7 +78,7 @@ fn test_task_execution() {
 
         local tick = rover.task(function()
             _G.test_count = _G.test_count + 1
-            coroutine.yield(rover.delay(5))
+            rover.delay(5)  -- No coroutine.yield() needed!
             _G.test_count = _G.test_count + 1
         end)
 
@@ -155,19 +153,17 @@ fn test_button_click_handler() {
         local ru = rover.ui
         local clicks = rover.signal(0)
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.button {
                 label = "Click me",
                 on_click = function()
                     clicks.val = clicks.val + 1
                 end
             }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -187,18 +183,16 @@ fn test_column_layout() {
     let script = r#"
         local ru = rover.ui
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.column {
                 ru.text { "Item 1" },
                 ru.text { "Item 2" },
                 ru.text { "Item 3" }
             }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -221,14 +215,12 @@ fn test_checkbox_component() {
     let script = r#"
         local ru = rover.ui
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.checkbox { checked = false }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -248,14 +240,12 @@ fn test_input_component() {
     let script = r#"
         local ru = rover.ui
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.input { value = "initial text" }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -275,14 +265,12 @@ fn test_image_component() {
     let script = r#"
         local ru = rover.ui
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.image { src = "test.png" }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -301,16 +289,14 @@ fn test_view_container() {
     let script = r#"
         local ru = rover.ui
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.view {
                 ru.text { "Content inside view" }
             }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -325,10 +311,10 @@ fn test_delay_scheduling() {
     let renderer = StubRenderer::new();
     let app = App::new(renderer).unwrap();
 
-    // Use explicit coroutine.yield for reliable delay behavior
+    // Test that rover.delay() works without explicit yield
     let script = r#"
         local tick = rover.task(function()
-            coroutine.yield(rover.delay(100))
+            rover.delay(100)  -- No coroutine.yield() needed!
         end)
 
         tick()
@@ -353,7 +339,7 @@ fn test_nested_layout() {
     let script = r#"
         local ru = rover.ui
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.column {
                 ru.row {
                     ru.text { "A" },
@@ -364,12 +350,10 @@ fn test_nested_layout() {
                     ru.text { "D" }
                 }
             }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -394,14 +378,12 @@ fn test_derived_signal_ui() {
             return count.val * 2
         end)
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.text { doubled }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(script).eval().unwrap();
+    app.lua().load(script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -423,14 +405,12 @@ fn test_signal_update_triggers_render() {
         local ru = rover.ui
         _G.count = rover.signal(0)
 
-        local node = rover.render(function()
+        function rover.render()
             return ru.text { _G.count }
-        end)
-
-        return node.id
+        end
     "#;
 
-    let _node_id: u32 = app.lua().load(setup_script).eval().unwrap();
+    app.lua().load(setup_script).exec().unwrap();
 
     // Tick to trigger initial render (auto-mounts)
     app.tick().unwrap();
@@ -445,7 +425,7 @@ fn test_signal_update_triggers_render() {
     app.lua().load(r#"
         local updater = rover.task(function()
             _G.count.val = 42
-            coroutine.yield(rover.delay(1))
+            rover.delay(1)  -- No coroutine.yield() needed!
         end)
         updater()
     "#).exec().unwrap();

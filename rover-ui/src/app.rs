@@ -92,6 +92,26 @@ impl<R: Renderer> App<R> {
         Ok(())
     }
 
+    /// Mount the UI by calling the global rover.render() function
+    /// This should be called after running the user's script
+    pub fn mount(&mut self) -> mlua::Result<()> {
+        // Check if rover.render function exists
+        let rover_table: mlua::Table = self.lua.globals().get("rover")?;
+        let render_fn: Option<mlua::Function> = rover_table.get("render")?;
+
+        if let Some(render_fn) = render_fn {
+            // Call the render function to get the root node
+            let root_node: crate::ui::lua_node::LuaNode = render_fn.call(())?;
+            self.registry.borrow_mut().set_root(root_node.id());
+        }
+
+        // Trigger initial render (even if no render function defined)
+        self.renderer.mount(&self.registry.borrow());
+        self.running = true;
+
+        Ok(())
+    }
+
     /// Push an event to the event queue
     pub fn push_event(&mut self, event: UiEvent) {
         self.events.push(event);
@@ -102,9 +122,7 @@ impl<R: Renderer> App<R> {
         // Auto-mount on first tick (for testing convenience)
         // In production, run() calls mount() explicitly
         if !self.running {
-            let registry = self.registry.clone();
-            self.renderer.mount(&registry.borrow());
-            self.running = true;
+            self.mount()?;
         }
 
         let now = Instant::now();
@@ -145,9 +163,7 @@ impl<R: Renderer> App<R> {
     pub fn tick_ms(&mut self, duration_ms: u64) -> mlua::Result<()> {
         // Auto-mount on first call (for testing convenience)
         if !self.running {
-            let registry = self.registry.clone();
-            self.renderer.mount(&registry.borrow());
-            self.running = true;
+            self.mount()?;
         }
 
         let start = Instant::now();
@@ -265,10 +281,8 @@ impl<R: Renderer> App<R> {
     ///
     /// This will keep ticking until `stop()` is called or there are no more pending coroutines.
     pub fn run(&mut self) -> mlua::Result<()> {
-        self.running = true;
-
-        // Mount initial UI
-        self.renderer.mount(&self.registry.borrow());
+        // Mount UI by calling global rover.render()
+        self.mount()?;
 
         while self.running {
             self.tick()?;

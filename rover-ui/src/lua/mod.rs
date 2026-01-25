@@ -6,7 +6,7 @@ pub mod signal;
 pub mod utils;
 use crate::task;
 
-use crate::{signal::SignalValue, ui::{ui::LuaUi, lua_node::LuaNode}};
+use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
 use mlua::{Function, Lua, Result, Table, UserData, Value};
 use signal::LuaSignal;
@@ -66,27 +66,26 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     let none_fn = utils::create_none_fn(lua)?;
     rover_table.set("none", none_fn)?;
 
-    // rover.delay(ms) - delay coroutine execution
-    // Returns a DelayMarker that will be auto-yielded by the task wrapper
+    // rover._delay_ms(ms) - internal function that creates a DelayMarker
+    // This is the Rust backing for rover.delay()
+    // rover.delay() is overridden in task wrappers to yield directly
     let delay_fn = lua.create_function(|lua, delay_ms: u64| {
         let marker = DelayMarker { delay_ms };
         lua.create_userdata(marker)
     })?;
-    rover_table.set("delay", delay_fn)?;
+    rover_table.set("_delay_ms", delay_fn)?;
 
-    // rover.render(fn) - register the app's render function
-    let render_fn = lua.create_function(|lua, render_fn: Function| {
-        let registry = crate::lua::helpers::get_registry(lua)?;
-
-        // Call the render function to get the root node
-        let root_node: LuaNode = render_fn.call(())?;
-
-        // Store as root in registry
-        registry.borrow_mut().set_root(root_node.id());
-
-        Ok(root_node)
+    // rover.delay(ms) - delay coroutine execution
+    // By default, this just calls _delay_ms (for non-task contexts)
+    // In task contexts, this is overridden to yield directly
+    let delay_wrapper = lua.create_function(|lua, delay_ms: u64| {
+        let marker = DelayMarker { delay_ms };
+        lua.create_userdata(marker)
     })?;
-    rover_table.set("render", render_fn)?;
+    rover_table.set("delay", delay_wrapper)?;
+
+    // Note: rover.render() is NOT registered here - users define their own
+    // global function: `function rover.render() ... end`
 
     // Register task module (rover.task(fn), rover.task.cancel(), etc.)
     task::register_task_module(lua, rover_table)?;
