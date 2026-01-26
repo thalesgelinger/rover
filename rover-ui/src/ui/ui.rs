@@ -832,30 +832,3 @@ fn evaluate_condition(lua: &mlua::Lua, condition: &Value) -> mlua::Result<bool> 
     }
 }
 
-/// Extract items array from a Lua value (signal, derived, or table)
-fn extract_items_array(lua: &mlua::Lua, items: &Value) -> mlua::Result<Value> {
-    match items {
-        // Table - direct value
-        Value::Table(_) => Ok(items.clone()),
-
-        // Signal or Derived - get reactive value
-        Value::UserData(ud) => {
-            let runtime = crate::lua::helpers::get_runtime(lua)?;
-
-            // Try as signal
-            if ud.is::<LuaSignal>() {
-                let signal = ud.borrow::<LuaSignal>()?;
-                runtime.get_signal(lua, signal.id)
-            } else if ud.is::<LuaDerived>() {
-                let derived = ud.borrow::<LuaDerived>()?;
-                runtime.get_derived(lua, derived.id)
-                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))
-            } else {
-                Ok(Value::Nil)
-            }
-        }
-
-        // Return as-is for other types
-        _ => Ok(items.clone()),
-    }
-}

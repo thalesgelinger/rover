@@ -6,7 +6,7 @@ function rover.render()
 	local tick = rover.task(function()
 		while true do
 			value.val = value.val + 1
-			rover.delay(1000)  -- No coroutine.yield() needed!
+			coroutine.yield(rover.delay(1000))
 		end
 	end)
 
