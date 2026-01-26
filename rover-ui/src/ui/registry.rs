@@ -3,7 +3,7 @@ use super::node::{NodeArena, NodeId, UiNode};
 #[cfg(test)]
 use super::node::TextContent;
 use super::super::signal::graph::EffectId;
-use mlua::RegistryKey;
+use mlua::{RegistryKey, Value};
 use std::collections::{HashMap, HashSet};
 
 /// Central registry for UI nodes with dirty tracking
@@ -18,6 +18,10 @@ pub struct UiRegistry {
     dirty_nodes: HashSet<NodeId>,
     /// Cleanup callbacks to run on destroy
     on_destroy_callbacks: Vec<RegistryKey>,
+    /// Conditional node state tracking
+    condition_state: HashMap<NodeId, bool>,
+    /// List node items tracking
+    list_items: HashMap<NodeId, Value>,
 }
 
 impl UiRegistry {
@@ -29,6 +33,8 @@ impl UiRegistry {
             node_to_effects: HashMap::new(),
             dirty_nodes: HashSet::new(),
             on_destroy_callbacks: Vec::new(),
+            condition_state: HashMap::new(),
+            list_items: HashMap::new(),
         }
     }
 
@@ -135,6 +141,73 @@ impl UiRegistry {
     /// Get all nodes (for debugging/testing)
     pub fn nodes(&self) -> &NodeArena {
         &self.nodes
+    }
+
+    // ===== Conditional node methods =====
+
+    /// Get the condition state for a conditional node
+    pub fn get_condition_state(&self, node_id: NodeId) -> Option<bool> {
+        self.condition_state.get(&node_id).copied()
+    }
+
+    /// Set the condition state for a conditional node
+    pub fn set_condition_state(&mut self, node_id: NodeId, state: bool) {
+        self.condition_state.insert(node_id, state);
+    }
+
+    /// Get the child of a conditional node
+    pub fn get_condition_child(&self, node_id: NodeId) -> Option<NodeId> {
+        if let Some(UiNode::Conditional { child, .. }) = self.nodes.get(node_id) {
+            *child
+        } else {
+            None
+        }
+    }
+
+    /// Set the child of a conditional node
+    pub fn set_condition_child(&mut self, node_id: NodeId, child_id: NodeId) {
+        if let Some(UiNode::Conditional { child, .. }) = self.nodes.get_mut(node_id) {
+            *child = Some(child_id);
+        }
+    }
+
+    /// Remove the child of a conditional node
+    pub fn remove_condition_child(&mut self, node_id: NodeId) {
+        if let Some(UiNode::Conditional { child, .. }) = self.nodes.get_mut(node_id) {
+            if let Some(child_id) = child.take() {
+                // Remove the child node
+                let _ = self.remove_node(child_id);
+            }
+        }
+    }
+
+    // ===== List node methods =====
+
+    /// Get the items for a list node
+    pub fn get_list_items(&self, node_id: NodeId) -> &Value {
+        self.list_items.get(&node_id).map(|v| v).unwrap_or(&Value::Nil)
+    }
+
+    /// Set the items for a list node
+    pub fn set_list_items(&mut self, node_id: NodeId, items: Value) {
+        self.list_items.insert(node_id, items);
+    }
+
+    /// Get the children of a list node
+    pub fn get_list_children(&self, node_id: NodeId) -> &[NodeId] {
+        if let Some(UiNode::List { children, .. }) = self.nodes.get(node_id) {
+            children
+        } else {
+            &[]
+        }
+    }
+
+    /// Update the children of a list node
+    pub fn update_list_children(&mut self, node_id: NodeId, children: Vec<NodeId>) {
+        if let Some(UiNode::List { children: existing_children, .. }) = self.nodes.get_mut(node_id) {
+            *existing_children = children;
+            self.mark_dirty(node_id);
+        }
     }
 }
 

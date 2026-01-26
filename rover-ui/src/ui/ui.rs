@@ -252,6 +252,247 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
+        // rover.ui.when(condition, child_fn)
+        // Conditionally render a child based on a condition
+        methods.add_function("when", |lua, (condition, child_fn): (Value, Function)| {
+            let registry_rc = get_registry_rc(lua)?;
+            let runtime = crate::lua::helpers::get_runtime(lua)?;
+
+            // Reserve the conditional node ID (before creating the effect)
+            let node_id = registry_rc.borrow_mut().reserve_node_id();
+
+            // Store the child function in registry for later use
+            let child_fn_key = lua.create_registry_value(child_fn.clone())?;
+
+            // Determine if condition is a signal/derived and extract the source info
+            let reactive_source = if let Value::UserData(ref ud) = condition {
+                if ud.is::<LuaSignal>() {
+                    let signal = ud.borrow::<LuaSignal>()?;
+                    Some(ReactiveSource::Signal(signal.id))
+                } else if ud.is::<LuaDerived>() {
+                    let derived = ud.borrow::<LuaDerived>()?;
+                    Some(ReactiveSource::Derived(derived.id))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Clone values for the effect callback
+            let registry_for_callback = registry_rc.clone();
+            let child_fn_key_for_callback = child_fn_key;
+
+            // Create the effect callback that evaluates the condition and mounts/unmounts the child
+            // If reactive, read from the signal/derived to track dependencies
+            let effect_callback = lua.create_function(move |lua, ()| {
+                // Read the condition (this tracks signal/derived dependencies)
+                let should_show = if let Some(source) = &reactive_source {
+                    // Reactive source - read from it to track dependency
+                    let runtime = crate::lua::helpers::get_runtime(lua)?;
+                    let value = source.get_value(lua, &runtime)?;
+                    evaluate_condition(lua, &value)?
+                } else {
+                    // Static condition - just use the static value
+                    // For static conditions, the effect won't re-run, so we store the initial value
+                    registry_for_callback
+                        .borrow()
+                        .get_condition_state(node_id)
+                        .unwrap_or(false)
+                };
+
+                // Update the registry state
+                registry_for_callback
+                    .borrow_mut()
+                    .set_condition_state(node_id, should_show);
+
+                if should_show {
+                    // Condition is true - mount child if not already mounted
+                    let mut registry = registry_for_callback.borrow_mut();
+
+                    if registry.get_condition_child(node_id).is_none() {
+                        // Child not mounted, create it
+                        let child_fn: Function = lua
+                            .registry_value(&child_fn_key_for_callback)
+                            .map_err(|e| mlua::Error::RuntimeError(format!("Failed to get child function: {}", e)))?;
+
+                        let child_node: LuaNode = child_fn
+                            .call(())
+                            .map_err(|e| mlua::Error::RuntimeError(format!("Child function error: {}", e)))?;
+
+                        registry.set_condition_child(node_id, child_node.id());
+                        registry.mark_dirty(node_id);
+                    }
+                } else {
+                    // Condition is false - unmount child if mounted
+                    let mut registry = registry_for_callback.borrow_mut();
+
+                    if let Some(_child_id) = registry.get_condition_child(node_id) {
+                        registry.remove_condition_child(node_id);
+                        registry.mark_dirty(node_id);
+                    }
+                }
+
+                Ok(())
+            })?;
+
+            let effect_key = lua.create_registry_value(effect_callback)?;
+
+            // Evaluate initial condition for static conditions
+            if reactive_source.is_none() {
+                let initial_condition = evaluate_condition(lua, &condition)?;
+                registry_rc.borrow_mut().set_condition_state(node_id, initial_condition);
+            }
+
+            // Create a tracking effect for the condition
+            // This will call the callback immediately, which reads the signal/derived and tracks dependencies
+            let condition_effect_id = runtime
+                .create_effect(lua, effect_key)
+                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+            // Create the conditional node
+            let node = UiNode::Conditional {
+                condition_effect: condition_effect_id,
+                child: None,
+            };
+
+            {
+                let mut registry = registry_rc.borrow_mut();
+                registry.finalize_node(node_id, node);
+                registry.attach_effect(node_id, condition_effect_id);
+            }
+
+            Ok(LuaNode::new(node_id))
+        });
+
+        // rover.ui.each(items, render_fn, key_fn)
+        // Render a list of items with reconciliation
+        methods.add_function("each", |lua, (items, render_fn, _key_fn): (Value, Function, Function)| {
+            let registry_rc = get_registry_rc(lua)?;
+            let runtime = crate::lua::helpers::get_runtime(lua)?;
+
+            // Reserve the list node ID
+            let node_id = registry_rc.borrow_mut().reserve_node_id();
+
+            // Store render function in registry
+            let render_fn_key = lua.create_registry_value(render_fn.clone())?;
+
+            // Determine if items is a signal/derived and extract the source info
+            let reactive_source = if let Value::UserData(ref ud) = items {
+                if ud.is::<LuaSignal>() {
+                    let signal = ud.borrow::<LuaSignal>()?;
+                    Some(ReactiveSource::Signal(signal.id))
+                } else if ud.is::<LuaDerived>() {
+                    let derived = ud.borrow::<LuaDerived>()?;
+                    Some(ReactiveSource::Derived(derived.id))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Clone for effect callback
+            let registry_for_callback = registry_rc.clone();
+            let render_fn_key_clone = render_fn_key;
+
+            // Create the effect callback that updates the list when items change
+            // If reactive, read from the signal/derived to track dependencies
+            let effect_callback = lua.create_function(move |lua, ()| {
+                // Read the items (this tracks signal/derived dependencies)
+                let items_value = if let Some(source) = &reactive_source {
+                    // Reactive source - read from it to track dependency
+                    let runtime = crate::lua::helpers::get_runtime(lua)?;
+                    source.get_value(lua, &runtime)?
+                } else {
+                    // Static items - use stored value
+                    registry_for_callback
+                        .borrow()
+                        .get_list_items(node_id)
+                        .clone()
+                };
+
+                // Extract items table
+                let items_array = match &items_value {
+                    Value::Table(t) => t.clone(),
+                    _ => return Ok(()), // No items, nothing to do
+                };
+
+                // Get current children to remove them
+                let current_children = registry_for_callback
+                    .borrow()
+                    .get_list_children(node_id)
+                    .to_vec();
+
+                // Remove all current children
+                for child_id in current_children {
+                    registry_for_callback.borrow_mut().remove_node(child_id);
+                }
+
+                let mut new_children = Vec::new();
+
+                // Iterate through items and create new children
+                let mut i = 1;
+                while let Ok(item) = items_array.get::<Value>(i) {
+                    if item == Value::Nil {
+                        break;
+                    }
+
+                    // Create new child
+                    let render_fn: Function = lua
+                        .registry_value(&render_fn_key_clone)
+                        .map_err(|e| mlua::Error::RuntimeError(format!("Failed to get render function: {}", e)))?;
+
+                    let child_node: LuaNode = render_fn
+                        .call((item, i))
+                        .map_err(|e| mlua::Error::RuntimeError(format!("Render function error: {}", e)))?;
+
+                    new_children.push(child_node.id());
+                    i += 1;
+                }
+
+                // Update the list node's children
+                registry_for_callback
+                    .borrow_mut()
+                    .update_list_children(node_id, new_children);
+
+                Ok(())
+            })?;
+
+            let effect_key = lua.create_registry_value(effect_callback)?;
+
+            // Store initial items for static conditions
+            if reactive_source.is_none() {
+                registry_rc.borrow_mut().set_list_items(node_id, items.clone());
+            }
+
+            // Create the effect
+            // This will call the callback immediately, which reads the signal/derived and tracks dependencies
+            let items_effect_id = runtime
+                .create_effect(lua, effect_key)
+                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+            // Get initial children (the effect has already created them)
+            let initial_children = registry_rc
+                .borrow()
+                .get_list_children(node_id)
+                .to_vec();
+
+            // Create the list node
+            let node = UiNode::List {
+                items_effect: items_effect_id,
+                children: initial_children,
+            };
+
+            {
+                let mut registry = registry_rc.borrow_mut();
+                registry.finalize_node(node_id, node);
+                registry.attach_effect(node_id, items_effect_id);
+            }
+
+            Ok(LuaNode::new(node_id))
+        });
+
         // TODO: there must be a best way to define render method lookup
         methods.add_meta_function(
             mlua::MetaMethod::Index,
@@ -538,5 +779,83 @@ fn extract_node_id(_lua: &mlua::Lua, value: Value) -> mlua::Result<super::node::
             "Expected node, got {:?}",
             value
         ))),
+    }
+}
+
+/// Evaluate a condition value (signal, derived, or boolean)
+fn evaluate_condition(lua: &mlua::Lua, condition: &Value) -> mlua::Result<bool> {
+    match condition {
+        // Boolean - direct value
+        Value::Boolean(b) => Ok(*b),
+
+        // Signal or Derived - get reactive value
+        Value::UserData(ud) => {
+            let runtime = crate::lua::helpers::get_runtime(lua)?;
+
+            // Try as signal
+            if ud.is::<LuaSignal>() {
+                let signal = ud.borrow::<LuaSignal>()?;
+                let value = runtime.get_signal(lua, signal.id)?;
+                match value {
+                    Value::Boolean(b) => Ok(b),
+                    Value::Integer(n) => Ok(n != 0),
+                    Value::Number(n) => Ok(n != 0.0),
+                    Value::Nil => Ok(false),
+                    _ => Ok(true), // Other truthy values
+                }
+            } else if ud.is::<LuaDerived>() {
+                let derived = ud.borrow::<LuaDerived>()?;
+                let value = runtime.get_derived(lua, derived.id)
+                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                match value {
+                    Value::Boolean(b) => Ok(b),
+                    Value::Integer(n) => Ok(n != 0),
+                    Value::Number(n) => Ok(n != 0.0),
+                    Value::Nil => Ok(false),
+                    _ => Ok(true), // Other truthy values
+                }
+            } else {
+                // Unknown userdata - try to convert to boolean
+                Ok(true)
+            }
+        }
+
+        // Integer/Number - truthy if non-zero
+        Value::Integer(n) => Ok(*n != 0),
+        Value::Number(n) => Ok(*n != 0.0),
+
+        // Nil is falsy
+        Value::Nil => Ok(false),
+
+        // Everything else is truthy
+        _ => Ok(true),
+    }
+}
+
+/// Extract items array from a Lua value (signal, derived, or table)
+fn extract_items_array(lua: &mlua::Lua, items: &Value) -> mlua::Result<Value> {
+    match items {
+        // Table - direct value
+        Value::Table(_) => Ok(items.clone()),
+
+        // Signal or Derived - get reactive value
+        Value::UserData(ud) => {
+            let runtime = crate::lua::helpers::get_runtime(lua)?;
+
+            // Try as signal
+            if ud.is::<LuaSignal>() {
+                let signal = ud.borrow::<LuaSignal>()?;
+                runtime.get_signal(lua, signal.id)
+            } else if ud.is::<LuaDerived>() {
+                let derived = ud.borrow::<LuaDerived>()?;
+                runtime.get_derived(lua, derived.id)
+                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))
+            } else {
+                Ok(Value::Nil)
+            }
+        }
+
+        // Return as-is for other types
+        _ => Ok(items.clone()),
     }
 }

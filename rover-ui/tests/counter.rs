@@ -438,3 +438,152 @@ fn test_signal_update_triggers_render() {
     let log = log_buffer.borrow();
     assert!(log.iter().any(|line| line.contains("\"42\"") || line.contains("\"0\" → \"42\"")));
 }
+
+/// Test rover.ui.when() conditional rendering
+#[test]
+fn test_conditional_rendering() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.show = rover.signal(false)
+
+        function rover.render()
+            return ru.column {
+                ru.text { "Always visible" },
+                ru.when(_G.show, function()
+                    return ru.text { "Conditional content" }
+                end)
+            }
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    // Should see "Always visible" but not "Conditional content"
+    let log = log_buffer.borrow();
+    assert!(log.iter().any(|line| line.contains("Always visible")));
+    assert!(!log.iter().any(|line| line.contains("Conditional content")));
+}
+
+/// Test rover.ui.each() list rendering
+#[test]
+fn test_list_rendering() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({ "apple", "banana", "cherry" })
+
+        function rover.render()
+            return ru.column {
+                ru.text { "Fruits:" },
+                ru.each(_G.items, function(item, index)
+                    return ru.text { item .. " (" .. index .. ")" }
+                end, function(item, index)
+                    return item .. index
+                end)
+            }
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    // Should see all items
+    let log = log_buffer.borrow();
+    assert!(log.iter().any(|line| line.contains("apple")));
+    assert!(log.iter().any(|line| line.contains("banana")));
+    assert!(log.iter().any(|line| line.contains("cherry")));
+}
+
+/// Test rover.ui.when() with reactive condition
+#[test]
+fn test_conditional_reactive_toggle() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.show = rover.signal(false)
+
+        function rover.render()
+            return ru.when(_G.show, function()
+                return ru.text { "Now you see me!" }
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    // Initially should not see the conditional content
+    {
+        let log = log_buffer.borrow();
+        assert!(!log.iter().any(|line| line.contains("Now you see me")));
+    }
+
+    // Toggle the condition
+    app.lua().load(r#"
+        _G.show.val = true
+    "#).exec().unwrap();
+
+    log_buffer.borrow_mut().clear();
+    app.tick().unwrap();
+
+    // Now should see the conditional content
+    let log = log_buffer.borrow();
+    assert!(log.iter().any(|line| line.contains("Now you see me")));
+}
+
+/// Test rover.ui.each() with reactive list updates
+#[test]
+fn test_list_reactive_updates() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({ "one", "two" })
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                return ru.text { item }
+            end, function(item, index)
+                return item .. index
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    // Should see initial items
+    let log = log_buffer.borrow();
+    assert!(log.iter().any(|line| line.contains("one")));
+    assert!(log.iter().any(|line| line.contains("two")));
+    assert!(!log.iter().any(|line| line.contains("three")));
+
+    drop(log); // Release borrow
+
+    // Update the list
+    app.lua().load(r#"
+        _G.items.val = { "one", "two", "three" }
+    "#).exec().unwrap();
+
+    log_buffer.borrow_mut().clear();
+    app.tick().unwrap();
+
+    // Should see all three items
+    let log = log_buffer.borrow();
+    assert!(log.iter().any(|line| line.contains("one")));
+    assert!(log.iter().any(|line| line.contains("two")));
+    assert!(log.iter().any(|line| line.contains("three")));
+}
