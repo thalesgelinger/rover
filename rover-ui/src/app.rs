@@ -148,7 +148,10 @@ impl<R: Renderer> App<R> {
         // 2. Process events (in signal batch)
         self.process_events()?;
 
-        // 3. Render dirty nodes
+        // 3. Flush any pending effects from signal updates
+        self.flush_effects()?;
+
+        // 4. Render dirty nodes
         let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
         if !dirty_set.is_empty() {
             let dirty: Vec<_> = dirty_set.into_iter().collect();
@@ -185,8 +188,10 @@ impl<R: Renderer> App<R> {
                 }
             }
 
-            // Process events and render
+            // Process events
             self.process_events()?;
+
+            // Render dirty nodes
             let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
             if !dirty_set.is_empty() {
                 let dirty: Vec<_> = dirty_set.into_iter().collect();
@@ -204,6 +209,17 @@ impl<R: Renderer> App<R> {
                 break;
             }
         }
+
+        Ok(())
+    }
+
+    /// Flush any pending effects from signal updates
+    /// This ensures effects run even when there are no events
+    fn flush_effects(&mut self) -> mlua::Result<()> {
+        // Run any pending effects that were scheduled outside of a batch
+        self.runtime
+            .run_pending_effects(&self.lua)
+            .map_err(|e| LuaError::RuntimeError(format!("Effect error: {:?}", e)))?;
 
         Ok(())
     }

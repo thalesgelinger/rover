@@ -308,26 +308,39 @@ impl UserData for LuaUi {
 
                 if should_show {
                     // Condition is true - mount child if not already mounted
-                    let mut registry = registry_for_callback.borrow_mut();
+                    // Check if child exists first (immutable borrow, then dropped)
+                    let child_exists = {
+                        let registry = registry_for_callback.borrow();
+                        registry.get_condition_child(node_id).is_some()
+                    };
 
-                    if registry.get_condition_child(node_id).is_none() {
+                    if !child_exists {
                         // Child not mounted, create it
                         let child_fn: Function = lua
                             .registry_value(&child_fn_key_for_callback)
                             .map_err(|e| mlua::Error::RuntimeError(format!("Failed to get child function: {}", e)))?;
 
+                        // Call child function WITHOUT holding registry borrow
                         let child_node: LuaNode = child_fn
                             .call(())
                             .map_err(|e| mlua::Error::RuntimeError(format!("Child function error: {}", e)))?;
 
+                        // Now update registry (mutably)
+                        let mut registry = registry_for_callback.borrow_mut();
                         registry.set_condition_child(node_id, child_node.id());
                         registry.mark_dirty(node_id);
                     }
                 } else {
                     // Condition is false - unmount child if mounted
-                    let mut registry = registry_for_callback.borrow_mut();
+                    // Check if child exists first (immutable borrow, then dropped)
+                    let child_id = {
+                        let registry = registry_for_callback.borrow();
+                        registry.get_condition_child(node_id)
+                    };
 
-                    if let Some(_child_id) = registry.get_condition_child(node_id) {
+                    if let Some(_id) = child_id {
+                        // Child mounted, remove it
+                        let mut registry = registry_for_callback.borrow_mut();
                         registry.remove_condition_child(node_id);
                         registry.mark_dirty(node_id);
                     }
@@ -418,15 +431,18 @@ impl UserData for LuaUi {
                     _ => return Ok(()), // No items, nothing to do
                 };
 
-                // Get current children to remove them
-                let current_children = registry_for_callback
-                    .borrow()
-                    .get_list_children(node_id)
-                    .to_vec();
+                // Get current children to remove them (immutable borrow, scoped to be dropped)
+                let current_children = {
+                    let registry = registry_for_callback.borrow();
+                    registry.get_list_children(node_id).to_vec()
+                };
 
-                // Remove all current children
-                for child_id in current_children {
-                    registry_for_callback.borrow_mut().remove_node(child_id);
+                // Remove all current children (single mutable borrow)
+                {
+                    let mut registry = registry_for_callback.borrow_mut();
+                    for child_id in current_children {
+                        registry.remove_node(child_id);
+                    }
                 }
 
                 let mut new_children = Vec::new();
@@ -438,7 +454,7 @@ impl UserData for LuaUi {
                         break;
                     }
 
-                    // Create new child
+                    // Create new child (NO registry borrow held during this call)
                     let render_fn: Function = lua
                         .registry_value(&render_fn_key_clone)
                         .map_err(|e| mlua::Error::RuntimeError(format!("Failed to get render function: {}", e)))?;
@@ -451,7 +467,7 @@ impl UserData for LuaUi {
                     i += 1;
                 }
 
-                // Update the list node's children
+                // Update the list node's children (mutable borrow after all children created)
                 registry_for_callback
                     .borrow_mut()
                     .update_list_children(node_id, new_children);
@@ -466,27 +482,33 @@ impl UserData for LuaUi {
                 registry_rc.borrow_mut().set_list_items(node_id, items.clone());
             }
 
-            // Create the effect
-            // This will call the callback immediately, which reads the signal/derived and tracks dependencies
-            let items_effect_id = runtime
-                .create_effect(lua, effect_key)
-                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-
-            // Get initial children (the effect has already created them)
-            let initial_children = registry_rc
-                .borrow()
-                .get_list_children(node_id)
-                .to_vec();
-
-            // Create the list node
+            // Create the list node FIRST with empty children
+            // The effect will populate it after we create it
             let node = UiNode::List {
-                items_effect: items_effect_id,
-                children: initial_children,
+                items_effect: crate::signal::graph::EffectId(0), // Placeholder, will be updated below
+                children: Vec::new(),
             };
 
             {
                 let mut registry = registry_rc.borrow_mut();
                 registry.finalize_node(node_id, node);
+            }
+
+            // NOW create the effect
+            // This will call the callback immediately, which will populate the list
+            let items_effect_id = runtime
+                .create_effect(lua, effect_key)
+                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+            {
+                let mut registry = registry_rc.borrow_mut();
+                // Get the children that were created by the effect
+                let children = registry.get_list_children(node_id).to_vec();
+                // Update the node's effect ID and children
+                if let Some(UiNode::List { items_effect, children: node_children }) = registry.get_node_mut(node_id) {
+                    *items_effect = items_effect_id;
+                    *node_children = children;
+                }
                 registry.attach_effect(node_id, items_effect_id);
             }
 

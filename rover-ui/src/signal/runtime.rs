@@ -394,6 +394,38 @@ impl SignalRuntime {
     fn schedule_effect(&self, _lua: &Lua, id: EffectId) {
         self.batch.borrow_mut().pending_effects.push(id);
     }
+
+    /// Run any pending effects that were scheduled outside of a batch
+    /// This is useful when signal updates happen outside of event processing
+    pub fn run_pending_effects(&self, lua: &Lua) -> Result<()> {
+        // Check if we're already in a batch
+        let in_batch = {
+            let batch = self.batch.borrow();
+            batch.depth > 0
+        };
+
+        if in_batch {
+            // Already in a batch, effects will run when the batch ends
+            return Ok(());
+        }
+
+        // Check if there are pending effects
+        let has_pending = {
+            let batch = self.batch.borrow();
+            !batch.pending_effects.is_empty()
+        };
+
+        if has_pending {
+            // Not in a batch, but there are pending effects
+            // This means they were scheduled outside of event processing
+            // Begin a batch to run the effects
+            self.begin_batch();
+            // Immediately end it, which will run the pending effects
+            self.end_batch(lua)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for SignalRuntime {

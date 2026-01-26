@@ -289,11 +289,21 @@ impl Renderer for StubRenderer {
                             node_id, src
                         ));
                     }
-                    UiNode::Conditional { .. } => {
-                        self.log(&format!("  Updated Conditional(id={:?})", node_id));
+                    UiNode::Conditional { child, .. } => {
+                        self.log(&format!("  Updated Conditional(id={:?}) {{", node_id));
+                        if let Some(child_id) = child {
+                            self.print_node(registry, *child_id, 3);
+                        } else {
+                            self.log("    (hidden)");
+                        }
+                        self.log("  }");
                     }
-                    UiNode::List { .. } => {
-                        self.log(&format!("  Updated List(id={:?})", node_id));
+                    UiNode::List { children, .. } => {
+                        self.log(&format!("  Updated List(id={:?}) {{", node_id));
+                        for &child_id in children {
+                            self.print_node(registry, child_id, 3);
+                        }
+                        self.log("  }");
                     }
                 }
             }
