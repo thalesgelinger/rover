@@ -181,7 +181,7 @@ pub fn cancel_task(_lua: &Lua, task_ud: AnyUserData) -> mlua::Result<()> {
 /// like `rover.delay(1000)` without needing explicit `coroutine.yield()`.
 pub fn create_task(lua: &Lua, func: mlua::Function) -> mlua::Result<AnyUserData> {
     // Create a wrapped function that overrides rover.delay locally
-    // The wrapper creates a closure where rover.delay yields directly
+    // The wrapper loops to handle yields and resumptions
     let wrapped_code = r#"
         return function(user_fn)
             -- Override rover.delay to yield directly
@@ -196,23 +196,49 @@ pub fn create_task(lua: &Lua, func: mlua::Function) -> mlua::Result<AnyUserData>
 
             -- Return a function that uses the overridden delay
             return function(...)
-                -- Temporarily override rover.delay in the global scope
-                rover.delay = task_delay
+                local args = {...}
+                local first_call = true
 
-                -- Call user function
-                local results = {pcall(user_fn, ...)}
+                while true do
+                    -- Temporarily override rover.delay in the global scope
+                    rover.delay = task_delay
 
-                -- Restore original delay
-                rover.delay = old_delay
+                    -- Call user function (only pass args on first call)
+                    local results
+                    if first_call then
+                        results = {pcall(user_fn, table.unpack(args))}
+                        first_call = false
+                    else
+                        results = {pcall(user_fn)}
+                    end
 
-                -- Check for errors
-                if not results[1] then
-                    error(results[2], 0)
+                    -- Restore original delay
+                    rover.delay = old_delay
+
+                    -- Check for errors
+                    if not results[1] then
+                        error(results[2], 0)
+                    end
+
+                    -- Remove pcall status
+                    table.remove(results, 1)
+
+                    -- Check if first result is a DelayMarker
+                    if #results > 0 and type(results[1]) == "userdata" then
+                        local success, delay_ms = pcall(function()
+                            return results[1].delay_ms
+                        end)
+
+                        if success and type(delay_ms) == "number" then
+                            -- This is a DelayMarker, yield it
+                            -- coroutine.yield() works here because we're in pure Lua!
+                            return coroutine.yield(table.unpack(results))
+                        end
+                    end
+
+                    -- Not a DelayMarker, function completed normally
+                    return table.unpack(results)
                 end
-
-                -- Remove pcall status and return results
-                table.remove(results, 1)
-                return table.unpack(results)
             end
         end
     "#;
