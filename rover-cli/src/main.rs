@@ -4,7 +4,9 @@ mod fmt;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use rover_core::run;
+use rover_core::register_extra_modules;
+use rover_ui::app::App;
+use rover_ui::ui::StubRenderer;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -126,26 +128,6 @@ fn main() -> Result<()> {
             // Parse args for --yolo and --platform flags
             let (file_args, yolo_mode, platform) = parse_external_args(&args);
 
-            // Check platform availability
-            match platform {
-                Platform::Stub => {
-                    // Default - debug renderer
-                }
-                Platform::Tui => {
-                    println!("Platform 'tui' coming soon!");
-                    std::process::exit(0);
-                }
-                Platform::Web
-                | Platform::Ios
-                | Platform::Android
-                | Platform::Macos
-                | Platform::Windows
-                | Platform::Linux => {
-                    println!("Platform '{:?}' coming soon!", platform);
-                    std::process::exit(0);
-                }
-            }
-
             let raw_path = file_args.first().ok_or_else(|| {
                 anyhow::anyhow!("No file specified. Usage: rover @<file.lua> [--yolo] [--platform <platform>]")
             })?;
@@ -159,11 +141,39 @@ fn main() -> Result<()> {
             // Run database pre-run analysis
             pre_run_db_analysis(&file_path, yolo_mode)?;
 
-            // Execute the file
-            match run(path, cli.verbose) {
-                Ok(()) => Ok(()),
-                Err(_) => {
-                    std::process::exit(1);
+            // Execute the file based on platform
+            match platform {
+                Platform::Stub => {
+                    // Use StubRenderer with App
+                    let renderer = StubRenderer::new();
+                    let mut app = App::new(renderer)
+                        .map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
+
+                    // Register additional rover modules on the app's Lua instance
+                    register_extra_modules(app.lua())?;
+
+                    // Load and run the script
+                    let content = std::fs::read_to_string(&file_path)
+                        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+                    app.run_script(&content)
+                        .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
+
+                    // Run the app (includes mount and event loop)
+                    app.run().map_err(|e| anyhow::anyhow!("App error: {}", e))?;
+                    Ok(())
+                }
+                Platform::Tui => {
+                    println!("Platform 'tui' coming soon!");
+                    std::process::exit(0);
+                }
+                Platform::Web
+                | Platform::Ios
+                | Platform::Android
+                | Platform::Macos
+                | Platform::Windows
+                | Platform::Linux => {
+                    println!("Platform '{:?}' coming soon!", platform);
+                    std::process::exit(0);
                 }
             }
         }

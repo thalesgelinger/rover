@@ -2067,6 +2067,7 @@ dependencies = [
  "rover-parser",
  "rover_core",
  "rover_db",
+ "rover_ui",
  "serde_json",
  "tokio",
 ]

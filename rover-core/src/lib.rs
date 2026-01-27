@@ -9,6 +9,8 @@ mod server;
 pub mod template;
 
 use html::create_html_module;
+use http::create_http_module;
+use io::create_io_module;
 use rover_db::create_db_module;
 use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module, ui::UiRegistry};
 use server::{AppServer, Server};
@@ -190,6 +192,86 @@ pub fn run(path: &str, verbose: bool) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Register extra rover modules (http, html, db, io, debug, guard) on an existing Lua instance
+/// This is useful when using a custom renderer with rover_ui::App
+pub fn register_extra_modules(lua: &Lua) -> Result<()> {
+    let rover: Table = lua.globals().get("rover")?;
+
+    // Add HTTP client module
+    let http_module = create_http_module(lua)?;
+    rover.set("http", http_module)?;
+
+    // Add rover.html global templating function
+    let html_module = create_html_module(lua)?;
+    rover.set("html", html_module)?;
+
+    // Add rover.db database module
+    let db_module = create_db_module(lua)?;
+    rover.set("db", db_module)?;
+
+    // Override global io module with async version
+    let io_module = create_io_module(lua)?;
+    lua.globals().set("io", io_module)?;
+
+    // Load debug module from embedded Lua file
+    let debug_module: Table = lua
+        .load(include_str!("debug.lua"))
+        .set_name("debug.lua")
+        .eval()?;
+    lua.globals().set("debug", debug_module)?;
+
+    // Load guard from embedded Lua file
+    let guard: Table = lua
+        .load(include_str!("guard.lua"))
+        .set_name("guard.lua")
+        .eval()?;
+
+    // Add __call metamethod for rover.guard(data, schema)
+    let guard_meta = lua.create_table()?;
+    guard_meta.set("__index", guard.clone())?;
+    guard_meta.set(
+        "__call",
+        lua.create_function(|lua, (data, schema): (Value, Value)| {
+            use crate::guard::{ValidationErrors, validate_table};
+
+            // Extract the table from data
+            let data_table = match data {
+                Value::Table(ref t) => t.clone(),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "First argument must be a table".to_string(),
+                    ));
+                }
+            };
+
+            // Extract the table from schema
+            let schema_table = match schema {
+                Value::Table(ref t) => t.clone(),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "Second argument must be a table".to_string(),
+                    ));
+                }
+            };
+
+            match validate_table(lua, &data_table, &schema_table, "") {
+                Ok(validated) => Ok(validated),
+                Err(errors) => {
+                    // Return ValidationErrors that formats nicely when converted to string
+                    let validation_errors = ValidationErrors::new(errors);
+                    Err(mlua::Error::ExternalError(std::sync::Arc::new(
+                        validation_errors,
+                    )))
+                }
+            }
+        })?,
+    )?;
+    let _ = guard.set_metatable(Some(guard_meta));
+    rover.set("guard", guard)?;
+
+    Ok(())
 }
 
 #[derive(Debug)]

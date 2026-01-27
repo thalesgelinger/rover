@@ -24,7 +24,7 @@ fn test_counter_style_ui() {
 
             -- Create a task that updates the value
             local tick = rover.task(function()
-                coroutine.yield(rover.delay(10))
+                rover.delay(10)
                 value.val = value.val + 1
             end)
 
@@ -78,7 +78,7 @@ fn test_task_execution() {
 
         local tick = rover.task(function()
             _G.test_count = _G.test_count + 1
-            coroutine.yield(rover.delay(5))
+            rover.delay(5)
             _G.test_count = _G.test_count + 1
         end)
 
@@ -314,7 +314,7 @@ fn test_delay_scheduling() {
     // Test that rover.delay() works with explicit yield
     let script = r#"
         local tick = rover.task(function()
-            coroutine.yield(rover.delay(100))
+            rover.delay(100)
         end)
 
         tick()
@@ -425,7 +425,7 @@ fn test_signal_update_triggers_render() {
     app.lua().load(r#"
         local updater = rover.task(function()
             _G.count.val = 42
-            coroutine.yield(rover.delay(1))
+            rover.delay(1)
         end)
         updater()
     "#).exec().unwrap();

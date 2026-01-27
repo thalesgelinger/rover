@@ -257,12 +257,16 @@ impl SignalRuntime {
             tracking.reads.clear();
         }
 
-        let result = {
+        // Get the callback key and drop the borrow before calling Lua
+        // (Lua call might create more effects, which would cause a RefCell panic)
+        let callback: Function = {
             let effects = self.effects.borrow();
-            let effect = &effects[id.0 as usize];
-            let callback: Function = lua.registry_value(&effect.callback)?;
-            callback.call::<Value>(()).map_err(RuntimeError::LuaError)?
+            let key = &effects[id.0 as usize].callback;
+            lua.registry_value(key)?
         };
+
+        // Now call the Lua callback (effects borrow is released)
+        let result = callback.call::<Value>(()).map_err(RuntimeError::LuaError)?;
 
         let deps = {
             let mut tracking = self.tracking.borrow_mut();

@@ -320,8 +320,7 @@ impl<R: Renderer> App<R> {
 
             // Exit if no more pending work
             if !self.scheduler.borrow().has_pending() && self.events.is_empty() {
-                // Could exit here, but for now keep running
-                // In a real app, we might want to keep running for events
+                break;
             }
         }
 

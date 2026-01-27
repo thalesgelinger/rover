@@ -50,8 +50,10 @@ impl Task {
         self.set_status(TaskStatus::Cancelled);
 
         // Cancel timer if scheduled
-        if let Some(timer_id) = *self.timer_id.borrow() {
-            self.scheduler.borrow_mut().cancel_task(timer_id);
+        // Extract timer_id first to end the borrow before borrowing scheduler
+        let timer_id = *self.timer_id.borrow();
+        if let Some(id) = timer_id {
+            self.scheduler.borrow_mut().cancel_task(id);
             *self.timer_id.borrow_mut() = None;
         }
     }
@@ -176,8 +178,45 @@ pub fn cancel_task(_lua: &Lua, task_ud: AnyUserData) -> mlua::Result<()> {
 
 /// Create a new task from a Lua function
 pub fn create_task(lua: &Lua, func: mlua::Function) -> mlua::Result<AnyUserData> {
+    // Create a wrapper function that intercepts rover.delay() calls
+    let wrapper_code = r#"
+        return function(user_fn)
+            -- Return a wrapped function
+            return function(...)
+                -- Save original delay function
+                local original_delay = rover.delay
+
+                -- Override rover.delay to yield immediately
+                rover.delay = function(ms)
+                    return coroutine.yield(rover._delay_ms(ms))
+                end
+
+                -- Call user function (may yield via rover.delay)
+                local results = table.pack(pcall(user_fn, ...))
+
+                -- Restore original delay
+                rover.delay = original_delay
+
+                -- Check for errors
+                if not results[1] then
+                    error(results[2], 0)
+                end
+
+                -- Return results normally
+                return table.unpack(results, 2, results.n)
+            end
+        end
+    "#;
+
+    let wrapper_factory: mlua::Function = lua
+        .load(wrapper_code)
+        .eval()
+        .map_err(|e| mlua::Error::RuntimeError(format!("Failed to create wrapper: {}", e)))?;
+
+    let wrapped_func: mlua::Function = wrapper_factory.call(func)?;
+
     let scheduler = crate::lua::helpers::get_scheduler(lua)?;
-    let thread = lua.create_thread(func)?;
+    let thread = lua.create_thread(wrapped_func)?;
     let task_id = scheduler.borrow_mut().next_task_id();
     let task = Task::new(thread, scheduler.clone(), task_id);
     lua.create_userdata(task)

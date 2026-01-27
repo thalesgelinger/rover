@@ -67,17 +67,14 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     rover_table.set("none", none_fn)?;
 
     // rover._delay_ms(ms) - internal function that creates a DelayMarker
-    // This is the Rust backing for rover.delay()
-    // rover.delay() is overridden in task wrappers to yield directly
     let delay_fn = lua.create_function(|lua, delay_ms: u64| {
         let marker = DelayMarker { delay_ms };
         lua.create_userdata(marker)
     })?;
     rover_table.set("_delay_ms", delay_fn)?;
 
-    // rover.delay(ms) - delay coroutine execution
-    // By default, this just calls _delay_ms (for non-task contexts)
-    // In task contexts, this is overridden to yield directly
+    // rover.delay(ms) - delay coroutine execution (non-yielding version by default)
+    // Task wrappers override this to yield
     let delay_wrapper = lua.create_function(|lua, delay_ms: u64| {
         let marker = DelayMarker { delay_ms };
         lua.create_userdata(marker)
