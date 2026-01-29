@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::fs::{File, OpenOptions as StdOpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 
 thread_local! {
     static CURRENT_INPUT: RefCell<Option<LuaAnyUserData>> = RefCell::new(None);
@@ -38,10 +39,57 @@ impl StderrHandle {
     }
 }
 
+pub struct PipeHandle {
+    child: Child,
+    read_mode: bool,
+}
+
+impl PipeHandle {
+    fn new(child: Child, read_mode: bool) -> Self {
+        PipeHandle { child, read_mode }
+    }
+}
+
+pub struct TempFile {
+    file: tempfile::NamedTempFile,
+}
+
+impl TempFile {
+    fn new() -> std::io::Result<Self> {
+        let file = tempfile::NamedTempFile::new()?;
+        Ok(TempFile { file })
+    }
+}
+
+fn should_yield_for_io(lua: &Lua) -> LuaResult<bool> {
+    let globals = lua.globals();
+    if let Ok(coroutine) = globals.get::<LuaTable>("coroutine") {
+        if let Ok(running) = coroutine.get::<LuaFunction>("running") {
+            if let Ok((thread, is_main)) = running.call::<(LuaValue, bool)>(()) {
+                return Ok(!is_main && matches!(thread, LuaValue::Thread(_)));
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn yield_for_io(lua: &Lua) {
+    let globals = lua.globals();
+    if let Ok(coroutine) = globals.get::<LuaTable>("coroutine") {
+        if let Ok(yield_fn) = coroutine.get::<LuaFunction>("yield") {
+            let _ = yield_fn.call::<()>(());
+        }
+    }
+}
+
 impl LuaUserData for StdinHandle {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("read", |lua, _this, format: Option<LuaValue>| {
             let mut stdin = std::io::stdin();
+
+            if should_yield_for_io(lua)? {
+                yield_for_io(lua);
+            }
 
             let format_str = match format {
                 Some(LuaValue::String(s)) => s.to_str()?.to_string(),
@@ -136,7 +184,7 @@ impl LuaUserData for StdinHandle {
 
 impl LuaUserData for StdoutHandle {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut("write", |_lua, this, data: LuaValue| {
+        methods.add_method_mut("write", |lua, this, data: LuaValue| {
             let mut stdout = std::io::stdout();
 
             let text = match data {
@@ -153,6 +201,10 @@ impl LuaUserData for StdoutHandle {
             stdout
                 .write_all(text.as_bytes())
                 .map_err(|e| LuaError::external(e))?;
+
+            if should_yield_for_io(lua)? {
+                yield_for_io(lua);
+            }
 
             Ok(())
         });
@@ -201,6 +253,256 @@ impl LuaUserData for StderrHandle {
         methods.add_method_mut("close", |_lua, _this, ()| {
             Err::<(), _>(LuaError::RuntimeError("Cannot close stderr".to_string()))
         });
+    }
+}
+
+impl LuaUserData for PipeHandle {
+    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method_mut("read", |lua, this, format: Option<LuaValue>| {
+            if !this.read_mode {
+                return Err(LuaError::RuntimeError(
+                    "Pipe is opened for writing".to_string(),
+                ));
+            }
+
+            use std::io::Read;
+
+            let child_stdout =
+                this.child.stdout.as_mut().ok_or_else(|| {
+                    LuaError::RuntimeError("Process stdout is closed".to_string())
+                })?;
+
+            let format_str = match format {
+                Some(LuaValue::String(s)) => s.to_str()?.to_string(),
+                Some(LuaValue::Integer(n)) => n.to_string(),
+                Some(LuaValue::Number(n)) => (n as i64).to_string(),
+                None => "*l".to_string(),
+                _ => return Err(LuaError::RuntimeError("Invalid read format".to_string())),
+            };
+
+            match format_str.as_str() {
+                "*a" | "*all" => {
+                    let mut contents = String::new();
+                    child_stdout
+                        .read_to_string(&mut contents)
+                        .map_err(|e| LuaError::external(e))?;
+                    Ok(LuaValue::String(lua.create_string(contents)?))
+                }
+                "*l" | "*line" => {
+                    let mut reader = BufReader::new(child_stdout);
+                    let mut line = String::new();
+                    let bytes_read = reader
+                        .read_line(&mut line)
+                        .map_err(|e| LuaError::external(e))?;
+
+                    if bytes_read == 0 {
+                        return Ok(LuaValue::Nil);
+                    }
+
+                    if line.ends_with('\n') {
+                        line.pop();
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                    }
+
+                    Ok(LuaValue::String(lua.create_string(line)?))
+                }
+                "*L" => {
+                    let mut reader = BufReader::new(child_stdout);
+                    let mut line = String::new();
+                    let bytes_read = reader
+                        .read_line(&mut line)
+                        .map_err(|e| LuaError::external(e))?;
+
+                    if bytes_read == 0 {
+                        return Ok(LuaValue::Nil);
+                    }
+
+                    Ok(LuaValue::String(lua.create_string(line)?))
+                }
+                _ => Err(LuaError::RuntimeError(
+                    "Unsupported format for pipe".to_string(),
+                )),
+            }
+        });
+
+        methods.add_method_mut("write", |_lua, this, data: LuaValue| {
+            if this.read_mode {
+                return Err(LuaError::RuntimeError(
+                    "Pipe is opened for reading".to_string(),
+                ));
+            }
+
+            use std::io::Write;
+
+            let child_stdin = this
+                .child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| LuaError::RuntimeError("Process stdin is closed".to_string()))?;
+
+            let text = match data {
+                LuaValue::String(s) => s.to_str()?.to_string(),
+                LuaValue::Integer(i) => i.to_string(),
+                LuaValue::Number(n) => n.to_string(),
+                _ => {
+                    return Err(LuaError::RuntimeError(
+                        "Can only write strings or numbers".to_string(),
+                    ));
+                }
+            };
+
+            child_stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| LuaError::external(e))?;
+
+            Ok(())
+        });
+
+        methods.add_method_mut("close", |_lua, this, ()| {
+            drop(this.child.stdin.take());
+            drop(this.child.stdout.take());
+            let _ = this.child.wait();
+            Ok(())
+        });
+    }
+}
+
+impl LuaUserData for TempFile {
+    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method_mut("read", |lua, this, format: Option<LuaValue>| {
+            let file = this.file.as_file_mut();
+
+            let format_str = match format {
+                Some(LuaValue::String(s)) => s.to_str()?.to_string(),
+                Some(LuaValue::Integer(n)) => n.to_string(),
+                Some(LuaValue::Number(n)) => (n as i64).to_string(),
+                None => "*l".to_string(),
+                _ => return Err(LuaError::RuntimeError("Invalid read format".to_string())),
+            };
+
+            match format_str.as_str() {
+                "*a" | "*all" => {
+                    let mut contents = String::new();
+                    file.read_to_string(&mut contents)
+                        .map_err(|e| LuaError::external(e))?;
+                    Ok(LuaValue::String(lua.create_string(contents)?))
+                }
+                "*l" | "*line" => {
+                    let mut reader = BufReader::new(file);
+                    let mut line = String::new();
+                    let bytes_read = reader
+                        .read_line(&mut line)
+                        .map_err(|e| LuaError::external(e))?;
+
+                    if bytes_read == 0 {
+                        return Ok(LuaValue::Nil);
+                    }
+
+                    if line.ends_with('\n') {
+                        line.pop();
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                    }
+
+                    Ok(LuaValue::String(lua.create_string(line)?))
+                }
+                "*L" => {
+                    let mut reader = BufReader::new(file);
+                    let mut line = String::new();
+                    let bytes_read = reader
+                        .read_line(&mut line)
+                        .map_err(|e| LuaError::external(e))?;
+
+                    if bytes_read == 0 {
+                        return Ok(LuaValue::Nil);
+                    }
+
+                    Ok(LuaValue::String(lua.create_string(line)?))
+                }
+                num_str => {
+                    let n = num_str
+                        .parse::<usize>()
+                        .map_err(|_| LuaError::RuntimeError("Invalid byte count".to_string()))?;
+
+                    let mut buffer = vec![0u8; n];
+                    let bytes_read = file.read(&mut buffer).map_err(|e| LuaError::external(e))?;
+
+                    buffer.truncate(bytes_read);
+                    match String::from_utf8(buffer) {
+                        Ok(s) => match lua.create_string(s) {
+                            Ok(lua_str) => Ok(LuaValue::String(lua_str)),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(LuaError::RuntimeError(format!("Invalid UTF-8: {}", e))),
+                    }
+                }
+            }
+        });
+
+        methods.add_method_mut("write", |_lua, this, data: LuaValue| {
+            let file = this.file.as_file_mut();
+
+            let text = match data {
+                LuaValue::String(s) => s.to_str()?.to_string(),
+                LuaValue::Integer(i) => i.to_string(),
+                LuaValue::Number(n) => n.to_string(),
+                _ => {
+                    return Err(LuaError::RuntimeError(
+                        "Can only write strings or numbers".to_string(),
+                    ));
+                }
+            };
+
+            file.write_all(text.as_bytes())
+                .map_err(|e| LuaError::external(e))?;
+
+            Ok(())
+        });
+
+        methods.add_method_mut("flush", |_lua, this, ()| {
+            let file = this.file.as_file_mut();
+            file.flush().map_err(|e| LuaError::external(e))?;
+            Ok(())
+        });
+
+        methods.add_method_mut("close", |_lua, this, ()| {
+            let file = this.file.as_file_mut();
+            file.flush().map_err(|e| LuaError::external(e))?;
+            Ok(())
+        });
+
+        methods.add_method_mut(
+            "seek",
+            |_lua, this, (whence, offset): (Option<String>, Option<i64>)| {
+                let file = this.file.as_file_mut();
+
+                let whence = whence.unwrap_or_else(|| "cur".to_string());
+                let offset = offset.unwrap_or(0);
+
+                let pos = match whence.as_str() {
+                    "set" => file
+                        .seek(SeekFrom::Start(offset as u64))
+                        .map_err(|e| LuaError::external(e))?,
+                    "cur" => file
+                        .seek(SeekFrom::Current(offset))
+                        .map_err(|e| LuaError::external(e))?,
+                    "end" => file
+                        .seek(SeekFrom::End(offset))
+                        .map_err(|e| LuaError::external(e))?,
+                    _ => {
+                        return Err(LuaError::RuntimeError(format!(
+                            "Invalid whence: {}",
+                            whence
+                        )));
+                    }
+                };
+
+                Ok(pos)
+            },
+        );
     }
 }
 
@@ -396,6 +698,23 @@ impl LuaUserData for SyncFile {
             this.reader.take();
             Ok(())
         });
+
+        methods.add_method_mut(
+            "setvbuf",
+            |_lua, _this, (mode, size): (String, Option<i64>)| {
+                let size = size.unwrap_or(8192);
+
+                match mode.as_str() {
+                    "no" | "none" => Ok(()),
+                    "full" => Ok(()),
+                    "line" => Ok(()),
+                    _ => Err(LuaError::RuntimeError(format!(
+                        "Invalid vbuf mode: {}",
+                        mode
+                    ))),
+                }
+            },
+        );
 
         methods.add_method("lines", |lua, this, ()| {
             let file = SyncFile::open(
@@ -660,6 +979,8 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
                     } else {
                         return Ok(LuaValue::String(lua.create_string("closed file")?));
                     }
+                } else if ud.is::<PipeHandle>() || ud.is::<TempFile>() {
+                    return Ok(LuaValue::String(lua.create_string("file")?));
                 } else if ud.is::<StdinHandle>()
                     || ud.is::<StdoutHandle>()
                     || ud.is::<StderrHandle>()
@@ -711,8 +1032,21 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
     io.set(
         "lines",
         lua.create_function(|lua, filename: LuaValue| {
-            let file = SyncFile::open(filename.to_string()?.to_string(), Some("r".to_string()))?;
-            let file_ud = lua.create_userdata(file)?;
+            let file_ud = match filename {
+                LuaValue::String(s) => {
+                    let file = SyncFile::open(s.to_str()?.to_string(), Some("r".to_string()))?;
+                    lua.create_userdata(file)?
+                }
+                LuaValue::Nil => {
+                    let input_ud = CURRENT_INPUT
+                        .with(|current| current.borrow().as_ref().map(|ud| ud.clone()));
+
+                    input_ud
+                        .ok_or_else(|| LuaError::RuntimeError("No input file set".to_string()))?
+                }
+                _ => return Err(LuaError::RuntimeError("Invalid filename".to_string())),
+            };
+
             let file_ud_clone = file_ud.clone();
 
             let lines_iterator = lua.create_function(move |lua, (): ()| {
@@ -737,7 +1071,45 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
                 }
             })?;
 
-            Ok((lines_iterator, LuaValue::Nil, LuaValue::Nil, file_ud))
+            Ok(lines_iterator)
+        })?,
+    )?;
+
+    io.set(
+        "popen",
+        lua.create_function(|_lua, (prog, mode): (String, Option<String>)| {
+            let mode = mode.unwrap_or_else(|| "r".to_string());
+
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(&prog);
+
+            let child = match mode.as_str() {
+                "r" => command
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| LuaError::external(e))?,
+                "w" => command
+                    .stdin(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| LuaError::external(e))?,
+                _ => {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Invalid popen mode: {} (use 'r' or 'w')",
+                        mode
+                    )));
+                }
+            };
+
+            let pipe = PipeHandle::new(child, mode == "r");
+            Ok(pipe)
+        })?,
+    )?;
+
+    io.set(
+        "tmpfile",
+        lua.create_function(|_lua, ()| {
+            let temp = TempFile::new().map_err(|e| LuaError::external(e))?;
+            Ok(temp)
         })?,
     )?;
 
