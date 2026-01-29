@@ -52,9 +52,9 @@ enum Commands {
         /// Skip confirmation prompts for database migrations/schema creation
         #[arg(long, short = 'y')]
         yolo: bool,
-        /// Platform to run on
-        #[arg(long, short, default_value_t = Platform::Stub)]
-        platform: Platform,
+        /// Platform to run on (if omitted, executes Lua directly without UI)
+        #[arg(long, short)]
+        platform: Option<Platform>,
         /// Arguments to pass to the Lua script
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -142,48 +142,37 @@ fn main() -> Result<()> {
             yolo,
             platform,
             args: _,
-        } => {
-            // Run pre-execution check (syntax/type errors)
-            check::pre_run_check(&file)?;
+        } => run_file(file, yolo, platform),
+    }
+}
 
-            // Run database pre-run analysis
-            pre_run_db_analysis(&file, yolo)?;
+fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>) -> Result<()> {
+    // Run pre-execution check (syntax/type errors)
+    check::pre_run_check(&file)?;
 
-            // Execute the file based on platform
-            match platform {
-                Platform::Stub => {
-                    // Use StubRenderer with App
-                    let renderer = StubRenderer::new();
-                    let mut app = App::new(renderer)
-                        .map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
+    // Run database pre-run analysis
+    pre_run_db_analysis(&file, yolo)?;
 
-                    // Register additional rover modules on the app's Lua instance
-                    register_extra_modules(app.lua())?;
-
-                    // Load and run the script
-                    let content = std::fs::read_to_string(&file)
-                        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
-                    app.run_script(&content)
-                        .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
-
-                    // Run the app (includes mount and event loop)
-                    app.run().map_err(|e| anyhow::anyhow!("App error: {}", e))?;
-                    Ok(())
-                }
-                Platform::Tui => {
-                    println!("Platform 'tui' coming soon!");
-                    std::process::exit(0);
-                }
-                Platform::Web
-                | Platform::Ios
-                | Platform::Android
-                | Platform::Macos
-                | Platform::Windows
-                | Platform::Linux => {
-                    println!("Platform '{:?}' coming soon!", platform);
-                    std::process::exit(0);
-                }
-            }
+    match platform {
+        None => {
+            // Direct execution without UI
+            rover_core::run(file.to_str().unwrap(), false)
+        }
+        Some(Platform::Stub) => {
+            let renderer = StubRenderer::new();
+            let mut app = App::new(renderer)
+                .map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
+            register_extra_modules(app.lua())?;
+            let content = std::fs::read_to_string(&file)
+                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+            app.run_script(&content)
+                .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
+            app.run().map_err(|e| anyhow::anyhow!("App error: {}", e))?;
+            Ok(())
+        }
+        Some(platform) => {
+            println!("Platform '{}' coming soon!", platform);
+            std::process::exit(0);
         }
     }
 }

@@ -2063,6 +2063,7 @@ dependencies = [
  "anyhow",
  "clap 4.5.53",
  "colored",
+ "mlua",
  "rover-lsp",
  "rover-parser",
  "rover_core",
