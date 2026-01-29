@@ -1,8 +1,8 @@
 use super::node::{NodeArena, NodeId, UiNode};
 
+use super::super::signal::graph::EffectId;
 #[cfg(test)]
 use super::node::TextContent;
-use super::super::signal::graph::EffectId;
 use mlua::{RegistryKey, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -84,7 +84,10 @@ impl UiRegistry {
 
     /// Get all effects attached to a node
     pub fn get_effects_for_node(&self, node_id: NodeId) -> Vec<EffectId> {
-        self.node_to_effects.get(&node_id).cloned().unwrap_or_default()
+        self.node_to_effects
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Mark a node as dirty (needs re-rendering)
@@ -185,7 +188,10 @@ impl UiRegistry {
 
     /// Get the items for a list node
     pub fn get_list_items(&self, node_id: NodeId) -> &Value {
-        self.list_items.get(&node_id).map(|v| v).unwrap_or(&Value::Nil)
+        self.list_items
+            .get(&node_id)
+            .map(|v| v)
+            .unwrap_or(&Value::Nil)
     }
 
     /// Set the items for a list node
@@ -204,7 +210,11 @@ impl UiRegistry {
 
     /// Update the children of a list node
     pub fn update_list_children(&mut self, node_id: NodeId, children: Vec<NodeId>) {
-        if let Some(UiNode::List { children: existing_children, .. }) = self.nodes.get_mut(node_id) {
+        if let Some(UiNode::List {
+            children: existing_children,
+            ..
+        }) = self.nodes.get_mut(node_id)
+        {
             *existing_children = children;
             self.mark_dirty(node_id);
         }

@@ -62,88 +62,98 @@ impl Task {
 impl UserData for Task {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // Add a __call metamethod so tasks are callable: task()
-        methods.add_meta_function(MetaMethod::Call, |lua, (_ud, args): (AnyUserData, mlua::Value)| {
-            let ud = _ud;
-            let task = ud.borrow::<Task>()?;
+        methods.add_meta_function(
+            MetaMethod::Call,
+            |lua, (_ud, args): (AnyUserData, mlua::Value)| {
+                let ud = _ud;
+                let task = ud.borrow::<Task>()?;
 
-            // Check if cancelled
-            if task.get_status() == TaskStatus::Cancelled {
-                return Err(mlua::Error::RuntimeError("Task is cancelled".to_string()));
-            }
+                // Check if cancelled
+                if task.get_status() == TaskStatus::Cancelled {
+                    return Err(mlua::Error::RuntimeError("Task is cancelled".to_string()));
+                }
 
-            // Check if already completed
-            if task.get_status() == TaskStatus::Completed {
-                return Err(mlua::Error::RuntimeError("Task is completed".to_string()));
-            }
+                // Check if already completed
+                if task.get_status() == TaskStatus::Completed {
+                    return Err(mlua::Error::RuntimeError("Task is completed".to_string()));
+                }
 
-            // Get coroutine info to see if we can resume
-            let thread = task.thread.clone();
-            let status = thread.status();
+                // Get coroutine info to see if we can resume
+                let thread = task.thread.clone();
+                let status = thread.status();
 
-            match status {
-                mlua::ThreadStatus::Resumable => {
-                    // Resume the coroutine
-                    let scheduler = task.scheduler.clone();
-                    let _task_id = task.id;
+                match status {
+                    mlua::ThreadStatus::Resumable => {
+                        // Resume the coroutine
+                        let scheduler = task.scheduler.clone();
+                        let _task_id = task.id;
 
-                    // Resume with batching
-                    let runtime = crate::lua::helpers::get_runtime(lua)?;
-                    runtime.begin_batch();
+                        // Resume with batching
+                        let runtime = crate::lua::helpers::get_runtime(lua)?;
+                        runtime.begin_batch();
 
-                    let result: mlua::Result<mlua::MultiValue> = thread.resume(args);
+                        let result: mlua::Result<mlua::MultiValue> = thread.resume(args);
 
-                    // End batch
-                    if let Err(e) = runtime.end_batch(lua) {
-                        task.set_status(TaskStatus::Completed);
-                        return Err(mlua::Error::RuntimeError(format!("Effect error: {:?}", e)));
-                    }
+                        // End batch
+                        if let Err(e) = runtime.end_batch(lua) {
+                            task.set_status(TaskStatus::Completed);
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "Effect error: {:?}",
+                                e
+                            )));
+                        }
 
-                    match result {
-                        Ok(values) => {
-                            // Check if yielded or completed
-                            let new_status = match thread.status() {
-                                mlua::ThreadStatus::Resumable => TaskStatus::Yielded,
-                                _ => TaskStatus::Completed,
-                            };
+                        match result {
+                            Ok(values) => {
+                                // Check if yielded or completed
+                                let new_status = match thread.status() {
+                                    mlua::ThreadStatus::Resumable => TaskStatus::Yielded,
+                                    _ => TaskStatus::Completed,
+                                };
 
-                            if new_status == TaskStatus::Yielded {
-                                // Check if yielded a DelayMarker (from coroutine.yield in wrapper)
-                                let values_vec: Vec<mlua::Value> = values.into();
-                                if let Some(mlua::Value::UserData(ud)) = values_vec.first() {
-                                    if ud.is::<crate::lua::DelayMarker>() {
-                                        if let Ok(marker) = ud.borrow::<crate::lua::DelayMarker>() {
-                                            task.set_status(TaskStatus::Yielded);
-                                            let timer_id = scheduler.borrow_mut().schedule_delay(thread, marker.delay_ms);
-                                            *task.timer_id.borrow_mut() = Some(timer_id);
-                                            return Ok(mlua::MultiValue::new());
+                                if new_status == TaskStatus::Yielded {
+                                    // Check if yielded a DelayMarker (from coroutine.yield in wrapper)
+                                    let values_vec: Vec<mlua::Value> = values.into();
+                                    if let Some(mlua::Value::UserData(ud)) = values_vec.first() {
+                                        if ud.is::<crate::lua::DelayMarker>() {
+                                            if let Ok(marker) =
+                                                ud.borrow::<crate::lua::DelayMarker>()
+                                            {
+                                                task.set_status(TaskStatus::Yielded);
+                                                let timer_id = scheduler
+                                                    .borrow_mut()
+                                                    .schedule_delay(thread, marker.delay_ms);
+                                                *task.timer_id.borrow_mut() = Some(timer_id);
+                                                return Ok(mlua::MultiValue::new());
+                                            }
                                         }
                                     }
+                                    // Unknown yield - keep as yielded but don't reschedule
+                                    task.set_status(TaskStatus::Yielded);
+                                } else {
+                                    // Thread completed normally
+                                    task.set_status(TaskStatus::Completed);
+                                    *task.timer_id.borrow_mut() = None;
                                 }
-                                // Unknown yield - keep as yielded but don't reschedule
-                                task.set_status(TaskStatus::Yielded);
-                            } else {
-                                // Thread completed normally
+
+                                Ok(mlua::MultiValue::new())
+                            }
+                            Err(e) => {
                                 task.set_status(TaskStatus::Completed);
                                 *task.timer_id.borrow_mut() = None;
+                                Err(e)
                             }
-
-                            Ok(mlua::MultiValue::new())
-                        }
-                        Err(e) => {
-                            task.set_status(TaskStatus::Completed);
-                            *task.timer_id.borrow_mut() = None;
-                            Err(e)
                         }
                     }
+                    _ => {
+                        // Thread is dead or can't resume
+                        task.set_status(TaskStatus::Completed);
+                        *task.timer_id.borrow_mut() = None;
+                        Ok(mlua::MultiValue::new())
+                    }
                 }
-                _ => {
-                    // Thread is dead or can't resume
-                    task.set_status(TaskStatus::Completed);
-                    *task.timer_id.borrow_mut() = None;
-                    Ok(mlua::MultiValue::new())
-                }
-            }
-        });
+            },
+        );
 
         // Add cancel() method
         methods.add_method("cancel", |_lua, this, ()| {
@@ -240,7 +250,7 @@ pub fn task_all(lua: &Lua, args: mlua::MultiValue) -> mlua::Result<mlua::MultiVa
             _ => {
                 return Err(mlua::Error::RuntimeError(
                     "All arguments to rover.task.all must be Tasks".to_string(),
-                ))
+                ));
             }
         }
     }

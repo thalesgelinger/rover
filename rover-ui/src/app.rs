@@ -1,9 +1,9 @@
-use crate::coroutine::{run_coroutine_with_delay, CoroutineResult};
+use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use crate::events::{EventQueue, UiEvent};
 use crate::scheduler::{Scheduler, SharedScheduler};
 use crate::signal::SignalRuntime;
-use crate::ui::renderer::Renderer;
 use crate::ui::registry::UiRegistry;
+use crate::ui::renderer::Renderer;
 use mlua::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -131,13 +131,21 @@ impl<R: Renderer> App<R> {
         let ready_ids = self.scheduler.borrow_mut().tick(now);
         for id in ready_ids {
             let pending = self.scheduler.borrow_mut().take_pending(id)?;
-            match run_coroutine_with_delay(&self.lua, &self.runtime, &pending.thread, LuaValue::Nil)? {
+            match run_coroutine_with_delay(
+                &self.lua,
+                &self.runtime,
+                &pending.thread,
+                LuaValue::Nil,
+            )? {
                 CoroutineResult::Completed => {
                     // Coroutine finished, nothing more to do
                 }
                 CoroutineResult::YieldedDelay { delay_ms } => {
                     // Re-schedule with delay
-                    let _new_id = self.scheduler.borrow_mut().schedule_delay(pending.thread, delay_ms);
+                    let _new_id = self
+                        .scheduler
+                        .borrow_mut()
+                        .schedule_delay(pending.thread, delay_ms);
                 }
                 CoroutineResult::YieldedOther => {
                     // Unknown yield - could be an error
@@ -179,10 +187,18 @@ impl<R: Renderer> App<R> {
             let ready_ids = self.scheduler.borrow_mut().tick(now);
             for id in ready_ids {
                 let pending = self.scheduler.borrow_mut().take_pending(id)?;
-                match run_coroutine_with_delay(&self.lua, &self.runtime, &pending.thread, LuaValue::Nil)? {
+                match run_coroutine_with_delay(
+                    &self.lua,
+                    &self.runtime,
+                    &pending.thread,
+                    LuaValue::Nil,
+                )? {
                     CoroutineResult::Completed => {}
                     CoroutineResult::YieldedDelay { delay_ms } => {
-                        let _new_id = self.scheduler.borrow_mut().schedule_delay(pending.thread, delay_ms);
+                        let _new_id = self
+                            .scheduler
+                            .borrow_mut()
+                            .schedule_delay(pending.thread, delay_ms);
                     }
                     CoroutineResult::YieldedOther => {}
                 }
@@ -200,7 +216,10 @@ impl<R: Renderer> App<R> {
 
             // Sleep a bit if there's pending work
             if self.scheduler.borrow().has_pending() {
-                let sleep_dur = self.scheduler.borrow().next_wake_time()
+                let sleep_dur = self
+                    .scheduler
+                    .borrow()
+                    .next_wake_time()
                     .map(|wake| wake.saturating_duration_since(now))
                     .unwrap_or_else(|| Duration::from_millis(1))
                     .min(Duration::from_millis(10));

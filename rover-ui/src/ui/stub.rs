@@ -1,6 +1,6 @@
 use super::node::{NodeId, TextContent, UiNode};
-use super::renderer::Renderer;
 use super::registry::UiRegistry;
+use super::renderer::Renderer;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -74,10 +74,7 @@ impl StubRenderer {
                             )
                         }
                         TextContent::Static(_) => {
-                            format!(
-                                "{}Text(id={:?}): \"{}\"",
-                                indent_str, node_id, value
-                            )
+                            format!("{}Text(id={:?}): \"{}\"", indent_str, node_id, value)
                         }
                     };
                     self.log(&msg);
@@ -232,17 +229,13 @@ impl Renderer for StubRenderer {
                                 )
                             }
                             (None, TextContent::Static(_)) => {
-                                format!(
-                                    "  Updated Text(id={:?}): \"{}\"",
-                                    node_id, new_value
-                                )
+                                format!("  Updated Text(id={:?}): \"{}\"", node_id, new_value)
                             }
                         };
                         self.log(&msg);
 
                         // Update previous value
-                        self.previous_values
-                            .insert(node_id, new_value.to_string());
+                        self.previous_values.insert(node_id, new_value.to_string());
                     }
                     UiNode::Column { .. } => {
                         self.log(&format!("  Updated Column(id={:?})", node_id));
@@ -273,8 +266,7 @@ impl Renderer for StubRenderer {
                                 node_id, new_value
                             ));
                         }
-                        self.previous_values
-                            .insert(node_id, new_value.to_string());
+                        self.previous_values.insert(node_id, new_value.to_string());
                     }
                     UiNode::Checkbox { checked, .. } => {
                         let check_str = if *checked { "☑" } else { "☐" };
@@ -328,8 +320,8 @@ impl Renderer for StubRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::node::TextContent;
+    use super::*;
 
     #[test]
     fn test_stub_renderer_mount() {

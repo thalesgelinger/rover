@@ -233,7 +233,8 @@ impl SignalRuntime {
         // Drop the borrow before calling the function
         drop(effects);
 
-        callback.call::<Value>(args)
+        callback
+            .call::<Value>(args)
             .map_err(|e| RuntimeError::LuaError(e))?;
         Ok(())
     }

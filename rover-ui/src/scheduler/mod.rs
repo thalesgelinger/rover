@@ -114,8 +114,12 @@ mod tests {
         let lua = Lua::new();
         let mut scheduler = Scheduler::new();
 
-        let thread1 = lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
-        let thread2 = lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
+        let thread1 = lua
+            .create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
+        let thread2 = lua
+            .create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
 
         // Schedule with different delays
         let id1 = scheduler.schedule_delay(thread1, 100);
@@ -143,7 +147,9 @@ mod tests {
         let lua = Lua::new();
         let mut scheduler = Scheduler::new();
 
-        let thread = lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
+        let thread = lua
+            .create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
         let id = scheduler.schedule_delay(thread, 100);
 
         assert_eq!(scheduler.pending_count(), 1);
@@ -163,7 +169,9 @@ mod tests {
 
         assert!(scheduler.next_wake_time().is_none());
 
-        let thread = lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
+        let thread = lua
+            .create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
         let now = Instant::now();
         scheduler.schedule_delay(thread, 100);
 
@@ -181,7 +189,9 @@ mod tests {
 
         assert!(!scheduler.has_pending());
 
-        let thread = lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
+        let thread = lua
+            .create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+            .unwrap();
         scheduler.schedule_delay(thread, 100);
 
         assert!(scheduler.has_pending());

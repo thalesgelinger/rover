@@ -1,5 +1,5 @@
-use crate::lua::DelayMarker;
 use crate::SharedSignalRuntime;
+use crate::lua::DelayMarker;
 use mlua::prelude::*;
 
 /// Result of running a coroutine
@@ -16,7 +16,10 @@ pub enum CoroutineResult {
 impl CoroutineResult {
     /// Check if the coroutine can be resumed
     pub fn is_resumable(&self) -> bool {
-        matches!(self, CoroutineResult::YieldedDelay { .. } | CoroutineResult::YieldedOther)
+        matches!(
+            self,
+            CoroutineResult::YieldedDelay { .. } | CoroutineResult::YieldedOther
+        )
     }
 }
 
@@ -57,11 +60,9 @@ pub fn run_coroutine(
                     // Thread completed
                     Ok(CoroutineResult::Completed)
                 }
-                LuaThreadStatus::Error => {
-                    Err(LuaError::RuntimeError(
-                        "Coroutine is in error state".to_string(),
-                    ))
-                }
+                LuaThreadStatus::Error => Err(LuaError::RuntimeError(
+                    "Coroutine is in error state".to_string(),
+                )),
                 _ => {
                     // Running state - shouldn't happen here
                     Ok(CoroutineResult::YieldedOther)
@@ -120,11 +121,9 @@ pub fn run_coroutine_with_delay(
                     // Thread completed
                     Ok(CoroutineResult::Completed)
                 }
-                LuaThreadStatus::Error => {
-                    Err(LuaError::RuntimeError(
-                        "Coroutine is in error state".to_string(),
-                    ))
-                }
+                LuaThreadStatus::Error => Err(LuaError::RuntimeError(
+                    "Coroutine is in error state".to_string(),
+                )),
                 _ => {
                     // Running state - shouldn't happen here
                     Ok(CoroutineResult::YieldedOther)
@@ -215,7 +214,8 @@ mod tests {
 
         let effect_fn = lua
             .create_function(move |lua, _: ()| {
-                let runtime: SharedSignalRuntime = lua.app_data_ref::<SharedSignalRuntime>().unwrap().clone();
+                let runtime: SharedSignalRuntime =
+                    lua.app_data_ref::<SharedSignalRuntime>().unwrap().clone();
                 let _value = runtime.get_signal(&lua, signal_id)?;
                 *effect_called_clone.borrow_mut() = true;
                 Ok(())
@@ -228,7 +228,8 @@ mod tests {
         // Create a coroutine that updates the signal
         let func = lua
             .create_function(move |lua, _: ()| {
-                let runtime: SharedSignalRuntime = lua.app_data_ref::<SharedSignalRuntime>().unwrap().clone();
+                let runtime: SharedSignalRuntime =
+                    lua.app_data_ref::<SharedSignalRuntime>().unwrap().clone();
                 runtime.set_signal(&lua, signal_id, crate::signal::SignalValue::Float(42.0));
                 Ok(())
             })

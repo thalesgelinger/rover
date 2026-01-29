@@ -1,10 +1,9 @@
 /// Integration test for counter.lua-style functionality
 /// Tests UI with signals, where changes trigger granular UI updates
-
 use rover_ui::app::App;
 use rover_ui::ui::stub::StubRenderer;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Test that mimics examples/counter.lua - a counter with text display
 /// and rover.task() + rover.delay() for timing
@@ -88,12 +87,12 @@ fn test_task_execution() {
     "#;
 
     let count1: i32 = app.lua().load(script).eval().unwrap();
-    assert_eq!(count1, 1);  // First increment before yield
+    assert_eq!(count1, 1); // First increment before yield
 
     app.tick_ms(20).unwrap();
 
     let count2: i32 = app.lua().load("return _G.test_count").eval().unwrap();
-    assert_eq!(count2, 2);  // Should be 2 after resuming
+    assert_eq!(count2, 2); // Should be 2 after resuming
 }
 
 /// Test task cancellation
@@ -170,7 +169,10 @@ fn test_button_click_handler() {
 
     // Node IDs start at 0, so just check the log for the button
     let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("Button") && line.contains("[clickable]")));
+    assert!(
+        log.iter()
+            .any(|line| line.contains("Button") && line.contains("[clickable]"))
+    );
 }
 
 /// Test a simple column layout with static text nodes
@@ -201,7 +203,10 @@ fn test_column_layout() {
     let log = log_buffer.borrow();
     assert!(log.iter().any(|line| line.contains("Column")));
     // Should have 3 text nodes
-    let text_count = log.iter().filter(|line| line.contains("Text") && line.contains("\"")).count();
+    let text_count = log
+        .iter()
+        .filter(|line| line.contains("Text") && line.contains("\""))
+        .count();
     assert!(text_count >= 3);
 }
 
@@ -227,7 +232,10 @@ fn test_checkbox_component() {
 
     // Verify checkbox was created with ☐ (unchecked) state
     let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("Checkbox") && line.contains("☐")));
+    assert!(
+        log.iter()
+            .any(|line| line.contains("Checkbox") && line.contains("☐"))
+    );
 }
 
 /// Test input component
@@ -252,7 +260,10 @@ fn test_input_component() {
 
     // Verify input was created with initial value
     let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("Input") && line.contains("initial text")));
+    assert!(
+        log.iter()
+            .any(|line| line.contains("Input") && line.contains("initial text"))
+    );
 }
 
 /// Test image component
@@ -276,7 +287,10 @@ fn test_image_component() {
     app.tick().unwrap();
 
     let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("Image") && line.contains("test.png")));
+    assert!(
+        log.iter()
+            .any(|line| line.contains("Image") && line.contains("test.png"))
+    );
 }
 
 /// Test view container
@@ -419,24 +433,32 @@ fn test_signal_update_triggers_render() {
     {
         let log = log_buffer.borrow();
         assert!(log.iter().any(|line| line.contains("\"0\"")));
-    }  // Release the borrow here
+    } // Release the borrow here
 
     // Update the signal via a task
-    app.lua().load(r#"
+    app.lua()
+        .load(
+            r#"
         local updater = rover.task(function()
             _G.count.val = 42
             rover.delay(1)
         end)
         updater()
-    "#).exec().unwrap();
+    "#,
+        )
+        .exec()
+        .unwrap();
 
     // Clear and tick to process updates
     log_buffer.borrow_mut().clear();
-    app.tick_ms(10).unwrap();  // Wait for the task to run
+    app.tick_ms(10).unwrap(); // Wait for the task to run
 
     // Should see updated value "42"
     let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("\"42\"") || line.contains("\"0\" → \"42\"")));
+    assert!(
+        log.iter()
+            .any(|line| line.contains("\"42\"") || line.contains("\"0\" → \"42\""))
+    );
 }
 
 /// Test rover.ui.when() conditional rendering
@@ -530,9 +552,14 @@ fn test_conditional_reactive_toggle() {
     }
 
     // Toggle the condition
-    app.lua().load(r#"
+    app.lua()
+        .load(
+            r#"
         _G.show.val = true
-    "#).exec().unwrap();
+    "#,
+        )
+        .exec()
+        .unwrap();
 
     log_buffer.borrow_mut().clear();
     app.tick().unwrap();
@@ -574,9 +601,14 @@ fn test_list_reactive_updates() {
     drop(log); // Release borrow
 
     // Update the list
-    app.lua().load(r#"
+    app.lua()
+        .load(
+            r#"
         _G.items.val = { "one", "two", "three" }
-    "#).exec().unwrap();
+    "#,
+        )
+        .exec()
+        .unwrap();
 
     log_buffer.borrow_mut().clear();
     app.tick().unwrap();

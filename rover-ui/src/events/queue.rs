@@ -52,15 +52,9 @@ mod tests {
     fn test_event_queue_fifo() {
         let mut queue = EventQueue::new();
 
-        queue.push(UiEvent::Click {
-            node_id: NodeId(1),
-        });
-        queue.push(UiEvent::Click {
-            node_id: NodeId(2),
-        });
-        queue.push(UiEvent::Click {
-            node_id: NodeId(3),
-        });
+        queue.push(UiEvent::Click { node_id: NodeId(1) });
+        queue.push(UiEvent::Click { node_id: NodeId(2) });
+        queue.push(UiEvent::Click { node_id: NodeId(3) });
 
         assert_eq!(queue.len(), 3);
 
@@ -77,12 +71,8 @@ mod tests {
     fn test_event_queue_clear() {
         let mut queue = EventQueue::new();
 
-        queue.push(UiEvent::Click {
-            node_id: NodeId(1),
-        });
-        queue.push(UiEvent::Click {
-            node_id: NodeId(2),
-        });
+        queue.push(UiEvent::Click { node_id: NodeId(1) });
+        queue.push(UiEvent::Click { node_id: NodeId(2) });
 
         assert_eq!(queue.len(), 2);
 
@@ -92,9 +82,7 @@ mod tests {
 
     #[test]
     fn test_event_types() {
-        let click = UiEvent::Click {
-            node_id: NodeId(1),
-        };
+        let click = UiEvent::Click { node_id: NodeId(1) };
         assert_eq!(click.node_id(), NodeId(1));
 
         let change = UiEvent::Change {

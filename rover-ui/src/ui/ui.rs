@@ -318,12 +318,17 @@ impl UserData for LuaUi {
                         // Child not mounted, create it
                         let child_fn: Function = lua
                             .registry_value(&child_fn_key_for_callback)
-                            .map_err(|e| mlua::Error::RuntimeError(format!("Failed to get child function: {}", e)))?;
+                            .map_err(|e| {
+                                mlua::Error::RuntimeError(format!(
+                                    "Failed to get child function: {}",
+                                    e
+                                ))
+                            })?;
 
                         // Call child function WITHOUT holding registry borrow
-                        let child_node: LuaNode = child_fn
-                            .call(())
-                            .map_err(|e| mlua::Error::RuntimeError(format!("Child function error: {}", e)))?;
+                        let child_node: LuaNode = child_fn.call(()).map_err(|e| {
+                            mlua::Error::RuntimeError(format!("Child function error: {}", e))
+                        })?;
 
                         // Now update registry (mutably)
                         let mut registry = registry_for_callback.borrow_mut();
@@ -354,7 +359,9 @@ impl UserData for LuaUi {
             // Evaluate initial condition for static conditions
             if reactive_source.is_none() {
                 let initial_condition = evaluate_condition(lua, &condition)?;
-                registry_rc.borrow_mut().set_condition_state(node_id, initial_condition);
+                registry_rc
+                    .borrow_mut()
+                    .set_condition_state(node_id, initial_condition);
             }
 
             // Create a tracking effect for the condition
@@ -380,140 +387,153 @@ impl UserData for LuaUi {
 
         // rover.ui.each(items, render_fn, key_fn)
         // Render a list of items with reconciliation
-        methods.add_function("each", |lua, (items, render_fn, _key_fn): (Value, Function, Function)| {
-            let registry_rc = get_registry_rc(lua)?;
-            let runtime = crate::lua::helpers::get_runtime(lua)?;
+        methods.add_function(
+            "each",
+            |lua, (items, render_fn, _key_fn): (Value, Function, Function)| {
+                let registry_rc = get_registry_rc(lua)?;
+                let runtime = crate::lua::helpers::get_runtime(lua)?;
 
-            // Reserve the list node ID
-            let node_id = registry_rc.borrow_mut().reserve_node_id();
+                // Reserve the list node ID
+                let node_id = registry_rc.borrow_mut().reserve_node_id();
 
-            // Store render function in registry
-            let render_fn_key = lua.create_registry_value(render_fn.clone())?;
+                // Store render function in registry
+                let render_fn_key = lua.create_registry_value(render_fn.clone())?;
 
-            // Determine if items is a signal/derived and extract the source info
-            let reactive_source = if let Value::UserData(ref ud) = items {
-                if ud.is::<LuaSignal>() {
-                    let signal = ud.borrow::<LuaSignal>()?;
-                    Some(ReactiveSource::Signal(signal.id))
-                } else if ud.is::<LuaDerived>() {
-                    let derived = ud.borrow::<LuaDerived>()?;
-                    Some(ReactiveSource::Derived(derived.id))
+                // Determine if items is a signal/derived and extract the source info
+                let reactive_source = if let Value::UserData(ref ud) = items {
+                    if ud.is::<LuaSignal>() {
+                        let signal = ud.borrow::<LuaSignal>()?;
+                        Some(ReactiveSource::Signal(signal.id))
+                    } else if ud.is::<LuaDerived>() {
+                        let derived = ud.borrow::<LuaDerived>()?;
+                        Some(ReactiveSource::Derived(derived.id))
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
-            } else {
-                None
-            };
+                };
 
-            // Clone for effect callback
-            let registry_for_callback = registry_rc.clone();
-            let render_fn_key_clone = render_fn_key;
+                // Clone for effect callback
+                let registry_for_callback = registry_rc.clone();
+                let render_fn_key_clone = render_fn_key;
 
-            // Create the effect callback that updates the list when items change
-            // If reactive, read from the signal/derived to track dependencies
-            let effect_callback = lua.create_function(move |lua, ()| {
-                // Read the items (this tracks signal/derived dependencies)
-                let items_value = if let Some(source) = &reactive_source {
-                    // Reactive source - read from it to track dependency
-                    let runtime = crate::lua::helpers::get_runtime(lua)?;
-                    source.get_value(lua, &runtime)?
-                } else {
-                    // Static items - use stored value
+                // Create the effect callback that updates the list when items change
+                // If reactive, read from the signal/derived to track dependencies
+                let effect_callback = lua.create_function(move |lua, ()| {
+                    // Read the items (this tracks signal/derived dependencies)
+                    let items_value = if let Some(source) = &reactive_source {
+                        // Reactive source - read from it to track dependency
+                        let runtime = crate::lua::helpers::get_runtime(lua)?;
+                        source.get_value(lua, &runtime)?
+                    } else {
+                        // Static items - use stored value
+                        registry_for_callback
+                            .borrow()
+                            .get_list_items(node_id)
+                            .clone()
+                    };
+
+                    // Extract items table
+                    let items_array = match &items_value {
+                        Value::Table(t) => t.clone(),
+                        _ => return Ok(()), // No items, nothing to do
+                    };
+
+                    // Get current children to remove them (immutable borrow, scoped to be dropped)
+                    let current_children = {
+                        let registry = registry_for_callback.borrow();
+                        registry.get_list_children(node_id).to_vec()
+                    };
+
+                    // Remove all current children (single mutable borrow)
+                    {
+                        let mut registry = registry_for_callback.borrow_mut();
+                        for child_id in current_children {
+                            registry.remove_node(child_id);
+                        }
+                    }
+
+                    let mut new_children = Vec::new();
+
+                    // Iterate through items and create new children
+                    let mut i = 1;
+                    while let Ok(item) = items_array.get::<Value>(i) {
+                        if item == Value::Nil {
+                            break;
+                        }
+
+                        // Create new child (NO registry borrow held during this call)
+                        let render_fn: Function =
+                            lua.registry_value(&render_fn_key_clone).map_err(|e| {
+                                mlua::Error::RuntimeError(format!(
+                                    "Failed to get render function: {}",
+                                    e
+                                ))
+                            })?;
+
+                        let child_node: LuaNode = render_fn.call((item, i)).map_err(|e| {
+                            mlua::Error::RuntimeError(format!("Render function error: {}", e))
+                        })?;
+
+                        new_children.push(child_node.id());
+                        i += 1;
+                    }
+
+                    // Update the list node's children (mutable borrow after all children created)
                     registry_for_callback
-                        .borrow()
-                        .get_list_items(node_id)
-                        .clone()
+                        .borrow_mut()
+                        .update_list_children(node_id, new_children);
+
+                    Ok(())
+                })?;
+
+                let effect_key = lua.create_registry_value(effect_callback)?;
+
+                // Store initial items for static conditions
+                if reactive_source.is_none() {
+                    registry_rc
+                        .borrow_mut()
+                        .set_list_items(node_id, items.clone());
+                }
+
+                // Create the list node FIRST with empty children
+                // The effect will populate it after we create it
+                let node = UiNode::List {
+                    items_effect: crate::signal::graph::EffectId(0), // Placeholder, will be updated below
+                    children: Vec::new(),
                 };
 
-                // Extract items table
-                let items_array = match &items_value {
-                    Value::Table(t) => t.clone(),
-                    _ => return Ok(()), // No items, nothing to do
-                };
-
-                // Get current children to remove them (immutable borrow, scoped to be dropped)
-                let current_children = {
-                    let registry = registry_for_callback.borrow();
-                    registry.get_list_children(node_id).to_vec()
-                };
-
-                // Remove all current children (single mutable borrow)
                 {
-                    let mut registry = registry_for_callback.borrow_mut();
-                    for child_id in current_children {
-                        registry.remove_node(child_id);
+                    let mut registry = registry_rc.borrow_mut();
+                    registry.finalize_node(node_id, node);
+                }
+
+                // NOW create the effect
+                // This will call the callback immediately, which will populate the list
+                let items_effect_id = runtime
+                    .create_effect(lua, effect_key)
+                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+                {
+                    let mut registry = registry_rc.borrow_mut();
+                    // Get the children that were created by the effect
+                    let children = registry.get_list_children(node_id).to_vec();
+                    // Update the node's effect ID and children
+                    if let Some(UiNode::List {
+                        items_effect,
+                        children: node_children,
+                    }) = registry.get_node_mut(node_id)
+                    {
+                        *items_effect = items_effect_id;
+                        *node_children = children;
                     }
+                    registry.attach_effect(node_id, items_effect_id);
                 }
 
-                let mut new_children = Vec::new();
-
-                // Iterate through items and create new children
-                let mut i = 1;
-                while let Ok(item) = items_array.get::<Value>(i) {
-                    if item == Value::Nil {
-                        break;
-                    }
-
-                    // Create new child (NO registry borrow held during this call)
-                    let render_fn: Function = lua
-                        .registry_value(&render_fn_key_clone)
-                        .map_err(|e| mlua::Error::RuntimeError(format!("Failed to get render function: {}", e)))?;
-
-                    let child_node: LuaNode = render_fn
-                        .call((item, i))
-                        .map_err(|e| mlua::Error::RuntimeError(format!("Render function error: {}", e)))?;
-
-                    new_children.push(child_node.id());
-                    i += 1;
-                }
-
-                // Update the list node's children (mutable borrow after all children created)
-                registry_for_callback
-                    .borrow_mut()
-                    .update_list_children(node_id, new_children);
-
-                Ok(())
-            })?;
-
-            let effect_key = lua.create_registry_value(effect_callback)?;
-
-            // Store initial items for static conditions
-            if reactive_source.is_none() {
-                registry_rc.borrow_mut().set_list_items(node_id, items.clone());
-            }
-
-            // Create the list node FIRST with empty children
-            // The effect will populate it after we create it
-            let node = UiNode::List {
-                items_effect: crate::signal::graph::EffectId(0), // Placeholder, will be updated below
-                children: Vec::new(),
-            };
-
-            {
-                let mut registry = registry_rc.borrow_mut();
-                registry.finalize_node(node_id, node);
-            }
-
-            // NOW create the effect
-            // This will call the callback immediately, which will populate the list
-            let items_effect_id = runtime
-                .create_effect(lua, effect_key)
-                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-
-            {
-                let mut registry = registry_rc.borrow_mut();
-                // Get the children that were created by the effect
-                let children = registry.get_list_children(node_id).to_vec();
-                // Update the node's effect ID and children
-                if let Some(UiNode::List { items_effect, children: node_children }) = registry.get_node_mut(node_id) {
-                    *items_effect = items_effect_id;
-                    *node_children = children;
-                }
-                registry.attach_effect(node_id, items_effect_id);
-            }
-
-            Ok(LuaNode::new(node_id))
-        });
+                Ok(LuaNode::new(node_id))
+            },
+        );
 
         // TODO: there must be a best way to define render method lookup
         methods.add_meta_function(
@@ -554,7 +574,11 @@ enum ReactiveSource {
 
 impl ReactiveSource {
     /// Get the current value of this reactive source
-    fn get_value(&self, lua: &mlua::Lua, runtime: &crate::SharedSignalRuntime) -> mlua::Result<Value> {
+    fn get_value(
+        &self,
+        lua: &mlua::Lua,
+        runtime: &crate::SharedSignalRuntime,
+    ) -> mlua::Result<Value> {
         match self {
             ReactiveSource::Signal(id) => runtime.get_signal(lua, *id),
             ReactiveSource::Derived(id) => runtime
@@ -758,13 +782,13 @@ fn extract_children(lua: &mlua::Lua, props: Table) -> mlua::Result<Vec<super::no
         let mut i = 1;
         loop {
             match props.get::<Value>(i) {
-                Ok(Value::Nil) => break,  // No more varargs
+                Ok(Value::Nil) => break, // No more varargs
                 Ok(value) => {
                     if let Ok(node) = extract_node_id(lua, value) {
                         children.push(node);
                     }
                 }
-                Err(_) => break,  // Should not happen, but break on error too
+                Err(_) => break, // Should not happen, but break on error too
             }
             i += 1;
         }
@@ -794,7 +818,9 @@ fn extract_node_id(_lua: &mlua::Lua, value: Value) -> mlua::Result<super::node::
                     Err(mlua::Error::RuntimeError("Invalid node id".to_string()))
                 }
             } else {
-                Err(mlua::Error::RuntimeError("Expected node with id field".to_string()))
+                Err(mlua::Error::RuntimeError(
+                    "Expected node with id field".to_string(),
+                ))
             }
         }
         _ => Err(mlua::Error::RuntimeError(format!(
@@ -827,7 +853,8 @@ fn evaluate_condition(lua: &mlua::Lua, condition: &Value) -> mlua::Result<bool> 
                 }
             } else if ud.is::<LuaDerived>() {
                 let derived = ud.borrow::<LuaDerived>()?;
-                let value = runtime.get_derived(lua, derived.id)
+                let value = runtime
+                    .get_derived(lua, derived.id)
                     .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
                 match value {
                     Value::Boolean(b) => Ok(b),
@@ -853,4 +880,3 @@ fn evaluate_condition(lua: &mlua::Lua, condition: &Value) -> mlua::Result<bool> 
         _ => Ok(true),
     }
 }
-
