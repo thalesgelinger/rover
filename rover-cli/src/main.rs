@@ -2,7 +2,7 @@ mod check;
 mod fmt;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use rover_core::register_extra_modules;
 use rover_ui::app::App;
@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "rover")]
+#[command(version, about, long_about = None)]
 struct Cli {
     /// Show verbose output including stack traces
     #[arg(short, long, global = true)]
@@ -44,13 +45,25 @@ enum Commands {
         #[arg(short, long)]
         check: bool,
     },
+    /// Run a Rover Lua file
+    Run {
+        /// Path to the Lua file to run
+        file: PathBuf,
+        /// Skip confirmation prompts for database migrations/schema creation
+        #[arg(long, short = 'y')]
+        yolo: bool,
+        /// Platform to run on
+        #[arg(long, short, default_value_t = Platform::Stub)]
+        platform: Platform,
+        /// Arguments to pass to the Lua script
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Database migration commands
     Db {
         #[command(subcommand)]
         action: DbAction,
     },
-    #[command(external_subcommand)]
-    External(Vec<String>),
 }
 
 #[derive(Subcommand)]
@@ -124,22 +137,17 @@ fn main() -> Result<()> {
         }
         Commands::Fmt { file, check } => fmt::run_fmt(fmt::FmtOptions { file, check }),
         Commands::Db { action } => handle_db_command(action),
-        Commands::External(args) => {
-            // Parse args for --yolo and --platform flags
-            let (file_args, yolo_mode, platform) = parse_external_args(&args);
-
-            let raw_path = file_args.first().ok_or_else(|| {
-                anyhow::anyhow!("No file specified. Usage: rover @<file.lua> [--yolo] [--platform <platform>]")
-            })?;
-            // Strip @ prefix if present (external_subcommand includes it)
-            let path = raw_path.strip_prefix('@').unwrap_or(raw_path);
-            let file_path = PathBuf::from(path);
-
+        Commands::Run {
+            file,
+            yolo,
+            platform,
+            args: _,
+        } => {
             // Run pre-execution check (syntax/type errors)
-            check::pre_run_check(&file_path)?;
+            check::pre_run_check(&file)?;
 
             // Run database pre-run analysis
-            pre_run_db_analysis(&file_path, yolo_mode)?;
+            pre_run_db_analysis(&file, yolo)?;
 
             // Execute the file based on platform
             match platform {
@@ -153,7 +161,7 @@ fn main() -> Result<()> {
                     register_extra_modules(app.lua())?;
 
                     // Load and run the script
-                    let content = std::fs::read_to_string(&file_path)
+                    let content = std::fs::read_to_string(&file)
                         .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
                     app.run_script(&content)
                         .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
@@ -288,71 +296,39 @@ fn handle_db_command(action: DbAction) -> Result<()> {
 }
 
 /// Platform selection for rendering
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum Platform {
-    Stub,   // Debug renderer (prints updates)
-    Tui,    // Terminal UI (ratatui)
+    /// Debug renderer (prints updates)
+    Stub,
+    /// Terminal UI (ratatui)
+    Tui,
+    /// Web platform
     Web,
+    /// iOS platform
     Ios,
+    /// Android platform
     Android,
+    /// macOS platform
     Macos,
+    /// Windows platform
     Windows,
+    /// Linux platform
     Linux,
 }
 
-impl Default for Platform {
-    fn default() -> Self {
-        Platform::Stub
-    }
-}
-
-impl std::str::FromStr for Platform {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s.to_lowercase().as_str() {
-            "stub" => Ok(Platform::Stub),
-            "tui" => Ok(Platform::Tui),
-            "web" => Ok(Platform::Web),
-            "ios" => Ok(Platform::Ios),
-            "android" => Ok(Platform::Android),
-            "macos" => Ok(Platform::Macos),
-            "windows" => Ok(Platform::Windows),
-            "linux" => Ok(Platform::Linux),
-            _ => Err(anyhow::anyhow!("Unknown platform: {}", s)),
+impl std::fmt::Display for Platform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Platform::Stub => write!(f, "stub"),
+            Platform::Tui => write!(f, "tui"),
+            Platform::Web => write!(f, "web"),
+            Platform::Ios => write!(f, "ios"),
+            Platform::Android => write!(f, "android"),
+            Platform::Macos => write!(f, "macos"),
+            Platform::Windows => write!(f, "windows"),
+            Platform::Linux => write!(f, "linux"),
         }
     }
-}
-
-/// Parse external command args, extracting --yolo and --platform flags
-fn parse_external_args(args: &[String]) -> (Vec<String>, bool, Platform) {
-    let mut file_args = Vec::new();
-    let mut yolo_mode = false;
-    let mut platform = Platform::default();
-    let mut skip_next = false;
-
-    for (i, arg) in args.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-
-        if arg == "--yolo" || arg == "-y" {
-            yolo_mode = true;
-        } else if arg == "--platform" || arg == "-p" {
-            // Next arg should be the platform value
-            if let Some(platform_str) = args.get(i + 1) {
-                if let Ok(p) = platform_str.parse() {
-                    platform = p;
-                }
-                skip_next = true;
-            }
-        } else {
-            file_args.push(arg.clone());
-        }
-    }
-
-    (file_args, yolo_mode, platform)
 }
 
 fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
