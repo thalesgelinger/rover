@@ -9,6 +9,12 @@ impl NodeId {
     pub fn from_u32(id: u32) -> Self {
         NodeId(id)
     }
+
+    /// Get the underlying index (for Vec-based lookups in renderers)
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
 }
 
 /// Arena-based storage for UI nodes
