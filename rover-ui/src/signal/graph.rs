@@ -17,17 +17,21 @@ pub enum SubscriberId {
     // Node(NodeId), // Phase 2
 }
 
-/// Tracks dependencies between signals and their subscribers
+/// Tracks dependencies between signals/derived and their subscribers
 pub struct SubscriberGraph {
     /// For each signal: who depends on it
     /// Index by SignalId.0
     subscribers: Vec<SmallVec<[SubscriberId; 8]>>,
+    /// For each derived signal: who depends on it
+    /// Index by DerivedId.0
+    derived_subscribers: Vec<SmallVec<[SubscriberId; 8]>>,
 }
 
 impl SubscriberGraph {
     pub fn new() -> Self {
         Self {
             subscribers: Vec::new(),
+            derived_subscribers: Vec::new(),
         }
     }
 
@@ -67,9 +71,34 @@ impl SubscriberGraph {
         }
     }
 
+    /// Subscribe a subscriber to a derived signal
+    pub fn subscribe_derived(&mut self, derived: DerivedId, subscriber: SubscriberId) {
+        let idx = derived.0 as usize;
+        if self.derived_subscribers.len() <= idx {
+            self.derived_subscribers
+                .resize_with(idx + 1, SmallVec::new);
+        }
+        if !self.derived_subscribers[idx].contains(&subscriber) {
+            self.derived_subscribers[idx].push(subscriber);
+        }
+    }
+
+    /// Get all subscribers for a derived signal
+    pub fn get_derived_subscribers(&self, derived: DerivedId) -> &[SubscriberId] {
+        let idx = derived.0 as usize;
+        if idx < self.derived_subscribers.len() {
+            &self.derived_subscribers[idx]
+        } else {
+            &[]
+        }
+    }
+
     /// Clear all subscriptions for a given subscriber
     pub fn clear_for(&mut self, subscriber: SubscriberId) {
         for subs in &mut self.subscribers {
+            subs.retain(|s| *s != subscriber);
+        }
+        for subs in &mut self.derived_subscribers {
             subs.retain(|s| *s != subscriber);
         }
     }

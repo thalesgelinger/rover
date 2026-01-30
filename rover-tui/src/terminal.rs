@@ -181,6 +181,41 @@ impl Terminal {
         self.origin_row
     }
 
+    /// Current content height in rows (inline mode).
+    #[inline]
+    pub fn content_height(&self) -> u16 {
+        self.content_height
+    }
+
+    /// Grow the inline render region to accommodate a taller layout.
+    ///
+    /// Emits additional newlines to reserve space, then re-queries the
+    /// cursor position to recalculate `origin_row`.
+    pub fn grow_inline(&mut self, new_height: u16) -> io::Result<()> {
+        if self.mode != TerminalMode::Inline || new_height <= self.content_height {
+            return Ok(());
+        }
+
+        let extra = new_height - self.content_height;
+
+        // Move cursor to the end of the current content region
+        let end_row = self.origin_row + self.content_height;
+        self.stdout.queue(cursor::MoveTo(0, end_row))?;
+
+        // Emit newlines to reserve additional space
+        for _ in 0..extra {
+            self.stdout.write_all(b"\r\n")?;
+        }
+        self.stdout.flush()?;
+
+        // Re-query cursor position and recalculate origin
+        let (_, cursor_row) = cursor::position()?;
+        self.content_height = new_height;
+        self.origin_row = cursor_row.saturating_sub(new_height.saturating_sub(1));
+
+        Ok(())
+    }
+
     /// Refresh cached terminal size. Call on resize events.
     pub fn refresh_size(&mut self) {
         if let Ok(size) = terminal::size() {

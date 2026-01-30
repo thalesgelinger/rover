@@ -163,24 +163,57 @@ impl Renderer for TuiRenderer {
             return;
         }
 
-        for &node_id in dirty_nodes {
-            let node = match registry.get_node(node_id) {
-                Some(n) => n,
-                None => continue,
-            };
+        // Check if any dirty node is a container (structural change)
+        let structural_change = dirty_nodes.iter().any(|&id| {
+            registry.get_node(id).is_some_and(|n| node_content(n).is_none())
+        });
 
-            let content = match node_content(node) {
-                Some(c) => c,
-                None => continue,
-            };
+        if structural_change {
+            // Structural change: re-layout the whole tree and re-render
+            if let Some(root) = registry.root() {
+                let old_height = self.terminal.content_height();
+                self.layout.clear();
+                let (_w, new_height) = compute_layout(registry, root, 0, 0, &mut self.layout);
 
-            let rect = match self.layout.get(node_id) {
-                Some(r) => *r,
-                None => continue,
-            };
+                // If the content grew, reserve additional lines
+                if new_height > old_height {
+                    if let Err(e) = self.terminal.grow_inline(new_height) {
+                        eprintln!("rover-tui: grow error: {}", e);
+                        return;
+                    }
+                    self.origin_row = self.terminal.origin_row();
+                }
 
-            if let Err(e) = self.render_leaf(node_id, &content, &rect) {
-                eprintln!("rover-tui: update error for node {:?}: {}", node_id, e);
+                if let Err(e) = self.terminal.clear_inline_region() {
+                    eprintln!("rover-tui: clear error: {}", e);
+                    return;
+                }
+                if let Err(e) = self.render_tree(registry, root) {
+                    eprintln!("rover-tui: render error: {}", e);
+                    return;
+                }
+            }
+        } else {
+            // Content-only changes: update individual leaf nodes
+            for &node_id in dirty_nodes {
+                let node = match registry.get_node(node_id) {
+                    Some(n) => n,
+                    None => continue,
+                };
+
+                let content = match node_content(node) {
+                    Some(c) => c,
+                    None => continue,
+                };
+
+                let rect = match self.layout.get(node_id) {
+                    Some(r) => *r,
+                    None => continue,
+                };
+
+                if let Err(e) = self.render_leaf(node_id, &content, &rect) {
+                    eprintln!("rover-tui: update error for node {:?}: {}", node_id, e);
+                }
             }
         }
 
