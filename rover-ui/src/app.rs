@@ -1,7 +1,7 @@
 use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use crate::events::{EventQueue, UiEvent};
 use crate::scheduler::{Scheduler, SharedScheduler};
-use crate::signal::SignalRuntime;
+use crate::signal::{SignalRuntime, SignalValue};
 use crate::ui::node::UiNode;
 use crate::ui::registry::UiRegistry;
 use crate::ui::renderer::Renderer;
@@ -271,11 +271,25 @@ impl<R: Renderer> App<R> {
     ///
     /// Each event type maps to a specific effect field on the node:
     /// - Click → Button.on_click
-    /// - Change → Input.on_change
+    /// - Change → Input.on_change (and updates the bound signal for two-way binding)
     /// - Submit → Input.on_submit
     /// - Toggle → Checkbox.on_toggle
     fn dispatch_event(&mut self, event: UiEvent) -> mlua::Result<()> {
         let node_id = event.node_id();
+
+        // For Change events, update the bound signal first (two-way binding)
+        if let UiEvent::Change { value, .. } = &event {
+            let registry = self.registry.borrow();
+            if let Some(UiNode::Input { value: text_content, .. }) = registry.get_node(node_id) {
+                if let Some(signal_id) = text_content.signal_id() {
+                    // Update the signal with the new value (two-way binding)
+                    drop(registry);
+                    self.runtime
+                        .set_signal(&self.lua, signal_id, SignalValue::String(value.clone().into()));
+                }
+            }
+        }
+
         let registry = self.registry.borrow();
         let node = match registry.get_node(node_id) {
             Some(n) => n,

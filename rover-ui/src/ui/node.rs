@@ -134,6 +134,8 @@ pub enum TextContent {
     Reactive {
         current_value: String,
         effect_id: EffectId,
+        /// Signal ID for two-way binding (e.g., input fields that update their signal)
+        signal_id: Option<super::super::signal::arena::SignalId>,
     },
 }
 
@@ -158,6 +160,14 @@ impl TextContent {
         match self {
             TextContent::Static(_) => None,
             TextContent::Reactive { effect_id, .. } => Some(*effect_id),
+        }
+    }
+
+    /// Get the signal ID if this is reactive text with a bound signal
+    pub fn signal_id(&self) -> Option<super::super::signal::arena::SignalId> {
+        match self {
+            TextContent::Static(_) => None,
+            TextContent::Reactive { signal_id, .. } => *signal_id,
         }
     }
 }
@@ -222,6 +232,7 @@ mod tests {
         let reactive_text = TextContent::Reactive {
             current_value: "Reactive".to_string(),
             effect_id: EffectId(0),
+            signal_id: None,
         };
         assert_eq!(reactive_text.value(), "Reactive");
     }
@@ -231,6 +242,7 @@ mod tests {
         let mut text = TextContent::Reactive {
             current_value: "Old".to_string(),
             effect_id: EffectId(0),
+            signal_id: None,
         };
 
         text.update("New".to_string());

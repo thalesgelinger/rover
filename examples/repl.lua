@@ -3,7 +3,13 @@ local ru = rover.ui
 function rover.render()
 	-- Log entries (reactive list of strings)
 	local log = rover.signal {}
-	local log_count = rover.signal(0)
+	-- Derived: count entries from log itself (no manual sync needed)
+	local log_count = rover.derive(function()
+		return #log.val
+	end)
+
+	-- Input value (two-way bound signal)
+	local input_value = rover.signal("")
 
 	-- Uptime counter (background task)
 	local uptime = rover.signal(0)
@@ -52,11 +58,19 @@ function rover.render()
 		ru.row {
 			ru.text { "> " },
 			ru.input {
+				value = input_value,  -- Two-way binding: typing updates the signal
+				on_change = function(val)
+					-- Optional: side effect on each keystroke
+					-- print("typing: " .. val)
+				end,
 				on_submit = function(val)
+					-- val is provided, but we could also use input_value.val
 					local entries = log.val
 					entries[#entries + 1] = "> " .. val
 					log.val = entries
-					log_count.val = log_count.val + 1
+					-- log_count updates automatically (derived signal)
+					-- Clear the input after submit
+					input_value.val = ""
 				end,
 			},
 		},

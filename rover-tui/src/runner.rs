@@ -152,6 +152,10 @@ impl TuiRunner {
             self.has_inputs = !inputs.is_empty();
             if let Some(&first) = inputs.first() {
                 self.focused = Some(first);
+                // Initialize input_buffer from the input's current value
+                if let Some(UiNode::Input { value, .. }) = reg.get_node(first) {
+                    self.input_buffer = value.value().to_string();
+                }
             }
         }
     }

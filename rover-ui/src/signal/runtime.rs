@@ -262,6 +262,29 @@ impl SignalRuntime {
         Ok(id)
     }
 
+    /// Register a callback without running it immediately.
+    /// Used for event handlers that should only run in response to events.
+    pub fn register_callback(&self, lua: &Lua, callback: Function) -> Result<EffectId> {
+        let callback_key = lua.create_registry_value(callback)?;
+
+        let id = if let Some(idx) = self.effects_free.borrow_mut().pop() {
+            EffectId(idx)
+        } else {
+            EffectId(self.effects.borrow().len() as u32)
+        };
+
+        let effect = Effect::new(id, callback_key);
+
+        let mut effects = self.effects.borrow_mut();
+        if id.0 as usize >= effects.len() {
+            effects.push(effect);
+        } else {
+            effects[id.0 as usize] = effect;
+        }
+
+        Ok(id)
+    }
+
     pub fn dispose_effect(&self, lua: &Lua, id: EffectId) -> Result<()> {
         // Run cleanup while borrowing effects
         {

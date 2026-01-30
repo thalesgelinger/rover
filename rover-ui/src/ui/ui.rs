@@ -118,11 +118,11 @@ impl UserData for LuaUi {
             // Extract on_click (optional)
             let on_click = match props.get::<Function>("on_click") {
                 Ok(callback) => {
-                    let callback_key = lua.create_registry_value(callback)?;
-                    let effect_id = runtime
-                        .create_effect(lua, callback_key)
-                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                    Some(effect_id)
+                    Some(
+                        runtime
+                            .register_callback(lua, callback)
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                    )
                 }
                 Err(_) => None,
             };
@@ -142,17 +142,30 @@ impl UserData for LuaUi {
             let registry_rc = get_registry_rc(lua)?;
             let runtime = crate::lua::helpers::get_runtime(lua)?;
 
+            // Reserve the node ID first (before creating the effect)
+            let node_id = registry_rc.borrow_mut().reserve_node_id();
+
             // Extract value (signal or static)
-            let value = extract_text_content(lua, props.get::<Value>("value")?)?;
+            let value = match props.get::<Value>("value")? {
+                Value::UserData(ref ud) => {
+                    // Check if it's a Signal or Derived - if so, create proper reactive content
+                    if ud.is::<LuaSignal>() || ud.is::<LuaDerived>() {
+                        create_reactive_input_value(lua, ud.clone(), node_id, registry_rc.clone())?
+                    } else {
+                        extract_text_content(lua, Value::UserData(ud.clone()))?
+                    }
+                }
+                v => extract_text_content(lua, v)?,
+            };
 
             // Extract on_change (optional)
             let on_change = match props.get::<Function>("on_change") {
                 Ok(callback) => {
-                    let callback_key = lua.create_registry_value(callback)?;
-                    let effect_id = runtime
-                        .create_effect(lua, callback_key)
-                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                    Some(effect_id)
+                    Some(
+                        runtime
+                            .register_callback(lua, callback)
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                    )
                 }
                 Err(_) => None,
             };
@@ -160,11 +173,11 @@ impl UserData for LuaUi {
             // Extract on_submit (optional — called on Enter)
             let on_submit = match props.get::<Function>("on_submit") {
                 Ok(callback) => {
-                    let callback_key = lua.create_registry_value(callback)?;
-                    let effect_id = runtime
-                        .create_effect(lua, callback_key)
-                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                    Some(effect_id)
+                    Some(
+                        runtime
+                            .register_callback(lua, callback)
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                    )
                 }
                 Err(_) => None,
             };
@@ -174,8 +187,14 @@ impl UserData for LuaUi {
                 on_change,
                 on_submit,
             };
-            let node_id = registry_rc.borrow_mut().create_node(node);
 
+            // Finalize the node
+            {
+                let mut registry = registry_rc.borrow_mut();
+                registry.finalize_node(node_id, node);
+            }
+
+            // Attach effects for callbacks
             if let Some(effect_id) = on_change {
                 registry_rc.borrow_mut().attach_effect(node_id, effect_id);
             }
@@ -200,11 +219,11 @@ impl UserData for LuaUi {
             // Extract on_toggle (optional)
             let on_toggle = match props.get::<Function>("on_toggle") {
                 Ok(callback) => {
-                    let callback_key = lua.create_registry_value(callback)?;
-                    let effect_id = runtime
-                        .create_effect(lua, callback_key)
-                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                    Some(effect_id)
+                    Some(
+                        runtime
+                            .register_callback(lua, callback)
+                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                    )
                 }
                 Err(_) => None,
             };
@@ -665,6 +684,7 @@ fn create_reactive_text_node(
         content: TextContent::Reactive {
             current_value: initial_value,
             effect_id,
+            signal_id: None, // Text nodes don't need two-way binding
         },
     };
 
@@ -691,6 +711,69 @@ fn lua_value_to_string(_lua: &mlua::Lua, value: Value) -> mlua::Result<String> {
         Value::UserData(_) => Ok("<userdata>".to_string()),
         _ => Ok("<?>".to_string()),
     }
+}
+
+/// Create reactive text content for an Input node with proper updating.
+/// Unlike create_reactive_text_node (for Text nodes), this returns TextContent
+/// and sets up the effect to update the node's display value when the signal changes.
+fn create_reactive_input_value(
+    lua: &mlua::Lua,
+    userdata: mlua::AnyUserData,
+    node_id: super::node::NodeId,
+    registry_rc: Rc<RefCell<UiRegistry>>,
+) -> mlua::Result<TextContent> {
+    use crate::lua::helpers::get_runtime;
+
+    // Determine if this is a signal or derived and get the ID
+    // For signals, we store the ID for two-way binding (input fields can update the signal)
+    let (reactive_source, signal_id) = if let Ok(signal) = userdata.borrow::<LuaSignal>() {
+        (ReactiveSource::Signal(signal.id), Some(signal.id))
+    } else if let Ok(derived) = userdata.borrow::<LuaDerived>() {
+        (ReactiveSource::Derived(derived.id), None)
+    } else {
+        return Ok(TextContent::Static("<error>".to_string()));
+    };
+
+    // Get the initial value
+    let runtime = get_runtime(lua)?;
+    let initial_value = {
+        let value = reactive_source.get_value(lua, &runtime)?;
+        lua_value_to_string(lua, value)?
+    };
+
+    // Clone for the closure
+    let registry_for_callback = registry_rc.clone();
+
+    // Create the effect callback that updates the input's display value
+    let callback = lua.create_function(move |lua, ()| {
+        let runtime = get_runtime(lua)?;
+        let value = reactive_source.get_value(lua, &runtime)?;
+        let value_str = lua_value_to_string(lua, value)?;
+
+        // Update the node's text content so the renderer displays the new value
+        registry_for_callback
+            .borrow_mut()
+            .update_text_content(node_id, value_str);
+
+        Ok(())
+    })?;
+
+    // Store the callback in the Lua registry
+    let callback_key = lua.create_registry_value(callback)?;
+
+    // Create the effect (this will run it immediately)
+    let effect_id = runtime
+        .create_effect(lua, callback_key)
+        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+    // Attach the effect to the node
+    registry_rc.borrow_mut().attach_effect(node_id, effect_id);
+
+    Ok(TextContent::Reactive {
+        current_value: initial_value,
+        effect_id,
+        signal_id,
+    })
 }
 
 /// Extract text content from a Lua value (static string, signal, or derived)
@@ -732,10 +815,11 @@ fn extract_reactive_text_content(
     use crate::lua::helpers::get_runtime;
 
     // Determine if this is a signal or derived and get the ID
-    let reactive_source = if let Ok(signal) = userdata.borrow::<LuaSignal>() {
-        ReactiveSource::Signal(signal.id)
+    // For signals, we store the ID for two-way binding (input fields can update the signal)
+    let (reactive_source, signal_id) = if let Ok(signal) = userdata.borrow::<LuaSignal>() {
+        (ReactiveSource::Signal(signal.id), Some(signal.id))
     } else if let Ok(derived) = userdata.borrow::<LuaDerived>() {
-        ReactiveSource::Derived(derived.id)
+        (ReactiveSource::Derived(derived.id), None)
     } else {
         return Ok(TextContent::Static("<error>".to_string()));
     };
@@ -779,6 +863,7 @@ fn extract_reactive_text_content(
     Ok(TextContent::Reactive {
         current_value: initial_value,
         effect_id,
+        signal_id,
     })
 }
 
