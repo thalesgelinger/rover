@@ -5,15 +5,20 @@ use std::io;
 
 /// TUI renderer — draws the UI node tree to the terminal.
 ///
+/// Renders **inline** by default: content appears at the current cursor
+/// position, like a CLI progress bar. No alternate screen, no fullscreen.
+///
 /// Uses a Vec-indexed layout map for O(1) position lookups and tracks
-/// previous content strings to clear stale characters when content shrinks.
+/// previous content widths to clear stale characters when content shrinks.
 /// All writes are queued per frame and flushed once.
 pub struct TuiRenderer {
     terminal: Terminal,
     layout: LayoutMap,
-    /// Previous rendered content per node, indexed by NodeId.
-    /// Used to know how many characters to clear when content changes.
+    /// Previous rendered width per node, indexed by NodeId.
     previous_widths: Vec<u16>,
+    /// Origin row offset — layout positions are relative (starting at 0),
+    /// so we add origin_row to get absolute screen positions.
+    origin_row: u16,
 }
 
 impl TuiRenderer {
@@ -22,10 +27,10 @@ impl TuiRenderer {
             terminal: Terminal::new()?,
             layout: LayoutMap::new(),
             previous_widths: Vec::new(),
+            origin_row: 0,
         })
     }
 
-    /// Record the rendered width for a node (for clearing on update).
     #[inline]
     fn set_prev_width(&mut self, id: NodeId, width: u16) {
         let idx = id.index();
@@ -35,7 +40,6 @@ impl TuiRenderer {
         self.previous_widths[idx] = width;
     }
 
-    /// Get the previously rendered width for a node.
     #[inline]
     fn get_prev_width(&self, id: NodeId) -> u16 {
         let idx = id.index();
@@ -46,18 +50,21 @@ impl TuiRenderer {
         }
     }
 
-    /// Render a single leaf node at its layout position.
+    /// Render a single leaf node at its layout position + origin offset.
     fn render_leaf(&mut self, id: NodeId, content: &str, rect: &LayoutRect) -> io::Result<()> {
         let old_width = self.get_prev_width(id);
         let new_width = content.len() as u16;
+        let abs_row = self.origin_row + rect.row;
 
-        // If old content was wider, clear the extra characters
         if old_width > new_width {
-            self.terminal
-                .queue_clear_region(rect.row, rect.col + new_width, old_width - new_width)?;
+            self.terminal.queue_clear_region(
+                abs_row,
+                rect.col + new_width,
+                old_width - new_width,
+            )?;
         }
 
-        self.terminal.queue_write_at(rect.row, rect.col, content)?;
+        self.terminal.queue_write_at(abs_row, rect.col, content)?;
         self.set_prev_width(id, new_width);
         Ok(())
     }
@@ -69,7 +76,6 @@ impl TuiRenderer {
             None => return Ok(()),
         };
 
-        // If it's a leaf with content, render it
         if let Some(content) = node_content(node) {
             if let Some(rect) = self.layout.get(node_id) {
                 let rect = *rect;
@@ -84,9 +90,7 @@ impl TuiRenderer {
             | UiNode::Row { children }
             | UiNode::View { children }
             | UiNode::List { children, .. } => children.clone(),
-            UiNode::Conditional { child, .. } => {
-                child.iter().copied().collect()
-            }
+            UiNode::Conditional { child, .. } => child.iter().copied().collect(),
             _ => vec![],
         };
 
@@ -116,20 +120,16 @@ impl Renderer for TuiRenderer {
             None => return,
         };
 
-        // Enter TUI mode
-        if let Err(e) = self.terminal.enter() {
+        // Compute layout first to know the content height
+        self.layout.clear();
+        let (_width, height) = compute_layout(registry, root, 0, 0, &mut self.layout);
+
+        // Enter inline mode — reserves space and sets origin_row
+        if let Err(e) = self.terminal.enter_inline(height) {
             eprintln!("rover-tui: failed to enter terminal: {}", e);
             return;
         }
-
-        if let Err(e) = self.terminal.clear() {
-            eprintln!("rover-tui: failed to clear terminal: {}", e);
-            return;
-        }
-
-        // Compute layout for the full tree
-        self.layout.clear();
-        compute_layout(registry, root, 0, 0, &mut self.layout);
+        self.origin_row = self.terminal.origin_row();
 
         // Render all nodes
         if let Err(e) = self.render_tree(registry, root) {
@@ -153,8 +153,6 @@ impl Renderer for TuiRenderer {
                 None => continue,
             };
 
-            // Only update leaf nodes with content — container dirty flags
-            // are handled by their children being individually dirty.
             let content = match node_content(node) {
                 Some(c) => c,
                 None => continue,
@@ -176,8 +174,6 @@ impl Renderer for TuiRenderer {
     }
 
     fn node_added(&mut self, registry: &UiRegistry, _node_id: NodeId) {
-        // For now: full re-layout and redraw.
-        // Structural changes (add/remove) are rare compared to content updates.
         let root = match registry.root() {
             Some(id) => id,
             None => return,
@@ -186,7 +182,8 @@ impl Renderer for TuiRenderer {
         self.layout.clear();
         compute_layout(registry, root, 0, 0, &mut self.layout);
 
-        if let Err(e) = self.terminal.clear() {
+        // Clear inline region and redraw
+        if let Err(e) = self.terminal.clear_inline_region() {
             eprintln!("rover-tui: clear error: {}", e);
             return;
         }
@@ -203,7 +200,6 @@ impl Renderer for TuiRenderer {
 
     fn node_removed(&mut self, node_id: NodeId) {
         self.layout.remove(node_id);
-        // Clear previous width tracking
         let idx = node_id.index();
         if idx < self.previous_widths.len() {
             self.previous_widths[idx] = 0;
@@ -213,8 +209,6 @@ impl Renderer for TuiRenderer {
 
 impl Drop for TuiRenderer {
     fn drop(&mut self) {
-        // Terminal::drop will handle leave(), but we also explicitly
-        // leave here to get error reporting if needed.
         let _ = self.terminal.leave();
     }
 }
@@ -224,45 +218,26 @@ mod tests {
     use super::*;
     use rover_ui::ui::TextContent;
 
-    // NOTE: We cannot test actual terminal rendering in unit tests (no TTY).
-    // These tests verify the internal state management (layout, previous_widths).
-
     #[test]
     fn test_prev_width_tracking() {
-        // Use default which may fail in CI — so test the tracking logic directly
         let mut widths: Vec<u16> = Vec::new();
-
         let id = NodeId::from_u32(3);
         let idx = id.index();
 
-        // Simulate set_prev_width
         if idx >= widths.len() {
             widths.resize(idx + 1, 0);
         }
         widths[idx] = 10;
-
         assert_eq!(widths[idx], 10);
-
-        // Simulate get_prev_width
-        assert_eq!(
-            if idx < widths.len() {
-                widths[idx]
-            } else {
-                0
-            },
-            10
-        );
     }
 
     #[test]
     fn test_node_content_for_update_decisions() {
-        // Leaf nodes produce content
         let text = UiNode::Text {
             content: TextContent::Static("hello".into()),
         };
         assert!(node_content(&text).is_some());
 
-        // Containers do not
         let col = UiNode::Column {
             children: vec![],
         };
@@ -271,8 +246,6 @@ mod tests {
 
     #[test]
     fn test_layout_drives_rendering_position() {
-        // Verify that layout computation produces correct positions
-        // that the renderer would use
         let mut registry = UiRegistry::new();
         let t1 = registry.create_node(UiNode::Text {
             content: TextContent::Static("Hello".into()),
@@ -288,7 +261,6 @@ mod tests {
         let mut layout = LayoutMap::new();
         compute_layout(&registry, col, 0, 0, &mut layout);
 
-        // t1 at (0,0), t2 at (1,0)
         let r1 = layout.get(t1).unwrap();
         assert_eq!((r1.row, r1.col), (0, 0));
 
@@ -298,8 +270,6 @@ mod tests {
 
     #[test]
     fn test_row_content_positions_for_counter_pattern() {
-        // Simulates the counter.lua pattern:
-        // row { text("Count: "), text(signal) }
         let mut registry = UiRegistry::new();
         let label = registry.create_node(UiNode::Text {
             content: TextContent::Static("Count: ".into()),
@@ -317,10 +287,39 @@ mod tests {
 
         let r_label = layout.get(label).unwrap();
         assert_eq!((r_label.row, r_label.col), (0, 0));
-        assert_eq!(r_label.width, 7); // "Count: "
+        assert_eq!(r_label.width, 7);
 
         let r_value = layout.get(value).unwrap();
         assert_eq!((r_value.row, r_value.col), (0, 7));
-        assert_eq!(r_value.width, 1); // "0"
+        assert_eq!(r_value.width, 1);
+    }
+
+    #[test]
+    fn test_origin_offset_applied_to_render() {
+        // Layout is relative (starts at 0,0), origin_row offsets it.
+        // Verify that a renderer with origin_row=5 would write to row 5+0=5
+        // for the first node, 5+1=6 for the second, etc.
+        let mut registry = UiRegistry::new();
+        let t1 = registry.create_node(UiNode::Text {
+            content: TextContent::Static("A".into()),
+        });
+        let t2 = registry.create_node(UiNode::Text {
+            content: TextContent::Static("B".into()),
+        });
+        let col = registry.create_node(UiNode::Column {
+            children: vec![t1, t2],
+        });
+        registry.set_root(col);
+
+        let mut layout = LayoutMap::new();
+        compute_layout(&registry, col, 0, 0, &mut layout);
+
+        let origin_row: u16 = 5;
+
+        let r1 = layout.get(t1).unwrap();
+        assert_eq!(origin_row + r1.row, 5);
+
+        let r2 = layout.get(t2).unwrap();
+        assert_eq!(origin_row + r2.row, 6);
     }
 }

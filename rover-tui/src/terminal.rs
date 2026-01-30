@@ -5,62 +5,128 @@ use crossterm::{
 };
 use std::io::{self, Stdout, Write};
 
+/// How the terminal was entered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerminalMode {
+    Inactive,
+    /// Inline: renders at current cursor position, no alternate screen.
+    Inline,
+    /// Fullscreen: alternate screen buffer.
+    Fullscreen,
+}
+
 /// Low-level terminal abstraction.
 ///
-/// Manages raw mode, alternate screen, cursor positioning, and buffered writes.
-/// All writes are queued into an internal buffer and flushed once per frame
-/// to minimize syscalls and prevent partial-frame rendering.
+/// Supports two modes:
+/// - **Inline** (default): renders in-place at the current cursor position,
+///   like a CLI progress bar. No alternate screen.
+/// - **Fullscreen**: alternate screen buffer, clears everything.
+///
+/// All writes are queued and flushed once per frame to minimize syscalls.
 pub struct Terminal {
     stdout: Stdout,
-    /// Whether we are currently in raw mode + alternate screen
-    active: bool,
+    mode: TerminalMode,
     /// Cached terminal dimensions (columns, rows)
     size: (u16, u16),
+    /// Absolute row where the rendered content starts (inline mode).
+    origin_row: u16,
+    /// Height of rendered content in rows (inline mode).
+    content_height: u16,
 }
 
 impl Terminal {
-    /// Create a new Terminal handle without entering raw mode.
     pub fn new() -> io::Result<Self> {
         let size = terminal::size().unwrap_or((80, 24));
         Ok(Self {
             stdout: io::stdout(),
-            active: false,
+            mode: TerminalMode::Inactive,
             size,
+            origin_row: 0,
+            content_height: 0,
         })
     }
 
-    /// Enter the TUI: alternate screen, raw mode, hidden cursor.
-    pub fn enter(&mut self) -> io::Result<()> {
-        if self.active {
+    /// Enter inline mode: raw mode, hide cursor, reserve vertical space.
+    ///
+    /// Scrolls the terminal if needed to make room for `content_height` rows,
+    /// then positions the cursor at the top of the reserved region.
+    pub fn enter_inline(&mut self, content_height: u16) -> io::Result<()> {
+        if self.mode != TerminalMode::Inactive {
+            return Ok(());
+        }
+
+        terminal::enable_raw_mode()?;
+        self.size = terminal::size().unwrap_or(self.size);
+
+        // Reserve vertical space by emitting newlines.
+        // This scrolls the terminal if we're near the bottom.
+        let needed = content_height.max(1);
+        for _ in 0..needed {
+            self.stdout.write_all(b"\r\n")?;
+        }
+        self.stdout.flush()?;
+
+        // Query where the cursor ended up after scrolling
+        let (_, cursor_row) = cursor::position()?;
+        self.origin_row = cursor_row.saturating_sub(needed.saturating_sub(1));
+        self.content_height = content_height;
+
+        self.stdout.execute(cursor::Hide)?;
+        self.mode = TerminalMode::Inline;
+        Ok(())
+    }
+
+    /// Enter fullscreen mode: alternate screen, raw mode, hidden cursor.
+    pub fn enter_fullscreen(&mut self) -> io::Result<()> {
+        if self.mode != TerminalMode::Inactive {
             return Ok(());
         }
         terminal::enable_raw_mode()?;
-        self.stdout
-            .execute(terminal::EnterAlternateScreen)?;
+        self.stdout.execute(terminal::EnterAlternateScreen)?;
         self.stdout.execute(cursor::Hide)?;
-        self.active = true;
+        self.mode = TerminalMode::Fullscreen;
         self.size = terminal::size().unwrap_or(self.size);
         Ok(())
     }
 
-    /// Leave the TUI: restore cursor, disable raw mode, leave alternate screen.
+    /// Leave whichever mode is active, restoring the terminal.
     pub fn leave(&mut self) -> io::Result<()> {
-        if !self.active {
-            return Ok(());
+        match self.mode {
+            TerminalMode::Inactive => Ok(()),
+            TerminalMode::Inline => {
+                // Move cursor below rendered content
+                let end_row = self.origin_row + self.content_height;
+                self.stdout.execute(cursor::MoveTo(0, end_row))?;
+                self.stdout.execute(cursor::Show)?;
+                self.stdout.write_all(b"\r\n")?;
+                self.stdout.flush()?;
+                terminal::disable_raw_mode()?;
+                self.mode = TerminalMode::Inactive;
+                Ok(())
+            }
+            TerminalMode::Fullscreen => {
+                self.stdout.execute(cursor::Show)?;
+                self.stdout.execute(terminal::LeaveAlternateScreen)?;
+                terminal::disable_raw_mode()?;
+                self.mode = TerminalMode::Inactive;
+                Ok(())
+            }
         }
-        self.stdout.execute(cursor::Show)?;
-        self.stdout
-            .execute(terminal::LeaveAlternateScreen)?;
-        terminal::disable_raw_mode()?;
-        self.active = false;
+    }
+
+    /// Clear the entire screen (fullscreen mode only).
+    pub fn clear(&mut self) -> io::Result<()> {
+        self.stdout.queue(terminal::Clear(ClearType::All))?;
+        self.stdout.queue(cursor::MoveTo(0, 0))?;
         Ok(())
     }
 
-    /// Clear the entire screen.
-    pub fn clear(&mut self) -> io::Result<()> {
-        self.stdout
-            .queue(terminal::Clear(ClearType::All))?;
-        self.stdout.queue(cursor::MoveTo(0, 0))?;
+    /// Clear only the inline render region by overwriting with spaces.
+    pub fn clear_inline_region(&mut self) -> io::Result<()> {
+        let cols = self.size.0;
+        for row in 0..self.content_height {
+            self.queue_clear_region(self.origin_row + row, 0, cols)?;
+        }
         Ok(())
     }
 
@@ -81,7 +147,6 @@ impl Terminal {
             return Ok(());
         }
         self.stdout.queue(cursor::MoveTo(col, row))?;
-        // Write spaces to clear. Avoid allocation for small widths.
         const SPACES: &[u8; 256] = &[b' '; 256];
         let mut remaining = width as usize;
         while remaining > 0 {
@@ -110,6 +175,12 @@ impl Terminal {
         self.size.1
     }
 
+    /// Absolute screen row where rendered content starts (inline mode).
+    #[inline]
+    pub fn origin_row(&self) -> u16 {
+        self.origin_row
+    }
+
     /// Refresh cached terminal size. Call on resize events.
     pub fn refresh_size(&mut self) {
         if let Ok(size) = terminal::size() {
@@ -117,16 +188,15 @@ impl Terminal {
         }
     }
 
-    /// Whether the terminal is currently in raw/alternate-screen mode.
+    /// Whether the terminal is currently active.
     #[inline]
     pub fn is_active(&self) -> bool {
-        self.active
+        self.mode != TerminalMode::Inactive
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // Best-effort cleanup — ignore errors during drop
         let _ = self.leave();
     }
 }
@@ -148,17 +218,20 @@ mod tests {
     #[test]
     fn test_terminal_size_defaults() {
         let term = Terminal::new().unwrap();
-        // In CI/test environments size may be the fallback (80, 24)
-        // but should always be non-zero
         assert!(term.cols() > 0);
         assert!(term.rows() > 0);
     }
 
     #[test]
     fn test_queue_clear_region_zero_width() {
-        // Should be a no-op, no panic
         let mut term = Terminal::new().unwrap();
         let result = term.queue_clear_region(0, 0, 0);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_origin_row_defaults_to_zero() {
+        let term = Terminal::new().unwrap();
+        assert_eq!(term.origin_row(), 0);
     }
 }
