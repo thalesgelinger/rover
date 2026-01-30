@@ -97,13 +97,22 @@ impl UiRegistry {
 
     /// Update text content of a node and mark it dirty
     /// Returns true if the node was found and updated
+    ///
+    /// This handles both `UiNode::Text` and `UiNode::Input` (which stores its value as `TextContent`)
     pub fn update_text_content(&mut self, node_id: NodeId, new_value: String) -> bool {
-        if let Some(UiNode::Text { content }) = self.nodes.get_mut(node_id) {
-            content.update(new_value);
-            self.mark_dirty(node_id);
-            true
-        } else {
-            false
+        let node = self.nodes.get_mut(node_id);
+        match node {
+            Some(UiNode::Text { content }) => {
+                content.update(new_value);
+                self.mark_dirty(node_id);
+                true
+            }
+            Some(UiNode::Input { value, .. }) => {
+                value.update(new_value);
+                self.mark_dirty(node_id);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -264,6 +273,7 @@ mod tests {
             content: TextContent::Reactive {
                 current_value: "Test".to_string(),
                 effect_id: EffectId(0),
+                signal_id: None,
             },
         };
         let node_id = registry.create_node(node);
@@ -281,6 +291,7 @@ mod tests {
             content: TextContent::Reactive {
                 current_value: "Old".to_string(),
                 effect_id: EffectId(0),
+                signal_id: None,
             },
         };
         let node_id = registry.create_node(node);
@@ -322,6 +333,7 @@ mod tests {
             content: TextContent::Reactive {
                 current_value: "Test".to_string(),
                 effect_id: EffectId(0),
+                signal_id: None,
             },
         };
         let node_id = registry.create_node(node);
