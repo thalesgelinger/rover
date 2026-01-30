@@ -106,6 +106,7 @@ pub enum UiNode {
     Input {
         value: TextContent,
         on_change: Option<EffectId>,
+        on_submit: Option<EffectId>,
     },
     Checkbox {
         checked: bool,

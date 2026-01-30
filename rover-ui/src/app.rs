@@ -2,6 +2,7 @@ use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use crate::events::{EventQueue, UiEvent};
 use crate::scheduler::{Scheduler, SharedScheduler};
 use crate::signal::SignalRuntime;
+use crate::ui::node::UiNode;
 use crate::ui::registry::UiRegistry;
 use crate::ui::renderer::Renderer;
 use mlua::prelude::*;
@@ -266,25 +267,39 @@ impl<R: Renderer> App<R> {
         Ok(())
     }
 
-    /// Dispatch a single event to its target node
+    /// Dispatch a single event to the specific handler on its target node.
+    ///
+    /// Each event type maps to a specific effect field on the node:
+    /// - Click → Button.on_click
+    /// - Change → Input.on_change
+    /// - Submit → Input.on_submit
+    /// - Toggle → Checkbox.on_toggle
     fn dispatch_event(&mut self, event: UiEvent) -> mlua::Result<()> {
         let node_id = event.node_id();
         let registry = self.registry.borrow();
+        let node = match registry.get_node(node_id) {
+            Some(n) => n,
+            None => return Ok(()),
+        };
 
-        // Get effects attached to this node
-        let effect_ids = registry.get_effects_for_node(node_id);
+        let effect_id = match (&event, node) {
+            (UiEvent::Click { .. }, UiNode::Button { on_click, .. }) => *on_click,
+            (UiEvent::Change { .. }, UiNode::Input { on_change, .. }) => *on_change,
+            (UiEvent::Submit { .. }, UiNode::Input { on_submit, .. }) => *on_submit,
+            (UiEvent::Toggle { .. }, UiNode::Checkbox { on_toggle, .. }) => *on_toggle,
+            _ => None,
+        };
         drop(registry);
 
-        // For each effect, call it with the event data
-        for effect_id in effect_ids {
-            // Call the effect with appropriate arguments
+        if let Some(effect_id) = effect_id {
             let args = match &event {
                 UiEvent::Click { .. } => LuaValue::Nil,
-                UiEvent::Change { value, .. } => LuaValue::String(self.lua.create_string(value)?),
+                UiEvent::Change { value, .. } | UiEvent::Submit { value, .. } => {
+                    LuaValue::String(self.lua.create_string(value)?)
+                }
                 UiEvent::Toggle { checked, .. } => LuaValue::Boolean(*checked),
             };
 
-            // Call the effect
             if let Err(e) = self
                 .runtime
                 .call_effect(&self.lua, effect_id, args)

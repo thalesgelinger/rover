@@ -137,7 +137,7 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
-        // rover.ui.input({ value = signal, on_change = function(val) end })
+        // rover.ui.input({ value = signal, on_change = function(val) end, on_submit = function(val) end })
         methods.add_function("input", |lua, props: Table| {
             let registry_rc = get_registry_rc(lua)?;
             let runtime = crate::lua::helpers::get_runtime(lua)?;
@@ -157,10 +157,29 @@ impl UserData for LuaUi {
                 Err(_) => None,
             };
 
-            let node = UiNode::Input { value, on_change };
+            // Extract on_submit (optional — called on Enter)
+            let on_submit = match props.get::<Function>("on_submit") {
+                Ok(callback) => {
+                    let callback_key = lua.create_registry_value(callback)?;
+                    let effect_id = runtime
+                        .create_effect(lua, callback_key)
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                    Some(effect_id)
+                }
+                Err(_) => None,
+            };
+
+            let node = UiNode::Input {
+                value,
+                on_change,
+                on_submit,
+            };
             let node_id = registry_rc.borrow_mut().create_node(node);
 
             if let Some(effect_id) = on_change {
+                registry_rc.borrow_mut().attach_effect(node_id, effect_id);
+            }
+            if let Some(effect_id) = on_submit {
                 registry_rc.borrow_mut().attach_effect(node_id, effect_id);
             }
 
