@@ -105,6 +105,22 @@ impl TuiRenderer {
     pub fn refresh_size(&mut self) {
         self.terminal.refresh_size();
     }
+
+    /// Position the terminal cursor at a node's location + column offset.
+    /// Used by the runner to show a blinking cursor inside the focused input.
+    pub fn show_cursor_at(&mut self, node_id: NodeId, col_offset: u16) -> io::Result<()> {
+        if let Some(rect) = self.layout.get(node_id) {
+            let abs_row = self.origin_row + rect.row;
+            let abs_col = rect.col + col_offset;
+            self.terminal.show_cursor_at(abs_row, abs_col)?;
+        }
+        Ok(())
+    }
+
+    /// Hide the terminal cursor.
+    pub fn hide_cursor(&mut self) -> io::Result<()> {
+        self.terminal.hide_cursor()
+    }
 }
 
 impl Default for TuiRenderer {

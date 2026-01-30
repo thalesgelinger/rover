@@ -188,6 +188,19 @@ impl Terminal {
         }
     }
 
+    /// Show the terminal cursor at an absolute (row, col) position.
+    pub fn show_cursor_at(&mut self, row: u16, col: u16) -> io::Result<()> {
+        self.stdout.execute(cursor::MoveTo(col, row))?;
+        self.stdout.execute(cursor::Show)?;
+        Ok(())
+    }
+
+    /// Hide the terminal cursor.
+    pub fn hide_cursor(&mut self) -> io::Result<()> {
+        self.stdout.execute(cursor::Hide)?;
+        Ok(())
+    }
+
     /// Whether the terminal is currently active.
     #[inline]
     pub fn is_active(&self) -> bool {
