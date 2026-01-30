@@ -3,7 +3,7 @@ local ru = rover.ui
 function rover.render()
 	local seconds = rover.signal(0)
 	local clicks = rover.signal(0)
-	local status = rover.signal("running")
+	local status = rover.signal "running"
 
 	-- Fast ticker: updates every second
 	local clock = rover.task(function()

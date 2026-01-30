@@ -142,11 +142,31 @@ impl SignalRuntime {
         };
 
         let subscriber = SubscriberId::Derived(id);
+
+        // Save parent's tracking state (if we're being called from within another effect/derived)
+        let (_parent_reads, parent_derived_reads, parent_stack_len) = {
+            let tracking = self.tracking.borrow();
+            let stack_len = tracking.stack.len();
+            if stack_len > 0 {
+                // We're being called from within another effect/derived - save its tracking state
+                (tracking.reads.clone(), tracking.derived_reads.clone(), stack_len)
+            } else {
+                (Vec::new(), Vec::new(), 0)
+            }
+        };
+
         {
             let mut tracking = self.tracking.borrow_mut();
             tracking.stack.push(subscriber);
-            tracking.reads.clear();
-            tracking.derived_reads.clear();
+            // Only clear if we're the top-level computation
+            if parent_stack_len == 0 {
+                tracking.reads.clear();
+                tracking.derived_reads.clear();
+            } else {
+                // We're nested - preserve the parent's reads for derived signals
+                tracking.reads.clear();
+                // DON'T clear derived_reads - parent effect's tracking needs to be preserved
+            }
         }
 
         let result = compute_fn
@@ -166,6 +186,10 @@ impl SignalRuntime {
             }
             tracking.reads.clear();
 
+            // For nested computation, the derived_reads contains both:
+            // 1. Parent's reads (which we preserved)
+            // 2. This derived's reads (added during computation)
+            // We need to extract only THIS derived's reads (those that aren't the parent's)
             let mut derived_deps: SmallVec<[DerivedId; 4]> = SmallVec::new();
             let mut seen_d = HashSet::new();
             for &did in &tracking.derived_reads {
@@ -173,12 +197,25 @@ impl SignalRuntime {
                     derived_deps.push(did);
                 }
             }
-            tracking.derived_reads.clear();
+
+            if parent_stack_len > 0 {
+                // Restore parent's tracking state
+                tracking.derived_reads = parent_derived_reads;
+            } else {
+                tracking.derived_reads.clear();
+            }
 
             (signal_deps, derived_deps)
         };
 
         let value = SignalValue::from_lua(lua, result)?;
+
+        // Save the current subscribers to this derived signal before clearing
+        // (we need to preserve effects that depend on this derived signal)
+        let subscribers_to_preserve = {
+            let graph = self.graph.borrow();
+            graph.get_derived_subscribers(id).to_vec()
+        };
 
         {
             let mut graph = self.graph.borrow_mut();
@@ -188,6 +225,10 @@ impl SignalRuntime {
             }
             for &did in &derived_deps {
                 graph.subscribe_derived(did, subscriber);
+            }
+            // Restore the subscribers that depend on this derived signal
+            for &sub in &subscribers_to_preserve {
+                graph.subscribe_derived(id, sub);
             }
         }
 

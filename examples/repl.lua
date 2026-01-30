@@ -2,7 +2,7 @@ local ru = rover.ui
 
 function rover.render()
 	-- Log entries (reactive list of strings)
-	local log = rover.signal({})
+	local log = rover.signal {}
 	local log_count = rover.signal(0)
 
 	-- Uptime counter (background task)
@@ -16,7 +16,7 @@ function rover.render()
 	clock()
 
 	-- Status rotates through states
-	local status = rover.signal("ready")
+	local status = rover.signal "ready"
 	local status_task = rover.task(function()
 		local states = { "ready", "processing", "idle", "ready" }
 		local i = 1
@@ -34,12 +34,6 @@ function rover.render()
 	end)
 
 	-- Render the log entries as text nodes
-	local log_list = ru.each(log, function(entry)
-		return ru.text { entry }
-	end, function(entry)
-		return entry
-	end)
-
 	return ru.column {
 		ru.text { "=== Rover REPL ===" },
 		ru.row {
@@ -49,7 +43,11 @@ function rover.render()
 			ru.text { status },
 		},
 		ru.text { "---" },
-		log_list,
+		ru.each(log, function(entry)
+			return ru.text { entry }
+		end, function(entry)
+			return entry
+		end),
 		ru.text { "---" },
 		ru.row {
 			ru.text { "> " },

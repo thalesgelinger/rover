@@ -2,6 +2,7 @@ local ru = rover.ui
 
 function rover.render()
 	local count = rover.signal(0)
+	local double = count * 2
 
 	local tick = rover.task(function()
 		while true do
@@ -19,8 +20,10 @@ function rover.render()
 	return ru.column {
 		ru.text { "Rover TUI Counter" },
 		ru.row {
-			ru.text { "Count: " },
-			ru.text { count },
+			ru.text { "Count: " .. count },
+			ru.column {
+				ru.text { double },
+			},
 		},
 		ru.text { "Press Ctrl+C to exit" },
 	}

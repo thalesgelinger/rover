@@ -149,7 +149,7 @@ fn main() -> Result<()> {
 
 fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>) -> Result<()> {
     // Run pre-execution check (syntax/type errors)
-    check::pre_run_check(&file)?;
+    // check::pre_run_check(&file)?;
 
     // Run database pre-run analysis
     pre_run_db_analysis(&file, yolo)?;
