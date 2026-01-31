@@ -619,3 +619,140 @@ fn test_list_reactive_updates() {
     assert!(log.iter().any(|line| line.contains("two")));
     assert!(log.iter().any(|line| line.contains("three")));
 }
+
+/// Test that derived signals reactively update UI when the source signal changes.
+/// This verifies the full chain: signal mutation → derived dirty → effect re-run → UI update.
+#[test]
+fn test_derived_signal_reactivity() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.count = rover.signal(5)
+        local doubled = rover.derive(function()
+            return _G.count.val * 2
+        end)
+
+        function rover.render()
+            return ru.text { doubled }
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+
+    // Tick to mount and render initial value
+    app.tick().unwrap();
+
+    // Initial: 5 * 2 = 10
+    {
+        let log = log_buffer.borrow();
+        assert!(
+            log.iter().any(|line| line.contains("\"10\"")),
+            "Expected initial derived value 10, got: {:?}",
+            *log
+        );
+    }
+
+    // Update source signal: 5 → 20
+    app.lua()
+        .load(
+            r#"
+        local updater = rover.task(function()
+            _G.count.val = 20
+            rover.delay(1)
+        end)
+        updater()
+    "#,
+        )
+        .exec()
+        .unwrap();
+
+    log_buffer.borrow_mut().clear();
+    app.tick_ms(10).unwrap();
+
+    // Derived should now be 20 * 2 = 40
+    let log = log_buffer.borrow();
+    assert!(
+        log.iter().any(|line| line.contains("\"40\"")),
+        "Expected derived value 40 after signal update, got: {:?}",
+        *log
+    );
+}
+
+/// Test chained derived signals: derived_a depends on signal, derived_b depends on derived_a.
+#[test]
+fn test_chained_derived_signals() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.base = rover.signal(3)
+        local doubled = rover.derive(function()
+            return _G.base.val * 2
+        end)
+        local quadrupled = rover.derive(function()
+            return doubled.val * 2
+        end)
+
+        function rover.render()
+            return ru.column {
+                ru.text { doubled },
+                ru.text { quadrupled },
+            }
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+
+    // Tick to mount
+    app.tick().unwrap();
+
+    // Initial: 3*2=6, 3*2*2=12
+    {
+        let log = log_buffer.borrow();
+        assert!(
+            log.iter().any(|line| line.contains("\"6\"")),
+            "Expected doubled=6, got: {:?}",
+            *log
+        );
+        assert!(
+            log.iter().any(|line| line.contains("\"12\"")),
+            "Expected quadrupled=12, got: {:?}",
+            *log
+        );
+    }
+
+    // Update base: 3 → 10
+    app.lua()
+        .load(
+            r#"
+        local updater = rover.task(function()
+            _G.base.val = 10
+            rover.delay(1)
+        end)
+        updater()
+    "#,
+        )
+        .exec()
+        .unwrap();
+
+    log_buffer.borrow_mut().clear();
+    app.tick_ms(10).unwrap();
+
+    // Should be 10*2=20 and 10*2*2=40
+    let log = log_buffer.borrow();
+    assert!(
+        log.iter().any(|line| line.contains("\"20\"")),
+        "Expected doubled=20 after update, got: {:?}",
+        *log
+    );
+    assert!(
+        log.iter().any(|line| line.contains("\"40\"")),
+        "Expected quadrupled=40 after update, got: {:?}",
+        *log
+    );
+}

@@ -24,6 +24,7 @@ pub type Result<T> = std::result::Result<T, RuntimeError>;
 struct TrackingState {
     stack: Vec<SubscriberId>,
     reads: Vec<SignalId>,
+    derived_reads: Vec<DerivedId>,
 }
 
 struct BatchState {
@@ -57,6 +58,7 @@ impl SignalRuntime {
             tracking: RefCell::new(TrackingState {
                 stack: Vec::new(),
                 reads: Vec::new(),
+                derived_reads: Vec::new(),
             }),
             batch: RefCell::new(BatchState {
                 depth: 0,
@@ -110,6 +112,14 @@ impl SignalRuntime {
     }
 
     pub fn get_derived(&self, lua: &Lua, id: DerivedId) -> Result<Value> {
+        // Track this derived read (so effects/derived that read us get subscribed)
+        {
+            let mut tracking = self.tracking.borrow_mut();
+            if !tracking.stack.is_empty() {
+                tracking.derived_reads.push(id);
+            }
+        }
+
         let is_dirty = {
             let derived = self.derived.borrow();
             derived[id.0 as usize].is_dirty()
@@ -132,45 +142,100 @@ impl SignalRuntime {
         };
 
         let subscriber = SubscriberId::Derived(id);
+
+        // Save parent's tracking state (if we're being called from within another effect/derived)
+        let (_parent_reads, parent_derived_reads, parent_stack_len) = {
+            let tracking = self.tracking.borrow();
+            let stack_len = tracking.stack.len();
+            if stack_len > 0 {
+                // We're being called from within another effect/derived - save its tracking state
+                (tracking.reads.clone(), tracking.derived_reads.clone(), stack_len)
+            } else {
+                (Vec::new(), Vec::new(), 0)
+            }
+        };
+
         {
             let mut tracking = self.tracking.borrow_mut();
             tracking.stack.push(subscriber);
-            tracking.reads.clear();
+            // Only clear if we're the top-level computation
+            if parent_stack_len == 0 {
+                tracking.reads.clear();
+                tracking.derived_reads.clear();
+            } else {
+                // We're nested - preserve the parent's reads for derived signals
+                tracking.reads.clear();
+                // DON'T clear derived_reads - parent effect's tracking needs to be preserved
+            }
         }
 
         let result = compute_fn
             .call::<Value>(())
             .map_err(RuntimeError::LuaError)?;
 
-        let deps = {
+        let (signal_deps, derived_deps) = {
             let mut tracking = self.tracking.borrow_mut();
             tracking.stack.pop();
 
-            let mut deps: SmallVec<[SignalId; 4]> = SmallVec::new();
+            let mut signal_deps: SmallVec<[SignalId; 4]> = SmallVec::new();
             let mut seen = HashSet::new();
             for &signal in &tracking.reads {
-                if seen.insert(signal) {
-                    deps.push(signal);
+                if seen.insert(signal.0) {
+                    signal_deps.push(signal);
                 }
             }
             tracking.reads.clear();
-            deps
+
+            // For nested computation, the derived_reads contains both:
+            // 1. Parent's reads (which we preserved)
+            // 2. This derived's reads (added during computation)
+            // We need to extract only THIS derived's reads (those that aren't the parent's)
+            let mut derived_deps: SmallVec<[DerivedId; 4]> = SmallVec::new();
+            let mut seen_d = HashSet::new();
+            for &did in &tracking.derived_reads {
+                if seen_d.insert(did.0) {
+                    derived_deps.push(did);
+                }
+            }
+
+            if parent_stack_len > 0 {
+                // Restore parent's tracking state
+                tracking.derived_reads = parent_derived_reads;
+            } else {
+                tracking.derived_reads.clear();
+            }
+
+            (signal_deps, derived_deps)
         };
 
         let value = SignalValue::from_lua(lua, result)?;
 
+        // Save the current subscribers to this derived signal before clearing
+        // (we need to preserve effects that depend on this derived signal)
+        let subscribers_to_preserve = {
+            let graph = self.graph.borrow();
+            graph.get_derived_subscribers(id).to_vec()
+        };
+
         {
             let mut graph = self.graph.borrow_mut();
             graph.clear_for(subscriber);
-            for &signal in &deps {
+            for &signal in &signal_deps {
                 graph.subscribe(signal, subscriber);
+            }
+            for &did in &derived_deps {
+                graph.subscribe_derived(did, subscriber);
+            }
+            // Restore the subscribers that depend on this derived signal
+            for &sub in &subscribers_to_preserve {
+                graph.subscribe_derived(id, sub);
             }
         }
 
         {
             let mut derived = self.derived.borrow_mut();
             derived[id.0 as usize].set_cached_value(value);
-            derived[id.0 as usize].set_dependencies(deps);
+            derived[id.0 as usize].set_dependencies(signal_deps);
         }
 
         Ok(())
@@ -194,6 +259,29 @@ impl SignalRuntime {
         drop(effects);
 
         self.run_effect(lua, id)?;
+        Ok(id)
+    }
+
+    /// Register a callback without running it immediately.
+    /// Used for event handlers that should only run in response to events.
+    pub fn register_callback(&self, lua: &Lua, callback: Function) -> Result<EffectId> {
+        let callback_key = lua.create_registry_value(callback)?;
+
+        let id = if let Some(idx) = self.effects_free.borrow_mut().pop() {
+            EffectId(idx)
+        } else {
+            EffectId(self.effects.borrow().len() as u32)
+        };
+
+        let effect = Effect::new(id, callback_key);
+
+        let mut effects = self.effects.borrow_mut();
+        if id.0 as usize >= effects.len() {
+            effects.push(effect);
+        } else {
+            effects[id.0 as usize] = effect;
+        }
+
         Ok(id)
     }
 
@@ -256,6 +344,7 @@ impl SignalRuntime {
             let mut tracking = self.tracking.borrow_mut();
             tracking.stack.push(subscriber);
             tracking.reads.clear();
+            tracking.derived_reads.clear();
         }
 
         // Get the callback key and drop the borrow before calling Lua
@@ -269,19 +358,29 @@ impl SignalRuntime {
         // Now call the Lua callback (effects borrow is released)
         let result = callback.call::<Value>(()).map_err(RuntimeError::LuaError)?;
 
-        let deps = {
+        let (signal_deps, derived_deps) = {
             let mut tracking = self.tracking.borrow_mut();
             tracking.stack.pop();
 
-            let mut deps: SmallVec<[SignalId; 4]> = SmallVec::new();
+            let mut signal_deps: SmallVec<[SignalId; 4]> = SmallVec::new();
             let mut seen = HashSet::new();
             for &signal in &tracking.reads {
-                if seen.insert(signal) {
-                    deps.push(signal);
+                if seen.insert(signal.0) {
+                    signal_deps.push(signal);
                 }
             }
             tracking.reads.clear();
-            deps
+
+            let mut derived_deps: SmallVec<[DerivedId; 4]> = SmallVec::new();
+            let mut seen_d = HashSet::new();
+            for &did in &tracking.derived_reads {
+                if seen_d.insert(did.0) {
+                    derived_deps.push(did);
+                }
+            }
+            tracking.derived_reads.clear();
+
+            (signal_deps, derived_deps)
         };
 
         let cleanup = if let Value::Function(f) = result {
@@ -293,8 +392,11 @@ impl SignalRuntime {
         {
             let mut graph = self.graph.borrow_mut();
             graph.clear_for(subscriber);
-            for &signal in &deps {
+            for &signal in &signal_deps {
                 graph.subscribe(signal, subscriber);
+            }
+            for &did in &derived_deps {
+                graph.subscribe_derived(did, subscriber);
             }
         }
 
@@ -370,9 +472,10 @@ impl SignalRuntime {
                 batch.dirty_derived.push(id);
             }
 
+            // Look up who subscribes to THIS derived signal
             let subscribers = {
                 let graph = self.graph.borrow();
-                graph.get_subscribers(SignalId(id.0)).to_vec()
+                graph.get_derived_subscribers(id).to_vec()
             };
 
             for subscriber in subscribers {

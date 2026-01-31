@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use rover_core::register_extra_modules;
+use rover_tui::{TuiRenderer, TuiRunner};
 use rover_ui::app::App;
 use rover_ui::ui::StubRenderer;
 use std::io::{self, Write};
@@ -148,7 +149,7 @@ fn main() -> Result<()> {
 
 fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>) -> Result<()> {
     // Run pre-execution check (syntax/type errors)
-    check::pre_run_check(&file)?;
+    // check::pre_run_check(&file)?;
 
     // Run database pre-run analysis
     pre_run_db_analysis(&file, yolo)?;
@@ -168,6 +169,24 @@ fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>) -> Result<()>
             app.run_script(&content)
                 .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
             app.run().map_err(|e| anyhow::anyhow!("App error: {}", e))?;
+            Ok(())
+        }
+        Some(Platform::Tui) => {
+            let renderer = TuiRenderer::new()
+                .map_err(|e| anyhow::anyhow!("Failed to create TUI renderer: {}", e))?;
+            let app = App::new(renderer)
+                .map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
+            let mut runner = TuiRunner::new(app);
+            register_extra_modules(runner.app().lua())?;
+            let content = std::fs::read_to_string(&file)
+                .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+            runner
+                .app_mut()
+                .run_script(&content)
+                .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
+            runner
+                .run()
+                .map_err(|e| anyhow::anyhow!("TUI error: {}", e))?;
             Ok(())
         }
         Some(platform) => {

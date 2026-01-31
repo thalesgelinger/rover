@@ -1,0 +1,83 @@
+local ru = rover.ui
+
+function rover.render()
+	-- Log entries (reactive list of strings)
+	local log = rover.signal {}
+	-- Derived: count entries from log itself (no manual sync needed)
+	local log_count = rover.derive(function()
+		return #log.val
+	end)
+
+	-- Input value (two-way bound signal)
+	local input_value = rover.signal("")
+
+	-- Uptime counter (background task)
+	local uptime = rover.signal(0)
+	local clock = rover.task(function()
+		while true do
+			rover.delay(1000)
+			uptime.val = uptime.val + 1
+		end
+	end)
+	clock()
+
+	-- Status rotates through states
+	local status = rover.signal "ready"
+	local status_task = rover.task(function()
+		local states = { "ready", "processing", "idle", "ready" }
+		local i = 1
+		while true do
+			rover.delay(4000)
+			i = (i % #states) + 1
+			status.val = states[i]
+		end
+	end)
+	status_task()
+
+	rover.on_destroy(function()
+		rover.task.cancel(clock)
+		rover.task.cancel(status_task)
+	end)
+
+	-- Render the log entries as text nodes
+	return ru.column {
+		ru.text { "=== Rover REPL ===" },
+		ru.row {
+			ru.text { "uptime: " },
+			ru.text { uptime },
+			ru.text { "s | status: " },
+			ru.text { status },
+		},
+		ru.text { "---" },
+		ru.each(log, function(entry)
+			return ru.text { entry }
+		end, function(entry)
+			return entry
+		end),
+		ru.text { "---" },
+		ru.row {
+			ru.text { "> " },
+			ru.input {
+				value = input_value,  -- Two-way binding: typing updates the signal
+				on_change = function(val)
+					-- Optional: side effect on each keystroke
+					-- print("typing: " .. val)
+				end,
+				on_submit = function(val)
+					-- val is provided, but we could also use input_value.val
+					local entries = log.val
+					entries[#entries + 1] = "> " .. val
+					log.val = entries
+					-- log_count updates automatically (derived signal)
+					-- Clear the input after submit
+					input_value.val = ""
+				end,
+			},
+		},
+		ru.row {
+			ru.text { "entries: " },
+			ru.text { log_count },
+			ru.text { " | Ctrl+C to exit" },
+		},
+	}
+end
