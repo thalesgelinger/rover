@@ -26,6 +26,8 @@ httparse = "1.10"
 slab = "0.4"
 bytes = "1.10"
 lru = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
 
 
 [lib]
