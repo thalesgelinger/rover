@@ -8,6 +8,10 @@ pub mod http_task;
 mod response;
 pub mod table_pool;
 pub mod to_json;
+pub mod ws_frame;
+pub mod ws_handshake;
+pub mod ws_lua;
+pub mod ws_manager;
 
 pub use http_task::{CoroutineResponse, HttpResponse};
 pub use response::RoverResponse;
@@ -101,8 +105,16 @@ pub struct Route {
     pub is_static: bool,
 }
 
+pub struct WsRoute {
+    pub pattern: Bytes,
+    pub param_names: Vec<String>,
+    pub is_static: bool,
+    pub endpoint_config: ws_manager::WsEndpointConfig,
+}
+
 pub struct RouteTable {
     pub routes: Vec<Route>,
+    pub ws_routes: Vec<WsRoute>,
 }
 
 #[derive(Debug, Clone)]
@@ -193,7 +205,7 @@ pub fn run(
 
     let sock_addr = SocketAddr::from((host, config.port));
 
-    match http_server::run_server(lua, routes.routes, config, openapi_spec, sock_addr) {
+    match http_server::run_server(lua, routes.routes, routes.ws_routes, config, openapi_spec, sock_addr) {
         Ok(_) => {}
         Err(e) => {
             if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
