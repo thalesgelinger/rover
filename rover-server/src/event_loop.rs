@@ -9,7 +9,7 @@ use std::time::Instant;
 use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
+use mlua::{Function, Lua, Thread, ThreadStatus, Value};
 use slab::Slab;
 use tracing::{debug, info, warn};
 
@@ -504,7 +504,7 @@ impl EventLoop {
         keep_alive: bool,
     ) -> Result<()> {
         // Match against WS router
-        let (endpoint_idx, params) = match self.router.match_ws_route(path) {
+        let (endpoint_idx, _params) = match self.router.match_ws_route(path) {
             Some((idx, p)) => (idx, p),
             None => {
                 let mut conns = self.connections.borrow_mut();
@@ -924,26 +924,6 @@ impl EventLoop {
                 .and_then(|c| c.ws_data.as_ref())
                 .map(|ws| ws.endpoint_idx)
                 .unwrap_or(0)
-        };
-
-        // Look up the handler
-        let handler_key: Option<RegistryKey> = {
-            let mgr = self.ws_manager.borrow();
-            if let Some(endpoint) = mgr.endpoints.get(endpoint_idx as usize) {
-                if let Some(event) = &event_name {
-                    if let Some(key) = endpoint.event_handlers.get(event) {
-                        // We need to clone the RegistryKey -- but RegistryKey doesn't implement Clone.
-                        // Instead, we'll look up the function from registry and use it directly.
-                        None // Will handle below with a different approach
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
         };
 
         // Get the handler function from the endpoint

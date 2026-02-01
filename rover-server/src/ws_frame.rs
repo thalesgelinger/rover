@@ -278,4 +278,108 @@ mod tests {
         unmask_payload_in_place(&mut data, mask);
         assert_eq!(&data, b"Hello!  ");
     }
+
+    #[test]
+    fn test_unmask_odd_length() {
+        let mask = [0x11, 0x22, 0x33, 0x44];
+        let original = b"Hey";
+        let mut masked: Vec<u8> = original.iter().enumerate()
+            .map(|(i, &b)| b ^ mask[i % 4])
+            .collect();
+        unmask_payload_in_place(&mut masked, mask);
+        assert_eq!(&masked, original);
+    }
+
+    #[test]
+    fn test_write_pong_frame() {
+        let mut buf = Vec::new();
+        write_pong_frame(&mut buf, b"ping!");
+        assert_eq!(buf[0], 0x80 | 0x0A); // FIN | Pong
+        assert_eq!(buf[1], 5);
+        assert_eq!(&buf[2..], b"ping!");
+    }
+
+    #[test]
+    fn test_parse_close_frame() {
+        // FIN=1, Close, payload_len=5, no mask
+        let mut frame = vec![0x88, 0x05];
+        frame.extend_from_slice(&1000u16.to_be_bytes()); // status code
+        frame.extend_from_slice(b"bye");
+        let header = try_parse_frame(&frame).unwrap();
+        assert!(header.fin);
+        assert_eq!(header.opcode, WsOpcode::Close);
+        assert_eq!(header.payload_len, 5);
+    }
+
+    #[test]
+    fn test_parse_continuation_frame() {
+        // FIN=0, Continuation, payload_len=3, no mask
+        let frame = [0x00, 0x03, b'a', b'b', b'c'];
+        let header = try_parse_frame(&frame).unwrap();
+        assert!(!header.fin);
+        assert_eq!(header.opcode, WsOpcode::Continuation);
+        assert_eq!(header.payload_len, 3);
+    }
+
+    #[test]
+    fn test_parse_binary_frame() {
+        let frame = [0x82, 0x02, 0xFF, 0x00]; // FIN|Binary, 2 bytes
+        let header = try_parse_frame(&frame).unwrap();
+        assert!(header.fin);
+        assert_eq!(header.opcode, WsOpcode::Binary);
+        assert_eq!(header.payload_len, 2);
+    }
+
+    #[test]
+    fn test_opcode_is_control() {
+        assert!(!WsOpcode::Continuation.is_control());
+        assert!(!WsOpcode::Text.is_control());
+        assert!(!WsOpcode::Binary.is_control());
+        assert!(WsOpcode::Close.is_control());
+        assert!(WsOpcode::Ping.is_control());
+        assert!(WsOpcode::Pong.is_control());
+    }
+
+    #[test]
+    fn test_opcode_from_u8_invalid() {
+        assert!(WsOpcode::from_u8(0x03).is_none());
+        assert!(WsOpcode::from_u8(0x0B).is_none());
+        assert!(WsOpcode::from_u8(0xFF).is_none());
+    }
+
+    #[test]
+    fn test_write_large_frame() {
+        // Test 64-bit length encoding (>65535 bytes)
+        let payload = vec![0x42; 70000];
+        let mut buf = Vec::new();
+        write_frame(&mut buf, WsOpcode::Binary, &payload);
+        assert_eq!(buf[0], 0x82); // FIN | Binary
+        assert_eq!(buf[1], 127);  // 64-bit length marker
+        let len = u64::from_be_bytes([buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]]) as usize;
+        assert_eq!(len, 70000);
+        assert_eq!(buf.len(), 10 + 70000);
+    }
+
+    #[test]
+    fn test_roundtrip_unmask() {
+        // Build a masked frame, parse it, unmask, verify payload
+        let mask = [0xDE, 0xAD, 0xBE, 0xEF];
+        let payload = b"WebSocket test data!";
+        let mut masked_payload = Vec::with_capacity(payload.len());
+        for (i, &b) in payload.iter().enumerate() {
+            masked_payload.push(b ^ mask[i % 4]);
+        }
+
+        let mut frame = vec![0x81, 0x80 | (payload.len() as u8)]; // FIN|Text, MASK|len
+        frame.extend_from_slice(&mask);
+        frame.extend_from_slice(&masked_payload);
+
+        let header = try_parse_frame(&frame).unwrap();
+        assert!(header.masked);
+        assert_eq!(header.payload_len, payload.len());
+
+        let mut buf = frame[header.payload_offset..header.payload_offset + header.payload_len].to_vec();
+        unmask_payload_in_place(&mut buf, header.mask);
+        assert_eq!(&buf, payload);
+    }
 }

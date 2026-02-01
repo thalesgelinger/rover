@@ -86,7 +86,7 @@ pub fn create_ws_table(lua: &Lua) -> mlua::Result<Table> {
         })?,
     )?;
 
-    listen.set_metatable(Some(listen_meta));
+    let _ = listen.set_metatable(Some(listen_meta));
     ws.raw_set("listen", listen)?;
 
     // ── send sub-table ──
@@ -102,7 +102,7 @@ pub fn create_ws_table(lua: &Lua) -> mlua::Result<Table> {
         })?,
     )?;
 
-    send.set_metatable(Some(send_meta));
+    let _ = send.set_metatable(Some(send_meta));
     ws.raw_set("send", send)?;
 
     // ── ws metatable: captures ws.join and ws.leave assignments ──
@@ -122,7 +122,7 @@ pub fn create_ws_table(lua: &Lua) -> mlua::Result<Table> {
             Ok(())
         })?,
     )?;
-    ws.set_metatable(Some(ws_meta));
+    let _ = ws.set_metatable(Some(ws_meta));
 
     // ── ws.error(code, msg) ──
     ws.raw_set(
@@ -172,7 +172,7 @@ fn create_send_event_builder(lua: &Lua, event_name: String) -> mlua::Result<Tabl
         })?,
     )?;
 
-    builder.set_metatable(Some(meta));
+    let _ = builder.set_metatable(Some(meta));
     Ok(builder)
 }
 

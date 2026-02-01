@@ -3,7 +3,7 @@ use mlua::{Lua, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
 use rover_server::to_json::ToJson;
-use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerConfig};
+use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerConfig, WsRoute};
 use rover_types::ValidationErrors;
 
 use crate::html::{get_rover_html, render_template_with_components};
@@ -317,12 +317,12 @@ impl AppServer for Lua {
 
 pub trait Server {
     fn run_server(&self, lua: &Lua, source: &str) -> Result<()>;
-    fn get_routes(&self) -> Result<RouteTable>;
+    fn get_routes(&self, lua: &Lua) -> Result<RouteTable>;
 }
 
 impl Server for Table {
     fn run_server(&self, lua: &Lua, source: &str) -> Result<()> {
-        let routes = self.get_routes()?;
+        let routes = self.get_routes(lua)?;
         let config: ServerConfig = self.get("config")?;
 
         // Generate OpenAPI spec if docs enabled
@@ -337,12 +337,14 @@ impl Server for Table {
         Ok(())
     }
 
-    fn get_routes(&self) -> Result<RouteTable> {
+    fn get_routes(&self, lua: &Lua) -> Result<RouteTable> {
         fn extract_recursive(
+            lua: &Lua,
             table: &Table,
             current_path: &str,
             param_names: &mut Vec<String>,
             routes: &mut Vec<Route>,
+            ws_routes: &mut Vec<WsRoute>,
         ) -> Result<()> {
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
@@ -373,6 +375,14 @@ impl Server for Table {
                         } else {
                             current_path
                         };
+
+                        // WebSocket endpoint: function api.chat.ws(ws) ... end
+                        if key_string == "ws" {
+                            let ws_route =
+                                extract_ws_endpoint(lua, &func, path, param_names)?;
+                            ws_routes.push(ws_route);
+                            continue;
+                        }
 
                         let method = HttpMethod::from_str(&key_string).ok_or_else(|| {
                             anyhow!(
@@ -420,7 +430,14 @@ impl Server for Table {
                             param_names.push(param);
                         }
 
-                        extract_recursive(&nested_table, &new_path, param_names, routes)?;
+                        extract_recursive(
+                            lua,
+                            &nested_table,
+                            &new_path,
+                            param_names,
+                            routes,
+                            ws_routes,
+                        )?;
 
                         // Remove param name after recursion
                         if key_string.starts_with("p_") {
@@ -444,9 +461,74 @@ impl Server for Table {
             Ok(())
         }
 
+        /// Extract a WebSocket endpoint from its setup function.
+        ///
+        /// Calls the setup function with a fresh ws DSL table, then extracts
+        /// the captured join/leave/listen handlers into a WsEndpointConfig.
+        fn extract_ws_endpoint(
+            lua: &Lua,
+            setup_fn: &mlua::Function,
+            path: &str,
+            param_names: &[String],
+        ) -> Result<WsRoute> {
+            use ahash::AHashMap;
+            use rover_server::ws_lua::create_ws_table;
+            use rover_server::ws_manager::WsEndpointConfig;
+
+            // Create the ws DSL table (captures handler assignments via metamethods)
+            let ws_table = create_ws_table(lua)
+                .map_err(|e| anyhow!("Failed to create WS table for '{}': {}", path, e))?;
+
+            // Execute: function api.x.ws(ws) ... end
+            setup_fn
+                .call::<()>(ws_table.clone())
+                .map_err(|e| anyhow!("WS setup function failed at '{}': {}", path, e))?;
+
+            // Extract join handler (stored as __ws_join by metamethod)
+            let join_handler = match ws_table.raw_get::<Value>("__ws_join") {
+                Ok(Value::Function(f)) => Some(lua.create_registry_value(f)?),
+                _ => None,
+            };
+
+            // Extract leave handler (stored as __ws_leave by metamethod)
+            let leave_handler = match ws_table.raw_get::<Value>("__ws_leave") {
+                Ok(Value::Function(f)) => Some(lua.create_registry_value(f)?),
+                _ => None,
+            };
+
+            // Extract listen event handlers from ws.listen.__ws_handlers table
+            let listen_table: Table = ws_table.raw_get("listen")?;
+            let handlers_table: Table = listen_table.raw_get("__ws_handlers")?;
+
+            let mut event_handlers = AHashMap::new();
+            for pair in handlers_table.pairs::<String, mlua::Function>() {
+                let (event_name, handler_fn) = pair?;
+                let key = lua.create_registry_value(handler_fn)?;
+                event_handlers.insert(event_name, key);
+            }
+
+            // Store the ws table itself in registry (needed at runtime for send context)
+            let ws_table_key = lua.create_registry_value(ws_table)?;
+
+            let config = WsEndpointConfig {
+                join_handler,
+                leave_handler,
+                event_handlers,
+                ws_table_key,
+            };
+
+            Ok(WsRoute {
+                pattern: Bytes::from(path.to_string()),
+                param_names: param_names.to_vec(),
+                is_static: param_names.is_empty(),
+                endpoint_config: config,
+            })
+        }
+
         let mut routes = Vec::new();
+        let mut ws_routes = Vec::new();
         let mut param_names = Vec::new();
-        extract_recursive(self, "", &mut param_names, &mut routes)?;
+        extract_recursive(lua, self, "", &mut param_names, &mut routes, &mut ws_routes)?;
 
         // Sort routes: static routes first (for exact-match priority)
         routes.sort_by(|a, b| match (a.is_static, b.is_static) {
@@ -455,6 +537,6 @@ impl Server for Table {
             _ => std::cmp::Ordering::Equal,
         });
 
-        Ok(RouteTable { routes })
+        Ok(RouteTable { routes, ws_routes })
     }
 }

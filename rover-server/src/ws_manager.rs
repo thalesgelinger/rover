@@ -4,8 +4,6 @@
 /// tracking, and frame buffer pools. Single-threaded -- context fields are safe
 /// because the mio event loop is non-preemptive.
 
-use std::collections::HashMap;
-
 use ahash::AHashMap;
 use mlua::RegistryKey;
 use slab::Slab;
@@ -182,5 +180,165 @@ impl WsManager {
     pub fn set_context(&mut self, conn_idx: usize, endpoint_idx: u16) {
         self.current_conn_idx = conn_idx;
         self.current_endpoint_idx = endpoint_idx;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a WsManager with one endpoint (no Lua needed for tracking tests)
+    fn setup_manager_with_endpoint() -> WsManager {
+        let lua = mlua::Lua::new();
+        let dummy_key = lua.create_registry_value(true).unwrap();
+        let config = WsEndpointConfig {
+            join_handler: None,
+            leave_handler: None,
+            event_handlers: AHashMap::new(),
+            ws_table_key: dummy_key,
+        };
+        let mut mgr = WsManager::new();
+        mgr.register_endpoint(config);
+        mgr
+    }
+
+    #[test]
+    fn test_register_endpoint() {
+        let lua = mlua::Lua::new();
+        let key1 = lua.create_registry_value(true).unwrap();
+        let key2 = lua.create_registry_value(true).unwrap();
+        let mut mgr = WsManager::new();
+
+        let idx0 = mgr.register_endpoint(WsEndpointConfig {
+            join_handler: None,
+            leave_handler: None,
+            event_handlers: AHashMap::new(),
+            ws_table_key: key1,
+        });
+        let idx1 = mgr.register_endpoint(WsEndpointConfig {
+            join_handler: None,
+            leave_handler: None,
+            event_handlers: AHashMap::new(),
+            ws_table_key: key2,
+        });
+
+        assert_eq!(idx0, 0);
+        assert_eq!(idx1, 1);
+        assert_eq!(mgr.endpoints.len(), 2);
+    }
+
+    #[test]
+    fn test_add_remove_connection() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        mgr.add_connection(0, 10);
+        mgr.add_connection(0, 20);
+        mgr.add_connection(0, 30);
+        assert_eq!(mgr.get_endpoint_connections(0), &[10, 20, 30]);
+
+        mgr.remove_connection(0, 20);
+        // swap_remove: 30 takes 20's place
+        assert_eq!(mgr.get_endpoint_connections(0).len(), 2);
+        assert!(mgr.get_endpoint_connections(0).contains(&10));
+        assert!(mgr.get_endpoint_connections(0).contains(&30));
+    }
+
+    #[test]
+    fn test_subscribe_and_topic_members() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        let t0 = mgr.subscribe(1, "room:general");
+        let t1 = mgr.subscribe(2, "room:general");
+        let t2 = mgr.subscribe(3, "room:random");
+
+        // Same topic returns same index
+        assert_eq!(t0, t1);
+        assert_ne!(t0, t2);
+
+        let members = mgr.get_topic_members("room:general").unwrap();
+        assert_eq!(members, &[1, 2]);
+
+        let members = mgr.get_topic_members("room:random").unwrap();
+        assert_eq!(members, &[3]);
+
+        assert!(mgr.get_topic_members("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_subscribe_idempotent() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        mgr.subscribe(1, "room:test");
+        mgr.subscribe(1, "room:test"); // duplicate
+        mgr.subscribe(1, "room:test"); // duplicate
+
+        let members = mgr.get_topic_members("room:test").unwrap();
+        assert_eq!(members, &[1]); // only one entry
+    }
+
+    #[test]
+    fn test_unsubscribe() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        let topic_idx = mgr.subscribe(1, "room:test");
+        mgr.subscribe(2, "room:test");
+
+        mgr.unsubscribe(1, topic_idx);
+        let members = mgr.get_topic_members("room:test").unwrap();
+        assert_eq!(members, &[2]);
+    }
+
+    #[test]
+    fn test_frame_buf_pool() {
+        let mut mgr = WsManager::new();
+
+        // Pool starts pre-filled
+        let initial_count = mgr.frame_bufs.len();
+        assert!(initial_count > 0);
+
+        // Get a buffer
+        let buf = mgr.get_frame_buf();
+        assert_eq!(mgr.frame_bufs.len(), initial_count - 1);
+
+        // Return it
+        mgr.return_frame_buf(buf);
+        assert_eq!(mgr.frame_bufs.len(), initial_count);
+    }
+
+    #[test]
+    fn test_frame_buf_pool_overflow() {
+        let mut mgr = WsManager::new();
+
+        // Drain the pool
+        let mut bufs = Vec::new();
+        while !mgr.frame_bufs.is_empty() {
+            bufs.push(mgr.get_frame_buf());
+        }
+
+        // Getting more still works (creates new)
+        let extra = mgr.get_frame_buf();
+        assert!(extra.is_empty());
+
+        // Return all back -- pool caps at FRAME_BUF_POOL_SIZE
+        for buf in bufs {
+            mgr.return_frame_buf(buf);
+        }
+        mgr.return_frame_buf(extra);
+        assert!(mgr.frame_bufs.len() <= 64); // FRAME_BUF_POOL_SIZE
+    }
+
+    #[test]
+    fn test_set_context() {
+        let mut mgr = WsManager::new();
+        mgr.set_context(42, 3);
+        assert_eq!(mgr.current_conn_idx, 42);
+        assert_eq!(mgr.current_endpoint_idx, 3);
+    }
+
+    #[test]
+    fn test_endpoint_connections_invalid_idx() {
+        let mgr = WsManager::new();
+        // No endpoints registered
+        assert_eq!(mgr.get_endpoint_connections(99), &[] as &[usize]);
     }
 }

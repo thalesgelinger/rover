@@ -219,6 +219,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -261,6 +267,15 @@ name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
+
+[[package]]
+name = "block-buffer"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+dependencies = [
+ "generic-array",
+]
 
 [[package]]
 name = "block-padding"
@@ -630,6 +645,16 @@ dependencies = [
  "quote",
  "syn 2.0.112",
  "unicode-xid",
+]
+
+[[package]]
+name = "digest"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
+dependencies = [
+ "block-buffer",
+ "crypto-common",
 ]
 
 [[package]]
@@ -1347,7 +1372,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "base64",
+ "base64 0.21.7",
  "bincode",
  "bitflags 2.10.0",
  "bytes",
@@ -1392,7 +1417,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aeaf5d19e365465e1c23d687a28c805d7462531b3f619f0ba49d3cf369890a3e"
 dependencies = [
- "base64",
+ "base64 0.21.7",
  "bytes",
  "prost",
  "serde",
@@ -2077,6 +2102,7 @@ dependencies = [
 name = "rover_core"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "anyhow",
  "bytes",
  "colored",
@@ -2118,6 +2144,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "form_urlencoded",
  "httparse",
@@ -2133,6 +2160,7 @@ dependencies = [
  "ryu",
  "serde",
  "serde_json",
+ "sha1",
  "slab",
  "smallvec",
  "tracing",
@@ -2385,6 +2413,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]
@@ -2802,7 +2841,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
- "base64",
+ "base64 0.21.7",
  "bytes",
  "h2",
  "http",
@@ -2826,7 +2865,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc3b0e1cedbf19fdfb78ef3d672cb9928e0a91a9cb4629cc0c916e8cff8aaaa1"
 dependencies = [
- "base64",
+ "base64 0.21.7",
  "bytes",
  "http",
  "http-body",
