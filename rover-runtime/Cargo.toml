@@ -13,6 +13,7 @@ smallvec = "1.15.1"
 colored = "2.2"
 
 # Optional runtime modules
+rover_core = { path = "../rover-core", optional = true }
 rover_server = { path = "../rover-server", optional = true }
 rover_ui = { path = "../rover-ui", optional = true }
 rover_db = { path = "../rover-db", optional = true }
@@ -20,7 +21,7 @@ rover_types = { path = "../rover-types", optional = true }
 
 [features]
 default = ["http", "db", "server"]
-server = ["rover_server", "rover_types"]
+server = ["rover_core", "rover_server", "rover_types"]
 ui = ["rover_ui", "rover_types"]
 db = ["rover_db", "rover_types"]
 http = []

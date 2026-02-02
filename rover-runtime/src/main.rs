@@ -1,97 +1,22 @@
 use anyhow::Result;
-use mlua::{Lua, Table, Value};
 use std::env;
 
 fn main() -> Result<()> {
-    let lua = Lua::new();
-
-    // Setup arg table
+    // Get command line arguments
     let args: Vec<String> = env::args().collect();
-    let arg_table = lua.create_table()?;
-    for (i, arg) in args.iter().enumerate() {
-        arg_table.set(i, arg.as_str())?;
-    }
-    lua.globals().set("arg", arg_table)?;
 
-    // Register core modules
-    register_core_modules(&lua)?;
+    // Load embedded bundle
+    let bundle = match load_embedded_bundle() {
+        Some(bundle) => bundle,
+        None => {
+            eprintln!("Error: No embedded bundle found");
+            eprintln!("This binary appears to be an unbundled runtime.");
+            std::process::exit(1);
+        }
+    };
 
-    // Try to load embedded bundle
-    if let Some(bundle) = load_embedded_bundle() {
-        lua.load(&bundle).set_name("bundle").exec()?;
-    } else {
-        eprintln!("Error: No embedded bundle found");
-        std::process::exit(1);
-    }
-
-    Ok(())
-}
-
-fn register_core_modules(lua: &Lua) -> Result<()> {
-    let rover = lua.create_table()?;
-
-    #[cfg(feature = "server")]
-    {
-        rover.set(
-            "server",
-            lua.create_function(|lua, opts: Table| {
-                let server = create_server(lua, opts)?;
-                Ok(server)
-            })?,
-        )?;
-    }
-
-    #[cfg(feature = "ui")]
-    {
-        // UI module will be registered here
-        register_ui_module(lua, &rover)?;
-    }
-
-    #[cfg(feature = "db")]
-    {
-        // DB module will be registered here
-        let db_module = create_db_module(lua)?;
-        rover.set("db", db_module)?;
-    }
-
-    lua.globals().set("rover", rover)?;
-    Ok(())
-}
-
-#[cfg(feature = "server")]
-fn create_server(lua: &Lua, config: Table) -> Result<Table> {
-    use rover_server::{RouteTable, ServerConfig};
-
-    let server = lua.create_table()?;
-    server.set("config", config)?;
-
-    // Add server methods
-    let json_helper = lua.create_table()?;
-    let json_call = lua.create_function(|_lua, (_self, data): (Table, Value)| {
-        // Simplified - would use rover_server types
-        Ok(())
-    })?;
-    let meta = lua.create_table()?;
-    meta.set("__call", json_call)?;
-    json_helper.set_metatable(Some(meta))?;
-    server.set("json", json_helper)?;
-
-    Ok(server)
-}
-
-#[cfg(feature = "ui")]
-fn register_ui_module(lua: &Lua, rover: &Table) -> Result<()> {
-    // Simplified UI module registration
-    let ui = lua.create_table()?;
-    rover.set("ui", ui)?;
-    Ok(())
-}
-
-#[cfg(feature = "db")]
-fn create_db_module(lua: &Lua) -> Result<Table> {
-    let db = lua.create_table()?;
-    // Simplified DB module
-    Ok(db)
+    // Run the bundled application using rover_core
+    rover_core::run_from_str(&bundle, &args[1..], false)
 }
 
 /// Load embedded bundle from binary trailer
