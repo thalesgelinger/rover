@@ -24,6 +24,20 @@ pub struct BuildOptions {
 pub fn run_build(options: BuildOptions) -> Result<()> {
     println!("{}", "📦 Building Rover application...".cyan());
 
+    // Validate target if provided
+    let target = options.target.unwrap_or_else(|| get_host_target());
+    if !SUPPORTED_TARGETS.contains(&target.as_str()) {
+        return Err(anyhow::anyhow!(
+            "Unsupported target: {}\n\nSupported targets:\n{}\n\nUse --target to specify a supported target.",
+            target,
+            SUPPORTED_TARGETS
+                .iter()
+                .map(|t| format!("  - {}", t))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
     // Step 1: Bundle the application
     let base_path = options
         .entrypoint
@@ -57,7 +71,6 @@ pub fn run_build(options: BuildOptions) -> Result<()> {
     let bundle_lua = serialize_bundle(&bundle);
 
     // Step 4: Select runtime
-    let target = options.target.unwrap_or_else(|| get_host_target());
     let runtime_path = find_runtime(&target, features)?;
 
     println!(
