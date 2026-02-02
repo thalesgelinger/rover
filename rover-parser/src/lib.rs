@@ -823,7 +823,6 @@ print(value)
 pub struct AppFeatures {
     pub server: bool,
     pub ui: bool,
-    pub db: bool,
 }
 
 /// Detect app features from code using AST analysis
@@ -844,33 +843,19 @@ fn detect_features_recursive(node: &tree_sitter::Node, code: &str, features: &mu
     match node.kind() {
         "dot_index_expression" => {
             let text = &code[node.start_byte()..node.end_byte()];
-            // Check for rover.server
-            if text == "rover.server" || text.starts_with("rover.server.") {
+            // Check for rover.server (exact match only)
+            if text == "rover.server" {
                 features.server = true;
             }
-            // Check for rover.render (UI)
-            if text == "rover.render" || text.starts_with("rover.render.") {
-                features.ui = true;
-            }
-            // Check for rover.db
-            if text == "rover.db" || text.starts_with("rover.db.") {
-                features.db = true;
-            }
         }
-        "function_call" => {
-            // Check for direct calls like rover.server({})
+        "function_declaration" => {
+            // Check for function rover.render() ... end
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "dot_index_expression" {
-                    let text = &code[child.start_byte()..child.end_byte()];
-                    if text == "rover.server" {
-                        features.server = true;
-                    }
-                    if text == "rover.render" {
+                if child.kind() == "function_name" {
+                    let name = &code[child.start_byte()..child.end_byte()];
+                    if name == "rover.render" {
                         features.ui = true;
-                    }
-                    if text == "rover.db" {
-                        features.db = true;
                     }
                 }
             }
@@ -903,22 +888,13 @@ return api
     #[test]
     fn test_detect_ui_feature() {
         let code = r#"
-rover.render(function()
+function rover.render()
     return {}
-end)
+end
 "#;
         let features = detect_features(code);
         assert!(features.ui);
         assert!(!features.server);
-    }
-
-    #[test]
-    fn test_detect_db_feature() {
-        let code = r#"
-local users = rover.db.query("SELECT * FROM users")
-"#;
-        let features = detect_features(code);
-        assert!(features.db);
     }
 
     #[test]
@@ -930,6 +906,5 @@ print(x)
         let features = detect_features(code);
         assert!(!features.server);
         assert!(!features.ui);
-        assert!(!features.db);
     }
 }

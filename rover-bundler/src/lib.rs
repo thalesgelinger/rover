@@ -43,7 +43,6 @@ pub fn bundle(options: BundleOptions) -> Result<Bundle> {
         let file_features = detect_features(&content);
         bundle.features.server |= file_features.server;
         bundle.features.ui |= file_features.ui;
-        bundle.features.db |= file_features.db;
 
         // Add to bundle
         let relative_path = make_relative(&path, &options.base_path)?;
