@@ -19,7 +19,7 @@ rover_db = { path = "../rover-db", optional = true }
 rover_types = { path = "../rover-types", optional = true }
 
 [features]
-default = ["http", "db"]
+default = ["http", "db", "server"]
 server = ["rover_server", "rover_types"]
 ui = ["rover_ui", "rover_types"]
 db = ["rover_db", "rover_types"]

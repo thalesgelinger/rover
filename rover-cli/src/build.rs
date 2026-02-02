@@ -125,24 +125,12 @@ fn get_host_target() -> String {
 }
 
 /// Find the appropriate runtime binary
-fn find_runtime(target: &str, features: &rover_parser::AppFeatures) -> Result<PathBuf> {
-    // Build runtime feature suffix
-    let mut feature_suffix = String::new();
-    if features.server {
-        feature_suffix.push_str("-server");
-    }
-    if features.ui {
-        feature_suffix.push_str("-ui");
-    }
-
-    // For now, use a generic runtime (will be replaced with feature-specific ones)
-    let runtime_name = format!("rover-runtime-{}{}", target, feature_suffix);
-
-    // Search paths (in order of priority)
+fn find_runtime(_target: &str, _features: &rover_parser::AppFeatures) -> Result<PathBuf> {
+    // For now, use the local runtime binary
+    // In the future, this will select feature-specific and target-specific runtimes
     let search_paths = [
-        PathBuf::from(format!("./target/{}", runtime_name)),
-        PathBuf::from(format!("./target/release/{}-runtime", runtime_name)),
-        PathBuf::from(format!("./target/debug/{}-runtime", runtime_name)),
+        PathBuf::from("./target/release/rover-runtime"),
+        PathBuf::from("./target/debug/rover-runtime"),
     ];
 
     for path in &search_paths {
@@ -151,27 +139,11 @@ fn find_runtime(target: &str, features: &rover_parser::AppFeatures) -> Result<Pa
         }
     }
 
-    // If no feature-specific runtime found, try generic
-    let generic_runtime = format!("rover-runtime-{}", target);
-    let generic_paths = [
-        PathBuf::from(format!("./target/{}", generic_runtime)),
-        PathBuf::from(format!("./target/release/{}-runtime", generic_runtime)),
-        PathBuf::from(format!("./target/debug/{}-runtime", generic_runtime)),
-    ];
-
-    for path in &generic_paths {
-        if path.exists() {
-            return Ok(path.clone());
-        }
-    }
-
     // Error with helpful message
     Err(anyhow::anyhow!(
-        "Runtime not found for target: {}\n\nExpected at one of:\n{}\n\nTo build locally:\n  cargo build --package rover-runtime --release\n\nFor cross-compilation, prebuilt runtimes will be downloaded in the future.",
-        target,
+        "Runtime binary not found\n\nExpected at one of:\n{}\n\nTo build locally:\n  cargo build --package rover_runtime --release\n\nFor cross-compilation, prebuilt runtimes will be downloaded in the future.",
         search_paths
             .iter()
-            .chain(generic_paths.iter())
             .map(|p| format!("  - {}", p.display()))
             .collect::<Vec<_>>()
             .join("\n")
