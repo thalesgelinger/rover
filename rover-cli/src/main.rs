@@ -1,3 +1,4 @@
+mod build;
 mod check;
 mod fmt;
 
@@ -63,6 +64,17 @@ enum Commands {
     Db {
         #[command(subcommand)]
         action: DbAction,
+    },
+    /// Build a standalone binary from a Rover Lua file
+    Build {
+        /// Path to the Lua file to build
+        file: PathBuf,
+        /// Output binary name (default: derived from entrypoint)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Target platform (default: host)
+        #[arg(short, long)]
+        target: Option<String>,
     },
 }
 
@@ -143,10 +155,16 @@ fn main() -> Result<()> {
             platform,
             args,
         } => run_file(file, yolo, platform, args),
+        Commands::Build { file, out, target } => run_build(file, out, target),
     }
 }
 
-fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>, args: Vec<String>) -> Result<()> {
+fn run_file(
+    file: PathBuf,
+    yolo: bool,
+    platform: Option<Platform>,
+    args: Vec<String>,
+) -> Result<()> {
     // Run pre-execution check (syntax/type errors)
     check::pre_run_check(&file)?;
 
@@ -160,8 +178,8 @@ fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>, args: Vec<Str
         }
         Some(Platform::Stub) => {
             let renderer = StubRenderer::new();
-            let mut app = App::new(renderer)
-                .map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
+            let mut app =
+                App::new(renderer).map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
             register_extra_modules(app.lua())?;
             let content = std::fs::read_to_string(&file)
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
@@ -512,4 +530,13 @@ fn prompt_yn(message: &str) -> Result<bool> {
     io::stdin().lock().read_line(&mut line)?;
     let answer = line.trim().to_lowercase();
     Ok(answer == "y" || answer == "yes")
+}
+
+fn run_build(file: PathBuf, out: Option<PathBuf>, target: Option<String>) -> Result<()> {
+    use build::{BuildOptions, run_build};
+    run_build(BuildOptions {
+        entrypoint: file,
+        output: out,
+        target,
+    })
 }
