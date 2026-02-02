@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rover_parser::analyze;
+use rover_parser::{AppFeatures, detect_features};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,14 +10,6 @@ pub struct Bundle {
     pub entrypoint: PathBuf,
     pub files: HashMap<String, String>, // relative path -> content
     pub features: AppFeatures,
-}
-
-/// Detected app features
-#[derive(Debug, Clone, Default)]
-pub struct AppFeatures {
-    pub server: bool,
-    pub ui: bool,
-    pub db: bool,
 }
 
 /// Bundle options
@@ -47,8 +39,11 @@ pub fn bundle(options: BundleOptions) -> Result<Bundle> {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
 
-        // Detect features
-        detect_features(&content, &mut bundle.features);
+        // Detect features using AST analysis
+        let file_features = detect_features(&content);
+        bundle.features.server |= file_features.server;
+        bundle.features.ui |= file_features.ui;
+        bundle.features.db |= file_features.db;
 
         // Add to bundle
         let relative_path = make_relative(&path, &options.base_path)?;
@@ -66,24 +61,6 @@ pub fn bundle(options: BundleOptions) -> Result<Bundle> {
     }
 
     Ok(bundle)
-}
-
-/// Detect app features from code
-fn detect_features(code: &str, features: &mut AppFeatures) {
-    // Check for server usage
-    if code.contains("rover.server") || code.contains("rover.server(") {
-        features.server = true;
-    }
-
-    // Check for UI usage (rover.render)
-    if code.contains("rover.render") || code.contains("rover.render(") {
-        features.ui = true;
-    }
-
-    // Check for DB usage
-    if code.contains("rover.db") || code.contains("rover.db.") {
-        features.db = true;
-    }
 }
 
 /// Find all require() calls in code
@@ -214,6 +191,7 @@ end
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rover_parser::detect_features;
 
     #[test]
     fn test_detect_features_server() {
@@ -221,8 +199,7 @@ mod tests {
 local api = rover.server {}
 return api
 "#;
-        let mut features = AppFeatures::default();
-        detect_features(code, &mut features);
+        let features = detect_features(code);
         assert!(features.server);
         assert!(!features.ui);
     }
@@ -234,8 +211,7 @@ rover.render(function()
     return {}
 end)
 "#;
-        let mut features = AppFeatures::default();
-        detect_features(code, &mut features);
+        let features = detect_features(code);
         assert!(features.ui);
         assert!(!features.server);
     }

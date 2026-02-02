@@ -817,3 +817,119 @@ print(value)
         assert!(value_symbol.used, "value should be marked as used");
     }
 }
+
+/// Detected app features from AST analysis
+#[derive(Debug, Clone, Default)]
+pub struct AppFeatures {
+    pub server: bool,
+    pub ui: bool,
+    pub db: bool,
+}
+
+/// Detect app features from code using AST analysis
+pub fn detect_features(code: &str) -> AppFeatures {
+    let mut features = AppFeatures::default();
+    let mut parser = Parser::new();
+    let language = tree_sitter_lua::LANGUAGE;
+    parser
+        .set_language(&language.into())
+        .expect("Error loading Lua parser");
+    let tree = parser.parse(code, None).unwrap();
+
+    detect_features_recursive(&tree.root_node(), code, &mut features);
+    features
+}
+
+fn detect_features_recursive(node: &tree_sitter::Node, code: &str, features: &mut AppFeatures) {
+    match node.kind() {
+        "dot_index_expression" => {
+            let text = &code[node.start_byte()..node.end_byte()];
+            // Check for rover.server
+            if text == "rover.server" || text.starts_with("rover.server.") {
+                features.server = true;
+            }
+            // Check for rover.render (UI)
+            if text == "rover.render" || text.starts_with("rover.render.") {
+                features.ui = true;
+            }
+            // Check for rover.db
+            if text == "rover.db" || text.starts_with("rover.db.") {
+                features.db = true;
+            }
+        }
+        "function_call" => {
+            // Check for direct calls like rover.server({})
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "dot_index_expression" {
+                    let text = &code[child.start_byte()..child.end_byte()];
+                    if text == "rover.server" {
+                        features.server = true;
+                    }
+                    if text == "rover.render" {
+                        features.ui = true;
+                    }
+                    if text == "rover.db" {
+                        features.db = true;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        detect_features_recursive(&child, code, features);
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_server_feature() {
+        let code = r#"
+local api = rover.server {}
+return api
+"#;
+        let features = detect_features(code);
+        assert!(features.server);
+        assert!(!features.ui);
+    }
+
+    #[test]
+    fn test_detect_ui_feature() {
+        let code = r#"
+rover.render(function()
+    return {}
+end)
+"#;
+        let features = detect_features(code);
+        assert!(features.ui);
+        assert!(!features.server);
+    }
+
+    #[test]
+    fn test_detect_db_feature() {
+        let code = r#"
+local users = rover.db.query("SELECT * FROM users")
+"#;
+        let features = detect_features(code);
+        assert!(features.db);
+    }
+
+    #[test]
+    fn test_detect_no_features() {
+        let code = r#"
+local x = 1 + 2
+print(x)
+"#;
+        let features = detect_features(code);
+        assert!(!features.server);
+        assert!(!features.ui);
+        assert!(!features.db);
+    }
+}
