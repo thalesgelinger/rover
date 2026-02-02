@@ -141,12 +141,12 @@ fn main() -> Result<()> {
             file,
             yolo,
             platform,
-            args: _,
-        } => run_file(file, yolo, platform),
+            args,
+        } => run_file(file, yolo, platform, args),
     }
 }
 
-fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>) -> Result<()> {
+fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>, args: Vec<String>) -> Result<()> {
     // Run pre-execution check (syntax/type errors)
     check::pre_run_check(&file)?;
 
@@ -156,7 +156,7 @@ fn run_file(file: PathBuf, yolo: bool, platform: Option<Platform>) -> Result<()>
     match platform {
         None => {
             // Direct execution without UI
-            rover_core::run(file.to_str().unwrap(), false)
+            rover_core::run(file.to_str().unwrap(), &args, false)
         }
         Some(Platform::Stub) => {
             let renderer = StubRenderer::new();

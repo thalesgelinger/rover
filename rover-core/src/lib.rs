@@ -35,9 +35,17 @@ impl RoverApp for Table {
     }
 }
 
-pub fn run(path: &str, verbose: bool) -> Result<()> {
+pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     let lua = Lua::new();
     let content = std::fs::read_to_string(path)?;
+
+    let arg_table = lua.create_table()?;
+    arg_table.set(0, path)?; 
+    for (i, arg) in args.iter().enumerate() {
+        arg_table.set(i + 1, arg.as_str())?;
+    }
+    arg_table.set(-1, "rover")?;
+    lua.globals().set("arg", arg_table)?;
 
     // Initialize signal runtime (interior mutability now handled by runtime itself)
     let runtime: SharedSignalRuntime = Rc::new(SignalRuntime::new());
@@ -303,7 +311,7 @@ mod tests {
 
     #[test]
     fn should_read_and_print_lua_file() {
-        let result = run("../examples/starter.lua", false);
+        let result = run("../examples/starter.lua", &[], false);
         assert_eq!(result.unwrap(), ());
     }
 
