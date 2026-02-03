@@ -211,6 +211,16 @@ fn execute_migration_lua(
     let has_up = globals.get::<LuaFunction>("up").is_ok();
     let has_down = globals.get::<LuaFunction>("down").is_ok();
 
+    // Validate: cannot have both change() and up()/down()
+    if has_change && (has_up || has_down) {
+        return Err("migration cannot define both change() and up()/down(). Use either change() OR up()/down(), not both.".into());
+    }
+
+    // Validate: must have at least one migration function
+    if !has_change && !has_up && !has_down {
+        return Err("migration must define change() or up()/down() functions.".into());
+    }
+
     // Call the appropriate function
     if has_change {
         let change_fn: LuaFunction = globals.get("change")?;
@@ -222,7 +232,6 @@ fn execute_migration_lua(
         let up_fn: LuaFunction = globals.get("up")?;
         up_fn.call::<()>(())?;
     }
-    // If no functions defined, assume DSL calls are at top-level (legacy/test support)
 
     // Get recorded operations
     let operations: LuaTable = migration
@@ -256,6 +265,11 @@ fn execute_migration_lua(
         if let Some(sql) = operation_to_sql(op)? {
             sql_statements.push(sql);
         }
+    }
+
+    // Error if no operations were generated
+    if sql_statements.is_empty() {
+        return Err("migration generated zero SQL operations. Ensure your migration defines actual database changes.".into());
     }
 
     Ok(sql_statements)

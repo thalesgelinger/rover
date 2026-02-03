@@ -24,10 +24,12 @@ fn test_migration_execution() {
 
     // Create a simple migration
     let migration_content = r#"
-migration.users:create({
-    name = rover.guard:string():required(),
-    email = rover.guard:string(),
-})
+function change()
+    migration.users:create({
+        name = rover.guard:string():required(),
+        email = rover.guard:string(),
+    })
+end
 "#;
 
     let migration_file = migrations_dir.join("001_create_users.lua");
@@ -85,9 +87,11 @@ fn test_rollback_migration() {
 
     // Create a simple migration
     let migration_content = r#"
-migration.users:create({
-    name = rover.guard:string():required(),
-})
+function change()
+    migration.users:create({
+        name = rover.guard:string():required(),
+    })
+end
 "#;
 
     let migration_file = migrations_dir.join("002_rollback_test.lua");
@@ -144,8 +148,12 @@ fn test_migration_status() {
     std::fs::create_dir_all(migrations_dir).expect("Failed to create migrations dir");
 
     // Create multiple migrations
-    let migration1 = r#"migration.posts:create({title = rover.guard:string()})"#;
-    let migration2 = r#"migration.comments:create({body = rover.guard:string()})"#;
+    let migration1 = r#"function change()
+    migration.posts:create({title = rover.guard:string()})
+end"#;
+    let migration2 = r#"function change()
+    migration.comments:create({body = rover.guard:string()})
+end"#;
 
     std::fs::write(migrations_dir.join("003_posts.lua"), migration1).unwrap();
     std::fs::write(migrations_dir.join("004_comments.lua"), migration2).unwrap();

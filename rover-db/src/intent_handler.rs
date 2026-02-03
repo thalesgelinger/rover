@@ -111,7 +111,7 @@ pub fn generate_migration_content(
 
     if is_create {
         lines.push(format!("-- Create {} table", table_name));
-        lines.push("function migration.change()".to_string());
+        lines.push("function change()".to_string());
         lines.push(format!("    migration.{}:create({{", table_name));
 
         let mut sorted_fields: Vec<_> = fields.iter().collect();
@@ -142,7 +142,7 @@ pub fn generate_migration_content(
         lines.push("end".to_string());
     } else {
         lines.push(format!("-- Add fields to {}", table_name));
-        lines.push("function migration.change()".to_string());
+        lines.push("function change()".to_string());
         lines.push(format!("    migration.{}:alter_table()", table_name));
 
         for (i, field) in fields.iter().enumerate() {

@@ -41,17 +41,59 @@ pub fn load_schemas(
         .call::<()>(())
         .map_err(|e| format!("Failed to clear schemas: {}", e))?;
 
-    // Load guard module for schema field types
+    // Load core guard module
     let guard: LuaTable = lua
-        .load(include_str!("guard.lua"))
+        .load(include_str!("../../rover-core/src/guard.lua"))
         .set_name("guard.lua")
         .eval()
         .map_err(|e| format!("Failed to load guard: {}", e))?;
 
-    // Make schema DSL available globally as rover.db.schema and guard
+    // Extend guard with DB-specific modifiers
+    let db_modifiers = r#"
+        return {
+            primary = function(self)
+                self._primary = true
+                self._nullable = false
+                return self
+            end,
+            auto = function(self)
+                self._auto = true
+                return self
+            end,
+            unique = function(self)
+                self._unique = true
+                return self
+            end,
+            references = function(self, table_col)
+                self._references_table = table_col
+                return self
+            end,
+            index = function(self)
+                self._index_flag = true
+                return self
+            end,
+        }
+    "#;
+
+    let db_methods: LuaTable = lua
+        .load(db_modifiers)
+        .set_name("db_guard_modifiers.lua")
+        .eval()
+        .map_err(|e| format!("Failed to load DB guard modifiers: {}", e))?;
+
+    let extend_fn: LuaFunction = guard
+        .get("extend")
+        .map_err(|e| format!("Failed to get extend function: {}", e))?;
+
+    // Call extend with guard as self and db_methods as argument
+    let db_guard: LuaTable = extend_fn
+        .call::<LuaTable>((guard.clone(), db_methods))
+        .map_err(|e| format!("Failed to extend guard: {}", e))?;
+
+    // Make schema DSL and guards available globally
     let globals = lua.globals();
     globals
-        .set("guard", guard)
+        .set("guard", guard.clone())
         .map_err(|e| format!("Failed to set guard: {}", e))?;
 
     let rover: LuaTable = globals
@@ -60,6 +102,13 @@ pub fn load_schemas(
     let db: LuaTable = rover
         .get("db")
         .unwrap_or_else(|_| lua.create_table().unwrap());
+
+    // Set up rover.guard (base guard) and rover.db.guard (extended with DB modifiers)
+    rover
+        .set("guard", guard.clone())
+        .map_err(|e| format!("Failed to set rover.guard: {}", e))?;
+    db.set("guard", db_guard.clone())
+        .map_err(|e| format!("Failed to set rover.db.guard: {}", e))?;
     db.set("schema", schema_dsl.clone())
         .map_err(|e| format!("Failed to set schema: {}", e))?;
     rover

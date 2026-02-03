@@ -59,7 +59,8 @@ pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
 
     println!("\n{}", "🔍 Analyzing code intent...".cyan());
 
-    let schemas = rover_db::load_schemas_from_dir(&schemas_dir).unwrap_or_default();
+    let schemas = rover_db::load_schemas_from_dir(&schemas_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to load schemas: {}", e))?;
     let comparison = rover_db::compare_intent_with_schemas(&intent, &schemas);
 
     let mut needs_migration = false;
