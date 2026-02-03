@@ -74,8 +74,6 @@ Rover supports all standard HTTP methods as function suffixes:
 - `put` - PUT requests
 - `patch` - PATCH requests
 - `delete` - DELETE requests
-- `head` - HEAD requests
-- `options` - OPTIONS requests
 
 Example with multiple methods on the same resource:
 

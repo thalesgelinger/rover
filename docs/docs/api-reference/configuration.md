@@ -14,7 +14,8 @@ Pass configuration options to `rover.server`:
 local api = rover.server {
     host = "127.0.0.1",       -- default: "localhost"
     port = 3000,              -- default: 4242
-    log_level = "debug"       -- "debug" | "info" | "warn" | "error" | "nope"
+    log_level = "debug",     -- default: "debug" ("debug" | "info" | "warn" | "error" | "nope")
+    docs = true               -- default: true (enable OpenAPI docs)
 }
 
 function api.hello.get(ctx)
@@ -57,9 +58,10 @@ rover.server {
 ### `log_level`
 
 - **Type**: `string`
-- **Default**: `"info"`
-- **Options**: `"debug"`, `"info"`, `"warn"`, `"error"`, `"nope"`
+- **Default**: "debug"
+- **Options**: "debug", "info", "warn", "error", "nope"
 - **Description**: Set the logging verbosity level
+
 
 Example:
 
@@ -69,13 +71,28 @@ rover.server {
 }
 ```
 
+### `docs`
+
+- **Type**: `boolean`
+- **Default**: `true`
+- **Description**: Enable OpenAPI docs at `/docs`
+
+Example:
+
+```lua
+rover.server {
+    docs = false  -- Disable docs endpoint
+}
+```
+
 ## Complete Example
 
 ```lua
 local api = rover.server {
     host = "0.0.0.0",
     port = 8080,
-    log_level = "info"
+    log_level = "info",
+    docs = true
 }
 
 function api.health.get(ctx)
@@ -89,3 +106,4 @@ This configuration will:
 - Listen on all network interfaces (`0.0.0.0`)
 - Use port 8080
 - Show info-level logs and above
+- Expose OpenAPI docs at `/docs`

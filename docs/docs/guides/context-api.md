@@ -88,6 +88,27 @@ function api.users.post(ctx)
 end
 ```
 
+`ctx:body()` returns a BodyValue with helpers:
+
+- `:json()` - parse JSON to Lua table
+- `:as_string()` - raw JSON string (zero-copy)
+- `:text()` - body as text
+- `:bytes()` - body as byte table
+- `:expect(schema)` - validate with `rover.guard`
+
+Example validation:
+
+```lua
+function api.users.post(ctx)
+    local user = ctx:body():expect {
+        name = rover.guard:string():required(),
+        email = rover.guard:string():required(),
+    }
+
+    return api.json(user)
+end
+```
+
 ## Complete Example
 
 Here's a comprehensive example using multiple context methods:

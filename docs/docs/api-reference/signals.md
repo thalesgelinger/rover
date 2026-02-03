@@ -217,6 +217,25 @@ print(suffix.val)  -- "42 items"
 
 ---
 
+## Utilities
+
+- `rover.any(...values)` - derived true if any argument is truthy
+- `rover.all(...values)` - derived true if all arguments are truthy
+- `rover.none(...values)` - derived true if none are truthy
+
+Example:
+
+```lua
+local a = rover.signal(true)
+local b = rover.signal(false)
+
+local any = rover.any(a, b)
+local all = rover.all(a, b)
+local none = rover.none(a, b)
+```
+
+---
+
 ## Type Compatibility
 
 Signals can store any Lua value:

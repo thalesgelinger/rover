@@ -47,7 +47,7 @@ function api.health.get(ctx)
 end
 
 -- Custom status code
-function api.error.get(ctx)
+function api:error.get(ctx)
     return api.text:status(503, "Service Unavailable")
 end
 ```
@@ -60,6 +60,11 @@ Return HTML with the `api.html` builder:
 -- 200 OK with text/html
 function api.home.get(ctx)
     return api.html("<h1>Welcome</h1>")
+end
+
+-- Template rendering with data
+function api.page.get(ctx)
+    return api.html({ title = "Home" }) [[<h1>{{ title }}</h1>]]
 end
 
 -- Custom status code (404)
@@ -91,13 +96,13 @@ end
 
 ## Error Responses
 
-Return error responses with the `api.error` builder:
+Return error responses with the `api:error` builder:
 
 ```lua
 function api.protected.get(ctx)
     local auth = ctx:headers()["Authorization"]
     if not auth then
-        return api.error(401, "Unauthorized")
+        return api:error(401, "Unauthorized")
     end
     return api.json { data = "secret" }
 end
@@ -123,6 +128,20 @@ function api.items.p_id.delete(ctx)
 end
 ```
 
+## Raw Responses
+
+Return raw bytes with no automatic content-type:
+
+```lua
+function api.binary.get(ctx)
+    return api.raw("raw-bytes")
+end
+
+function api.binary.post(ctx)
+    return api.raw:status(201, "created")
+end
+```
+
 ## Summary
 
 | Builder | Default Status | Content-Type | Example |
@@ -131,8 +150,9 @@ end
 | `api.text` | 200 | `text/plain` | `api.text("Hello")` |
 | `api.html` | 200 | `text/html` | `api.html("<h1>Hi</h1>")` |
 | `api.redirect` | 302 | - | `api.redirect("/path")` |
-| `api.error` | Custom | `application/json` | `api.error(401, "msg")` |
+| `api:error` | Custom | `application/json` | `api:error(401, "msg")` |
 | `api.no_content` | 204 | - | `api.no_content()` |
+| `api.raw` | 200 | - | `api.raw("raw-bytes")` |
 | Plain table | 200 | `application/json` | `{ message = "..." }` |
 
 ## Next Steps
