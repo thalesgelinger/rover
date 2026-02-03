@@ -2082,6 +2082,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rover_bundler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rover-parser",
+ "tree-sitter",
+ "tree-sitter-lua",
+]
+
+[[package]]
 name = "rover_cli"
 version = "0.1.0"
 dependencies = [
@@ -2091,6 +2101,7 @@ dependencies = [
  "mlua",
  "rover-lsp",
  "rover-parser",
+ "rover_bundler",
  "rover_core",
  "rover_db",
  "rover_ui",
@@ -2136,6 +2147,24 @@ dependencies = [
  "tokio",
  "tree-sitter",
  "tree-sitter-lua",
+]
+
+[[package]]
+name = "rover_runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "colored",
+ "mlua",
+ "rover_core",
+ "rover_db",
+ "rover_server",
+ "rover_types",
+ "rover_ui",
+ "serde_json",
+ "smallvec",
+ "tracing",
 ]
 
 [[package]]

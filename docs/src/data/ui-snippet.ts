@@ -1,23 +1,15 @@
-export default `local app = rover.app()
+export default `local ru = rover.ui
 
-function app.init()
-    return 0
-end
+function rover.render()
+    local count = rover.signal(0)
 
-function app.increase(state)
-    return state + 1
-end
-
-function app.render(state)
-    return rover.col {
-        width = "full",
-        height = 100,
-        rover.text { "Count: " .. state },
-        rover.row {
-            rover.button { 
-                "Increase", 
-                press = "increase" 
-            },
-        }
+    return ru.column {
+        ru.text { "Count: " .. count },
+        ru.button {
+            label = "Increase",
+            on_click = function()
+                count.val = count.val + 1
+            end,
+        },
     }
 end`;
