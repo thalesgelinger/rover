@@ -129,27 +129,22 @@ end
 
 **Performance**: All builders use pre-serialization for near-zero overhead (~182k req/s)
 
-### UI Framework (Coming Soon)
+### UI Runtime (Experimental)
 
 ```lua
-local app = rover.app()
+local ru = rover.ui
 
-function app.init()
-    return 0
-end
+function rover.render()
+    local count = rover.signal(0)
 
-function app.increase(state)
-    return state + 1
-end
-
-function app.render(state)
-    return rover.col {
-        width = "full",
-        height = 100,
-        rover.text { "Count: " .. state },
-        rover.row {
-            rover.button { "Increase", press = "increase" }
-        }
+    return ru.column {
+        ru.text { "Count: " .. count },
+        ru.button {
+            label = "Increase",
+            on_click = function()
+                count.val = count.val + 1
+            end,
+        },
     }
 end
 ```
@@ -183,7 +178,8 @@ Server options:
 rover.server {
     host = "127.0.0.1",       -- default: localhost
     port = 3000,              -- default: 4242
-    log_level = "debug"       -- "debug" | "info" | "warn" | "error" | "nope"
+    log_level = "debug",     -- default: debug
+    docs = true               -- default: true
 }
 ```
 
@@ -195,14 +191,9 @@ rover.server {
 
 ## HTTP Methods
 
-Supported: `get`, `post`, `put`, `patch`, `delete`, `head`, `options`
+Supported: `get`, `post`, `put`, `patch`, `delete`
 
 ## Roadmap
 
-- [x] HTTP server with automatic routing
-- [x] Context API (params, query, headers, body)
-- [ ] WebSocket support
-- [ ] Database integrations
-- [ ] UI framework with reactive state for mobile/web/desktop
-- [ ] Hot reload
+See `ROADMAP.md`.
 
