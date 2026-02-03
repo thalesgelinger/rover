@@ -1,11 +1,11 @@
 mod app_type;
 mod auto_table;
 mod error_reporter;
-mod guard;
+pub mod guard;
 pub mod html;
-mod http;
-mod io;
-mod server;
+pub mod http;
+pub mod io;
+pub mod server;
 pub mod template;
 
 use html::create_html_module;
