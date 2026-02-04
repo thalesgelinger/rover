@@ -277,8 +277,38 @@ pub(super) fn build_specs() -> Vec<ApiSpec> {
             "Global Rover namespace.",
             [
                 api_member!("server" => "rover_server_constructor", "Create a Rover server.", method),
-                api_member!("guard" => "rover_guard", "Guard builder namespace.", field)
+                api_member!("guard" => "rover_guard", "Guard builder namespace.", field),
+                api_member!("db" => "rover_db", "Database namespace.", field)
             ]
+        ),
+        api_object!(
+            "rover_db",
+            "Database namespace.",
+            [
+                api_member!("connect" => "rover_db_connect", "Connect to database.", method),
+                api_member!("guard" => "rover_db_guard", "Schema guard namespace.", field),
+                api_member!("schema" => "rover_db_schema", "Schema DSL namespace.", field),
+                api_member!("count" => "rover_db_agg", "Count aggregate.", method),
+                api_member!("sum" => "rover_db_agg", "Sum aggregate.", method),
+                api_member!("avg" => "rover_db_agg", "Average aggregate.", method),
+                api_member!("min" => "rover_db_agg", "Min aggregate.", method),
+                api_member!("max" => "rover_db_agg", "Max aggregate.", method)
+            ]
+        ),
+        api_function!(
+            "rover_db_connect",
+            "Connect to database.",
+            [api_param!("config", "table", "Database config table")],
+            Some("rover_db_connection")
+        ),
+        api_object!("rover_db_connection", "Database connection instance.", []),
+        api_object!("rover_db_guard", "Schema guard namespace.", []),
+        api_object!("rover_db_schema", "Schema DSL namespace.", []),
+        api_function!(
+            "rover_db_agg",
+            "Aggregate expression.",
+            [api_param!("expr", "string", "Aggregate expression")],
+            Some("table")
         ),
         api_function!(
             "rover_server_constructor",

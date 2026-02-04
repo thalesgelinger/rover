@@ -16,5 +16,6 @@ tower-lsp = "0.20"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rover-parser = { path = "../rover-parser" }
+rover_db = { path = "../rover-db" }
 tree-sitter = "0.26.3"
 tree-sitter-lua = "0.2.0"

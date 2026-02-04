@@ -7,10 +7,14 @@
 //! - Bubbles constraints from asserts to function parameters
 //! - Supports cross-file type flow via require()
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tree_sitter::Node;
+use tree_sitter::{Node, Parser};
 
+use crate::db_intent::{DbSchema, analyze_db_intent};
 use crate::types::{FunctionType, LuaType, TableType, TypeError};
 
 /// Type environment mapping variable names to their types at a given point
@@ -269,6 +273,100 @@ pub struct TypeInference<'a> {
     base_path: Option<String>,
     /// Current function being analyzed (for constraint collection)
     current_function: Option<String>,
+    db_instances: HashSet<String>,
+    db_schema: DbSchema,
+}
+
+fn load_db_schema() -> DbSchema {
+    let Some(schemas_dir) = locate_schema_dir() else {
+        return DbSchema::default();
+    };
+    let Ok(entries) = fs::read_dir(&schemas_dir) else {
+        return DbSchema::default();
+    };
+
+    let mut tables = HashMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("lua") {
+            continue;
+        }
+        let Ok(source) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some((table, fields)) = parse_schema_source(&source) {
+            tables.insert(table, fields);
+        }
+    }
+
+    DbSchema::from_table_fields(tables)
+}
+
+fn locate_schema_dir() -> Option<PathBuf> {
+    let mut current = env::current_dir().ok()?;
+    for _ in 0..6 {
+        let candidate = current.join("db").join("schemas");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn parse_schema_source(source: &str) -> Option<(String, Vec<String>)> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_lua::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(source, None)?;
+    let root = tree.root_node();
+
+    let table_name = find_schema_table_name(root, source)?;
+    let mut fields = Vec::new();
+    collect_schema_fields(root, source, &mut fields);
+
+    Some((table_name, fields))
+}
+
+fn find_schema_table_name(node: Node, source: &str) -> Option<String> {
+    if node.kind() == "dot_index_expression" {
+        let text = source.get(node.start_byte()..node.end_byte())?;
+        if let Some(rest) = text.strip_prefix("rover.db.schema.") {
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = find_schema_table_name(child, source) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn collect_schema_fields(node: Node, source: &str, fields: &mut Vec<String>) {
+    if node.kind() == "field" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                if let Some(text) = source.get(child.start_byte()..child.end_byte()) {
+                    fields.push(text.to_string());
+                }
+                break;
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_schema_fields(child, source, fields);
+    }
 }
 
 impl<'a> TypeInference<'a> {
@@ -277,6 +375,8 @@ impl<'a> TypeInference<'a> {
 
         // Register Lua stdlib types
         Self::register_stdlib(&mut env);
+
+        let db_intent = analyze_db_intent(source);
 
         Self {
             source,
@@ -288,6 +388,8 @@ impl<'a> TypeInference<'a> {
             module_cache: Arc::new(HashMap::new()),
             base_path: None,
             current_function: None,
+            db_instances: db_intent.db_instances,
+            db_schema: load_db_schema(),
         }
     }
 
@@ -1439,6 +1541,9 @@ impl<'a> TypeInference<'a> {
                     // Table methods - we'd need more info about table structure
                     // For now, just return unknown
                 }
+                LuaType::Unknown | LuaType::Any => {
+                    // Unknown or any types allow method access
+                }
                 _ => {
                     // Method call on non-table/string type
                     self.errors.push(TypeError {
@@ -1457,6 +1562,77 @@ impl<'a> TypeInference<'a> {
 
         // Method access returns the method itself, actual call handled by function_call
         LuaType::Function(Box::new(FunctionType::default()))
+    }
+
+    fn db_row_type(&self, table: &str) -> LuaType {
+        let Some(fields) = self.db_schema.table_fields(table) else {
+            return LuaType::Table(TableType::new());
+        };
+        let mut map = HashMap::new();
+        for field in fields {
+            map.insert(field.clone(), LuaType::Unknown);
+        }
+        LuaType::Table(TableType::with_fields(map))
+    }
+
+    fn infer_db_query_result(&self, callee_node: Node) -> Option<LuaType> {
+        if callee_node.kind() != "method_index_expression" {
+            return None;
+        }
+        let method = self.extract_method_name(callee_node)?;
+        if method != "all" && method != "first" {
+            return None;
+        }
+        let base = callee_node.named_child(0)?;
+        let table = self.extract_db_table_from_expression(base)?;
+        let row_type = self.db_row_type(&table);
+        if method == "all" {
+            return Some(LuaType::Table(TableType::array(row_type)));
+        }
+        Some(row_type)
+    }
+
+    fn extract_method_name(&self, node: Node) -> Option<String> {
+        let mut cursor = node.walk();
+        let mut method = None;
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                method = Some(self.node_text(child).to_string());
+            }
+        }
+        method
+    }
+
+    fn extract_db_table_from_expression(&self, node: Node) -> Option<String> {
+        match node.kind() {
+            "dot_index_expression" => {
+                let mut parts = Vec::new();
+                self.collect_dot_parts(node, &mut parts);
+                if parts.len() >= 2 && self.db_instances.contains(&parts[0]) {
+                    return Some(parts[1].clone());
+                }
+            }
+            "method_index_expression" => {
+                if let Some(base) = node.named_child(0) {
+                    return self.extract_db_table_from_expression(base);
+                }
+            }
+            "function_call" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if matches!(
+                        child.kind(),
+                        "method_index_expression" | "dot_index_expression"
+                    ) {
+                        if let Some(table) = self.extract_db_table_from_expression(child) {
+                            return Some(table);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
     }
 
     /// Infer type of function call
@@ -1483,11 +1659,19 @@ impl<'a> TypeInference<'a> {
             return LuaType::Unknown;
         };
 
+        if let Some(result) = self.infer_db_query_result(callee_node) {
+            return result;
+        }
+
         let callee_type = self.infer_expression(callee_node);
 
         if let Some(name) = self.get_callee_name(callee_node) {
             if name == "type" {
                 return LuaType::String;
+            }
+
+            if name == "rover.db.connect" {
+                return LuaType::Table(TableType::new());
             }
 
             if name == "require" {
@@ -2566,6 +2750,26 @@ mod tests {
         (tree, code.to_string())
     }
 
+    fn find_call_with_text<'a>(
+        node: tree_sitter::Node<'a>,
+        source: &'a str,
+        needle: &str,
+    ) -> Option<tree_sitter::Node<'a>> {
+        if node.kind() == "function_call" {
+            let text = &source[node.start_byte()..node.end_byte()];
+            if text.contains(needle) {
+                return Some(node);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = find_call_with_text(child, source, needle) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     #[test]
     fn test_literal_inference() {
         let code = r#"
@@ -2606,6 +2810,45 @@ local d = nil
             assert_eq!(table.get_field("age"), Some(&LuaType::Number));
         } else {
             panic!("Expected table type");
+        }
+    }
+
+    #[test]
+    fn test_db_query_row_type_from_schema() {
+        let code = r#"
+local users = db.users:find():all()
+local user = db.users:find():first()
+"#;
+        let (tree, source) = parse(code);
+        let mut inf = TypeInference::new(&source);
+
+        let all_call =
+            find_call_with_text(tree.root_node(), &source, ":all").expect("all call not found");
+        let all_type = inf.infer_expression(all_call);
+
+        if let LuaType::Table(table) = all_type {
+            let Some(element) = table.array_element else {
+                panic!("Expected array type");
+            };
+            if let LuaType::Table(row) = *element {
+                assert!(row.fields.contains_key("name"));
+                assert!(row.fields.contains_key("age"));
+            } else {
+                panic!("Expected row table");
+            }
+        } else {
+            panic!("Expected table for array");
+        }
+
+        let first_call =
+            find_call_with_text(tree.root_node(), &source, ":first").expect("first call not found");
+        let first_type = inf.infer_expression(first_call);
+
+        if let LuaType::Table(row) = first_type {
+            assert!(row.fields.contains_key("name"));
+            assert!(row.fields.contains_key("age"));
+        } else {
+            panic!("Expected row table");
         }
     }
 

@@ -3,8 +3,10 @@
 //! Analyzes Lua AST to extract database intent - what tables, fields, and types
 //! the code expects to use. Uses the same tree-sitter infrastructure as the main analyzer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
+
+use crate::analyzer::{ParsingError, SourceRange};
 
 /// Inferred field type from AST analysis
 #[derive(Debug, Clone, PartialEq)]
@@ -120,16 +122,87 @@ impl InferredTable {
     }
 }
 
-/// Database intent extracted from code
+/// Database schema definition (table -> fields)
 #[derive(Debug, Clone, Default)]
+pub struct DbSchema {
+    pub tables: HashMap<String, DbSchemaTable>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DbSchemaTable {
+    pub fields: Vec<String>,
+}
+
+impl DbSchema {
+    pub fn from_table_fields(mut tables: HashMap<String, Vec<String>>) -> Self {
+        let mut map = HashMap::new();
+        for (name, mut fields) in tables.drain() {
+            fields.sort();
+            fields.dedup();
+            map.insert(name, DbSchemaTable { fields });
+        }
+        Self { tables: map }
+    }
+
+    pub fn table_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tables.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub fn table_fields(&self, table: &str) -> Option<&[String]> {
+        self.tables.get(table).map(|t| t.fields.as_slice())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DbTableUsage {
+    pub name: String,
+    pub range: SourceRange,
+}
+
+#[derive(Debug, Clone)]
+pub enum DbFieldUsageKind {
+    Insert,
+    Set,
+    Filter { method: String },
+    Select,
+    GroupBy,
+    OrderBy,
+}
+
+#[derive(Debug, Clone)]
+pub struct DbFieldUsage {
+    pub table: String,
+    pub field: String,
+    pub kind: DbFieldUsageKind,
+    pub range: SourceRange,
+}
+
+/// Database intent extracted from code
+#[derive(Debug, Clone)]
 pub struct DbIntent {
     pub tables: HashMap<String, InferredTable>,
+    pub table_usages: HashMap<String, DbTableUsage>,
+    pub field_usages: Vec<DbFieldUsage>,
+    pub db_instances: HashSet<String>,
+}
+
+impl Default for DbIntent {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DbIntent {
     pub fn new() -> Self {
+        let mut instances = HashSet::new();
+        instances.insert("db".to_string());
         Self {
             tables: HashMap::new(),
+            table_usages: HashMap::new(),
+            field_usages: Vec::new(),
+            db_instances: instances,
         }
     }
 
@@ -143,6 +216,27 @@ impl DbIntent {
 
     pub fn table_names(&self) -> Vec<String> {
         self.tables.keys().cloned().collect()
+    }
+
+    pub fn add_db_instance(&mut self, name: String) {
+        self.db_instances.insert(name);
+    }
+
+    pub fn is_db_instance(&self, name: &str) -> bool {
+        self.db_instances.contains(name)
+    }
+
+    pub fn record_table_usage(&mut self, name: &str, range: SourceRange) {
+        self.table_usages
+            .entry(name.to_string())
+            .or_insert(DbTableUsage {
+                name: name.to_string(),
+                range,
+            });
+    }
+
+    pub fn record_field_usage(&mut self, usage: DbFieldUsage) {
+        self.field_usages.push(usage);
     }
 
     /// Finalize intent - add auto id fields to all tables
@@ -172,6 +266,9 @@ impl<'a> IntentAnalyzer<'a> {
         match node.kind() {
             "function_call" => self.analyze_function_call(node),
             "dot_index_expression" => self.analyze_dot_access(node),
+            "assignment_statement" | "local_variable_declaration" | "variable_declaration" => {
+                self.inspect_db_assignment(node);
+            }
             _ => {}
         }
 
@@ -188,22 +285,142 @@ impl<'a> IntentAnalyzer<'a> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "method_index_expression" {
-                if let Some((object_path, method)) = self.extract_method_info(child) {
-                    if let Some(table_name) = self.extract_table_from_path(&object_path) {
-                        self.handle_db_method(&table_name, &method, node);
+                if let Some((object_node, method, method_range)) = self.extract_method_info(child) {
+                    if let Some((table_name, table_range)) =
+                        self.extract_table_from_node(object_node)
+                    {
+                        self.intent.record_table_usage(&table_name, table_range);
+                        self.handle_db_method(&table_name, &method, method_range, node);
                     }
                 }
             }
         }
     }
 
+    fn inspect_db_assignment(&mut self, node: Node<'a>) {
+        if matches!(
+            node.kind(),
+            "assignment_statement" | "local_variable_declaration"
+        ) {
+            self.track_db_assignment(node);
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "assignment_statement" {
+                self.track_db_assignment(child);
+            }
+        }
+    }
+
+    fn track_db_assignment(&mut self, node: Node<'a>) {
+        let (variables, expressions) = self.extract_assignment_parts(node);
+        for (idx, var_name) in variables.iter().enumerate() {
+            if let Some(expr) = expressions.get(idx) {
+                if self.is_rover_db_connect_call(*expr) {
+                    self.intent.add_db_instance(var_name.clone());
+                } else if expr.kind() == "identifier" {
+                    let name = self.node_text(*expr);
+                    if self.intent.is_db_instance(name) {
+                        self.intent.add_db_instance(var_name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_assignment_parts(&self, node: Node<'a>) -> (Vec<String>, Vec<Node<'a>>) {
+        let mut variables = Vec::new();
+        let mut expressions = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "variable_list" | "name_list" => {
+                    let mut var_cursor = child.walk();
+                    for var in child.children(&mut var_cursor) {
+                        if var.kind() == "identifier" {
+                            variables.push(self.node_text(var).to_string());
+                        }
+                    }
+                }
+                "expression_list" => {
+                    let mut expr_cursor = child.walk();
+                    for expr in child.named_children(&mut expr_cursor) {
+                        expressions.push(expr);
+                    }
+                }
+                _ => {}
+            }
+        }
+        (variables, expressions)
+    }
+
+    fn is_rover_db_connect_call(&self, node: Node<'a>) -> bool {
+        if node.kind() != "function_call" {
+            return false;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "dot_index_expression" {
+                let path = self.extract_full_path(child);
+                return path == "rover.db.connect";
+            }
+        }
+        false
+    }
+
     /// Handle a db method call
-    fn handle_db_method(&mut self, table_name: &str, method: &str, call_node: Node<'a>) {
+    fn handle_db_method(
+        &mut self,
+        table_name: &str,
+        method: &str,
+        method_range: SourceRange,
+        call_node: Node<'a>,
+    ) {
         match method {
             "insert" => {
-                // Extract fields from table constructor argument
+                self.intent.get_or_create_table(table_name);
                 if let Some(args_node) = self.find_arguments(call_node) {
-                    self.extract_insert_fields(table_name, args_node);
+                    self.extract_insert_fields(table_name, args_node, DbFieldUsageKind::Insert);
+                }
+            }
+            "set" => {
+                self.intent.get_or_create_table(table_name);
+                if let Some(args_node) = self.find_arguments(call_node) {
+                    self.extract_insert_fields(table_name, args_node, DbFieldUsageKind::Set);
+                }
+            }
+            "select" => {
+                self.intent.get_or_create_table(table_name);
+                if let Some(args_node) = self.find_arguments(call_node) {
+                    self.extract_string_argument_fields(
+                        table_name,
+                        args_node,
+                        DbFieldUsageKind::Select,
+                        None,
+                    );
+                }
+            }
+            "group_by" => {
+                self.intent.get_or_create_table(table_name);
+                if let Some(args_node) = self.find_arguments(call_node) {
+                    self.extract_string_argument_fields(
+                        table_name,
+                        args_node,
+                        DbFieldUsageKind::GroupBy,
+                        None,
+                    );
+                }
+            }
+            "order_by" => {
+                self.intent.get_or_create_table(table_name);
+                if let Some(args_node) = self.find_arguments(call_node) {
+                    self.extract_string_argument_fields(
+                        table_name,
+                        args_node,
+                        DbFieldUsageKind::OrderBy,
+                        Some(1),
+                    );
                 }
             }
             _ if method.starts_with("by_") => {
@@ -223,39 +440,55 @@ impl<'a> IntentAnalyzer<'a> {
                             method: method.to_string(),
                         },
                     });
+                    self.intent.record_field_usage(DbFieldUsage {
+                        table: table_name.to_string(),
+                        field: field_name.to_string(),
+                        kind: DbFieldUsageKind::Filter {
+                            method: method.to_string(),
+                        },
+                        range: method_range,
+                    });
                 }
             }
             _ => {
-                // Just ensure table is tracked
                 self.intent.get_or_create_table(table_name);
             }
         }
     }
 
     /// Extract fields from insert table constructor
-    fn extract_insert_fields(&mut self, table_name: &str, args_node: Node<'a>) {
-        // Find table_constructor in arguments
+    fn extract_insert_fields(
+        &mut self,
+        table_name: &str,
+        args_node: Node<'a>,
+        usage_kind: DbFieldUsageKind,
+    ) {
         let mut cursor = args_node.walk();
         for child in args_node.children(&mut cursor) {
             if child.kind() == "table_constructor" {
-                self.extract_table_constructor_fields(table_name, child);
+                self.extract_table_constructor_fields(table_name, child, &usage_kind);
             }
         }
     }
 
     /// Extract fields from table constructor { field = value, ... }
-    fn extract_table_constructor_fields(&mut self, table_name: &str, node: Node<'a>) {
+    fn extract_table_constructor_fields(
+        &mut self,
+        table_name: &str,
+        node: Node<'a>,
+        usage_kind: &DbFieldUsageKind,
+    ) {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "field" {
-                self.extract_field(table_name, child);
+                self.extract_field(table_name, child, usage_kind);
             }
         }
     }
 
     /// Extract a single field from a field node
-    fn extract_field(&mut self, table_name: &str, node: Node<'a>) {
-        let mut field_name: Option<String> = None;
+    fn extract_field(&mut self, table_name: &str, node: Node<'a>, usage_kind: &DbFieldUsageKind) {
+        let mut field_name: Option<(String, Node)> = None;
         let mut field_type = FieldType::Unknown;
         let mut value_hint = String::new();
 
@@ -263,7 +496,7 @@ impl<'a> IntentAnalyzer<'a> {
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "identifier" if field_name.is_none() => {
-                    field_name = Some(self.node_text(child).to_string());
+                    field_name = Some((self.node_text(child).to_string(), child));
                 }
                 "string" => {
                     field_type = FieldType::String;
@@ -279,15 +512,13 @@ impl<'a> IntentAnalyzer<'a> {
                     value_hint = self.node_text(child).to_string();
                 }
                 "identifier" if field_name.is_some() => {
-                    // Variable reference - can't determine type
                     value_hint = self.node_text(child).to_string();
                 }
                 _ => {}
             }
         }
 
-        if let Some(name) = field_name {
-            // Skip id field - it's auto-generated
+        if let Some((name, name_node)) = field_name {
             if name == "id" {
                 return;
             }
@@ -298,28 +529,41 @@ impl<'a> IntentAnalyzer<'a> {
                 field_type,
                 source: FieldSource::Insert {
                     value_hint: if value_hint.is_empty() {
-                        name
+                        name.clone()
                     } else {
                         format!("{} = {}", name, value_hint)
                     },
                 },
+            });
+            self.intent.record_field_usage(DbFieldUsage {
+                table: table_name.to_string(),
+                field: name,
+                kind: usage_kind.clone(),
+                range: SourceRange::from_node(name_node),
             });
         }
     }
 
     /// Analyze dot access for field references like db.table.field
     fn analyze_dot_access(&mut self, node: Node<'a>) {
-        let path = self.extract_full_path(node);
-        let parts: Vec<&str> = path.split('.').collect();
+        let mut parts = Vec::new();
+        self.collect_path_parts_with_nodes(node, &mut parts);
+        if parts.len() < 2 {
+            return;
+        }
+        let base = &parts[0].0;
+        if !self.intent.is_db_instance(base) {
+            return;
+        }
+        let table_name = parts[1].0.clone();
+        let table_range = SourceRange::from_node(parts[1].1);
+        self.intent.record_table_usage(&table_name, table_range);
 
-        // Need db.table.field (3+ parts)
-        if parts.len() >= 3 && parts[0] == "db" {
-            let table_name = parts[1];
-            let field_name = parts[2];
-
-            let table = self.intent.get_or_create_table(table_name);
+        if parts.len() >= 3 {
+            let field_name = parts[2].0.clone();
+            let table = self.intent.get_or_create_table(&table_name);
             table.add_field(InferredField {
-                name: field_name.to_string(),
+                name: field_name,
                 field_type: FieldType::Unknown,
                 source: FieldSource::Access,
             });
@@ -327,22 +571,16 @@ impl<'a> IntentAnalyzer<'a> {
     }
 
     /// Extract method info from method_index_expression
-    fn extract_method_info(&self, node: Node<'a>) -> Option<(String, String)> {
+    fn extract_method_info(&self, node: Node<'a>) -> Option<(Node<'a>, String, SourceRange)> {
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
 
-        // First named child is the object
-        let object = children.first()?;
-        let object_path = self.extract_full_path(*object);
+        let object = *children.first()?;
 
-        // Last identifier is the method name
-        let method = children
-            .iter()
-            .rev()
-            .find(|c| c.kind() == "identifier")
-            .map(|c| self.node_text(*c).to_string())?;
+        let method_node = children.iter().rev().find(|c| c.kind() == "identifier")?;
+        let method = self.node_text(*method_node).to_string();
 
-        Some((object_path, method))
+        Some((object, method, SourceRange::from_node(*method_node)))
     }
 
     /// Extract full dotted path from expression
@@ -361,12 +599,10 @@ impl<'a> IntentAnalyzer<'a> {
                 let mut cursor = node.walk();
                 let children: Vec<_> = node.children(&mut cursor).collect();
 
-                // Process base first
                 if let Some(base) = children.first() {
                     self.collect_path_parts(*base, parts);
                 }
 
-                // Add field (last identifier)
                 for child in children.iter().rev() {
                     if child.kind() == "identifier" {
                         parts.push(self.node_text(*child).to_string());
@@ -375,7 +611,6 @@ impl<'a> IntentAnalyzer<'a> {
                 }
             }
             "function_call" => {
-                // For chained calls, look inside
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if matches!(
@@ -388,7 +623,6 @@ impl<'a> IntentAnalyzer<'a> {
                 }
             }
             "method_index_expression" => {
-                // Get object part only (before colon)
                 if let Some(object) = node.named_child(0) {
                     self.collect_path_parts(object, parts);
                 }
@@ -397,14 +631,59 @@ impl<'a> IntentAnalyzer<'a> {
         }
     }
 
-    /// Extract table name from path like "db.users"
-    fn extract_table_from_path(&self, path: &str) -> Option<String> {
-        let parts: Vec<&str> = path.split('.').collect();
-        if parts.len() >= 2 && parts[0] == "db" {
-            Some(parts[1].to_string())
-        } else {
-            None
+    fn collect_path_parts_with_nodes(&self, node: Node<'a>, parts: &mut Vec<(String, Node<'a>)>) {
+        match node.kind() {
+            "identifier" => {
+                parts.push((self.node_text(node).to_string(), node));
+            }
+            "dot_index_expression" => {
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.children(&mut cursor).collect();
+
+                if let Some(base) = children.first() {
+                    self.collect_path_parts_with_nodes(*base, parts);
+                }
+
+                for child in children.iter().rev() {
+                    if child.kind() == "identifier" {
+                        parts.push((self.node_text(*child).to_string(), *child));
+                        break;
+                    }
+                }
+            }
+            "function_call" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if matches!(
+                        child.kind(),
+                        "method_index_expression" | "dot_index_expression" | "function_call"
+                    ) {
+                        self.collect_path_parts_with_nodes(child, parts);
+                        break;
+                    }
+                }
+            }
+            "method_index_expression" => {
+                if let Some(object) = node.named_child(0) {
+                    self.collect_path_parts_with_nodes(object, parts);
+                }
+            }
+            _ => {}
         }
+    }
+
+    fn extract_table_from_node(&self, node: Node<'a>) -> Option<(String, SourceRange)> {
+        let mut parts = Vec::new();
+        self.collect_path_parts_with_nodes(node, &mut parts);
+        if parts.len() < 2 {
+            return None;
+        }
+        if !self.intent.is_db_instance(&parts[0].0) {
+            return None;
+        }
+        let table = parts[1].0.clone();
+        let range = SourceRange::from_node(parts[1].1);
+        Some((table, range))
     }
 
     /// Find arguments node in function call
@@ -430,6 +709,49 @@ impl<'a> IntentAnalyzer<'a> {
         } else {
             FieldType::Unknown
         }
+    }
+
+    fn extract_string_argument_fields(
+        &mut self,
+        table_name: &str,
+        args_node: Node<'a>,
+        kind: DbFieldUsageKind,
+        limit: Option<usize>,
+    ) {
+        let mut count = 0usize;
+        let mut cursor = args_node.walk();
+        for child in args_node.named_children(&mut cursor) {
+            if let Some(field) = self.extract_string_literal(child) {
+                self.intent.record_field_usage(DbFieldUsage {
+                    table: table_name.to_string(),
+                    field,
+                    kind: kind.clone(),
+                    range: SourceRange::from_node(child),
+                });
+                count += 1;
+                if let Some(max) = limit {
+                    if count >= max {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_string_literal(&self, node: Node<'a>) -> Option<String> {
+        if node.kind() != "string" {
+            return None;
+        }
+        let text = self.node_text(node).trim();
+        if text.len() >= 2 {
+            let bytes = text.as_bytes();
+            let first = bytes[0] as char;
+            let last = bytes[text.len() - 1] as char;
+            if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+                return Some(text[1..text.len() - 1].to_string());
+            }
+        }
+        Some(text.to_string())
     }
 
     /// Get text for a node
@@ -479,6 +801,56 @@ pub fn analyze_db_intent(source: &str) -> DbIntent {
     analyzer.walk(tree.root_node());
     analyzer.intent.finalize();
     analyzer.intent
+}
+
+pub fn db_warnings_from_intent(intent: &DbIntent, schema: &DbSchema) -> Vec<ParsingError> {
+    let mut warnings = Vec::new();
+    let known_tables = schema.table_names();
+
+    for (table_name, usage) in &intent.table_usages {
+        if !schema.tables.contains_key(table_name) {
+            let mut message = format!("No schema for table '{}'", table_name);
+            if !known_tables.is_empty() {
+                message.push_str(&format!(". Known tables: {}", known_tables.join(", ")));
+            }
+            warnings.push(ParsingError {
+                message,
+                function_name: None,
+                range: Some(usage.range),
+            });
+        }
+    }
+
+    for usage in &intent.field_usages {
+        let Some(table) = schema.tables.get(&usage.table) else {
+            continue;
+        };
+        if table.fields.iter().any(|f| f == &usage.field) {
+            continue;
+        }
+        let usage_label = match &usage.kind {
+            DbFieldUsageKind::Insert => "insert".to_string(),
+            DbFieldUsageKind::Set => "set".to_string(),
+            DbFieldUsageKind::Select => "select".to_string(),
+            DbFieldUsageKind::GroupBy => "group_by".to_string(),
+            DbFieldUsageKind::OrderBy => "order_by".to_string(),
+            DbFieldUsageKind::Filter { method } => format!(":{}()", method),
+        };
+        let mut message = format!(
+            "Unknown field '{}' on table '{}' in {}",
+            usage.field, usage.table, usage_label
+        );
+        if !table.fields.is_empty() {
+            message.push_str(&format!(". Valid fields: {}", table.fields.join(", ")));
+        }
+        warnings.push(ParsingError {
+            message,
+            function_name: None,
+            range: Some(usage.range),
+        });
+    }
+
+    warnings
 }
 
 #[cfg(test)]
@@ -554,5 +926,19 @@ mod tests {
             orders.fields.get("amount").unwrap().field_type,
             FieldType::Number
         );
+    }
+
+    #[test]
+    fn test_db_instance_assignment() {
+        let code = r#"
+local conn = rover.db.connect { path = "rover.sqlite" }
+local other = conn
+other.users:insert({ name = "Ada" })
+"#;
+        let intent = analyze_db_intent(code);
+
+        assert!(intent.db_instances.contains("conn"));
+        assert!(intent.db_instances.contains("other"));
+        assert!(intent.tables.contains_key("users"));
     }
 }
