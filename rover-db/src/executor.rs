@@ -1,9 +1,8 @@
 //! Query execution engine
 //!
-//! Bridges Lua queries to actual database operations with schema inference support.
+//! Bridges Lua queries to actual database operations.
 
 use crate::connection::Connection;
-use crate::schema::SchemaManager;
 use mlua::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -11,53 +10,30 @@ use tokio::sync::Mutex;
 /// Query executor that handles all database operations
 pub struct QueryExecutor {
     conn: Arc<Mutex<Connection>>,
-    schema_manager: SchemaManager,
 }
 
 impl QueryExecutor {
     /// Create a new query executor
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
-        Self {
-            conn: conn.clone(),
-            schema_manager: SchemaManager::new(conn),
-        }
+        Self { conn }
     }
 
-    /// Execute an INSERT operation with schema inference
+    /// Execute an INSERT operation
     pub fn execute_insert(
         &self,
         lua: &Lua,
         sql: &str,
         table_name: &str,
-        data: LuaValue,
+        _data: LuaValue,
     ) -> LuaResult<LuaValue> {
-        // Extract data as a table for schema inference
-        let data_table = match &data {
-            LuaValue::Table(t) => t.clone(),
-            _ => {
-                return Err(LuaError::RuntimeError(
-                    "Insert data must be a table".to_string(),
-                ));
-            }
-        };
-
-        // Check if table exists, if not infer schema and create it
         let conn = self.conn.blocking_lock();
 
+        // Check if table exists - migrations must create tables
         if !table_name.is_empty() && !conn.table_exists(table_name).unwrap_or(false) {
-            // Infer schema from data
-            let schema = self
-                .schema_manager
-                .infer_schema_from_lua(&data_table)
-                .map_err(|e| LuaError::RuntimeError(e.to_string()))?;
-
-            // Generate and execute CREATE TABLE
-            let create_sql = self
-                .schema_manager
-                .generate_create_table(table_name, &schema);
-
-            conn.execute(&create_sql)
-                .map_err(|e| LuaError::RuntimeError(format!("Failed to create table: {}", e)))?;
+            return Err(LuaError::RuntimeError(format!(
+                "Table '{}' does not exist. Generate and run migration for this table first.",
+                table_name
+            )));
         }
 
         // Execute the INSERT

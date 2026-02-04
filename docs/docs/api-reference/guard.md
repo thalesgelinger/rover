@@ -102,12 +102,12 @@ These modifiers are also available in migrations:
 ```lua
 function change()
   migration.users:create({
-    id = rover.guard:integer():primary():auto(),
-    email = rover.guard:string():unique()
+    id = rover.db.guard:integer():primary():auto(),
+    email = rover.db.guard:string():unique()
   })
 end
 ```
 
 :::tip
-Use `rover.guard` for general validation and `rover.db.guard` (or extend it yourself) for database schemas. Both share the same core validation logic.
+Use `rover.guard` for general validation and `rover.db.guard` for database schemas. `rover.db.guard` extends the base guard with DB modifiers.
 :::

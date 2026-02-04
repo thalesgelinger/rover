@@ -93,7 +93,7 @@ pub fn generate_schema_content(table: &InferredTable) -> String {
             ""
         };
         lines.push(format!(
-            "    {} = rover.guard:{}(){},",
+            "    {} = rover.db.guard:{}(){},",
             field.name, guard_type, modifiers
         ));
     }
@@ -133,7 +133,7 @@ pub fn generate_migration_content(
                 ""
             };
             lines.push(format!(
-                "        {} = rover.guard:{}(){},",
+                "        {} = rover.db.guard:{}(){},",
                 field.name, guard_type, modifiers
             ));
         }
@@ -149,7 +149,7 @@ pub fn generate_migration_content(
             let guard_type = inferred_to_guard_type(&field.field_type);
             let prefix = if i == 0 { "        " } else { "        " };
             lines.push(format!(
-                "{}:add_column(\"{}\", rover.guard:{}())",
+                "{}:add_column(\"{}\", rover.db.guard:{}())",
                 prefix, field.name, guard_type
             ));
         }
@@ -228,7 +228,7 @@ pub fn update_schema_file(
     if let Some(close_idx) = lines.iter().rposition(|l| l.trim() == "}") {
         for field in new_fields {
             let guard_type = field.field_type.to_guard_type();
-            let new_line = format!("    {} = rover.guard:{}(),", field.name, guard_type);
+            let new_line = format!("    {} = rover.db.guard:{}(),", field.name, guard_type);
             lines.insert(close_idx, new_line);
         }
     }

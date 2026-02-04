@@ -1,4 +1,4 @@
 -- Create posts table
 function change()
-    migration.posts:create({title = rover.guard:string()})
+    migration.posts:create({title = rover.db.guard:string()})
 end

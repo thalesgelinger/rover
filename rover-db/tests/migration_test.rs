@@ -26,8 +26,8 @@ fn test_migration_execution() {
     let migration_content = r#"
 function change()
     migration.users:create({
-        name = rover.guard:string():required(),
-        email = rover.guard:string(),
+        name = rover.db.guard:string():required(),
+        email = rover.db.guard:string(),
     })
 end
 "#;
@@ -89,7 +89,7 @@ fn test_rollback_migration() {
     let migration_content = r#"
 function change()
     migration.users:create({
-        name = rover.guard:string():required(),
+        name = rover.db.guard:string():required(),
     })
 end
 "#;
@@ -149,10 +149,10 @@ fn test_migration_status() {
 
     // Create multiple migrations
     let migration1 = r#"function change()
-    migration.posts:create({title = rover.guard:string()})
+    migration.posts:create({title = rover.db.guard:string()})
 end"#;
     let migration2 = r#"function change()
-    migration.comments:create({body = rover.guard:string()})
+    migration.comments:create({body = rover.db.guard:string()})
 end"#;
 
     std::fs::write(migrations_dir.join("003_posts.lua"), migration1).unwrap();

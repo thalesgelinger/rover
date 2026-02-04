@@ -61,7 +61,7 @@ rover.db.schema.users {
 }
 ```
 
-Use `rover.db.guard` for database schemas — it's an extended version of `rover.guard` with schema modifiers like `:primary()`, `:auto()`, `:unique()`, `:references()`, and `:index()`. You can also use `rover.guard` directly since it includes these modifiers too.
+Use `rover.db.guard` for database schemas — it extends `rover.guard` with schema modifiers like `:primary()`, `:auto()`, `:unique()`, `:references()`, and `:index()`. `rover.guard` is base validation only.
 
 ## Next Steps
 
