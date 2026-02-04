@@ -73,16 +73,6 @@ Full CLI guide: https://rover.uncmplx.com/docs/guides/cli
 - UI Runtime: https://rover.uncmplx.com/docs/guides/ui-runtime
 - Performance: https://rover.uncmplx.com/docs/performance
 
-## Performance
-
-Built for speed with zero-copy response handling:
-
-```
-Requests/sec:   182,000
-Latency (avg):  0.49ms
-Latency (p99):  0.67ms
-```
-
 ## Roadmap
 
 See `ROADMAP.md`.
