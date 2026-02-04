@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ahash = "0.8"
 anyhow = "1.0.100"
 bytes = "1.10"
 mlua = { version="0.11.5", features = ["anyhow", "vendored", "luajit52", "serialize"] }
