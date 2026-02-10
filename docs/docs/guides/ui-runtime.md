@@ -73,9 +73,13 @@ end)
 ## Tasks + Delay
 
 - `rover.task(fn)` creates a task
+- `rover.spawn(fn)` creates and starts a background task immediately
 - `rover.delay(ms)` yields inside tasks
+- `rover.interval(ms, fn)` runs `fn` now, then every `ms`
 - `rover.task.cancel(task)` stops a task
 - `rover.task.all(task1, task2, ...)` runs tasks in parallel
+- `task:pid()` returns task id
+- `task:kill()` cancels task (alias of `task:cancel()`)
 
 ## Cleanup
 

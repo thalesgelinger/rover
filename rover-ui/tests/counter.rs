@@ -118,6 +118,103 @@ fn test_task_cancellation() {
     assert_eq!(status, "cancelled");
 }
 
+#[test]
+fn test_spawn_auto_starts_and_has_pid() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.spawn_count = 0
+        local proc = rover.spawn(function()
+            _G.spawn_count = _G.spawn_count + 1
+        end)
+
+        _G.spawn_pid = proc:pid()
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let count: i32 = app.lua().load("return _G.spawn_count").eval().unwrap();
+    let pid: i64 = app.lua().load("return _G.spawn_pid").eval().unwrap();
+
+    assert_eq!(count, 1);
+    assert!(pid > 0);
+}
+
+#[test]
+fn test_interval_runs_immediately_then_waits() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.interval_count = 0
+        _G.proc = rover.interval(50, function()
+            _G.interval_count = _G.interval_count + 1
+        end)
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+
+    let first: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(first, 1);
+
+    app.tick_ms(30).unwrap();
+    let still_one: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(still_one, 1);
+
+    app.tick_ms(40).unwrap();
+    let second: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert!(second >= 2);
+}
+
+#[test]
+fn test_interval_kill_stops_future_runs() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.interval_count = 0
+        _G.proc = rover.interval(10, function()
+            _G.interval_count = _G.interval_count + 1
+        end)
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick_ms(30).unwrap();
+
+    let before_kill: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+
+    app.lua().load("_G.proc:kill()").exec().unwrap();
+    app.tick_ms(50).unwrap();
+
+    let after_kill: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(after_kill, before_kill);
+}
+
+#[test]
+fn test_interval_error_stops_task() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.interval_count = 0
+        _G.proc = rover.interval(10, function()
+            _G.interval_count = _G.interval_count + 1
+            if _G.interval_count == 2 then
+                error("boom")
+            end
+        end)
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    let run_result = app.tick_ms(60);
+    assert!(run_result.is_err());
+
+    let count: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(count, 2);
+}
+
 /// Test rover.on_destroy() for cleanup callbacks
 #[test]
 fn test_on_destroy_callback() {

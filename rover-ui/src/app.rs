@@ -135,7 +135,9 @@ impl<R: Renderer> App<R> {
         // 1. Resume ready timers
         let ready_ids = self.scheduler.borrow_mut().tick(now);
         for id in ready_ids {
-            let pending = self.scheduler.borrow_mut().take_pending(id)?;
+            let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
+                continue;
+            };
             match run_coroutine_with_delay(
                 &self.lua,
                 &self.runtime,
@@ -147,10 +149,11 @@ impl<R: Renderer> App<R> {
                 }
                 CoroutineResult::YieldedDelay { delay_ms } => {
                     // Re-schedule with delay
-                    let _new_id = self
-                        .scheduler
-                        .borrow_mut()
-                        .schedule_delay(pending.thread, delay_ms);
+                    self.scheduler.borrow_mut().schedule_delay_with_id(
+                        id,
+                        pending.thread,
+                        delay_ms,
+                    );
                 }
                 CoroutineResult::YieldedOther => {
                     // Unknown yield - could be an error
@@ -191,7 +194,9 @@ impl<R: Renderer> App<R> {
             // Resume ready timers
             let ready_ids = self.scheduler.borrow_mut().tick(now);
             for id in ready_ids {
-                let pending = self.scheduler.borrow_mut().take_pending(id)?;
+                let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
+                    continue;
+                };
                 match run_coroutine_with_delay(
                     &self.lua,
                     &self.runtime,
@@ -200,10 +205,11 @@ impl<R: Renderer> App<R> {
                 )? {
                     CoroutineResult::Completed => {}
                     CoroutineResult::YieldedDelay { delay_ms } => {
-                        let _new_id = self
-                            .scheduler
-                            .borrow_mut()
-                            .schedule_delay(pending.thread, delay_ms);
+                        self.scheduler.borrow_mut().schedule_delay_with_id(
+                            id,
+                            pending.thread,
+                            delay_ms,
+                        );
                     }
                     CoroutineResult::YieldedOther => {}
                 }

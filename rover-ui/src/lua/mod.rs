@@ -88,6 +88,39 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     // Register task module (rover.task(fn), rover.task.cancel(), etc.)
     task::register_task_module(lua, rover_table)?;
 
+    // rover.spawn(fn) - create and start a background task immediately
+    let spawn_fn = lua.create_function(|lua, func: Function| {
+        let task_ud = task::create_task(lua, func)?;
+        task::start_task(lua, &task_ud)?;
+        Ok(task_ud)
+    })?;
+    rover_table.set("spawn", spawn_fn)?;
+
+    // rover.interval(ms, fn) - run fn immediately, then every ms
+    let interval_fn = lua.create_function(|lua, (delay_ms, callback): (u64, Function)| {
+        let interval_factory: Function = lua
+            .load(
+                r#"
+                return function(ms, cb)
+                    return function(...)
+                        cb(...)
+                        while true do
+                            rover.delay(ms)
+                            cb(...)
+                        end
+                    end
+                end
+                "#,
+            )
+            .eval()?;
+
+        let interval_task_fn: Function = interval_factory.call((delay_ms, callback))?;
+        let task_ud = task::create_task(lua, interval_task_fn)?;
+        task::start_task(lua, &task_ud)?;
+        Ok(task_ud)
+    })?;
+    rover_table.set("interval", interval_fn)?;
+
     // rover.on_destroy(fn) - register cleanup callbacks
     let on_destroy_fn = lua.create_function(|lua, callback: Function| {
         let registry = crate::lua::helpers::get_registry(lua)?;
