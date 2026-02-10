@@ -1,4 +1,6 @@
-use crate::layout::{compute_layout, node_content, style_inset, LayoutMap, LayoutRect};
+use crate::layout::{
+    compute_layout, node_content, resolve_full_sizes, style_inset, LayoutMap, LayoutRect,
+};
 use crate::terminal::Terminal;
 use rover_ui::platform::UiTarget;
 use rover_ui::ui::{NodeId, NodeStyle, Renderer, StyleOp, StyleSize, UiNode, UiRegistry};
@@ -313,6 +315,7 @@ impl Renderer for TuiRenderer {
                 };
                 self.layout.set(root, root_rect);
             }
+            resolve_full_sizes(registry, root, &mut self.layout);
         } else {
             // Enter inline mode — reserves space and sets origin_row
             if let Err(e) = self.terminal.enter_inline(height) {
@@ -320,6 +323,7 @@ impl Renderer for TuiRenderer {
                 return;
             }
             self.origin_row = self.terminal.origin_row();
+            resolve_full_sizes(registry, root, &mut self.layout);
         }
 
         // Render all nodes
@@ -353,6 +357,21 @@ impl Renderer for TuiRenderer {
             if let Some(root) = registry.root() {
                 self.layout.clear();
                 let (_w, new_height) = compute_layout(registry, root, 0, 0, &mut self.layout);
+                if self.mounted_fullscreen {
+                    if let Some(mut root_rect) = self.layout.get(root).copied() {
+                        let root_style = registry.get_node_style(root);
+                        root_rect.width = match root_style.and_then(|s| s.width) {
+                            Some(StyleSize::Px(v)) => v.max(root_rect.width),
+                            Some(StyleSize::Full) | None => self.terminal.cols(),
+                        };
+                        root_rect.height = match root_style.and_then(|s| s.height) {
+                            Some(StyleSize::Px(v)) => v.max(root_rect.height),
+                            Some(StyleSize::Full) | None => self.terminal.rows(),
+                        };
+                        self.layout.set(root, root_rect);
+                    }
+                }
+                resolve_full_sizes(registry, root, &mut self.layout);
 
                 if self.mounted_fullscreen {
                     if let Err(e) = self.terminal.clear() {
@@ -428,6 +447,7 @@ impl Renderer for TuiRenderer {
 
         self.layout.clear();
         compute_layout(registry, root, 0, 0, &mut self.layout);
+        resolve_full_sizes(registry, root, &mut self.layout);
 
         // Clear and redraw
         let clear_result = if self.mounted_fullscreen {

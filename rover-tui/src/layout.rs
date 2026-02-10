@@ -467,6 +467,76 @@ pub fn compute_layout(
     }
 }
 
+pub fn resolve_full_sizes(registry: &UiRegistry, root: NodeId, layout: &mut LayoutMap) {
+    resolve_full_sizes_inner(registry, root, None, layout);
+}
+
+fn resolve_full_sizes_inner(
+    registry: &UiRegistry,
+    node_id: NodeId,
+    parent_id: Option<NodeId>,
+    layout: &mut LayoutMap,
+) {
+    let Some(mut rect) = layout.get(node_id).copied() else {
+        return;
+    };
+
+    if let Some(pid) = parent_id {
+        let parent_rect = match layout.get(pid).copied() {
+            Some(r) => r,
+            None => return,
+        };
+        let parent_style = registry.get_node_style(pid).cloned().unwrap_or_default();
+        let parent_inset = style_inset(&parent_style);
+
+        let parent_inner_row = parent_rect.row.saturating_add(parent_inset);
+        let parent_inner_col = parent_rect.col.saturating_add(parent_inset);
+        let parent_inner_w = parent_rect
+            .width
+            .saturating_sub(parent_inset.saturating_mul(2));
+        let parent_inner_h = parent_rect
+            .height
+            .saturating_sub(parent_inset.saturating_mul(2));
+
+        let style = registry
+            .get_node_style(node_id)
+            .cloned()
+            .unwrap_or_default();
+        if matches!(style.width, Some(StyleSize::Full)) {
+            let rel_col = rect.col.saturating_sub(parent_inner_col);
+            rect.width = parent_inner_w.saturating_sub(rel_col);
+        }
+        if matches!(style.height, Some(StyleSize::Full)) {
+            let rel_row = rect.row.saturating_sub(parent_inner_row);
+            rect.height = parent_inner_h.saturating_sub(rel_row);
+        }
+
+        layout.set(node_id, rect);
+    }
+
+    for child in child_nodes(registry, node_id) {
+        resolve_full_sizes_inner(registry, child, Some(node_id), layout);
+    }
+}
+
+fn child_nodes(registry: &UiRegistry, node_id: NodeId) -> Vec<NodeId> {
+    let Some(node) = registry.get_node(node_id) else {
+        return Vec::new();
+    };
+
+    match node {
+        UiNode::Column { children }
+        | UiNode::Row { children }
+        | UiNode::View { children }
+        | UiNode::Stack { children }
+        | UiNode::List { children, .. } => children.clone(),
+        UiNode::Conditional { child, .. }
+        | UiNode::KeyArea { child, .. }
+        | UiNode::FullScreen { child } => child.iter().copied().collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn style_inset(style: &NodeStyle) -> u16 {
     let mut inset: u16 = 0;
     for op in &style.ops {
