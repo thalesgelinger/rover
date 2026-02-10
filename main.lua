@@ -3,7 +3,7 @@ local ru = rover.ui
 local mod = rover.ui.mod
 
 local function screen_size()
-	return ru.screen.width.val , ru.screen.height.val
+	return ru.screen.width.val, ru.screen.height.val
 end
 
 local function clamp(n, minv, maxv)
@@ -48,7 +48,8 @@ function rover.render()
 			ru.view {
 				mod = mod:position("absolute"):top(y):left(x),
 				ru.text {
-					"🐍",
+					"*",
+					mod = mod:color "#00ffff",
 				},
 			},
 		},

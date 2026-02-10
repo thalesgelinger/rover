@@ -23,6 +23,7 @@ pub enum PositionType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeStyle {
     pub ops: Vec<StyleOp>,
+    pub color: Option<String>,
     pub width: Option<StyleSize>,
     pub height: Option<StyleSize>,
     pub position: PositionType,
@@ -42,6 +43,7 @@ impl Default for NodeStyle {
     fn default() -> Self {
         Self {
             ops: Vec::new(),
+            color: None,
             width: None,
             height: None,
             position: PositionType::Relative,
@@ -95,6 +97,7 @@ impl NodeStyle {
 
         style.width = parse_size_opt(table.get::<Value>("width")?);
         style.height = parse_size_opt(table.get::<Value>("height")?);
+        style.color = to_string(table.get::<Value>("color")?);
 
         if let Some(pos) = to_string(table.get::<Value>("position")?) {
             style.position = if pos == "absolute" {

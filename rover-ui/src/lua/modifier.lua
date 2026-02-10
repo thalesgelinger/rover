@@ -117,6 +117,18 @@ function core_methods:border_width(value)
   return self:_with_op("border_width", value)
 end
 
+function core_methods:color(value)
+  return self:_with_scalar("color", value)
+end
+
+function core_methods:text_color(value)
+  return self:color(value)
+end
+
+function core_methods:fg_color(value)
+  return self:color(value)
+end
+
 function core_methods:width(value)
   return self:_with_scalar("width", value)
 end
@@ -195,6 +207,8 @@ function core_methods:resolve()
     local resolved, _ = unwrap_reactive(value)
     if key == "gap" then
       resolved = maybe_theme_space(theme, resolved)
+    elseif key == "color" then
+      resolved = maybe_theme_color(theme, resolved)
     end
     out[key] = resolved
   end

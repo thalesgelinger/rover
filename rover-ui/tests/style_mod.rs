@@ -118,6 +118,26 @@ fn test_theme_set_and_extend_affect_mod_resolution() {
 }
 
 #[test]
+fn test_color_modifier_resolves_theme_token() {
+    let renderer = StubRenderer::new();
+    let app = App::new(renderer).unwrap();
+
+    let color: String = app
+        .lua()
+        .load(
+            r##"
+            local ui = rover.ui
+            local mod = ui.mod
+            return mod:color("accent"):resolve().color
+        "##,
+        )
+        .eval()
+        .unwrap();
+
+    assert_eq!(color, "#22c55e");
+}
+
+#[test]
 fn test_reactive_scalar_modifier_updates_style() {
     let renderer = StubRenderer::new();
     let mut app = App::new(renderer).unwrap();

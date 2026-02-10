@@ -64,6 +64,7 @@ impl TuiRenderer {
         content: &str,
         rect: &LayoutRect,
         inset: u16,
+        fg_hex: Option<&str>,
     ) -> io::Result<()> {
         let old_width = self.get_prev_width(id);
         let new_width = content.len() as u16;
@@ -78,7 +79,17 @@ impl TuiRenderer {
             )?;
         }
 
-        self.terminal.queue_write_at(abs_row, abs_col, content)?;
+        if let Some(fg) = fg_hex {
+            let style_prefix = ansi_prefix(None, Some(fg));
+            if style_prefix.is_empty() {
+                self.terminal.queue_write_at(abs_row, abs_col, content)?;
+            } else {
+                let line = format!("{}{}\x1b[0m", style_prefix, content);
+                self.terminal.queue_write_at(abs_row, abs_col, &line)?;
+            }
+        } else {
+            self.terminal.queue_write_at(abs_row, abs_col, content)?;
+        }
         self.set_prev_width(id, new_width);
         Ok(())
     }
@@ -220,7 +231,10 @@ impl TuiRenderer {
                 if let Some(style) = registry.get_node_style(node_id) {
                     self.draw_style_ops(&rect, style)?;
                 }
-                self.render_leaf(node_id, &content, &rect, inset)?;
+                let fg = registry
+                    .get_node_style(node_id)
+                    .and_then(|style| style.color.as_deref());
+                self.render_leaf(node_id, &content, &rect, inset, fg)?;
             }
             return Ok(());
         }
@@ -438,7 +452,10 @@ impl Renderer for TuiRenderer {
                     }
                 }
 
-                if let Err(e) = self.render_leaf(node_id, &content, &rect, inset) {
+                let fg = registry
+                    .get_node_style(node_id)
+                    .and_then(|style| style.color.as_deref());
+                if let Err(e) = self.render_leaf(node_id, &content, &rect, inset, fg) {
                     eprintln!("rover-tui: update error for node {:?}: {}", node_id, e);
                 }
             }
