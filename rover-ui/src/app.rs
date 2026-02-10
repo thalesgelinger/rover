@@ -1,4 +1,4 @@
-use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
+use crate::coroutine::{run_coroutine_with_delay, CoroutineResult};
 use crate::events::{EventQueue, UiEvent};
 use crate::platform::UiRuntimeConfig;
 use crate::scheduler::{Scheduler, SharedScheduler};
@@ -407,7 +407,22 @@ impl<R: Renderer> Drop for App<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::UiTarget;
+    use crate::ui::registry::UiRegistry;
+    use crate::ui::renderer::Renderer;
     use crate::ui::stub::StubRenderer;
+
+    struct TestTuiRenderer;
+
+    impl Renderer for TestTuiRenderer {
+        fn mount(&mut self, _registry: &UiRegistry) {}
+        fn update(&mut self, _registry: &UiRegistry, _dirty_nodes: &[crate::ui::node::NodeId]) {}
+        fn node_added(&mut self, _registry: &UiRegistry, _node_id: crate::ui::node::NodeId) {}
+        fn node_removed(&mut self, _node_id: crate::ui::node::NodeId) {}
+        fn target(&self) -> UiTarget {
+            UiTarget::Tui
+        }
+    }
 
     #[test]
     fn test_app_creation() {
@@ -471,16 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rover_target_exposed() {
-        let renderer = StubRenderer::new();
-        let app = App::new(renderer).unwrap();
-
-        let target: String = app.lua.load("return rover.target").eval().unwrap();
-        assert_eq!(target, "unknown");
-    }
-
-    #[test]
-    fn test_rover_tui_component_errors_on_non_tui_target() {
+    fn test_require_rover_tui_fails_on_non_tui() {
         let renderer = StubRenderer::new();
         let app = App::new(renderer).unwrap();
 
@@ -489,7 +495,7 @@ mod tests {
             .load(
                 r#"
                 local ok, err = pcall(function()
-                    rover.tui.select({})
+                    require("rover.tui")
                 end)
                 return ok, tostring(err)
             "#,
@@ -498,34 +504,51 @@ mod tests {
             .unwrap();
 
         assert!(!ok);
-        assert!(err.contains("rover.tui.select not supported on target=unknown"));
+        assert!(err.contains("require(\"rover.tui\") requires target=tui"));
     }
 
     #[test]
-    fn test_rover_warning_handler_receives_tui_guard_warning() {
-        let renderer = StubRenderer::new();
+    fn test_require_rover_tui_attaches_components_to_rover_ui() {
+        let renderer = TestTuiRenderer;
         let app = App::new(renderer).unwrap();
 
-        let (warn_msg, ok): (String, bool) = app
+        let (before_type, after_type): (String, String) = app
             .lua
             .load(
                 r#"
-                _G.last_warning = ""
-                rover.on_warning(function(msg)
-                    _G.last_warning = msg
-                end)
-
-                local ok = pcall(function()
-                    rover.tui.tab_select({})
-                end)
-
-                return _G.last_warning, ok
+                local before_type = type(rover.ui.select)
+                require("rover.tui")
+                local after_type = type(rover.ui.select)
+                return before_type, after_type
             "#,
             )
             .eval()
             .unwrap();
 
-        assert!(!ok);
-        assert!(warn_msg.contains("rover.tui.tab_select unsupported on target=unknown"));
+        assert_eq!(before_type, "nil");
+        assert_eq!(after_type, "function");
+    }
+
+    #[test]
+    fn test_tui_components_render_nodes_after_require() {
+        let renderer = TestTuiRenderer;
+        let app = App::new(renderer).unwrap();
+
+        let node_kind: String = app
+            .lua
+            .load(
+                r#"
+                require("rover.tui")
+                local node = rover.ui.select({
+                    title = "x",
+                    items = { "a", "b" },
+                })
+                return type(node) == "userdata" and "userdata" or type(node)
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert_eq!(node_kind, "userdata");
     }
 }

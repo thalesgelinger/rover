@@ -117,13 +117,11 @@ impl UserData for LuaUi {
 
             // Extract on_click (optional)
             let on_click = match props.get::<Function>("on_click") {
-                Ok(callback) => {
-                    Some(
-                        runtime
-                            .register_callback(lua, callback)
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
-                    )
-                }
+                Ok(callback) => Some(
+                    runtime
+                        .register_callback(lua, callback)
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                ),
                 Err(_) => None,
             };
 
@@ -160,25 +158,21 @@ impl UserData for LuaUi {
 
             // Extract on_change (optional)
             let on_change = match props.get::<Function>("on_change") {
-                Ok(callback) => {
-                    Some(
-                        runtime
-                            .register_callback(lua, callback)
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
-                    )
-                }
+                Ok(callback) => Some(
+                    runtime
+                        .register_callback(lua, callback)
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                ),
                 Err(_) => None,
             };
 
             // Extract on_submit (optional — called on Enter)
             let on_submit = match props.get::<Function>("on_submit") {
-                Ok(callback) => {
-                    Some(
-                        runtime
-                            .register_callback(lua, callback)
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
-                    )
-                }
+                Ok(callback) => Some(
+                    runtime
+                        .register_callback(lua, callback)
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                ),
                 Err(_) => None,
             };
 
@@ -218,13 +212,11 @@ impl UserData for LuaUi {
 
             // Extract on_toggle (optional)
             let on_toggle = match props.get::<Function>("on_toggle") {
-                Ok(callback) => {
-                    Some(
-                        runtime
-                            .register_callback(lua, callback)
-                            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
-                    )
-                }
+                Ok(callback) => Some(
+                    runtime
+                        .register_callback(lua, callback)
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                ),
                 Err(_) => None,
             };
 
@@ -577,11 +569,11 @@ impl UserData for LuaUi {
         methods.add_meta_function(
             mlua::MetaMethod::Index,
             |_lua, (ud, key): (AnyUserData, String)| {
+                let uv: mlua::Table = ud.user_value()?;
                 if key == "render" {
-                    let uv: mlua::Table = ud.user_value()?;
                     uv.get::<Value>("render")
                 } else {
-                    Ok(Value::Nil)
+                    uv.get::<Value>(key)
                 }
             },
         );

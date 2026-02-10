@@ -1,8 +1,8 @@
 use crate::signal::{DerivedId, SignalId};
 use crate::ui::registry::UiRegistry;
-use crate::{SharedSignalRuntime, scheduler::SharedScheduler};
 use crate::{platform::UiRuntimeConfig, platform::UiTarget};
-use mlua::{AppDataRef, Function, Lua, Result, Value};
+use crate::{scheduler::SharedScheduler, SharedSignalRuntime};
+use mlua::{AppDataRef, Lua, Result, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -53,16 +53,4 @@ pub fn get_runtime_config(lua: &Lua) -> Result<AppDataRef<'_, UiRuntimeConfig>> 
 /// Get active renderer target.
 pub fn get_target(lua: &Lua) -> Result<UiTarget> {
     Ok(get_runtime_config(lua)?.target())
-}
-
-/// Emit a runtime warning to stderr and optional Lua handler.
-pub fn emit_warning(lua: &Lua, message: &str) -> Result<()> {
-    get_runtime_config(lua)?.emit_warning(message);
-    Ok(())
-}
-
-/// Register warning callback.
-pub fn set_warning_handler(lua: &Lua, handler: Option<Function>) -> Result<()> {
-    get_runtime_config(lua)?.set_warning_handler(handler);
-    Ok(())
 }
