@@ -131,7 +131,18 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     rover_table.set("on_destroy", on_destroy_fn)?;
 
     let lua_ui = lua.create_userdata(LuaUi::new())?;
-    lua_ui.set_user_value(lua.create_table()?)?;
+    let uv = lua.create_table()?;
+    let modifier_module: Table = lua
+        .load(include_str!("modifier.lua"))
+        .set_name("rover_ui_modifier.lua")
+        .eval()?;
+    let default_theme: Table = modifier_module.get("default_theme")?;
+    let create_mod: Function = modifier_module.get("create_mod")?;
+    let mod_obj: Table = create_mod.call(default_theme.clone())?;
+
+    uv.set("theme", default_theme)?;
+    uv.set("mod", mod_obj)?;
+    lua_ui.set_user_value(uv)?;
     rover_table.set("ui", lua_ui)?;
 
     register_tui_preload_module(lua)?;

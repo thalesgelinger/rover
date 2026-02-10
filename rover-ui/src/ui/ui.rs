@@ -1,6 +1,7 @@
 use super::lua_node::LuaNode;
 use super::node::{TextContent, UiNode};
 use super::registry::UiRegistry;
+use super::style::NodeStyle;
 use crate::lua::{derived::LuaDerived, signal::LuaSignal};
 use mlua::{AnyUserData, Function, Table, UserData, UserDataMethods, Value};
 use std::cell::RefCell;
@@ -44,6 +45,7 @@ impl UserData for LuaUi {
                         content: TextContent::Static(s.to_str()?.to_string()),
                     };
                     let id = registry_rc.borrow_mut().create_node(node);
+                    apply_mod_to_node(lua, registry_rc.clone(), &props, id)?;
                     Ok(LuaNode::new(id))
                 }
 
@@ -53,6 +55,7 @@ impl UserData for LuaUi {
                         content: TextContent::Static(n.to_string()),
                     };
                     let id = registry_rc.borrow_mut().create_node(node);
+                    apply_mod_to_node(lua, registry_rc.clone(), &props, id)?;
                     Ok(LuaNode::new(id))
                 }
 
@@ -61,6 +64,7 @@ impl UserData for LuaUi {
                         content: TextContent::Static(n.to_string()),
                     };
                     let id = registry_rc.borrow_mut().create_node(node);
+                    apply_mod_to_node(lua, registry_rc.clone(), &props, id)?;
                     Ok(LuaNode::new(id))
                 }
 
@@ -70,6 +74,7 @@ impl UserData for LuaUi {
                         content: TextContent::Static(b.to_string()),
                     };
                     let id = registry_rc.borrow_mut().create_node(node);
+                    apply_mod_to_node(lua, registry_rc.clone(), &props, id)?;
                     Ok(LuaNode::new(id))
                 }
 
@@ -77,15 +82,20 @@ impl UserData for LuaUi {
                 Value::UserData(ref ud) => {
                     // Try to borrow as Signal
                     if ud.is::<LuaSignal>() {
-                        create_reactive_text_node(lua, registry_rc, ud.clone())
+                        let node = create_reactive_text_node(lua, registry_rc.clone(), ud.clone())?;
+                        apply_mod_to_node(lua, registry_rc.clone(), &props, node.id())?;
+                        Ok(node)
                     } else if ud.is::<LuaDerived>() {
-                        create_reactive_text_node(lua, registry_rc, ud.clone())
+                        let node = create_reactive_text_node(lua, registry_rc.clone(), ud.clone())?;
+                        apply_mod_to_node(lua, registry_rc.clone(), &props, node.id())?;
+                        Ok(node)
                     } else {
                         // Unknown userdata, convert to string
                         let node = UiNode::Text {
                             content: TextContent::Static("<userdata>".to_string()),
                         };
                         let id = registry_rc.borrow_mut().create_node(node);
+                        apply_mod_to_node(lua, registry_rc.clone(), &props, id)?;
                         Ok(LuaNode::new(id))
                     }
                 }
@@ -96,6 +106,7 @@ impl UserData for LuaUi {
                         content: TextContent::Static("".to_string()),
                     };
                     let id = registry_rc.borrow_mut().create_node(node);
+                    apply_mod_to_node(lua, registry_rc.clone(), &props, id)?;
                     Ok(LuaNode::new(id))
                 }
             }
@@ -127,6 +138,7 @@ impl UserData for LuaUi {
 
             let node = UiNode::Button { label, on_click };
             let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             if let Some(effect_id) = on_click {
                 registry_rc.borrow_mut().attach_effect(node_id, effect_id);
@@ -187,6 +199,7 @@ impl UserData for LuaUi {
                 let mut registry = registry_rc.borrow_mut();
                 registry.finalize_node(node_id, node);
             }
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             // Attach effects for callbacks
             if let Some(effect_id) = on_change {
@@ -222,6 +235,7 @@ impl UserData for LuaUi {
 
             let node = UiNode::Checkbox { checked, on_toggle };
             let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             if let Some(effect_id) = on_toggle {
                 registry_rc.borrow_mut().attach_effect(node_id, effect_id);
@@ -242,6 +256,7 @@ impl UserData for LuaUi {
 
             let node = UiNode::Image { src };
             let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             Ok(LuaNode::new(node_id))
         });
@@ -250,10 +265,11 @@ impl UserData for LuaUi {
         methods.add_function("column", |lua, props: Table| {
             let registry_rc = get_registry_rc(lua)?;
 
-            let children = extract_children(lua, props)?;
+            let children = extract_children(lua, &props)?;
 
             let node = UiNode::Column { children };
             let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             Ok(LuaNode::new(node_id))
         });
@@ -262,10 +278,11 @@ impl UserData for LuaUi {
         methods.add_function("row", |lua, props: Table| {
             let registry_rc = get_registry_rc(lua)?;
 
-            let children = extract_children(lua, props)?;
+            let children = extract_children(lua, &props)?;
 
             let node = UiNode::Row { children };
             let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             Ok(LuaNode::new(node_id))
         });
@@ -274,10 +291,11 @@ impl UserData for LuaUi {
         methods.add_function("view", |lua, props: Table| {
             let registry_rc = get_registry_rc(lua)?;
 
-            let children = extract_children(lua, props)?;
+            let children = extract_children(lua, &props)?;
 
             let node = UiNode::View { children };
             let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             Ok(LuaNode::new(node_id))
         });
@@ -303,6 +321,7 @@ impl UserData for LuaUi {
 
             let node = UiNode::KeyArea { child, on_key };
             let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             if let Some(effect_id) = on_key {
                 registry_rc.borrow_mut().attach_effect(node_id, effect_id);
@@ -888,9 +907,58 @@ fn extract_reactive_text_content(
     })
 }
 
+fn apply_mod_to_node(
+    lua: &mlua::Lua,
+    registry_rc: Rc<RefCell<UiRegistry>>,
+    props: &Table,
+    node_id: super::node::NodeId,
+) -> mlua::Result<()> {
+    let mod_value = props.get::<Value>("mod")?;
+    let mod_table = match mod_value {
+        Value::Table(t) => t,
+        Value::Nil => return Ok(()),
+        _ => {
+            return Err(mlua::Error::RuntimeError(
+                "props.mod must be a modifier table".to_string(),
+            ));
+        }
+    };
+
+    let resolve: mlua::Function = mod_table.get("resolve")?;
+    let resolved: Table = resolve.call(mod_table.clone())?;
+    let style = NodeStyle::from_lua_table(&resolved)?;
+    registry_rc.borrow_mut().set_node_style(node_id, style);
+
+    let is_reactive: mlua::Function = mod_table.get("is_reactive")?;
+    let reactive: bool = is_reactive.call(mod_table.clone())?;
+    if !reactive {
+        return Ok(());
+    }
+
+    let runtime = crate::lua::helpers::get_runtime(lua)?;
+    let registry_for_callback = registry_rc.clone();
+    let callback = lua.create_function(move |_lua, ()| {
+        let resolve: mlua::Function = mod_table.get("resolve")?;
+        let resolved: Table = resolve.call(mod_table.clone())?;
+        let style = NodeStyle::from_lua_table(&resolved)?;
+        registry_for_callback
+            .borrow_mut()
+            .set_node_style(node_id, style);
+        Ok(())
+    })?;
+
+    let callback_key = lua.create_registry_value(callback)?;
+    let effect_id = runtime
+        .create_effect(lua, callback_key)
+        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+    registry_rc.borrow_mut().attach_effect(node_id, effect_id);
+    Ok(())
+}
+
 /// Extract children from a props table
 /// Supports both `props.children` array and varargs through `props[1], props[2], ...`
-fn extract_children(lua: &mlua::Lua, props: Table) -> mlua::Result<Vec<super::node::NodeId>> {
+fn extract_children(lua: &mlua::Lua, props: &Table) -> mlua::Result<Vec<super::node::NodeId>> {
     let mut children = Vec::new();
 
     // First try props.children

@@ -1,4 +1,5 @@
 use super::node::{NodeArena, NodeId, UiNode};
+use super::style::NodeStyle;
 
 use super::super::signal::graph::EffectId;
 #[cfg(test)]
@@ -22,6 +23,8 @@ pub struct UiRegistry {
     condition_state: HashMap<NodeId, bool>,
     /// List node items tracking
     list_items: HashMap<NodeId, Value>,
+    /// Resolved style per node
+    node_styles: HashMap<NodeId, NodeStyle>,
 }
 
 impl UiRegistry {
@@ -35,6 +38,7 @@ impl UiRegistry {
             on_destroy_callbacks: Vec::new(),
             condition_state: HashMap::new(),
             list_items: HashMap::new(),
+            node_styles: HashMap::new(),
         }
     }
 
@@ -131,8 +135,27 @@ impl UiRegistry {
 
         // Remove from dirty set if present
         self.dirty_nodes.remove(&node_id);
+        self.node_styles.remove(&node_id);
 
         Some((node, effects))
+    }
+
+    /// Get style for a node, if present.
+    pub fn get_node_style(&self, node_id: NodeId) -> Option<&NodeStyle> {
+        self.node_styles.get(&node_id)
+    }
+
+    /// Set style for a node and mark it dirty if changed.
+    pub fn set_node_style(&mut self, node_id: NodeId, style: NodeStyle) {
+        let changed = self
+            .node_styles
+            .get(&node_id)
+            .map(|existing| existing != &style)
+            .unwrap_or(true);
+        self.node_styles.insert(node_id, style);
+        if changed {
+            self.mark_dirty(node_id);
+        }
     }
 
     /// Take all dirty nodes (clears the dirty set and returns it)
