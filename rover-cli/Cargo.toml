@@ -12,6 +12,7 @@ rover_tui = {path = "../rover-tui"}
 rover-lsp = {path = "../rover-lsp"}
 rover-parser = {path = "../rover-parser"}
 rover_db = {path = "../rover-db"}
+rover_bundler = {path = "../rover-bundler"}
 colored = "2.2"
 serde_json = "1.0"
 tokio = { version = "1", features = ["sync"] }

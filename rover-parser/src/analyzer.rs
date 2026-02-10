@@ -10,6 +10,7 @@ use crate::types::LuaType;
 pub struct SemanticModel {
     pub server: Option<RoverServer>,
     pub errors: Vec<ParsingError>,
+    pub warnings: Vec<ParsingError>,
     pub functions: Vec<FunctionMetadata>,
     pub symbol_specs: HashMap<String, SymbolSpecMetadata>,
     pub dynamic_members: HashMap<String, Vec<String>>, // table_name -> [member_names]
@@ -200,6 +201,7 @@ impl Analyzer {
             model: SemanticModel {
                 server: None,
                 errors: Vec::new(),
+                warnings: Vec::new(),
                 functions: Vec::new(),
                 symbol_specs: HashMap::new(),
                 dynamic_members: HashMap::new(),

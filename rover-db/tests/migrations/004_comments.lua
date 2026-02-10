@@ -1,1 +1,4 @@
-migration.comments:create({body = rover.guard:string()})
+-- Create comments table
+function change()
+    migration.comments:create({body = rover.db.guard:string()})
+end

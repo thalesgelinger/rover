@@ -106,6 +106,75 @@ function Guard:object(schema)
 	return v
 end
 
+-- Extend Guard with custom methods
+-- Creates a new Guard module with additional validator methods
+function Guard:extend(methods)
+	local ExtendedGuard = {}
+	setmetatable(ExtendedGuard, { __index = self })
+	
+	-- Create extended validator methods table
+	local ExtendedValidatorMethods = {}
+	setmetatable(ExtendedValidatorMethods, { __index = ValidatorMethods })
+	
+	-- Add custom methods - methods is a table with function values
+	if type(methods) == "table" then
+		for name, fn in pairs(methods) do
+			if type(name) == "string" and type(fn) == "function" then
+				ExtendedValidatorMethods[name] = fn
+			end
+		end
+	end
+	
+	-- Override create_validator to use extended methods
+	local function create_extended_validator(validator_type)
+		local v = {
+			type = validator_type,
+			_required = false,
+			_required_msg = nil,
+			_default = nil,
+			_enum = nil,
+			_element = nil,
+			_schema = nil,
+		}
+		setmetatable(v, { __index = ExtendedValidatorMethods })
+		return v
+	end
+	
+	-- Copy type factory methods
+	function ExtendedGuard:string()
+		return create_extended_validator "string"
+	end
+	
+	function ExtendedGuard:number()
+		return create_extended_validator "number"
+	end
+	
+	function ExtendedGuard:integer()
+		return create_extended_validator "integer"
+	end
+	
+	function ExtendedGuard:boolean()
+		return create_extended_validator "boolean"
+	end
+	
+	function ExtendedGuard:array(element_validator)
+		local v = create_extended_validator "array"
+		v.element = element_validator
+		return v
+	end
+	
+	function ExtendedGuard:object(schema)
+		local v = create_extended_validator "object"
+		v.schema = schema
+		return v
+	end
+	
+	-- Copy validate helper
+	ExtendedGuard.validate = self.validate
+	
+	return ExtendedGuard
+end
+
 -- Helper function to wrap validation in xpcall without stack traces
 function Guard.validate(fn)
 	local success, result = xpcall(fn, function(err)
