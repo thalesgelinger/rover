@@ -4,7 +4,7 @@ local ui = rover.ui
 
 function rover.render()
   local value = rover.signal(0)
-  local max = rover.signal(100)
+  local max = 100
   local running = rover.signal(true)
   local status = rover.signal("running")
 
@@ -13,8 +13,8 @@ function rover.render()
       rover.delay(120)
       if running.val then
         value.val = value.val + 1
-        if value.val >= max.val then
-          value.val = max.val
+        if value.val >= max then
+          value.val = max
           running.val = false
           status.val = "done"
         end
