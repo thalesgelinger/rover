@@ -149,7 +149,11 @@ impl SignalRuntime {
             let stack_len = tracking.stack.len();
             if stack_len > 0 {
                 // We're being called from within another effect/derived - save its tracking state
-                (tracking.reads.clone(), tracking.derived_reads.clone(), stack_len)
+                (
+                    tracking.reads.clone(),
+                    tracking.derived_reads.clone(),
+                    stack_len,
+                )
             } else {
                 (Vec::new(), Vec::new(), 0)
             }

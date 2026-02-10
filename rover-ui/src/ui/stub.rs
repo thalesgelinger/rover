@@ -111,7 +111,9 @@ impl StubRenderer {
                         indent_str, node_id, label, event_info
                     ));
                 }
-                UiNode::Input { value, on_change, .. } => {
+                UiNode::Input {
+                    value, on_change, ..
+                } => {
                     let event_info = if on_change.is_some() {
                         " [changeable]"
                     } else {

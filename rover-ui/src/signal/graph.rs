@@ -75,8 +75,7 @@ impl SubscriberGraph {
     pub fn subscribe_derived(&mut self, derived: DerivedId, subscriber: SubscriberId) {
         let idx = derived.0 as usize;
         if self.derived_subscribers.len() <= idx {
-            self.derived_subscribers
-                .resize_with(idx + 1, SmallVec::new);
+            self.derived_subscribers.resize_with(idx + 1, SmallVec::new);
         }
         if !self.derived_subscribers[idx].contains(&subscriber) {
             self.derived_subscribers[idx].push(subscriber);

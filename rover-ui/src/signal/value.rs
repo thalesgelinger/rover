@@ -1,8 +1,8 @@
 use mlua::{Lua, RegistryKey, Value};
 use smartstring::alias::String as SmartString;
 
-use crate::lua::signal::LuaSignal;
 use crate::lua::derived::LuaDerived;
+use crate::lua::signal::LuaSignal;
 
 /// SignalValue represents the value stored in a signal
 #[derive(Debug)]
@@ -68,17 +68,24 @@ impl SignalValue {
                 // If we receive a Signal or Derived, compute its value and recurse
                 if ud.is::<LuaSignal>() {
                     let signal = ud.borrow::<LuaSignal>()?;
-                    let runtime = lua.app_data_ref::<crate::SharedSignalRuntime>()
-                        .ok_or_else(|| mlua::Error::RuntimeError("Signal runtime not initialized".into()))?;
+                    let runtime = lua
+                        .app_data_ref::<crate::SharedSignalRuntime>()
+                        .ok_or_else(|| {
+                            mlua::Error::RuntimeError("Signal runtime not initialized".into())
+                        })?;
                     let computed = runtime.get_signal(lua, signal.id)?;
-                    Self::from_lua(lua, computed)  // Recurse with the computed value
+                    Self::from_lua(lua, computed) // Recurse with the computed value
                 } else if ud.is::<LuaDerived>() {
                     let derived = ud.borrow::<LuaDerived>()?;
-                    let runtime = lua.app_data_ref::<crate::SharedSignalRuntime>()
-                        .ok_or_else(|| mlua::Error::RuntimeError("Signal runtime not initialized".into()))?;
-                    let computed = runtime.get_derived(lua, derived.id)
+                    let runtime = lua
+                        .app_data_ref::<crate::SharedSignalRuntime>()
+                        .ok_or_else(|| {
+                            mlua::Error::RuntimeError("Signal runtime not initialized".into())
+                        })?;
+                    let computed = runtime
+                        .get_derived(lua, derived.id)
                         .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                    Self::from_lua(lua, computed)  // Recurse with the computed value
+                    Self::from_lua(lua, computed) // Recurse with the computed value
                 } else {
                     Err(mlua::Error::FromLuaConversionError {
                         from: "userdata",

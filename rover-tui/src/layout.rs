@@ -220,8 +220,7 @@ pub fn compute_layout(
         UiNode::Conditional { child, .. } => {
             if let Some(child_id) = child {
                 let child_id = *child_id;
-                let (w, h) =
-                    compute_layout(registry, child_id, origin_row, origin_col, layout);
+                let (w, h) = compute_layout(registry, child_id, origin_row, origin_col, layout);
                 layout.set(
                     root,
                     LayoutRect {
@@ -299,9 +298,7 @@ pub fn node_content(node: &UiNode) -> Option<String> {
         UiNode::Text { content } => Some(content.value().to_string()),
         UiNode::Button { label, .. } => Some(format!("[{}]", label)),
         UiNode::Input { value, .. } => Some(value.value().to_string()),
-        UiNode::Checkbox { checked, .. } => {
-            Some(if *checked { "[x]" } else { "[ ]" }.to_string())
-        }
+        UiNode::Checkbox { checked, .. } => Some(if *checked { "[x]" } else { "[ ]" }.to_string()),
         // Container nodes have no direct content
         UiNode::Column { .. }
         | UiNode::Row { .. }
@@ -596,14 +593,10 @@ mod tests {
 
     #[test]
     fn test_node_content_container_returns_none() {
-        let col = UiNode::Column {
-            children: vec![],
-        };
+        let col = UiNode::Column { children: vec![] };
         assert!(node_content(&col).is_none());
 
-        let row = UiNode::Row {
-            children: vec![],
-        };
+        let row = UiNode::Row { children: vec![] };
         assert!(node_content(&row).is_none());
     }
 }

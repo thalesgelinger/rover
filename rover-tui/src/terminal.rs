@@ -1,7 +1,6 @@
 use crossterm::{
-    cursor,
+    ExecutableCommand, QueueableCommand, cursor,
     terminal::{self, ClearType},
-    ExecutableCommand, QueueableCommand,
 };
 use std::io::{self, Stdout, Write};
 
