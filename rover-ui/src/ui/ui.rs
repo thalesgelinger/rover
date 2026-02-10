@@ -31,6 +31,12 @@ fn get_registry_rc(lua: &mlua::Lua) -> mlua::Result<Rc<RefCell<UiRegistry>>> {
         .map(|r| r.clone())
 }
 
+fn get_ui_user_value_table(lua: &mlua::Lua) -> mlua::Result<Table> {
+    let rover: Table = lua.globals().get("rover")?;
+    let ui_ud: AnyUserData = rover.get("ui")?;
+    ui_ud.user_value()
+}
+
 impl UserData for LuaUi {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_function("text", |lua, props: Table| {
@@ -642,6 +648,20 @@ impl UserData for LuaUi {
             },
         );
 
+        methods.add_function("set_theme", |lua, theme: Table| {
+            let uv: Table = get_ui_user_value_table(lua)?;
+            let current_theme: Table = uv.get("theme")?;
+            replace_table_recursive(&current_theme, &theme)?;
+            Ok(())
+        });
+
+        methods.add_function("extend_theme", |lua, patch: Table| {
+            let uv: Table = get_ui_user_value_table(lua)?;
+            let current_theme: Table = uv.get("theme")?;
+            merge_tables_recursive(&current_theme, &patch)?;
+            Ok(())
+        });
+
         // TODO: there must be a best way to define render method lookup
         methods.add_meta_function(
             mlua::MetaMethod::Index,
@@ -661,6 +681,17 @@ impl UserData for LuaUi {
                 if key == "render" {
                     let uv: mlua::Table = ud.user_value()?;
                     uv.set("render", value)
+                } else if key == "theme" {
+                    let uv: mlua::Table = ud.user_value()?;
+                    match value {
+                        Value::Table(theme) => {
+                            let current_theme: Table = uv.get("theme")?;
+                            replace_table_recursive(&current_theme, &theme)
+                        }
+                        _ => Err(mlua::Error::RuntimeError(
+                            "rover.ui.theme must be a table".to_string(),
+                        )),
+                    }
                 } else {
                     Err(mlua::Error::RuntimeError(format!(
                         "Cannot set field '{}' on rover.ui",
@@ -982,6 +1013,35 @@ fn apply_mod_to_node(
         .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 
     registry_rc.borrow_mut().attach_effect(node_id, effect_id);
+    Ok(())
+}
+
+fn replace_table_recursive(dst: &Table, src: &Table) -> mlua::Result<()> {
+    let mut keys = Vec::new();
+    for pair in dst.clone().pairs::<Value, Value>() {
+        let (key, _value) = pair?;
+        keys.push(key);
+    }
+
+    for key in keys {
+        dst.raw_remove(key)?;
+    }
+
+    merge_tables_recursive(dst, src)
+}
+
+fn merge_tables_recursive(dst: &Table, src: &Table) -> mlua::Result<()> {
+    for pair in src.clone().pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        match (dst.get::<Value>(key.clone())?, value.clone()) {
+            (Value::Table(dst_nested), Value::Table(src_nested)) => {
+                merge_tables_recursive(&dst_nested, &src_nested)?;
+            }
+            _ => {
+                dst.set(key, value)?;
+            }
+        }
+    }
     Ok(())
 }
 

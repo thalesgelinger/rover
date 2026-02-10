@@ -73,6 +73,52 @@ end
 
 - Theme tokens are available at `rover.ui.theme` (`space.*`, `color.*`).
 
+### Theme
+
+Default shape:
+
+```lua
+rover.ui.theme = {
+  space = { none = 0, xs = 1, sm = 2, md = 3, lg = 4, xl = 6 },
+  color = {
+    surface = "#1f2937",
+    surface_alt = "#374151",
+    text = "#f9fafb",
+    border = "#6b7280",
+    accent = "#22c55e",
+    danger = "#ef4444",
+    warning = "#f59e0b",
+    info = "#3b82f6",
+  },
+}
+```
+
+Modify theme in 3 ways:
+
+```lua
+local ui = rover.ui
+
+-- merge patch (keeps missing keys)
+ui.extend_theme({
+  color = { accent = "#00d084" },
+  space = { sm = 3 },
+})
+
+-- replace theme
+ui.set_theme({
+  space = { none = 0, sm = 2, md = 4 },
+  color = { surface = "#101828", accent = "#00d084" },
+})
+
+-- assignment also replaces
+ui.theme = {
+  space = { sm = 2 },
+  color = { accent = "#00d084" },
+}
+```
+
+All modifiers resolve from current theme, including existing `ui.mod` chains.
+
 ## Conditional Rendering
 
 ```lua

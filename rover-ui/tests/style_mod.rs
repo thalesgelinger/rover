@@ -78,3 +78,37 @@ fn test_reactive_modifier_updates_style() {
         .iter()
         .any(|op| matches!(op, StyleOp::BgColor(v) if v == "#22aa22")));
 }
+
+#[test]
+fn test_theme_set_and_extend_affect_mod_resolution() {
+    let renderer = StubRenderer::new();
+    let app = App::new(renderer).unwrap();
+
+    let (before, after_extend, after_set): (i64, i64, i64) = app
+        .lua()
+        .load(
+            r##"
+            local ui = rover.ui
+            local mod = ui.mod
+
+            local before = mod:padding("sm"):resolve().ops[1].value
+
+            ui.extend_theme({ space = { sm = 9 } })
+            local after_extend = mod:padding("sm"):resolve().ops[1].value
+
+            ui.set_theme({
+              space = { sm = 3 },
+              color = { surface = "#123456" },
+            })
+            local after_set = mod:padding("sm"):resolve().ops[1].value
+
+            return before, after_extend, after_set
+        "##,
+        )
+        .eval()
+        .unwrap();
+
+    assert_eq!(before, 2);
+    assert_eq!(after_extend, 9);
+    assert_eq!(after_set, 3);
+}
