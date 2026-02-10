@@ -39,7 +39,7 @@ impl TuiRunner {
         &mut self.app
     }
 
-    /// Run the TUI event loop. Blocks until quit or no pending work.
+    /// Run the TUI event loop. Blocks until quit.
     pub fn run(&mut self) -> Result<(), RunError> {
         self.app.mount().map_err(RunError::Lua)?;
 
@@ -78,10 +78,6 @@ impl TuiRunner {
             self.app.tick().map_err(RunError::Lua)?;
             self.scan_focusables();
             self.update_cursor();
-
-            if !self.app.scheduler().borrow().has_pending() && self.focused_node().is_none() {
-                break;
-            }
         }
 
         Ok(())
