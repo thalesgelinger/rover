@@ -13,21 +13,21 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 /// to the focused input's buffer, dispatching Change/Submit events.
 pub struct TuiRunner {
     app: App<TuiRenderer>,
-    /// Currently focused Input node.
-    focused: Option<NodeId>,
+    /// Ordered list of focusable nodes (Input + KeyArea).
+    focusable_nodes: Vec<NodeId>,
+    /// Current focus index inside `focusable_nodes`.
+    focus_index: Option<usize>,
     /// Keyboard input buffer for the focused input.
     input_buffer: String,
-    /// Whether we have any Input nodes (avoids 'q' quitting when typing).
-    has_inputs: bool,
 }
 
 impl TuiRunner {
     pub fn new(app: App<TuiRenderer>) -> Self {
         Self {
             app,
-            focused: None,
+            focusable_nodes: Vec::new(),
+            focus_index: None,
             input_buffer: String::new(),
-            has_inputs: false,
         }
     }
 
@@ -43,8 +43,8 @@ impl TuiRunner {
     pub fn run(&mut self) -> Result<(), RunError> {
         self.app.mount().map_err(RunError::Lua)?;
 
-        // Scan for Input nodes and auto-focus the first one
-        self.scan_inputs();
+        // Scan focusable nodes and auto-focus the first one
+        self.scan_focusables();
         self.update_cursor();
 
         while self.app.is_running() {
@@ -78,7 +78,7 @@ impl TuiRunner {
             self.app.tick().map_err(RunError::Lua)?;
             self.update_cursor();
 
-            if !self.app.scheduler().borrow().has_pending() && self.focused.is_none() {
+            if !self.app.scheduler().borrow().has_pending() && self.focused_node().is_none() {
                 break;
             }
         }
@@ -94,10 +94,23 @@ impl TuiRunner {
             return Ok(true);
         }
 
-        // If we have a focused input, route keystrokes to it
-        if let Some(node_id) = self.focused {
+        if key.code == KeyCode::Tab {
+            self.focus_next();
+            return Ok(false);
+        }
+
+        if key.code == KeyCode::BackTab {
+            self.focus_prev();
+            return Ok(false);
+        }
+
+        // If focused node is an input, keep native text editing behavior
+        if let Some(node_id) = self.focused_input_node() {
             match key.code {
-                KeyCode::Char(c) => {
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
                     self.input_buffer.push(c);
                     self.app.push_event(UiEvent::Change {
                         node_id,
@@ -123,13 +136,35 @@ impl TuiRunner {
                     });
                 }
                 KeyCode::Esc => {
-                    self.app.stop();
-                    return Ok(true);
+                    if let Some(token) = key_event_token(key) {
+                        self.app.push_event(UiEvent::Key {
+                            node_id,
+                            key: token,
+                        });
+                    }
                 }
-                _ => {}
+                _ => {
+                    if let Some(token) = key_event_token(key) {
+                        self.app.push_event(UiEvent::Key {
+                            node_id,
+                            key: token,
+                        });
+                    }
+                }
+            }
+            return Ok(false);
+        }
+
+        // Focused non-input node: forward key tokens to app callback
+        if let Some(node_id) = self.focused_node() {
+            if let Some(token) = key_event_token(key) {
+                self.app.push_event(UiEvent::Key {
+                    node_id,
+                    key: token,
+                });
             }
         } else {
-            // No focused input — q or Esc exits
+            // No focused node — q or Esc exits
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
                     self.app.stop();
@@ -142,35 +177,97 @@ impl TuiRunner {
         Ok(false)
     }
 
-    /// Scan the tree for Input nodes. Auto-focus the first one found.
-    fn scan_inputs(&mut self) {
+    /// Scan the tree for focusable nodes. Auto-focus the first one found.
+    fn scan_focusables(&mut self) {
         let registry = self.app.registry();
         let reg = registry.borrow();
         if let Some(root) = reg.root() {
-            let mut inputs = Vec::new();
-            collect_input_nodes(&reg, root, &mut inputs);
-            self.has_inputs = !inputs.is_empty();
-            if let Some(&first) = inputs.first() {
-                self.focused = Some(first);
+            let mut focusables = Vec::new();
+            collect_focusable_nodes(&reg, root, &mut focusables);
+            self.focusable_nodes = focusables;
+            if let Some(&first) = self.focusable_nodes.first() {
+                self.focus_index = Some(0);
                 // Initialize input_buffer from the input's current value
                 if let Some(UiNode::Input { value, .. }) = reg.get_node(first) {
                     self.input_buffer = value.value().to_string();
                 }
+            } else {
+                self.focus_index = None;
+                self.input_buffer.clear();
             }
+        } else {
+            self.focusable_nodes.clear();
+            self.focus_index = None;
+            self.input_buffer.clear();
         }
     }
 
     /// Position the terminal cursor at the focused input's edit position.
     fn update_cursor(&mut self) {
-        if let Some(node_id) = self.focused {
+        if let Some(node_id) = self.focused_input_node() {
             let col_offset = self.input_buffer.len() as u16;
             let _ = self.app.renderer().show_cursor_at(node_id, col_offset);
+        } else {
+            let _ = self.app.renderer().hide_cursor();
         }
+    }
+
+    #[inline]
+    fn focused_node(&self) -> Option<NodeId> {
+        self.focus_index
+            .and_then(|idx| self.focusable_nodes.get(idx).copied())
+    }
+
+    fn focused_input_node(&self) -> Option<NodeId> {
+        let node_id = self.focused_node()?;
+        let registry = self.app.registry();
+        let reg = registry.borrow();
+        match reg.get_node(node_id) {
+            Some(UiNode::Input { .. }) => Some(node_id),
+            _ => None,
+        }
+    }
+
+    fn focus_next(&mut self) {
+        if self.focusable_nodes.is_empty() {
+            return;
+        }
+        let next = match self.focus_index {
+            Some(idx) => (idx + 1) % self.focusable_nodes.len(),
+            None => 0,
+        };
+        self.focus_index = Some(next);
+        self.sync_input_buffer_from_focus();
+    }
+
+    fn focus_prev(&mut self) {
+        if self.focusable_nodes.is_empty() {
+            return;
+        }
+        let prev = match self.focus_index {
+            Some(0) => self.focusable_nodes.len() - 1,
+            Some(idx) => idx - 1,
+            None => 0,
+        };
+        self.focus_index = Some(prev);
+        self.sync_input_buffer_from_focus();
+    }
+
+    fn sync_input_buffer_from_focus(&mut self) {
+        if let Some(node_id) = self.focused_node() {
+            let registry = self.app.registry();
+            let reg = registry.borrow();
+            if let Some(UiNode::Input { value, .. }) = reg.get_node(node_id) {
+                self.input_buffer = value.value().to_string();
+                return;
+            }
+        }
+        self.input_buffer.clear();
     }
 }
 
-/// Recursively collect all Input node IDs from the tree.
-fn collect_input_nodes(registry: &UiRegistry, node_id: NodeId, out: &mut Vec<NodeId>) {
+/// Recursively collect all focusable node IDs from the tree.
+fn collect_focusable_nodes(registry: &UiRegistry, node_id: NodeId, out: &mut Vec<NodeId>) {
     let node = match registry.get_node(node_id) {
         Some(n) => n,
         None => return,
@@ -180,21 +277,57 @@ fn collect_input_nodes(registry: &UiRegistry, node_id: NodeId, out: &mut Vec<Nod
         UiNode::Input { .. } => {
             out.push(node_id);
         }
+        UiNode::KeyArea { child, .. } => {
+            out.push(node_id);
+            if let Some(child_id) = child {
+                collect_focusable_nodes(registry, *child_id, out);
+            }
+        }
         UiNode::Column { children }
         | UiNode::Row { children }
         | UiNode::View { children }
         | UiNode::List { children, .. } => {
             let children = children.clone();
             for child_id in children {
-                collect_input_nodes(registry, child_id, out);
+                collect_focusable_nodes(registry, child_id, out);
             }
         }
         UiNode::Conditional { child, .. } => {
             if let Some(child_id) = child {
-                collect_input_nodes(registry, *child_id, out);
+                collect_focusable_nodes(registry, *child_id, out);
             }
         }
         _ => {}
+    }
+}
+
+fn key_event_token(key: KeyEvent) -> Option<String> {
+    match key.code {
+        KeyCode::Up => Some("up".to_string()),
+        KeyCode::Down => Some("down".to_string()),
+        KeyCode::Left => Some("left".to_string()),
+        KeyCode::Right => Some("right".to_string()),
+        KeyCode::Home => Some("home".to_string()),
+        KeyCode::End => Some("end".to_string()),
+        KeyCode::PageUp => Some("page_up".to_string()),
+        KeyCode::PageDown => Some("page_down".to_string()),
+        KeyCode::Enter => Some("enter".to_string()),
+        KeyCode::Esc => Some("esc".to_string()),
+        KeyCode::Tab => Some("tab".to_string()),
+        KeyCode::BackTab => Some("backtab".to_string()),
+        KeyCode::Backspace => Some("backspace".to_string()),
+        KeyCode::Delete => Some("delete".to_string()),
+        KeyCode::Char(' ') => Some("space".to_string()),
+        KeyCode::Char(c) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                Some(format!("ctrl+{}", c))
+            } else if key.modifiers.contains(KeyModifiers::ALT) {
+                Some(format!("alt+{}", c))
+            } else {
+                Some(format!("char:{}", c))
+            }
+        }
+        _ => None,
     }
 }
 
@@ -243,23 +376,23 @@ mod tests {
         let app = App::new(renderer).unwrap();
         let runner = TuiRunner::new(app);
         assert!(!runner.app().is_running());
-        assert!(runner.focused.is_none());
+        assert!(runner.focus_index.is_none());
         assert!(runner.input_buffer.is_empty());
     }
 
     #[test]
-    fn test_collect_input_nodes_empty_tree() {
+    fn test_collect_focusable_nodes_empty_tree() {
         let registry = UiRegistry::new();
-        let mut inputs = Vec::new();
+        let mut nodes = Vec::new();
         // No root → no crash
         if let Some(root) = registry.root() {
-            collect_input_nodes(&registry, root, &mut inputs);
+            collect_focusable_nodes(&registry, root, &mut nodes);
         }
-        assert!(inputs.is_empty());
+        assert!(nodes.is_empty());
     }
 
     #[test]
-    fn test_collect_input_nodes_finds_inputs() {
+    fn test_collect_focusable_nodes_finds_inputs() {
         let mut registry = UiRegistry::new();
         let text = registry.create_node(UiNode::Text {
             content: TextContent::Static("hello".into()),
@@ -274,14 +407,14 @@ mod tests {
         });
         registry.set_root(col);
 
-        let mut inputs = Vec::new();
-        collect_input_nodes(&registry, col, &mut inputs);
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0], input);
+        let mut nodes = Vec::new();
+        collect_focusable_nodes(&registry, col, &mut nodes);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0], input);
     }
 
     #[test]
-    fn test_collect_input_nodes_nested() {
+    fn test_collect_focusable_nodes_nested() {
         let mut registry = UiRegistry::new();
         let input1 = registry.create_node(UiNode::Input {
             value: TextContent::Static("".into()),
@@ -301,11 +434,11 @@ mod tests {
         });
         registry.set_root(col);
 
-        let mut inputs = Vec::new();
-        collect_input_nodes(&registry, col, &mut inputs);
-        assert_eq!(inputs.len(), 2);
-        assert_eq!(inputs[0], input1);
-        assert_eq!(inputs[1], input2);
+        let mut nodes = Vec::new();
+        collect_focusable_nodes(&registry, col, &mut nodes);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0], input1);
+        assert_eq!(nodes[1], input2);
     }
 
     #[test]
@@ -316,8 +449,47 @@ mod tests {
         });
         registry.set_root(text);
 
-        let mut inputs = Vec::new();
-        collect_input_nodes(&registry, text, &mut inputs);
-        assert!(inputs.is_empty());
+        let mut nodes = Vec::new();
+        collect_focusable_nodes(&registry, text, &mut nodes);
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn test_collect_focusable_nodes_includes_key_area() {
+        let mut registry = UiRegistry::new();
+        let child = registry.create_node(UiNode::Text {
+            content: TextContent::Static("x".into()),
+        });
+        let key_area = registry.create_node(UiNode::KeyArea {
+            child: Some(child),
+            on_key: None,
+        });
+        registry.set_root(key_area);
+
+        let mut nodes = Vec::new();
+        collect_focusable_nodes(&registry, key_area, &mut nodes);
+        assert_eq!(nodes, vec![key_area]);
+    }
+
+    #[test]
+    fn test_key_event_token_maps_navigation_keys() {
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let page_down = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+
+        assert_eq!(key_event_token(up).as_deref(), Some("up"));
+        assert_eq!(key_event_token(enter).as_deref(), Some("enter"));
+        assert_eq!(key_event_token(page_down).as_deref(), Some("page_down"));
+    }
+
+    #[test]
+    fn test_key_event_token_maps_chars_and_modifiers() {
+        let plain = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        let ctrl = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        let alt = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT);
+
+        assert_eq!(key_event_token(plain).as_deref(), Some("char:j"));
+        assert_eq!(key_event_token(ctrl).as_deref(), Some("ctrl+k"));
+        assert_eq!(key_event_token(alt).as_deref(), Some("alt+x"));
     }
 }

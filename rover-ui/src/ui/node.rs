@@ -119,6 +119,10 @@ pub enum UiNode {
         condition_effect: EffectId,
         child: Option<NodeId>,
     },
+    KeyArea {
+        child: Option<NodeId>,
+        on_key: Option<EffectId>,
+    },
     List {
         items_effect: EffectId,
         children: Vec<NodeId>,

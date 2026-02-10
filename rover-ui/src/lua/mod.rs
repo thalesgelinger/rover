@@ -133,11 +133,21 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
             let tab_select_fn: Function = module.get("tab_select")?;
             let scroll_box_fn: Function = module.get("scroll_box")?;
             let textarea_fn: Function = module.get("textarea")?;
+            let nav_list_fn: Function = module.get("nav_list")?;
+            let separator_fn: Function = module.get("separator")?;
+            let badge_fn: Function = module.get("badge")?;
+            let progress_fn: Function = module.get("progress")?;
+            let paginator_fn: Function = module.get("paginator")?;
 
             uv.set("select", select_fn.clone())?;
             uv.set("tab_select", tab_select_fn.clone())?;
             uv.set("scroll_box", scroll_box_fn.clone())?;
             uv.set("textarea", textarea_fn.clone())?;
+            uv.set("nav_list", nav_list_fn.clone())?;
+            uv.set("separator", separator_fn.clone())?;
+            uv.set("badge", badge_fn.clone())?;
+            uv.set("progress", progress_fn.clone())?;
+            uv.set("paginator", paginator_fn.clone())?;
 
             Ok(module)
         })?,

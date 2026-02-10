@@ -15,6 +15,8 @@ pub enum UiEvent {
     Submit { node_id: NodeId, value: String },
     /// Checkbox toggle event
     Toggle { node_id: NodeId, checked: bool },
+    /// Generic key event for focusable TUI nodes
+    Key { node_id: NodeId, key: String },
 }
 
 impl UiEvent {
@@ -25,6 +27,7 @@ impl UiEvent {
             UiEvent::Change { node_id, .. } => *node_id,
             UiEvent::Submit { node_id, .. } => *node_id,
             UiEvent::Toggle { node_id, .. } => *node_id,
+            UiEvent::Key { node_id, .. } => *node_id,
         }
     }
 }

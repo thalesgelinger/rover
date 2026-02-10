@@ -160,6 +160,15 @@ impl StubRenderer {
                     }
                     self.log(&format!("{}}}", indent_str));
                 }
+                UiNode::KeyArea { child, .. } => {
+                    self.log(&format!("{}KeyArea(id={:?}) {{", indent_str, node_id));
+                    if let Some(child_id) = child {
+                        self.print_node(registry, *child_id, indent + 1);
+                    } else {
+                        self.log(&format!("{}  (empty)", indent_str));
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
                 UiNode::List {
                     items_effect,
                     children,
@@ -289,6 +298,15 @@ impl Renderer for StubRenderer {
                             self.print_node(registry, *child_id, 3);
                         } else {
                             self.log("    (hidden)");
+                        }
+                        self.log("  }");
+                    }
+                    UiNode::KeyArea { child, .. } => {
+                        self.log(&format!("  Updated KeyArea(id={:?}) {{", node_id));
+                        if let Some(child_id) = child {
+                            self.print_node(registry, *child_id, 3);
+                        } else {
+                            self.log("    (empty)");
                         }
                         self.log("  }");
                     }

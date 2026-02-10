@@ -245,6 +245,34 @@ pub fn compute_layout(
             }
         }
 
+        UiNode::KeyArea { child, .. } => {
+            if let Some(child_id) = child {
+                let child_id = *child_id;
+                let (w, h) = compute_layout(registry, child_id, origin_row, origin_col, layout);
+                layout.set(
+                    root,
+                    LayoutRect {
+                        row: origin_row,
+                        col: origin_col,
+                        width: w,
+                        height: h,
+                    },
+                );
+                (w, h)
+            } else {
+                layout.set(
+                    root,
+                    LayoutRect {
+                        row: origin_row,
+                        col: origin_col,
+                        width: 0,
+                        height: 0,
+                    },
+                );
+                (0, 0)
+            }
+        }
+
         UiNode::List { children, .. } => {
             // Like Column: stack children vertically
             let children = children.clone();
@@ -304,6 +332,7 @@ pub fn node_content(node: &UiNode) -> Option<String> {
         | UiNode::Row { .. }
         | UiNode::View { .. }
         | UiNode::Conditional { .. }
+        | UiNode::KeyArea { .. }
         | UiNode::List { .. }
         | UiNode::Image { .. } => None,
     }

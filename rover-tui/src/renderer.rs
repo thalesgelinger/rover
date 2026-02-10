@@ -92,6 +92,7 @@ impl TuiRenderer {
             | UiNode::View { children }
             | UiNode::List { children, .. } => children.clone(),
             UiNode::Conditional { child, .. } => child.iter().copied().collect(),
+            UiNode::KeyArea { child, .. } => child.iter().copied().collect(),
             _ => vec![],
         };
 

@@ -47,7 +47,7 @@ function rover.render()
     ui.when(show_help, function()
       return ui.column {
         ui.text { "require(\"rover.tui\") adds TUI APIs to rover.ui" },
-        ui.text { "added APIs: select, tab_select, scroll_box, textarea" },
+        ui.text { "added APIs: select, tab_select, scroll_box, textarea, nav_list, separator, badge, progress, paginator" },
       }
     end),
 
@@ -65,7 +65,7 @@ function rover.render()
 
     ui.text { "items" },
     ui.scroll_box {
-      child = ui.select {
+      ui.select {
         title = "Task list",
         items = visible,
       },

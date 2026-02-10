@@ -282,6 +282,35 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
+        // rover.ui.key_area({ on_key = function(key) end, node })
+        methods.add_function("key_area", |lua, props: Table| {
+            let registry_rc = get_registry_rc(lua)?;
+            let runtime = crate::lua::helpers::get_runtime(lua)?;
+
+            let child = match props.get::<Value>(1) {
+                Ok(Value::Nil) | Err(_) => None,
+                Ok(v) => Some(extract_node_id(lua, v)?),
+            };
+
+            let on_key = match props.get::<Function>("on_key") {
+                Ok(callback) => Some(
+                    runtime
+                        .register_callback(lua, callback)
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                ),
+                Err(_) => None,
+            };
+
+            let node = UiNode::KeyArea { child, on_key };
+            let node_id = registry_rc.borrow_mut().create_node(node);
+
+            if let Some(effect_id) = on_key {
+                registry_rc.borrow_mut().attach_effect(node_id, effect_id);
+            }
+
+            Ok(LuaNode::new(node_id))
+        });
+
         // rover.ui.when(condition, child_fn)
         // Conditionally render a child based on a condition
         methods.add_function("when", |lua, (condition, child_fn): (Value, Function)| {

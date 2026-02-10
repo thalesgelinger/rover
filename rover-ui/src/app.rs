@@ -1,4 +1,4 @@
-use crate::coroutine::{run_coroutine_with_delay, CoroutineResult};
+use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use crate::events::{EventQueue, UiEvent};
 use crate::platform::UiRuntimeConfig;
 use crate::scheduler::{Scheduler, SharedScheduler};
@@ -278,6 +278,7 @@ impl<R: Renderer> App<R> {
     /// - Change → Input.on_change (and updates the bound signal for two-way binding)
     /// - Submit → Input.on_submit
     /// - Toggle → Checkbox.on_toggle
+    /// - Key → KeyArea.on_key
     fn dispatch_event(&mut self, event: UiEvent) -> mlua::Result<()> {
         let node_id = event.node_id();
 
@@ -312,6 +313,7 @@ impl<R: Renderer> App<R> {
             (UiEvent::Change { .. }, UiNode::Input { on_change, .. }) => *on_change,
             (UiEvent::Submit { .. }, UiNode::Input { on_submit, .. }) => *on_submit,
             (UiEvent::Toggle { .. }, UiNode::Checkbox { on_toggle, .. }) => *on_toggle,
+            (UiEvent::Key { .. }, UiNode::KeyArea { on_key, .. }) => *on_key,
             _ => None,
         };
         drop(registry);
@@ -323,6 +325,7 @@ impl<R: Renderer> App<R> {
                     LuaValue::String(self.lua.create_string(value)?)
                 }
                 UiEvent::Toggle { checked, .. } => LuaValue::Boolean(*checked),
+                UiEvent::Key { key, .. } => LuaValue::String(self.lua.create_string(key)?),
             };
 
             if let Err(e) = self
@@ -512,21 +515,30 @@ mod tests {
         let renderer = TestTuiRenderer;
         let app = App::new(renderer).unwrap();
 
-        let (before_type, after_type): (String, String) = app
+        let (before_select, after_select, after_nav_list, after_progress): (
+            String,
+            String,
+            String,
+            String,
+        ) = app
             .lua
             .load(
                 r#"
                 local before_type = type(rover.ui.select)
                 require("rover.tui")
-                local after_type = type(rover.ui.select)
-                return before_type, after_type
+                local after_select = type(rover.ui.select)
+                local after_nav_list = type(rover.ui.nav_list)
+                local after_progress = type(rover.ui.progress)
+                return before_type, after_select, after_nav_list, after_progress
             "#,
             )
             .eval()
             .unwrap();
 
-        assert_eq!(before_type, "nil");
-        assert_eq!(after_type, "function");
+        assert_eq!(before_select, "nil");
+        assert_eq!(after_select, "function");
+        assert_eq!(after_nav_list, "function");
+        assert_eq!(after_progress, "function");
     }
 
     #[test]
