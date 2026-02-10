@@ -76,6 +76,7 @@ impl TuiRunner {
             }
 
             self.app.tick().map_err(RunError::Lua)?;
+            self.scan_focusables();
             self.update_cursor();
 
             if !self.app.scheduler().borrow().has_pending() && self.focused_node().is_none() {
@@ -130,10 +131,6 @@ impl TuiRunner {
                         value: self.input_buffer.clone(),
                     });
                     self.input_buffer.clear();
-                    self.app.push_event(UiEvent::Change {
-                        node_id,
-                        value: self.input_buffer.clone(),
-                    });
                 }
                 KeyCode::Esc => {
                     if let Some(token) = key_event_token(key) {
@@ -179,21 +176,55 @@ impl TuiRunner {
 
     /// Scan the tree for focusable nodes. Auto-focus the first one found.
     fn scan_focusables(&mut self) {
-        let registry = self.app.registry();
-        let reg = registry.borrow();
-        if let Some(root) = reg.root() {
-            let mut focusables = Vec::new();
-            collect_focusable_nodes(&reg, root, &mut focusables);
-            self.focusable_nodes = focusables;
-            if let Some(&first) = self.focusable_nodes.first() {
-                self.focus_index = Some(0);
-                // Initialize input_buffer from the input's current value
-                if let Some(UiNode::Input { value, .. }) = reg.get_node(first) {
-                    self.input_buffer = value.value().to_string();
-                }
+        let previous_focused = self.focused_node();
+        let focusables = {
+            let registry = self.app.registry();
+            let reg = registry.borrow();
+            if let Some(root) = reg.root() {
+                let mut nodes = Vec::new();
+                collect_focusable_nodes(&reg, root, &mut nodes);
+                Some(nodes)
             } else {
+                None
+            }
+        };
+
+        if let Some(focusables) = focusables {
+            self.focusable_nodes = focusables;
+            if self.focusable_nodes.is_empty() {
                 self.focus_index = None;
                 self.input_buffer.clear();
+            } else {
+                let mut next_focus = previous_focused
+                    .and_then(|node_id| self.focusable_nodes.iter().position(|id| *id == node_id))
+                    .or(Some(0));
+
+                // If an input is present and current focus is not input, prefer input.
+                // This makes typing work immediately when an input appears dynamically.
+                let preferred_input_idx = {
+                    let registry = self.app.registry();
+                    let reg = registry.borrow();
+                    let focused_is_input = next_focus
+                        .and_then(|idx| self.focusable_nodes.get(idx).copied())
+                        .and_then(|node_id| reg.get_node(node_id))
+                        .map(|node| matches!(node, UiNode::Input { .. }))
+                        .unwrap_or(false);
+
+                    if focused_is_input {
+                        None
+                    } else {
+                        self.focusable_nodes
+                            .iter()
+                            .position(|id| matches!(reg.get_node(*id), Some(UiNode::Input { .. })))
+                    }
+                };
+
+                if let Some(input_idx) = preferred_input_idx {
+                    next_focus = Some(input_idx);
+                }
+
+                self.focus_index = next_focus;
+                self.sync_input_buffer_from_focus();
             }
         } else {
             self.focusable_nodes.clear();
