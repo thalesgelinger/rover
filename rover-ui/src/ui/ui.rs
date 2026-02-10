@@ -300,6 +300,35 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
+        // rover.ui.stack({ children or varargs })
+        methods.add_function("stack", |lua, props: Table| {
+            let registry_rc = get_registry_rc(lua)?;
+
+            let children = extract_children(lua, &props)?;
+
+            let node = UiNode::Stack { children };
+            let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
+
+            Ok(LuaNode::new(node_id))
+        });
+
+        // rover.ui.full_screen({ child })
+        methods.add_function("full_screen", |lua, props: Table| {
+            let registry_rc = get_registry_rc(lua)?;
+
+            let child = match props.get::<Value>(1) {
+                Ok(Value::Nil) | Err(_) => None,
+                Ok(v) => Some(extract_node_id(lua, v)?),
+            };
+
+            let node = UiNode::FullScreen { child };
+            let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
+
+            Ok(LuaNode::new(node_id))
+        });
+
         // rover.ui.key_area({ on_key = function(key) end, node })
         methods.add_function("key_area", |lua, props: Table| {
             let registry_rc = get_registry_rc(lua)?;

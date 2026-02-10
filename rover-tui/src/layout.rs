@@ -144,6 +144,57 @@ pub fn compute_layout(
             (max_width, total_height)
         }
 
+        UiNode::Stack { children } => {
+            let children = children.clone();
+            let mut max_width: u16 = 0;
+            let mut max_height: u16 = 0;
+
+            for child_id in &children {
+                let (w, h) = compute_layout(registry, *child_id, origin_row, origin_col, layout);
+                max_width = max_width.max(w);
+                max_height = max_height.max(h);
+            }
+
+            layout.set(
+                root,
+                LayoutRect {
+                    row: origin_row,
+                    col: origin_col,
+                    width: max_width,
+                    height: max_height,
+                },
+            );
+            (max_width, max_height)
+        }
+
+        UiNode::FullScreen { child } => {
+            if let Some(child_id) = child {
+                let child_id = *child_id;
+                let (w, h) = compute_layout(registry, child_id, origin_row, origin_col, layout);
+                layout.set(
+                    root,
+                    LayoutRect {
+                        row: origin_row,
+                        col: origin_col,
+                        width: w,
+                        height: h,
+                    },
+                );
+                (w, h)
+            } else {
+                layout.set(
+                    root,
+                    LayoutRect {
+                        row: origin_row,
+                        col: origin_col,
+                        width: 0,
+                        height: 0,
+                    },
+                );
+                (0, 0)
+            }
+        }
+
         UiNode::Row { children } => {
             let children = children.clone();
             let mut total_width: u16 = 0;
@@ -331,6 +382,8 @@ pub fn node_content(node: &UiNode) -> Option<String> {
         UiNode::Column { .. }
         | UiNode::Row { .. }
         | UiNode::View { .. }
+        | UiNode::Stack { .. }
+        | UiNode::FullScreen { .. }
         | UiNode::Conditional { .. }
         | UiNode::KeyArea { .. }
         | UiNode::List { .. }

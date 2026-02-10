@@ -99,6 +99,12 @@ pub enum UiNode {
     View {
         children: Vec<NodeId>,
     },
+    Stack {
+        children: Vec<NodeId>,
+    },
+    FullScreen {
+        child: Option<NodeId>,
+    },
     Button {
         label: String,
         on_click: Option<EffectId>,

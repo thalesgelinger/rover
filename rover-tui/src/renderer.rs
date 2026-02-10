@@ -1,4 +1,4 @@
-use crate::layout::{LayoutMap, LayoutRect, compute_layout, node_content};
+use crate::layout::{compute_layout, node_content, LayoutMap, LayoutRect};
 use crate::terminal::Terminal;
 use rover_ui::platform::UiTarget;
 use rover_ui::ui::{NodeId, Renderer, UiNode, UiRegistry};
@@ -20,6 +20,8 @@ pub struct TuiRenderer {
     /// Origin row offset — layout positions are relative (starting at 0),
     /// so we add origin_row to get absolute screen positions.
     origin_row: u16,
+    /// Whether current root is mounted in fullscreen mode.
+    mounted_fullscreen: bool,
 }
 
 impl TuiRenderer {
@@ -29,6 +31,7 @@ impl TuiRenderer {
             layout: LayoutMap::new(),
             previous_widths: Vec::new(),
             origin_row: 0,
+            mounted_fullscreen: false,
         })
     }
 
@@ -90,9 +93,11 @@ impl TuiRenderer {
             UiNode::Column { children }
             | UiNode::Row { children }
             | UiNode::View { children }
+            | UiNode::Stack { children }
             | UiNode::List { children, .. } => children.clone(),
             UiNode::Conditional { child, .. } => child.iter().copied().collect(),
             UiNode::KeyArea { child, .. } => child.iter().copied().collect(),
+            UiNode::FullScreen { child } => child.iter().copied().collect(),
             _ => vec![],
         };
 
@@ -142,12 +147,27 @@ impl Renderer for TuiRenderer {
         self.layout.clear();
         let (_width, height) = compute_layout(registry, root, 0, 0, &mut self.layout);
 
-        // Enter inline mode — reserves space and sets origin_row
-        if let Err(e) = self.terminal.enter_inline(height) {
-            eprintln!("rover-tui: failed to enter terminal: {}", e);
-            return;
+        self.mounted_fullscreen =
+            matches!(registry.get_node(root), Some(UiNode::FullScreen { .. }));
+
+        if self.mounted_fullscreen {
+            if let Err(e) = self.terminal.enter_fullscreen() {
+                eprintln!("rover-tui: failed to enter fullscreen terminal: {}", e);
+                return;
+            }
+            self.origin_row = 0;
+            if let Err(e) = self.terminal.clear() {
+                eprintln!("rover-tui: clear error: {}", e);
+                return;
+            }
+        } else {
+            // Enter inline mode — reserves space and sets origin_row
+            if let Err(e) = self.terminal.enter_inline(height) {
+                eprintln!("rover-tui: failed to enter terminal: {}", e);
+                return;
+            }
+            self.origin_row = self.terminal.origin_row();
         }
-        self.origin_row = self.terminal.origin_row();
 
         // Render all nodes
         if let Err(e) = self.render_tree(registry, root) {
@@ -175,22 +195,29 @@ impl Renderer for TuiRenderer {
         if structural_change {
             // Structural change: re-layout the whole tree and re-render
             if let Some(root) = registry.root() {
-                let old_height = self.terminal.content_height();
                 self.layout.clear();
                 let (_w, new_height) = compute_layout(registry, root, 0, 0, &mut self.layout);
 
-                // If the content grew, reserve additional lines
-                if new_height > old_height {
-                    if let Err(e) = self.terminal.grow_inline(new_height) {
-                        eprintln!("rover-tui: grow error: {}", e);
+                if self.mounted_fullscreen {
+                    if let Err(e) = self.terminal.clear() {
+                        eprintln!("rover-tui: clear error: {}", e);
                         return;
                     }
-                    self.origin_row = self.terminal.origin_row();
-                }
+                } else {
+                    let old_height = self.terminal.content_height();
+                    // If the content grew, reserve additional lines
+                    if new_height > old_height {
+                        if let Err(e) = self.terminal.grow_inline(new_height) {
+                            eprintln!("rover-tui: grow error: {}", e);
+                            return;
+                        }
+                        self.origin_row = self.terminal.origin_row();
+                    }
 
-                if let Err(e) = self.terminal.clear_inline_region() {
-                    eprintln!("rover-tui: clear error: {}", e);
-                    return;
+                    if let Err(e) = self.terminal.clear_inline_region() {
+                        eprintln!("rover-tui: clear error: {}", e);
+                        return;
+                    }
                 }
                 if let Err(e) = self.render_tree(registry, root) {
                     eprintln!("rover-tui: render error: {}", e);
@@ -235,8 +262,13 @@ impl Renderer for TuiRenderer {
         self.layout.clear();
         compute_layout(registry, root, 0, 0, &mut self.layout);
 
-        // Clear inline region and redraw
-        if let Err(e) = self.terminal.clear_inline_region() {
+        // Clear and redraw
+        let clear_result = if self.mounted_fullscreen {
+            self.terminal.clear()
+        } else {
+            self.terminal.clear_inline_region()
+        };
+        if let Err(e) = clear_result {
             eprintln!("rover-tui: clear error: {}", e);
             return;
         }

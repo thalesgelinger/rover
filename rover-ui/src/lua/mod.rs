@@ -182,6 +182,7 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
             let badge_fn: Function = module.get("badge")?;
             let progress_fn: Function = module.get("progress")?;
             let paginator_fn: Function = module.get("paginator")?;
+            let full_screen_fn: Function = module.get("full_screen")?;
 
             uv.set("select", select_fn.clone())?;
             uv.set("tab_select", tab_select_fn.clone())?;
@@ -192,6 +193,7 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
             uv.set("badge", badge_fn.clone())?;
             uv.set("progress", progress_fn.clone())?;
             uv.set("paginator", paginator_fn.clone())?;
+            uv.set("full_screen", full_screen_fn.clone())?;
 
             Ok(module)
         })?,

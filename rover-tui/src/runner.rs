@@ -317,10 +317,16 @@ fn collect_focusable_nodes(registry: &UiRegistry, node_id: NodeId, out: &mut Vec
         UiNode::Column { children }
         | UiNode::Row { children }
         | UiNode::View { children }
+        | UiNode::Stack { children }
         | UiNode::List { children, .. } => {
             let children = children.clone();
             for child_id in children {
                 collect_focusable_nodes(registry, child_id, out);
+            }
+        }
+        UiNode::FullScreen { child } => {
+            if let Some(child_id) = child {
+                collect_focusable_nodes(registry, *child_id, out);
             }
         }
         UiNode::Conditional { child, .. } => {

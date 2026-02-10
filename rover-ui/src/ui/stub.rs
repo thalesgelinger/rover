@@ -100,6 +100,22 @@ impl StubRenderer {
                     }
                     self.log(&format!("{}}}", indent_str));
                 }
+                UiNode::Stack { children } => {
+                    self.log(&format!("{}Stack(id={:?}) {{", indent_str, node_id));
+                    for &child_id in children {
+                        self.print_node(registry, child_id, indent + 1);
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
+                UiNode::FullScreen { child } => {
+                    self.log(&format!("{}FullScreen(id={:?}) {{", indent_str, node_id));
+                    if let Some(child_id) = child {
+                        self.print_node(registry, *child_id, indent + 1);
+                    } else {
+                        self.log(&format!("{}  (empty)", indent_str));
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
                 UiNode::Button { label, on_click } => {
                     let event_info = if on_click.is_some() {
                         " [clickable]"
@@ -256,6 +272,18 @@ impl Renderer for StubRenderer {
                     }
                     UiNode::View { .. } => {
                         self.log(&format!("  Updated View(id={:?})", node_id));
+                    }
+                    UiNode::Stack { .. } => {
+                        self.log(&format!("  Updated Stack(id={:?})", node_id));
+                    }
+                    UiNode::FullScreen { child } => {
+                        self.log(&format!("  Updated FullScreen(id={:?}) {{", node_id));
+                        if let Some(child_id) = child {
+                            self.print_node(registry, *child_id, 3);
+                        } else {
+                            self.log("    (empty)");
+                        }
+                        self.log("  }");
                     }
                     UiNode::Button { label, .. } => {
                         self.log(&format!(
