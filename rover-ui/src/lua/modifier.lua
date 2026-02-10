@@ -161,6 +161,14 @@ function core_methods:align(value)
   return self:_with_scalar("align", value)
 end
 
+function core_methods:horizontal(value)
+  return self:_with_scalar("horizontal", value)
+end
+
+function core_methods:vertical(value)
+  return self:_with_scalar("vertical", value)
+end
+
 function core_methods:resolve()
   local out = {
     ops = {},

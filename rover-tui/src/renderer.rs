@@ -1,5 +1,6 @@
 use crate::layout::{
-    compute_layout, node_content, resolve_full_sizes, style_inset, LayoutMap, LayoutRect,
+    compute_layout, node_content, resolve_alignment, resolve_full_sizes, style_inset, LayoutMap,
+    LayoutRect,
 };
 use crate::terminal::Terminal;
 use rover_ui::platform::UiTarget;
@@ -316,6 +317,7 @@ impl Renderer for TuiRenderer {
                 self.layout.set(root, root_rect);
             }
             resolve_full_sizes(registry, root, &mut self.layout);
+            resolve_alignment(registry, root, &mut self.layout);
         } else {
             // Enter inline mode — reserves space and sets origin_row
             if let Err(e) = self.terminal.enter_inline(height) {
@@ -324,6 +326,7 @@ impl Renderer for TuiRenderer {
             }
             self.origin_row = self.terminal.origin_row();
             resolve_full_sizes(registry, root, &mut self.layout);
+            resolve_alignment(registry, root, &mut self.layout);
         }
 
         // Render all nodes
@@ -372,6 +375,7 @@ impl Renderer for TuiRenderer {
                     }
                 }
                 resolve_full_sizes(registry, root, &mut self.layout);
+                resolve_alignment(registry, root, &mut self.layout);
 
                 if self.mounted_fullscreen {
                     if let Err(e) = self.terminal.clear() {
@@ -448,6 +452,7 @@ impl Renderer for TuiRenderer {
         self.layout.clear();
         compute_layout(registry, root, 0, 0, &mut self.layout);
         resolve_full_sizes(registry, root, &mut self.layout);
+        resolve_alignment(registry, root, &mut self.layout);
 
         // Clear and redraw
         let clear_result = if self.mounted_fullscreen {

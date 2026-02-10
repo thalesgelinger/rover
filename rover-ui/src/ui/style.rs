@@ -34,6 +34,8 @@ pub struct NodeStyle {
     pub gap: Option<u16>,
     pub justify: Option<String>,
     pub align: Option<String>,
+    pub horizontal: Option<String>,
+    pub vertical: Option<String>,
 }
 
 impl Default for NodeStyle {
@@ -51,6 +53,8 @@ impl Default for NodeStyle {
             gap: None,
             justify: None,
             align: None,
+            horizontal: None,
+            vertical: None,
         }
     }
 }
@@ -109,6 +113,9 @@ impl NodeStyle {
         style.gap = to_u16(table.get::<Value>("gap")?);
         style.justify = to_string(table.get::<Value>("justify")?);
         style.align = to_string(table.get::<Value>("align")?);
+        style.horizontal =
+            to_string(table.get::<Value>("horizontal")?).or_else(|| style.justify.clone());
+        style.vertical = to_string(table.get::<Value>("vertical")?).or_else(|| style.align.clone());
 
         Ok(style)
     }

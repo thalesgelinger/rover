@@ -471,6 +471,10 @@ pub fn resolve_full_sizes(registry: &UiRegistry, root: NodeId, layout: &mut Layo
     resolve_full_sizes_inner(registry, root, None, layout);
 }
 
+pub fn resolve_alignment(registry: &UiRegistry, root: NodeId, layout: &mut LayoutMap) {
+    resolve_alignment_inner(registry, root, layout);
+}
+
 fn resolve_full_sizes_inner(
     registry: &UiRegistry,
     node_id: NodeId,
@@ -516,6 +520,134 @@ fn resolve_full_sizes_inner(
 
     for child in child_nodes(registry, node_id) {
         resolve_full_sizes_inner(registry, child, Some(node_id), layout);
+    }
+}
+
+fn resolve_alignment_inner(registry: &UiRegistry, node_id: NodeId, layout: &mut LayoutMap) {
+    let Some(node_rect) = layout.get(node_id).copied() else {
+        return;
+    };
+    let style = registry
+        .get_node_style(node_id)
+        .cloned()
+        .unwrap_or_default();
+    let inset = style_inset(&style);
+
+    let children_all = child_nodes(registry, node_id);
+    let children = children_all
+        .iter()
+        .copied()
+        .filter(|child_id| {
+            if matches!(registry.get_node(node_id), Some(UiNode::Stack { .. })) {
+                let child_style = registry
+                    .get_node_style(*child_id)
+                    .cloned()
+                    .unwrap_or_default();
+                child_style.position != PositionType::Absolute
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if !children.is_empty() {
+        let mut min_row = u16::MAX;
+        let mut min_col = u16::MAX;
+        let mut max_row = 0u16;
+        let mut max_col = 0u16;
+
+        for child_id in &children {
+            if let Some(rect) = layout.get(*child_id).copied() {
+                min_row = min_row.min(rect.row);
+                min_col = min_col.min(rect.col);
+                max_row = max_row.max(rect.row.saturating_add(rect.height));
+                max_col = max_col.max(rect.col.saturating_add(rect.width));
+            }
+        }
+
+        if min_row != u16::MAX && min_col != u16::MAX {
+            let inner_row = node_rect.row.saturating_add(inset);
+            let inner_col = node_rect.col.saturating_add(inset);
+            let inner_h = node_rect.height.saturating_sub(inset.saturating_mul(2));
+            let inner_w = node_rect.width.saturating_sub(inset.saturating_mul(2));
+            let content_h = max_row.saturating_sub(min_row);
+            let content_w = max_col.saturating_sub(min_col);
+
+            let target_col = match style.horizontal.as_deref() {
+                Some("center") => {
+                    if inner_w > content_w {
+                        inner_col.saturating_add((inner_w - content_w) / 2)
+                    } else {
+                        inner_col
+                    }
+                }
+                Some("right") => {
+                    if inner_w > content_w {
+                        inner_col.saturating_add(inner_w - content_w)
+                    } else {
+                        inner_col
+                    }
+                }
+                _ => inner_col,
+            };
+
+            let target_row = match style.vertical.as_deref() {
+                Some("center") => {
+                    if inner_h > content_h {
+                        inner_row.saturating_add((inner_h - content_h) / 2)
+                    } else {
+                        inner_row
+                    }
+                }
+                Some("bottom") => {
+                    if inner_h > content_h {
+                        inner_row.saturating_add(inner_h - content_h)
+                    } else {
+                        inner_row
+                    }
+                }
+                _ => inner_row,
+            };
+
+            let delta_row = target_row as i32 - min_row as i32;
+            let delta_col = target_col as i32 - min_col as i32;
+
+            if delta_row != 0 || delta_col != 0 {
+                for child_id in &children {
+                    offset_subtree(layout, registry, *child_id, delta_row, delta_col);
+                }
+            }
+        }
+    }
+
+    for child in children_all {
+        resolve_alignment_inner(registry, child, layout);
+    }
+}
+
+fn offset_subtree(
+    layout: &mut LayoutMap,
+    registry: &UiRegistry,
+    node_id: NodeId,
+    delta_row: i32,
+    delta_col: i32,
+) {
+    if let Some(mut rect) = layout.get(node_id).copied() {
+        rect.row = add_signed(rect.row, delta_row);
+        rect.col = add_signed(rect.col, delta_col);
+        layout.set(node_id, rect);
+    }
+
+    for child in child_nodes(registry, node_id) {
+        offset_subtree(layout, registry, child, delta_row, delta_col);
+    }
+}
+
+fn add_signed(value: u16, delta: i32) -> u16 {
+    if delta >= 0 {
+        value.saturating_add(delta as u16)
+    } else {
+        value.saturating_sub((-delta) as u16)
     }
 }
 
@@ -588,7 +720,7 @@ pub fn node_content(node: &UiNode) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rover_ui::ui::{NodeStyle, PositionType, TextContent, UiNode};
+    use rover_ui::ui::{NodeStyle, PositionType, StyleSize, TextContent, UiNode};
 
     /// Helper to build a registry with a given tree and return (registry, root_id)
     fn build_registry(root_node: UiNode) -> (UiRegistry, NodeId) {
@@ -901,5 +1033,35 @@ mod tests {
         let rect = layout.get(child).unwrap();
         assert_eq!(rect.row, 2);
         assert_eq!(rect.col, 3);
+    }
+
+    #[test]
+    fn test_view_horizontal_vertical_center() {
+        let mut registry = UiRegistry::new();
+        let child = registry.create_node(UiNode::Text {
+            content: TextContent::Static("ok".into()),
+        });
+        let view = registry.create_node(UiNode::View {
+            children: vec![child],
+        });
+        registry.set_root(view);
+
+        let style = NodeStyle {
+            width: Some(StyleSize::Px(20)),
+            height: Some(StyleSize::Px(10)),
+            horizontal: Some("center".to_string()),
+            vertical: Some("center".to_string()),
+            ..NodeStyle::default()
+        };
+        registry.set_node_style(view, style);
+
+        let mut layout = LayoutMap::new();
+        compute_layout(&registry, view, 0, 0, &mut layout);
+        resolve_full_sizes(&registry, view, &mut layout);
+        resolve_alignment(&registry, view, &mut layout);
+
+        let child_rect = layout.get(child).unwrap();
+        assert_eq!(child_rect.col, 9);
+        assert_eq!(child_rect.row, 4);
     }
 }
