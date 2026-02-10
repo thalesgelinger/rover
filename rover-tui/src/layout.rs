@@ -1,4 +1,4 @@
-use rover_ui::ui::{NodeId, UiNode, UiRegistry};
+use rover_ui::ui::{NodeId, NodeStyle, PositionType, StyleOp, StyleSize, UiNode, UiRegistry};
 
 /// Screen position and dimensions for a laid-out node.
 #[derive(Debug, Clone, Copy, Default)]
@@ -97,11 +97,17 @@ pub fn compute_layout(
         None => return (0, 0),
     };
 
+    let style = registry.get_node_style(root).cloned().unwrap_or_default();
+    let inset = style_inset(&style);
+
     match node {
         UiNode::Text { content } => {
             let text = content.value();
-            let width = text.len() as u16;
-            let height = if width > 0 { 1 } else { 0 };
+            let content_width = text.len() as u16;
+            let content_height: u16 = if content_width > 0 { 1 } else { 0 };
+            let mut width = content_width.saturating_add(inset.saturating_mul(2));
+            let mut height = content_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
             layout.set(
                 root,
                 LayoutRect {
@@ -119,79 +125,119 @@ pub fn compute_layout(
             let children = children.clone();
             let mut total_height: u16 = 0;
             let mut max_width: u16 = 0;
+            let inner_row = origin_row.saturating_add(inset);
+            let inner_col = origin_col.saturating_add(inset);
 
             for child_id in &children {
                 let (w, h) = compute_layout(
                     registry,
                     *child_id,
-                    origin_row + total_height,
-                    origin_col,
+                    inner_row.saturating_add(total_height),
+                    inner_col,
                     layout,
                 );
                 max_width = max_width.max(w);
                 total_height = total_height.saturating_add(h);
             }
 
+            let mut width = max_width.saturating_add(inset.saturating_mul(2));
+            let mut height = total_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
+
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
-                    width: max_width,
-                    height: total_height,
+                    width,
+                    height,
                 },
             );
-            (max_width, total_height)
+            (width, height)
         }
 
         UiNode::Stack { children } => {
             let children = children.clone();
             let mut max_width: u16 = 0;
             let mut max_height: u16 = 0;
+            let inner_row = origin_row.saturating_add(inset);
+            let inner_col = origin_col.saturating_add(inset);
 
             for child_id in &children {
-                let (w, h) = compute_layout(registry, *child_id, origin_row, origin_col, layout);
-                max_width = max_width.max(w);
-                max_height = max_height.max(h);
+                let child_style = registry
+                    .get_node_style(*child_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if child_style.position == PositionType::Absolute {
+                    let child_row =
+                        inner_row.saturating_add(child_style.top.unwrap_or(0).max(0) as u16);
+                    let child_col =
+                        inner_col.saturating_add(child_style.left.unwrap_or(0).max(0) as u16);
+                    let (w, h) = compute_layout(registry, *child_id, child_row, child_col, layout);
+                    let rel_w = child_col.saturating_sub(inner_col).saturating_add(w);
+                    let rel_h = child_row.saturating_sub(inner_row).saturating_add(h);
+                    max_width = max_width.max(rel_w);
+                    max_height = max_height.max(rel_h);
+                } else {
+                    let (w, h) = compute_layout(registry, *child_id, inner_row, inner_col, layout);
+                    max_width = max_width.max(w);
+                    max_height = max_height.max(h);
+                }
             }
+
+            let mut width = max_width.saturating_add(inset.saturating_mul(2));
+            let mut height = max_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
 
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
-                    width: max_width,
-                    height: max_height,
+                    width,
+                    height,
                 },
             );
-            (max_width, max_height)
+            (width, height)
         }
 
         UiNode::FullScreen { child } => {
             if let Some(child_id) = child {
                 let child_id = *child_id;
-                let (w, h) = compute_layout(registry, child_id, origin_row, origin_col, layout);
+                let (w, h) = compute_layout(
+                    registry,
+                    child_id,
+                    origin_row.saturating_add(inset),
+                    origin_col.saturating_add(inset),
+                    layout,
+                );
+                let mut width = w.saturating_add(inset.saturating_mul(2));
+                let mut height = h.saturating_add(inset.saturating_mul(2));
+                apply_size_overrides(&style, &mut width, &mut height);
                 layout.set(
                     root,
                     LayoutRect {
                         row: origin_row,
                         col: origin_col,
-                        width: w,
-                        height: h,
+                        width,
+                        height,
                     },
                 );
-                (w, h)
+                (width, height)
             } else {
+                let mut width = inset.saturating_mul(2);
+                let mut height = inset.saturating_mul(2);
+                apply_size_overrides(&style, &mut width, &mut height);
                 layout.set(
                     root,
                     LayoutRect {
                         row: origin_row,
                         col: origin_col,
-                        width: 0,
-                        height: 0,
+                        width,
+                        height,
                     },
                 );
-                (0, 0)
+                (width, height)
             }
         }
 
@@ -199,128 +245,170 @@ pub fn compute_layout(
             let children = children.clone();
             let mut total_width: u16 = 0;
             let mut max_height: u16 = 0;
+            let inner_row = origin_row.saturating_add(inset);
+            let inner_col = origin_col.saturating_add(inset);
 
             for child_id in &children {
                 let (w, h) = compute_layout(
                     registry,
                     *child_id,
-                    origin_row,
-                    origin_col + total_width,
+                    inner_row,
+                    inner_col.saturating_add(total_width),
                     layout,
                 );
                 total_width = total_width.saturating_add(w);
                 max_height = max_height.max(h);
             }
 
+            let mut width = total_width.saturating_add(inset.saturating_mul(2));
+            let mut height = max_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
+
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
-                    width: total_width,
-                    height: max_height,
+                    width,
+                    height,
                 },
             );
-            (total_width, max_height)
+            (width, height)
         }
 
         UiNode::Button { label, .. } => {
             // Render as [label]
-            let width = label.len() as u16 + 2;
+            let content_width = label.len() as u16 + 2;
+            let content_height: u16 = 1;
+            let mut width = content_width.saturating_add(inset.saturating_mul(2));
+            let mut height = content_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
                     width,
-                    height: 1,
+                    height,
                 },
             );
-            (width, 1)
+            (width, height)
         }
 
         UiNode::Input { value, .. } => {
-            let width = value.value().len().max(1) as u16;
+            let content_width = value.value().len().max(1) as u16;
+            let content_height: u16 = 1;
+            let mut width = content_width.saturating_add(inset.saturating_mul(2));
+            let mut height = content_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
                     width,
-                    height: 1,
+                    height,
                 },
             );
-            (width, 1)
+            (width, height)
         }
 
         UiNode::Checkbox { .. } => {
             // Render as [x] or [ ]
-            let width = 3;
+            let content_width: u16 = 3;
+            let content_height: u16 = 1;
+            let mut width = content_width.saturating_add(inset.saturating_mul(2));
+            let mut height = content_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
                     width,
-                    height: 1,
+                    height,
                 },
             );
-            (width, 1)
+            (width, height)
         }
 
         UiNode::Conditional { child, .. } => {
             if let Some(child_id) = child {
                 let child_id = *child_id;
-                let (w, h) = compute_layout(registry, child_id, origin_row, origin_col, layout);
+                let (w, h) = compute_layout(
+                    registry,
+                    child_id,
+                    origin_row.saturating_add(inset),
+                    origin_col.saturating_add(inset),
+                    layout,
+                );
+                let mut width = w.saturating_add(inset.saturating_mul(2));
+                let mut height = h.saturating_add(inset.saturating_mul(2));
+                apply_size_overrides(&style, &mut width, &mut height);
                 layout.set(
                     root,
                     LayoutRect {
                         row: origin_row,
                         col: origin_col,
-                        width: w,
-                        height: h,
+                        width,
+                        height,
                     },
                 );
-                (w, h)
+                (width, height)
             } else {
+                let mut width = inset.saturating_mul(2);
+                let mut height = inset.saturating_mul(2);
+                apply_size_overrides(&style, &mut width, &mut height);
                 layout.set(
                     root,
                     LayoutRect {
                         row: origin_row,
                         col: origin_col,
-                        width: 0,
-                        height: 0,
+                        width,
+                        height,
                     },
                 );
-                (0, 0)
+                (width, height)
             }
         }
 
         UiNode::KeyArea { child, .. } => {
             if let Some(child_id) = child {
                 let child_id = *child_id;
-                let (w, h) = compute_layout(registry, child_id, origin_row, origin_col, layout);
+                let (w, h) = compute_layout(
+                    registry,
+                    child_id,
+                    origin_row.saturating_add(inset),
+                    origin_col.saturating_add(inset),
+                    layout,
+                );
+                let mut width = w.saturating_add(inset.saturating_mul(2));
+                let mut height = h.saturating_add(inset.saturating_mul(2));
+                apply_size_overrides(&style, &mut width, &mut height);
                 layout.set(
                     root,
                     LayoutRect {
                         row: origin_row,
                         col: origin_col,
-                        width: w,
-                        height: h,
+                        width,
+                        height,
                     },
                 );
-                (w, h)
+                (width, height)
             } else {
+                let mut width = inset.saturating_mul(2);
+                let mut height = inset.saturating_mul(2);
+                apply_size_overrides(&style, &mut width, &mut height);
                 layout.set(
                     root,
                     LayoutRect {
                         row: origin_row,
                         col: origin_col,
-                        width: 0,
-                        height: 0,
+                        width,
+                        height,
                     },
                 );
-                (0, 0)
+                (width, height)
             }
         }
 
@@ -329,43 +417,79 @@ pub fn compute_layout(
             let children = children.clone();
             let mut total_height: u16 = 0;
             let mut max_width: u16 = 0;
+            let inner_row = origin_row.saturating_add(inset);
+            let inner_col = origin_col.saturating_add(inset);
 
             for child_id in &children {
                 let (w, h) = compute_layout(
                     registry,
                     *child_id,
-                    origin_row + total_height,
-                    origin_col,
+                    inner_row.saturating_add(total_height),
+                    inner_col,
                     layout,
                 );
                 max_width = max_width.max(w);
                 total_height = total_height.saturating_add(h);
             }
 
+            let mut width = max_width.saturating_add(inset.saturating_mul(2));
+            let mut height = total_height.saturating_add(inset.saturating_mul(2));
+            apply_size_overrides(&style, &mut width, &mut height);
+
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
-                    width: max_width,
-                    height: total_height,
+                    width,
+                    height,
                 },
             );
-            (max_width, total_height)
+            (width, height)
         }
 
         UiNode::Image { .. } => {
             // Placeholder — images not supported in terminal yet
+            let mut width = inset.saturating_mul(2);
+            let mut height = inset.saturating_mul(2);
+            apply_size_overrides(&style, &mut width, &mut height);
             layout.set(
                 root,
                 LayoutRect {
                     row: origin_row,
                     col: origin_col,
-                    width: 0,
-                    height: 0,
+                    width,
+                    height,
                 },
             );
-            (0, 0)
+            (width, height)
+        }
+    }
+}
+
+pub fn style_inset(style: &NodeStyle) -> u16 {
+    let mut inset: u16 = 0;
+    for op in &style.ops {
+        match op {
+            StyleOp::Padding(v) => inset = inset.saturating_add(*v),
+            StyleOp::BorderWidth(v) => inset = inset.saturating_add(*v),
+            StyleOp::BgColor(_) | StyleOp::BorderColor(_) => {}
+        }
+    }
+    inset
+}
+
+fn apply_size_overrides(style: &NodeStyle, width: &mut u16, height: &mut u16) {
+    if let Some(style_width) = style.width {
+        match style_width {
+            StyleSize::Px(v) => *width = (*width).max(v),
+            StyleSize::Full => {}
+        }
+    }
+    if let Some(style_height) = style.height {
+        match style_height {
+            StyleSize::Px(v) => *height = (*height).max(v),
+            StyleSize::Full => {}
         }
     }
 }
@@ -394,7 +518,7 @@ pub fn node_content(node: &UiNode) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rover_ui::ui::{TextContent, UiNode};
+    use rover_ui::ui::{NodeStyle, PositionType, TextContent, UiNode};
 
     /// Helper to build a registry with a given tree and return (registry, root_id)
     fn build_registry(root_node: UiNode) -> (UiRegistry, NodeId) {
@@ -680,5 +804,32 @@ mod tests {
 
         let row = UiNode::Row { children: vec![] };
         assert!(node_content(&row).is_none());
+    }
+
+    #[test]
+    fn test_stack_absolute_child_offset() {
+        let mut registry = UiRegistry::new();
+        let child = registry.create_node(UiNode::Text {
+            content: TextContent::Static("x".into()),
+        });
+        let stack = registry.create_node(UiNode::Stack {
+            children: vec![child],
+        });
+        registry.set_root(stack);
+
+        let child_style = NodeStyle {
+            position: PositionType::Absolute,
+            top: Some(2),
+            left: Some(3),
+            ..NodeStyle::default()
+        };
+        registry.set_node_style(child, child_style);
+
+        let mut layout = LayoutMap::new();
+        compute_layout(&registry, stack, 0, 0, &mut layout);
+
+        let rect = layout.get(child).unwrap();
+        assert_eq!(rect.row, 2);
+        assert_eq!(rect.col, 3);
     }
 }

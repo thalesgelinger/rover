@@ -24,6 +24,7 @@ local ui = rover.ui
 - `ui.badge { label = "...", tone = "info|success|warning|danger|neutral" }`
 - `ui.progress { value, max, width?, label? }`
 - `ui.paginator { page, total_pages, on_change?, on_key? }`
+- `ui.full_screen { child }` (alternate screen + full terminal canvas)
 
 ## Table Style
 
@@ -77,3 +78,4 @@ end
 ## Full Example
 
 - `examples/tui/kitchen_sink.lua`
+- `examples/tui/modifiers_showcase.lua`

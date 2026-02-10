@@ -41,12 +41,37 @@ end
 - `ru.column { ...children }`
 - `ru.row { ...children }`
 - `ru.view { ...children }`
+- `ru.stack { ...children }`
 
 Signals and derived values can be concatenated with strings (e.g., `"Count: " .. count`).
 
 TUI-only helpers are in `require("rover.tui")`.
 
 See [TUI Runtime](./tui-runtime).
+
+## Modifiers
+
+`ru.mod` is a chainable style builder.
+
+```lua
+local ru = rover.ui
+local mod = ru.mod
+
+ru.view {
+  mod = mod:width("full"):height("full"):bg_color("surface"):padding("md"),
+}
+```
+
+- Order matters for wrapper ops (`bg_color`, `padding`, `border_*`).
+- You can extend globally:
+
+```lua
+function rover.ui.mod:debug()
+  return self:border_color("danger"):border_width(1)
+end
+```
+
+- Theme tokens are available at `rover.ui.theme` (`space.*`, `color.*`).
 
 ## Conditional Rendering
 

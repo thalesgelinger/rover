@@ -1,7 +1,7 @@
-use crate::layout::{compute_layout, node_content, LayoutMap, LayoutRect};
+use crate::layout::{compute_layout, node_content, style_inset, LayoutMap, LayoutRect};
 use crate::terminal::Terminal;
 use rover_ui::platform::UiTarget;
-use rover_ui::ui::{NodeId, Renderer, UiNode, UiRegistry};
+use rover_ui::ui::{NodeId, NodeStyle, Renderer, StyleOp, StyleSize, UiNode, UiRegistry};
 use std::io;
 
 /// TUI renderer — draws the UI node tree to the terminal.
@@ -55,21 +55,148 @@ impl TuiRenderer {
     }
 
     /// Render a single leaf node at its layout position + origin offset.
-    fn render_leaf(&mut self, id: NodeId, content: &str, rect: &LayoutRect) -> io::Result<()> {
+    fn render_leaf(
+        &mut self,
+        id: NodeId,
+        content: &str,
+        rect: &LayoutRect,
+        inset: u16,
+    ) -> io::Result<()> {
         let old_width = self.get_prev_width(id);
         let new_width = content.len() as u16;
-        let abs_row = self.origin_row + rect.row;
+        let abs_row = self.origin_row + rect.row + inset;
+        let abs_col = rect.col + inset;
 
         if old_width > new_width {
             self.terminal.queue_clear_region(
                 abs_row,
-                rect.col + new_width,
+                abs_col + new_width,
                 old_width - new_width,
             )?;
         }
 
-        self.terminal.queue_write_at(abs_row, rect.col, content)?;
+        self.terminal.queue_write_at(abs_row, abs_col, content)?;
         self.set_prev_width(id, new_width);
+        Ok(())
+    }
+
+    fn draw_style_ops(&mut self, rect: &LayoutRect, style: &NodeStyle) -> io::Result<()> {
+        let mut layer = *rect;
+        let mut border_color: Option<String> = None;
+
+        for op in &style.ops {
+            match op {
+                StyleOp::BgColor(color) => {
+                    self.draw_filled_rect(&layer, Some(color.as_str()), None)?;
+                }
+                StyleOp::BorderColor(color) => {
+                    border_color = Some(color.clone());
+                }
+                StyleOp::BorderWidth(width) => {
+                    self.draw_border_rect(&layer, *width, border_color.as_deref())?;
+                    inset_rect(&mut layer, *width);
+                }
+                StyleOp::Padding(width) => {
+                    inset_rect(&mut layer, *width);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn draw_filled_rect(
+        &mut self,
+        rect: &LayoutRect,
+        bg_hex: Option<&str>,
+        fg_hex: Option<&str>,
+    ) -> io::Result<()> {
+        if rect.width == 0 || rect.height == 0 {
+            return Ok(());
+        }
+
+        let style_prefix = ansi_prefix(bg_hex, fg_hex);
+        let style_reset = if style_prefix.is_empty() {
+            ""
+        } else {
+            "\x1b[0m"
+        };
+        let spaces = " ".repeat(rect.width as usize);
+
+        for dy in 0..rect.height {
+            let row = self.origin_row + rect.row + dy;
+            if style_prefix.is_empty() {
+                self.terminal.queue_write_at(row, rect.col, &spaces)?;
+            } else {
+                let line = format!("{}{}{}", style_prefix, spaces, style_reset);
+                self.terminal.queue_write_at(row, rect.col, &line)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn draw_border_rect(
+        &mut self,
+        rect: &LayoutRect,
+        border_width: u16,
+        border_color: Option<&str>,
+    ) -> io::Result<()> {
+        if border_width == 0 || rect.width == 0 || rect.height == 0 {
+            return Ok(());
+        }
+
+        let bw = border_width.min(rect.width / 2).min(rect.height / 2);
+        if bw == 0 {
+            return Ok(());
+        }
+
+        let style_prefix = ansi_prefix(None, border_color);
+        let style_reset = if style_prefix.is_empty() {
+            ""
+        } else {
+            "\x1b[0m"
+        };
+
+        for i in 0..bw {
+            let top_row = self.origin_row + rect.row + i;
+            let bottom_row = self.origin_row + rect.row + rect.height - 1 - i;
+            let left_col = rect.col + i;
+            let right_col = rect.col + rect.width - 1 - i;
+            let horiz_width = rect.width.saturating_sub(i.saturating_mul(2));
+            if horiz_width == 0 {
+                continue;
+            }
+
+            let top_line = format!(
+                "{}{}{}",
+                style_prefix,
+                "#".repeat(horiz_width as usize),
+                style_reset
+            );
+            self.terminal.queue_write_at(top_row, left_col, &top_line)?;
+            if bottom_row != top_row {
+                let bottom_line = format!(
+                    "{}{}{}",
+                    style_prefix,
+                    "#".repeat(horiz_width as usize),
+                    style_reset
+                );
+                self.terminal
+                    .queue_write_at(bottom_row, left_col, &bottom_line)?;
+            }
+
+            if rect.height > i.saturating_mul(2).saturating_add(2) {
+                for dy in (top_row + 1)..bottom_row {
+                    let side = format!("{}#{}", style_prefix, style_reset);
+                    self.terminal.queue_write_at(dy, left_col, &side)?;
+                    if right_col != left_col {
+                        self.terminal.queue_write_at(dy, right_col, &side)?;
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -83,9 +210,23 @@ impl TuiRenderer {
         if let Some(content) = node_content(node) {
             if let Some(rect) = self.layout.get(node_id) {
                 let rect = *rect;
-                self.render_leaf(node_id, &content, &rect)?;
+                let inset = registry
+                    .get_node_style(node_id)
+                    .map(style_inset)
+                    .unwrap_or(0);
+                if let Some(style) = registry.get_node_style(node_id) {
+                    self.draw_style_ops(&rect, style)?;
+                }
+                self.render_leaf(node_id, &content, &rect, inset)?;
             }
             return Ok(());
+        }
+
+        if let Some(rect) = self.layout.get(node_id) {
+            let rect = *rect;
+            if let Some(style) = registry.get_node_style(node_id) {
+                self.draw_style_ops(&rect, style)?;
+            }
         }
 
         // Container: recurse into children
@@ -160,6 +301,18 @@ impl Renderer for TuiRenderer {
                 eprintln!("rover-tui: clear error: {}", e);
                 return;
             }
+            if let Some(mut root_rect) = self.layout.get(root).copied() {
+                let root_style = registry.get_node_style(root);
+                root_rect.width = match root_style.and_then(|s| s.width) {
+                    Some(StyleSize::Px(v)) => v.max(root_rect.width),
+                    Some(StyleSize::Full) | None => self.terminal.cols(),
+                };
+                root_rect.height = match root_style.and_then(|s| s.height) {
+                    Some(StyleSize::Px(v)) => v.max(root_rect.height),
+                    Some(StyleSize::Full) | None => self.terminal.rows(),
+                };
+                self.layout.set(root, root_rect);
+            }
         } else {
             // Enter inline mode — reserves space and sets origin_row
             if let Err(e) = self.terminal.enter_inline(height) {
@@ -187,9 +340,12 @@ impl Renderer for TuiRenderer {
 
         // Check if any dirty node is a container (structural change)
         let structural_change = dirty_nodes.iter().any(|&id| {
+            let has_style = registry
+                .get_node_style(id)
+                .is_some_and(|style| !style.ops.is_empty());
             registry
                 .get_node(id)
-                .is_some_and(|n| node_content(n).is_none())
+                .is_some_and(|n| node_content(n).is_none() || has_style)
         });
 
         if structural_change {
@@ -242,7 +398,18 @@ impl Renderer for TuiRenderer {
                     None => continue,
                 };
 
-                if let Err(e) = self.render_leaf(node_id, &content, &rect) {
+                let inset = registry
+                    .get_node_style(node_id)
+                    .map(style_inset)
+                    .unwrap_or(0);
+                if let Some(style) = registry.get_node_style(node_id) {
+                    if let Err(e) = self.draw_style_ops(&rect, style) {
+                        eprintln!("rover-tui: style draw error for node {:?}: {}", node_id, e);
+                        continue;
+                    }
+                }
+
+                if let Err(e) = self.render_leaf(node_id, &content, &rect, inset) {
                     eprintln!("rover-tui: update error for node {:?}: {}", node_id, e);
                 }
             }
@@ -300,6 +467,44 @@ impl Drop for TuiRenderer {
     fn drop(&mut self) {
         let _ = self.terminal.leave();
     }
+}
+
+fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
+    let raw = hex.trim();
+    let s = raw.strip_prefix('#').unwrap_or(raw);
+    if s.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn ansi_prefix(bg_hex: Option<&str>, fg_hex: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if let Some((r, g, b)) = bg_hex.and_then(parse_hex_color) {
+        parts.push(format!("48;2;{};{};{}", r, g, b));
+    }
+    if let Some((r, g, b)) = fg_hex.and_then(parse_hex_color) {
+        parts.push(format!("38;2;{};{};{}", r, g, b));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("\x1b[{}m", parts.join(";"))
+    }
+}
+
+fn inset_rect(rect: &mut LayoutRect, amount: u16) {
+    if amount == 0 {
+        return;
+    }
+    let delta = amount.saturating_mul(2);
+    rect.row = rect.row.saturating_add(amount);
+    rect.col = rect.col.saturating_add(amount);
+    rect.width = rect.width.saturating_sub(delta);
+    rect.height = rect.height.saturating_sub(delta);
 }
 
 #[cfg(test)]
