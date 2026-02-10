@@ -1,3 +1,5 @@
+use crate::signal::SignalId;
+
 /// Execution target for the active renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiTarget {
@@ -32,4 +34,13 @@ impl UiRuntimeConfig {
     pub fn target(&self) -> UiTarget {
         self.target
     }
+}
+
+pub const DEFAULT_VIEWPORT_WIDTH: u16 = 80;
+pub const DEFAULT_VIEWPORT_HEIGHT: u16 = 24;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ViewportSignals {
+    pub width: SignalId,
+    pub height: SignalId,
 }

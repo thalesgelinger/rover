@@ -400,11 +400,15 @@ end
 
 function M.full_screen(props)
   props = props or {}
+  local on_key = props.on_key
   local child = props[1]
   if child == nil then
     child = props.child
   end
-  return ui.full_screen { child }
+  return ui.full_screen {
+    on_key = on_key,
+    child,
+  }
 end
 
 return M

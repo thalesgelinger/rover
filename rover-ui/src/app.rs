@@ -1,6 +1,8 @@
 use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use crate::events::{EventQueue, UiEvent};
-use crate::platform::UiRuntimeConfig;
+use crate::platform::{
+    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiRuntimeConfig, ViewportSignals,
+};
 use crate::scheduler::{Scheduler, SharedScheduler};
 use crate::signal::{SignalRuntime, SignalValue};
 use crate::ui::node::UiNode;
@@ -38,12 +40,18 @@ impl<R: Renderer> App<R> {
         let registry = Rc::new(RefCell::new(UiRegistry::new()));
         let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
         let runtime_config = UiRuntimeConfig::new(target);
+        // TODO: replace these defaults with per-platform viewport providers (web/mobile/etc).
+        let viewport_signals = ViewportSignals {
+            width: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_WIDTH as i64)),
+            height: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_HEIGHT as i64)),
+        };
 
         // Store runtime, registry, and scheduler in Lua app_data for access from Lua
         lua.set_app_data(runtime.clone());
         lua.set_app_data(registry.clone());
         lua.set_app_data(scheduler.clone());
         lua.set_app_data(runtime_config);
+        lua.set_app_data(viewport_signals);
 
         // Register rover module
         let rover_table = lua.create_table()?;
@@ -284,7 +292,7 @@ impl<R: Renderer> App<R> {
     /// - Change → Input.on_change (and updates the bound signal for two-way binding)
     /// - Submit → Input.on_submit
     /// - Toggle → Checkbox.on_toggle
-    /// - Key → KeyArea.on_key
+    /// - Key → KeyArea.on_key / FullScreen.on_key
     fn dispatch_event(&mut self, event: UiEvent) -> mlua::Result<()> {
         let node_id = event.node_id();
 
@@ -320,6 +328,7 @@ impl<R: Renderer> App<R> {
             (UiEvent::Submit { .. }, UiNode::Input { on_submit, .. }) => *on_submit,
             (UiEvent::Toggle { .. }, UiNode::Checkbox { on_toggle, .. }) => *on_toggle,
             (UiEvent::Key { .. }, UiNode::KeyArea { on_key, .. }) => *on_key,
+            (UiEvent::Key { .. }, UiNode::FullScreen { on_key, .. }) => *on_key,
             _ => None,
         };
         drop(registry);
@@ -359,6 +368,18 @@ impl<R: Renderer> App<R> {
     /// Stop the application
     pub fn stop(&mut self) {
         self.running = false;
+    }
+
+    /// Update reactive viewport size signals.
+    pub fn set_viewport_size(&mut self, cols: u16, rows: u16) {
+        let Some(viewport) = self.lua.app_data_ref::<ViewportSignals>().map(|s| *s) else {
+            return;
+        };
+
+        self.runtime
+            .set_signal(&self.lua, viewport.width, SignalValue::Int(cols as i64));
+        self.runtime
+            .set_signal(&self.lua, viewport.height, SignalValue::Int(rows as i64));
     }
 
     /// Run the application loop (blocking)
@@ -568,5 +589,74 @@ mod tests {
             .unwrap();
 
         assert_eq!(node_kind, "userdata");
+    }
+
+    #[test]
+    fn test_full_screen_on_key_dispatches() {
+        let renderer = TestTuiRenderer;
+        let mut app = App::new(renderer).unwrap();
+
+        app.lua
+            .load(
+                r#"
+                require("rover.tui")
+                _G.hit = rover.signal(0)
+                function rover.render()
+                    return rover.ui.full_screen {
+                        on_key = function(key)
+                            if key == "left" then
+                                _G.hit.val = _G.hit.val + 1
+                            end
+                        end,
+                        rover.ui.text { "x" },
+                    }
+                end
+            "#,
+            )
+            .exec()
+            .unwrap();
+
+        app.mount().unwrap();
+
+        let full_screen_id = {
+            let reg = app.registry.borrow();
+            let root = reg.root().unwrap();
+            match reg.get_node(root).unwrap() {
+                UiNode::FullScreen { on_key, .. } if on_key.is_some() => root,
+                _ => panic!("expected full_screen root with on_key"),
+            }
+        };
+
+        app.push_event(UiEvent::Key {
+            node_id: full_screen_id,
+            key: "left".to_string(),
+        });
+        app.tick().unwrap();
+
+        let hit: i64 = app.lua.load("return _G.hit.val").eval().unwrap();
+        assert_eq!(hit, 1);
+    }
+
+    #[test]
+    fn test_ui_screen_signals_exposed_and_mutable() {
+        let renderer = StubRenderer::new();
+        let mut app = App::new(renderer).unwrap();
+
+        let (w0, h0): (i64, i64) = app
+            .lua
+            .load("return rover.ui.screen.width.val, rover.ui.screen.height.val")
+            .eval()
+            .unwrap();
+        assert_eq!(w0, 80);
+        assert_eq!(h0, 24);
+
+        app.set_viewport_size(123, 45);
+        let (w1, h1): (i64, i64) = app
+            .lua
+            .load("return rover.ui.screen.width.val, rover.ui.screen.height.val")
+            .eval()
+            .unwrap();
+        assert_eq!(w1, 123);
+        assert_eq!(h1, 45);
     }
 }

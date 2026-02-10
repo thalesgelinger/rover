@@ -41,6 +41,8 @@ impl TuiRunner {
 
     /// Run the TUI event loop. Blocks until quit.
     pub fn run(&mut self) -> Result<(), RunError> {
+        let (cols, rows) = self.app.renderer().viewport_size();
+        self.app.set_viewport_size(cols, rows);
         self.app.mount().map_err(RunError::Lua)?;
 
         // Scan focusable nodes and auto-focus the first one
@@ -68,8 +70,9 @@ impl TuiRunner {
                             break;
                         }
                     }
-                    Event::Resize(_cols, _rows) => {
+                    Event::Resize(cols, rows) => {
                         self.app.renderer().refresh_size();
+                        self.app.set_viewport_size(cols, rows);
                     }
                     _ => {}
                 }
@@ -320,7 +323,10 @@ fn collect_focusable_nodes(registry: &UiRegistry, node_id: NodeId, out: &mut Vec
                 collect_focusable_nodes(registry, child_id, out);
             }
         }
-        UiNode::FullScreen { child } => {
+        UiNode::FullScreen { child, on_key } => {
+            if on_key.is_some() {
+                out.push(node_id);
+            }
             if let Some(child_id) = child {
                 collect_focusable_nodes(registry, *child_id, out);
             }

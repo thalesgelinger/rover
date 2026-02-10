@@ -319,18 +319,32 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
-        // rover.ui.full_screen({ child })
+        // rover.ui.full_screen({ on_key = function(key) end, child })
         methods.add_function("full_screen", |lua, props: Table| {
             let registry_rc = get_registry_rc(lua)?;
+            let runtime = crate::lua::helpers::get_runtime(lua)?;
 
             let child = match props.get::<Value>(1) {
                 Ok(Value::Nil) | Err(_) => None,
                 Ok(v) => Some(extract_node_id(lua, v)?),
             };
 
-            let node = UiNode::FullScreen { child };
+            let on_key = match props.get::<Function>("on_key") {
+                Ok(callback) => Some(
+                    runtime
+                        .register_callback(lua, callback)
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                ),
+                Err(_) => None,
+            };
+
+            let node = UiNode::FullScreen { child, on_key };
             let node_id = registry_rc.borrow_mut().create_node(node);
             apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
+
+            if let Some(effect_id) = on_key {
+                registry_rc.borrow_mut().attach_effect(node_id, effect_id);
+            }
 
             Ok(LuaNode::new(node_id))
         });

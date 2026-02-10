@@ -59,10 +59,12 @@ fn test_reactive_modifier_updates_style() {
         .get_node_style(root)
         .cloned()
         .unwrap();
-    assert!(initial_style
-        .ops
-        .iter()
-        .any(|op| matches!(op, StyleOp::BgColor(v) if v == "#111111")));
+    assert!(
+        initial_style
+            .ops
+            .iter()
+            .any(|op| matches!(op, StyleOp::BgColor(v) if v == "#111111"))
+    );
 
     app.lua().load("_G.bg.val = '#22aa22'").exec().unwrap();
     app.tick().unwrap();
@@ -73,10 +75,12 @@ fn test_reactive_modifier_updates_style() {
         .get_node_style(root)
         .cloned()
         .unwrap();
-    assert!(updated_style
-        .ops
-        .iter()
-        .any(|op| matches!(op, StyleOp::BgColor(v) if v == "#22aa22")));
+    assert!(
+        updated_style
+            .ops
+            .iter()
+            .any(|op| matches!(op, StyleOp::BgColor(v) if v == "#22aa22"))
+    );
 }
 
 #[test]
@@ -111,4 +115,67 @@ fn test_theme_set_and_extend_affect_mod_resolution() {
     assert_eq!(before, 2);
     assert_eq!(after_extend, 9);
     assert_eq!(after_set, 3);
+}
+
+#[test]
+fn test_reactive_scalar_modifier_updates_style() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    app.lua()
+        .load(
+            r##"
+            local ui = rover.ui
+            local mod = ui.mod
+
+            _G.pos_x = rover.signal(2)
+            _G.pos_y = rover.signal(3)
+
+            function rover.render()
+                return ui.stack {
+                    ui.view {
+                        mod = mod:position("absolute"):left(_G.pos_x):top(_G.pos_y),
+                        ui.text { "x" },
+                    },
+                }
+            end
+        "##,
+        )
+        .exec()
+        .unwrap();
+
+    app.tick().unwrap();
+
+    let root = app.registry().borrow().root().unwrap();
+    let child = {
+        let reg = app.registry().borrow();
+        match reg.get_node(root).unwrap() {
+            rover_ui::ui::UiNode::Stack { children } => children[0],
+            _ => panic!("expected stack root"),
+        }
+    };
+
+    let initial = app
+        .registry()
+        .borrow()
+        .get_node_style(child)
+        .cloned()
+        .unwrap();
+    assert_eq!(initial.left, Some(2));
+    assert_eq!(initial.top, Some(3));
+
+    app.lua()
+        .load("_G.pos_x.val = 9; _G.pos_y.val = 11")
+        .exec()
+        .unwrap();
+    app.tick().unwrap();
+
+    let updated = app
+        .registry()
+        .borrow()
+        .get_node_style(child)
+        .cloned()
+        .unwrap();
+    assert_eq!(updated.left, Some(9));
+    assert_eq!(updated.top, Some(11));
 }

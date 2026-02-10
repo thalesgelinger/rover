@@ -1,6 +1,6 @@
 use crate::layout::{
-    compute_layout, node_content, resolve_alignment, resolve_full_sizes, style_inset, LayoutMap,
-    LayoutRect,
+    LayoutMap, LayoutRect, compute_layout, node_content, resolve_alignment, resolve_full_sizes,
+    style_inset,
 };
 use crate::terminal::Terminal;
 use rover_ui::platform::UiTarget;
@@ -241,7 +241,7 @@ impl TuiRenderer {
             | UiNode::List { children, .. } => children.clone(),
             UiNode::Conditional { child, .. } => child.iter().copied().collect(),
             UiNode::KeyArea { child, .. } => child.iter().copied().collect(),
-            UiNode::FullScreen { child } => child.iter().copied().collect(),
+            UiNode::FullScreen { child, .. } => child.iter().copied().collect(),
             _ => vec![],
         };
 
@@ -255,6 +255,12 @@ impl TuiRenderer {
     /// Refresh cached terminal size (call on resize events).
     pub fn refresh_size(&mut self) {
         self.terminal.refresh_size();
+    }
+
+    /// Read current terminal viewport size (cols, rows).
+    pub fn viewport_size(&mut self) -> (u16, u16) {
+        self.terminal.refresh_size();
+        (self.terminal.cols(), self.terminal.rows())
     }
 
     /// Position the terminal cursor at a node's location + column offset.

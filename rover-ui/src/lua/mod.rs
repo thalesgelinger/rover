@@ -7,6 +7,7 @@ pub mod utils;
 use crate::task;
 
 use crate::platform::UiTarget;
+use crate::platform::ViewportSignals;
 use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
 use mlua::{AnyUserData, Function, Lua, Result, Table, UserData, Value};
@@ -139,9 +140,22 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     let default_theme: Table = modifier_module.get("default_theme")?;
     let create_mod: Function = modifier_module.get("create_mod")?;
     let mod_obj: Table = create_mod.call(default_theme.clone())?;
+    let viewport = lua
+        .app_data_ref::<ViewportSignals>()
+        .ok_or_else(|| mlua::Error::RuntimeError("Viewport signals not initialized".into()))?;
+    let screen = lua.create_table()?;
+    screen.set(
+        "width",
+        lua.create_userdata(LuaSignal::new(viewport.width))?,
+    )?;
+    screen.set(
+        "height",
+        lua.create_userdata(LuaSignal::new(viewport.height))?,
+    )?;
 
     uv.set("theme", default_theme)?;
     uv.set("mod", mod_obj)?;
+    uv.set("screen", screen)?;
     lua_ui.set_user_value(uv)?;
     rover_table.set("ui", lua_ui)?;
 

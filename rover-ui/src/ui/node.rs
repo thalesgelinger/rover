@@ -104,6 +104,7 @@ pub enum UiNode {
     },
     FullScreen {
         child: Option<NodeId>,
+        on_key: Option<EffectId>,
     },
     Button {
         label: String,

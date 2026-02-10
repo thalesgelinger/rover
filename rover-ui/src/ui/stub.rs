@@ -107,7 +107,7 @@ impl StubRenderer {
                     }
                     self.log(&format!("{}}}", indent_str));
                 }
-                UiNode::FullScreen { child } => {
+                UiNode::FullScreen { child, .. } => {
                     self.log(&format!("{}FullScreen(id={:?}) {{", indent_str, node_id));
                     if let Some(child_id) = child {
                         self.print_node(registry, *child_id, indent + 1);
@@ -276,7 +276,7 @@ impl Renderer for StubRenderer {
                     UiNode::Stack { .. } => {
                         self.log(&format!("  Updated Stack(id={:?})", node_id));
                     }
-                    UiNode::FullScreen { child } => {
+                    UiNode::FullScreen { child, .. } => {
                         self.log(&format!("  Updated FullScreen(id={:?}) {{", node_id));
                         if let Some(child_id) = child {
                             self.print_node(registry, *child_id, 3);

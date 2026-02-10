@@ -201,7 +201,7 @@ pub fn compute_layout(
             (width, height)
         }
 
-        UiNode::FullScreen { child } => {
+        UiNode::FullScreen { child, .. } => {
             if let Some(child_id) = child {
                 let child_id = *child_id;
                 let (w, h) = compute_layout(
@@ -664,7 +664,7 @@ fn child_nodes(registry: &UiRegistry, node_id: NodeId) -> Vec<NodeId> {
         | UiNode::List { children, .. } => children.clone(),
         UiNode::Conditional { child, .. }
         | UiNode::KeyArea { child, .. }
-        | UiNode::FullScreen { child } => child.iter().copied().collect(),
+        | UiNode::FullScreen { child, .. } => child.iter().copied().collect(),
         _ => Vec::new(),
     }
 }
