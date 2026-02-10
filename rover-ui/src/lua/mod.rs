@@ -6,6 +6,7 @@ pub mod signal;
 pub mod utils;
 use crate::task;
 
+use crate::platform::UiTarget;
 use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
 use mlua::{Function, Lua, Result, Table, UserData, Value};
@@ -96,9 +97,67 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     })?;
     rover_table.set("on_destroy", on_destroy_fn)?;
 
+    // rover.on_warning(fn | nil) - register warning callback
+    let on_warning_fn = lua.create_function(|lua, callback: Value| {
+        match callback {
+            Value::Function(f) => crate::lua::helpers::set_warning_handler(lua, Some(f))?,
+            Value::Nil => crate::lua::helpers::set_warning_handler(lua, None)?,
+            _ => {
+                return Err(mlua::Error::RuntimeError(
+                    "rover.on_warning expects a function or nil".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    })?;
+    rover_table.set("on_warning", on_warning_fn)?;
+
+    // rover.target - active runtime target: tui|web|mobile|unknown
+    let target = crate::lua::helpers::get_target(lua)?;
+    rover_table.set("target", target.as_str())?;
+
     let lua_ui = lua.create_userdata(LuaUi::new())?;
     lua_ui.set_user_value(lua.create_table()?)?;
     rover_table.set("ui", lua_ui)?;
 
+    // rover.tui - TUI-only namespace
+    let tui_table = create_tui_namespace(lua)?;
+    rover_table.set("tui", tui_table)?;
+
     Ok(())
+}
+
+fn create_tui_namespace(lua: &Lua) -> Result<Table> {
+    let table = lua.create_table()?;
+
+    table.set("select", create_tui_component_stub(lua, "select")?)?;
+    table.set("tab_select", create_tui_component_stub(lua, "tab_select")?)?;
+    table.set("scroll_box", create_tui_component_stub(lua, "scroll_box")?)?;
+    table.set("textarea", create_tui_component_stub(lua, "textarea")?)?;
+
+    Ok(table)
+}
+
+fn create_tui_component_stub(lua: &Lua, component: &'static str) -> Result<Function> {
+    lua.create_function(move |lua, _props: Value| -> Result<()> {
+        let target = crate::lua::helpers::get_target(lua)?;
+        if target != UiTarget::Tui {
+            let warning = format!(
+                "rover.tui.{} unsupported on target={}",
+                component,
+                target.as_str()
+            );
+            crate::lua::helpers::emit_warning(lua, &warning)?;
+            return Err(mlua::Error::RuntimeError(format!(
+                "rover.tui.{} not supported on target={} (guard with if rover.target == 'tui')",
+                component,
+                target.as_str()
+            )));
+        }
+
+        Err(mlua::Error::RuntimeError(format!(
+            "rover.tui.{} not implemented yet",
+            component
+        )))
+    })
 }

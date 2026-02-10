@@ -1,5 +1,6 @@
-use crate::layout::{compute_layout, node_content, LayoutMap, LayoutRect};
+use crate::layout::{LayoutMap, LayoutRect, compute_layout, node_content};
 use crate::terminal::Terminal;
+use rover_ui::platform::UiTarget;
 use rover_ui::ui::{NodeId, Renderer, UiNode, UiRegistry};
 use std::io;
 
@@ -165,7 +166,9 @@ impl Renderer for TuiRenderer {
 
         // Check if any dirty node is a container (structural change)
         let structural_change = dirty_nodes.iter().any(|&id| {
-            registry.get_node(id).is_some_and(|n| node_content(n).is_none())
+            registry
+                .get_node(id)
+                .is_some_and(|n| node_content(n).is_none())
         });
 
         if structural_change {
@@ -254,6 +257,10 @@ impl Renderer for TuiRenderer {
             self.previous_widths[idx] = 0;
         }
     }
+
+    fn target(&self) -> UiTarget {
+        UiTarget::Tui
+    }
 }
 
 impl Drop for TuiRenderer {
@@ -287,9 +294,7 @@ mod tests {
         };
         assert!(node_content(&text).is_some());
 
-        let col = UiNode::Column {
-            children: vec![],
-        };
+        let col = UiNode::Column { children: vec![] };
         assert!(node_content(&col).is_none());
     }
 

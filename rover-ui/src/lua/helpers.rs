@@ -1,7 +1,8 @@
 use crate::signal::{DerivedId, SignalId};
 use crate::ui::registry::UiRegistry;
 use crate::{SharedSignalRuntime, scheduler::SharedScheduler};
-use mlua::{AppDataRef, Lua, Result, Value};
+use crate::{platform::UiRuntimeConfig, platform::UiTarget};
+use mlua::{AppDataRef, Function, Lua, Result, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -41,4 +42,27 @@ pub fn get_derived_as_lua(lua: &Lua, id: DerivedId) -> Result<Value> {
     runtime
         .get_derived(lua, id)
         .map_err(|e| mlua::Error::RuntimeError(e.to_string()))
+}
+
+/// Get runtime config from Lua app_data.
+pub fn get_runtime_config(lua: &Lua) -> Result<AppDataRef<'_, UiRuntimeConfig>> {
+    lua.app_data_ref::<UiRuntimeConfig>()
+        .ok_or_else(|| mlua::Error::RuntimeError("Runtime config not initialized".into()))
+}
+
+/// Get active renderer target.
+pub fn get_target(lua: &Lua) -> Result<UiTarget> {
+    Ok(get_runtime_config(lua)?.target())
+}
+
+/// Emit a runtime warning to stderr and optional Lua handler.
+pub fn emit_warning(lua: &Lua, message: &str) -> Result<()> {
+    get_runtime_config(lua)?.emit_warning(message);
+    Ok(())
+}
+
+/// Register warning callback.
+pub fn set_warning_handler(lua: &Lua, handler: Option<Function>) -> Result<()> {
+    get_runtime_config(lua)?.set_warning_handler(handler);
+    Ok(())
 }

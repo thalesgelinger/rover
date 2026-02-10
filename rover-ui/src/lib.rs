@@ -2,6 +2,7 @@ pub mod app;
 pub mod coroutine;
 pub mod events;
 pub mod lua;
+pub mod platform;
 pub mod scheduler;
 pub mod signal;
 pub mod task;

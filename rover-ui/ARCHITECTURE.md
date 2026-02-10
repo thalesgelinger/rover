@@ -1,5 +1,17 @@
 # Rover UI Reactivity System
 
+## Namespace Contract
+
+- `rover.ui`: portable primitives intended to work across TUI/web/mobile.
+- `rover.tui`: terminal-only components (`select`, `tab_select`, `scroll_box`, `textarea`).
+- `rover.target`: runtime target string (`tui`, `web`, `mobile`, `unknown`).
+
+Guard behavior:
+
+- Calling `rover.tui.*` on non-`tui` target emits warning and throws runtime error.
+- Warning sink is stderr by default.
+- Optional warning hook: `rover.on_warning(function(msg) ... end)`.
+
 ## Architecture Overview
 
 ```

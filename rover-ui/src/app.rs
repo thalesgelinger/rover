@@ -1,5 +1,6 @@
 use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use crate::events::{EventQueue, UiEvent};
+use crate::platform::UiRuntimeConfig;
 use crate::scheduler::{Scheduler, SharedScheduler};
 use crate::signal::{SignalRuntime, SignalValue};
 use crate::ui::node::UiNode;
@@ -32,14 +33,17 @@ impl<R: Renderer> App<R> {
     /// Create a new App with the given renderer
     pub fn new(renderer: R) -> mlua::Result<Self> {
         let lua = Lua::new();
+        let target = renderer.target();
         let runtime = Rc::new(SignalRuntime::new());
         let registry = Rc::new(RefCell::new(UiRegistry::new()));
         let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
+        let runtime_config = UiRuntimeConfig::new(target);
 
         // Store runtime, registry, and scheduler in Lua app_data for access from Lua
         lua.set_app_data(runtime.clone());
         lua.set_app_data(registry.clone());
         lua.set_app_data(scheduler.clone());
+        lua.set_app_data(runtime_config);
 
         // Register rover module
         let rover_table = lua.create_table()?;
@@ -280,12 +284,19 @@ impl<R: Renderer> App<R> {
         // For Change events, update the bound signal first (two-way binding)
         if let UiEvent::Change { value, .. } = &event {
             let registry = self.registry.borrow();
-            if let Some(UiNode::Input { value: text_content, .. }) = registry.get_node(node_id) {
+            if let Some(UiNode::Input {
+                value: text_content,
+                ..
+            }) = registry.get_node(node_id)
+            {
                 if let Some(signal_id) = text_content.signal_id() {
                     // Update the signal with the new value (two-way binding)
                     drop(registry);
-                    self.runtime
-                        .set_signal(&self.lua, signal_id, SignalValue::String(value.clone().into()));
+                    self.runtime.set_signal(
+                        &self.lua,
+                        signal_id,
+                        SignalValue::String(value.clone().into()),
+                    );
                 }
             }
         }
@@ -457,5 +468,64 @@ mod tests {
         let result = app.tick();
         assert!(result.is_ok());
         assert_eq!(app.events.len(), 0);
+    }
+
+    #[test]
+    fn test_rover_target_exposed() {
+        let renderer = StubRenderer::new();
+        let app = App::new(renderer).unwrap();
+
+        let target: String = app.lua.load("return rover.target").eval().unwrap();
+        assert_eq!(target, "unknown");
+    }
+
+    #[test]
+    fn test_rover_tui_component_errors_on_non_tui_target() {
+        let renderer = StubRenderer::new();
+        let app = App::new(renderer).unwrap();
+
+        let (ok, err): (bool, String) = app
+            .lua
+            .load(
+                r#"
+                local ok, err = pcall(function()
+                    rover.tui.select({})
+                end)
+                return ok, tostring(err)
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert!(!ok);
+        assert!(err.contains("rover.tui.select not supported on target=unknown"));
+    }
+
+    #[test]
+    fn test_rover_warning_handler_receives_tui_guard_warning() {
+        let renderer = StubRenderer::new();
+        let app = App::new(renderer).unwrap();
+
+        let (warn_msg, ok): (String, bool) = app
+            .lua
+            .load(
+                r#"
+                _G.last_warning = ""
+                rover.on_warning(function(msg)
+                    _G.last_warning = msg
+                end)
+
+                local ok = pcall(function()
+                    rover.tui.tab_select({})
+                end)
+
+                return _G.last_warning, ok
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert!(!ok);
+        assert!(warn_msg.contains("rover.tui.tab_select unsupported on target=unknown"));
     }
 }
