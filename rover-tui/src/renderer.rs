@@ -252,10 +252,19 @@ impl TuiRenderer {
             | UiNode::Row { children }
             | UiNode::View { children }
             | UiNode::Stack { children }
-            | UiNode::List { children, .. } => children.clone(),
-            UiNode::Conditional { child, .. } => child.iter().copied().collect(),
-            UiNode::KeyArea { child, .. } => child.iter().copied().collect(),
-            UiNode::FullScreen { child, .. } => child.iter().copied().collect(),
+            | UiNode::List { children, .. } => flatten_list_nodes(registry, children),
+            UiNode::Conditional { child, .. } => {
+                let raw: Vec<NodeId> = child.iter().copied().collect();
+                flatten_list_nodes(registry, &raw)
+            }
+            UiNode::KeyArea { child, .. } => {
+                let raw: Vec<NodeId> = child.iter().copied().collect();
+                flatten_list_nodes(registry, &raw)
+            }
+            UiNode::FullScreen { child, .. } => {
+                let raw: Vec<NodeId> = child.iter().copied().collect();
+                flatten_list_nodes(registry, &raw)
+            }
             _ => vec![],
         };
 
@@ -291,6 +300,21 @@ impl TuiRenderer {
     /// Hide the terminal cursor.
     pub fn hide_cursor(&mut self) -> io::Result<()> {
         self.terminal.hide_cursor()
+    }
+}
+
+fn flatten_list_nodes(registry: &UiRegistry, children: &[NodeId]) -> Vec<NodeId> {
+    let mut flattened = Vec::new();
+    flatten_list_nodes_into(registry, children, &mut flattened);
+    flattened
+}
+
+fn flatten_list_nodes_into(registry: &UiRegistry, children: &[NodeId], out: &mut Vec<NodeId>) {
+    for child_id in children {
+        match registry.get_node(*child_id) {
+            Some(UiNode::List { children, .. }) => flatten_list_nodes_into(registry, children, out),
+            _ => out.push(*child_id),
+        }
     }
 }
 

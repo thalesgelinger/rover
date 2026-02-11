@@ -621,6 +621,32 @@ fn test_list_rendering() {
     assert!(log.iter().any(|line| line.contains("cherry")));
 }
 
+/// Test rover.ui.each() without key function
+#[test]
+fn test_list_rendering_without_key_fn() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({ "apple", "banana" })
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                return ru.text { item .. " (" .. index .. ")" }
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let log = log_buffer.borrow();
+    assert!(log.iter().any(|line| line.contains("apple")));
+    assert!(log.iter().any(|line| line.contains("banana")));
+}
+
 /// Test rover.ui.when() with reactive condition
 #[test]
 fn test_conditional_reactive_toggle() {

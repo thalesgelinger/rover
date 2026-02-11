@@ -81,7 +81,7 @@ impl Default for LayoutMap {
 /// - **Input**: rendered as current value text, width = value.len(), height = 1.
 /// - **Checkbox**: rendered as `[x]` or `[ ]`, width = 3, height = 1.
 /// - **Conditional**: if child is present, laid out in-place; otherwise zero-size.
-/// - **List**: children stack vertically like Column.
+/// - **List**: transparent helper; its children are laid out by parent.
 /// - **Image**: placeholder, zero-size for now.
 ///
 /// Returns the bounding box (width, height) of the subtree.
@@ -121,8 +121,7 @@ pub fn compute_layout(
         }
 
         UiNode::Column { children } | UiNode::View { children } => {
-            // Clone children vec to release the borrow on registry
-            let children = children.clone();
+            let children = flatten_list_nodes(registry, children);
             let mut total_height: u16 = 0;
             let mut max_width: u16 = 0;
             let inner_row = origin_row.saturating_add(inset);
@@ -157,7 +156,7 @@ pub fn compute_layout(
         }
 
         UiNode::Stack { children } => {
-            let children = children.clone();
+            let children = flatten_list_nodes(registry, children);
             let mut max_width: u16 = 0;
             let mut max_height: u16 = 0;
             let inner_row = origin_row.saturating_add(inset);
@@ -242,7 +241,7 @@ pub fn compute_layout(
         }
 
         UiNode::Row { children } => {
-            let children = children.clone();
+            let children = flatten_list_nodes(registry, children);
             let mut total_width: u16 = 0;
             let mut max_height: u16 = 0;
             let inner_row = origin_row.saturating_add(inset);
@@ -413,27 +412,49 @@ pub fn compute_layout(
         }
 
         UiNode::List { children, .. } => {
-            // Like Column: stack children vertically
+            // Like Column, but absolute-positioned children are out-of-flow
             let children = children.clone();
-            let mut total_height: u16 = 0;
-            let mut max_width: u16 = 0;
+            let mut flow_height: u16 = 0;
+            let mut flow_max_width: u16 = 0;
+            let mut absolute_max_width: u16 = 0;
+            let mut absolute_max_height: u16 = 0;
             let inner_row = origin_row.saturating_add(inset);
             let inner_col = origin_col.saturating_add(inset);
 
             for child_id in &children {
-                let (w, h) = compute_layout(
-                    registry,
-                    *child_id,
-                    inner_row.saturating_add(total_height),
-                    inner_col,
-                    layout,
-                );
-                max_width = max_width.max(w);
-                total_height = total_height.saturating_add(h);
+                let child_style = registry
+                    .get_node_style(*child_id)
+                    .cloned()
+                    .unwrap_or_default();
+
+                if child_style.position == PositionType::Absolute {
+                    let child_row =
+                        inner_row.saturating_add(child_style.top.unwrap_or(0).max(0) as u16);
+                    let child_col =
+                        inner_col.saturating_add(child_style.left.unwrap_or(0).max(0) as u16);
+                    let (w, h) = compute_layout(registry, *child_id, child_row, child_col, layout);
+                    let rel_w = child_col.saturating_sub(inner_col).saturating_add(w);
+                    let rel_h = child_row.saturating_sub(inner_row).saturating_add(h);
+                    absolute_max_width = absolute_max_width.max(rel_w);
+                    absolute_max_height = absolute_max_height.max(rel_h);
+                } else {
+                    let (w, h) = compute_layout(
+                        registry,
+                        *child_id,
+                        inner_row.saturating_add(flow_height),
+                        inner_col,
+                        layout,
+                    );
+                    flow_max_width = flow_max_width.max(w);
+                    flow_height = flow_height.saturating_add(h);
+                }
             }
 
-            let mut width = max_width.saturating_add(inset.saturating_mul(2));
-            let mut height = total_height.saturating_add(inset.saturating_mul(2));
+            let content_width = flow_max_width.max(absolute_max_width);
+            let content_height = flow_height.max(absolute_max_height);
+
+            let mut width = content_width.saturating_add(inset.saturating_mul(2));
+            let mut height = content_height.saturating_add(inset.saturating_mul(2));
             apply_size_overrides(&style, &mut width, &mut height);
 
             layout.set(
@@ -656,7 +677,7 @@ fn child_nodes(registry: &UiRegistry, node_id: NodeId) -> Vec<NodeId> {
         return Vec::new();
     };
 
-    match node {
+    let raw_children = match node {
         UiNode::Column { children }
         | UiNode::Row { children }
         | UiNode::View { children }
@@ -666,6 +687,23 @@ fn child_nodes(registry: &UiRegistry, node_id: NodeId) -> Vec<NodeId> {
         | UiNode::KeyArea { child, .. }
         | UiNode::FullScreen { child, .. } => child.iter().copied().collect(),
         _ => Vec::new(),
+    };
+
+    flatten_list_nodes(registry, &raw_children)
+}
+
+fn flatten_list_nodes(registry: &UiRegistry, children: &[NodeId]) -> Vec<NodeId> {
+    let mut flattened = Vec::new();
+    flatten_list_nodes_into(registry, children, &mut flattened);
+    flattened
+}
+
+fn flatten_list_nodes_into(registry: &UiRegistry, children: &[NodeId], out: &mut Vec<NodeId>) {
+    for child_id in children {
+        match registry.get_node(*child_id) {
+            Some(UiNode::List { children, .. }) => flatten_list_nodes_into(registry, children, out),
+            _ => out.push(*child_id),
+        }
     }
 }
 
@@ -1033,6 +1071,71 @@ mod tests {
         let rect = layout.get(child).unwrap();
         assert_eq!(rect.row, 2);
         assert_eq!(rect.col, 3);
+    }
+
+    #[test]
+    fn test_list_absolute_child_offset() {
+        use rover_ui::signal::graph::EffectId;
+
+        let mut registry = UiRegistry::new();
+        let child = registry.create_node(UiNode::Text {
+            content: TextContent::Static("x".into()),
+        });
+        let list = registry.create_node(UiNode::List {
+            items_effect: EffectId(0),
+            children: vec![child],
+        });
+        registry.set_root(list);
+
+        let child_style = NodeStyle {
+            position: PositionType::Absolute,
+            top: Some(2),
+            left: Some(3),
+            ..NodeStyle::default()
+        };
+        registry.set_node_style(child, child_style);
+
+        let mut layout = LayoutMap::new();
+        let (w, h) = compute_layout(&registry, list, 0, 0, &mut layout);
+
+        let rect = layout.get(child).unwrap();
+        assert_eq!(rect.row, 2);
+        assert_eq!(rect.col, 3);
+        assert_eq!(w, 4);
+        assert_eq!(h, 3);
+    }
+
+    #[test]
+    fn test_stack_flattens_list_children() {
+        use rover_ui::signal::graph::EffectId;
+
+        let mut registry = UiRegistry::new();
+        let piece = registry.create_node(UiNode::Text {
+            content: TextContent::Static("x".into()),
+        });
+        let list = registry.create_node(UiNode::List {
+            items_effect: EffectId(0),
+            children: vec![piece],
+        });
+        let stack = registry.create_node(UiNode::Stack {
+            children: vec![list],
+        });
+        registry.set_root(stack);
+
+        let piece_style = NodeStyle {
+            position: PositionType::Absolute,
+            top: Some(5),
+            left: Some(7),
+            ..NodeStyle::default()
+        };
+        registry.set_node_style(piece, piece_style);
+
+        let mut layout = LayoutMap::new();
+        compute_layout(&registry, stack, 0, 0, &mut layout);
+
+        let rect = layout.get(piece).unwrap();
+        assert_eq!(rect.row, 5);
+        assert_eq!(rect.col, 7);
     }
 
     #[test]

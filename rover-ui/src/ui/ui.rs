@@ -512,11 +512,11 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
-        // rover.ui.each(items, render_fn, key_fn)
-        // Render a list of items with reconciliation
+        // rover.ui.each(items, render_fn, key_fn?)
+        // key_fn is optional (reserved for keyed reconciliation)
         methods.add_function(
             "each",
-            |lua, (items, render_fn, _key_fn): (Value, Function, Function)| {
+            |lua, (items, render_fn, _key_fn): (Value, Function, Value)| {
                 let registry_rc = get_registry_rc(lua)?;
                 let runtime = crate::lua::helpers::get_runtime(lua)?;
 

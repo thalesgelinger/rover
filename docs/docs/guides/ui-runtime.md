@@ -134,12 +134,13 @@ end)
 ```lua
 ru.each(items, function(item, index)
   return ru.text { index .. ": " .. item }
-end, function(item, index)
-  return item .. index
 end)
 ```
 
 `items` can be a table or a signal/derived table.
+
+`key_fn` is optional (reserved for keyed reconciliation). `ru.each` is a transparent helper: it does not add a visual/container layer,
+its children are treated as direct children of the parent container.
 
 ## Tasks + Delay
 
