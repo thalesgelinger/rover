@@ -11,7 +11,7 @@ function rover.render()
         },
 		Header(),
 		ru.text {
-			"\n Welcome to claudio code",
+			"Welcome to open claudio",
 			mod = mod:padding(1):color "#A8A8A8",
 		},
 		ru.each(messages, function(item, index)
@@ -67,7 +67,7 @@ function Header()
 		ru.column {
 			ru.row {
 				ru.text {
-					"Claudio code ",
+					"Open claudio code ",
 				},
 				ru.text {
 					"v4.2.69",
@@ -89,10 +89,10 @@ end
 function Bot()
 	return ru.text {
 		[[
- ▐▛███▜▌   
-▝▜█████▛▘  
-  ▘▘ ▝▝    
+  █▀▀█ 
+  █  █ 
+  ▀▀▀▀ 
         ]],
-		mod = mod:height(3):color "#00ffff",
+		mod = mod:height(3):color "#eaeaea",
 	}
 end

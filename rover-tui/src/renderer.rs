@@ -1,6 +1,6 @@
 use crate::layout::{
-    LayoutMap, LayoutRect, compute_layout, node_content, resolve_alignment, resolve_full_sizes,
-    style_inset,
+    LayoutMap, LayoutRect, compute_layout, node_content, resolve_alignment,
+    resolve_fixed_positions, resolve_full_sizes, style_inset,
 };
 use crate::terminal::Terminal;
 use rover_ui::platform::UiTarget;
@@ -28,6 +28,8 @@ pub struct TuiRenderer {
     origin_row: u16,
     /// Whether current root is mounted in fullscreen mode.
     mounted_fullscreen: bool,
+    /// Frame-level row shift for inline bottom anchoring.
+    inline_row_shift: i32,
 }
 
 impl TuiRenderer {
@@ -39,7 +41,36 @@ impl TuiRenderer {
             effective_bgs: Vec::new(),
             origin_row: 0,
             mounted_fullscreen: false,
+            inline_row_shift: 0,
         })
+    }
+
+    fn compute_inline_row_shift(&self, root: NodeId) -> i32 {
+        if self.mounted_fullscreen {
+            return 0;
+        }
+        let content_height = self
+            .layout
+            .get(root)
+            .map(|r| r.height)
+            .unwrap_or(self.terminal.content_height())
+            .max(1);
+        let visible_height = self.terminal.visible_height().max(1);
+        // Only shift when content exceeds visible viewport
+        // Clamp shift to <= 0 (never push down, only pull up)
+        if content_height <= visible_height {
+            return 0;
+        }
+        let shift = -(i32::from(content_height) - i32::from(visible_height));
+        shift.min(0)
+    }
+
+    fn current_row_shift(&self) -> i32 {
+        if self.mounted_fullscreen {
+            0
+        } else {
+            self.inline_row_shift
+        }
     }
 
     #[inline]
@@ -89,6 +120,8 @@ impl TuiRenderer {
         inset: u16,
         fg_hex: Option<&str>,
         bg_hex: Option<&str>,
+        row_shift: i32,
+        clip_rows: Option<(u16, u16)>,
     ) -> io::Result<()> {
         let (old_width, old_height) = self.get_prev_size(id);
         let lines: Vec<&str> = if content.is_empty() {
@@ -103,12 +136,18 @@ impl TuiRenderer {
             .max()
             .unwrap_or(0)
             .min(u16::MAX as usize) as u16;
-        let abs_row = self.origin_row + rect.row + inset;
+        let abs_row = i32::from(self.origin_row + rect.row + inset) + row_shift;
         let abs_col = rect.col + inset;
 
         let clear_width = old_width.max(new_width);
         let clear_height = old_height.max(new_height);
         for dy in 0..clear_height {
+            let Some(row) = row_with_offset(abs_row, dy as i32) else {
+                continue;
+            };
+            if !row_visible(row, clip_rows) {
+                continue;
+            }
             if clear_width == 0 {
                 continue;
             }
@@ -116,20 +155,25 @@ impl TuiRenderer {
                 let style_prefix = ansi_prefix(Some(bg), None);
                 if style_prefix.is_empty() {
                     self.terminal
-                        .queue_clear_region(abs_row + dy, abs_col, clear_width)?;
+                        .queue_clear_region(row, abs_col, clear_width)?;
                 } else {
                     let spaces = " ".repeat(clear_width as usize);
                     let line = format!("{}{}\x1b[0m", style_prefix, spaces);
-                    self.terminal.queue_write_at(abs_row + dy, abs_col, &line)?;
+                    self.terminal.queue_write_at(row, abs_col, &line)?;
                 }
             } else {
                 self.terminal
-                    .queue_clear_region(abs_row + dy, abs_col, clear_width)?;
+                    .queue_clear_region(row, abs_col, clear_width)?;
             }
         }
 
         for (dy, line) in lines.iter().enumerate() {
-            let row = abs_row + dy as u16;
+            let Some(row) = row_with_offset(abs_row, dy as i32) else {
+                continue;
+            };
+            if !row_visible(row, clip_rows) {
+                continue;
+            }
             let style_prefix = ansi_prefix(bg_hex, fg_hex);
             if style_prefix.is_empty() {
                 self.terminal.queue_write_at(row, abs_col, line)?;
@@ -143,20 +187,38 @@ impl TuiRenderer {
         Ok(())
     }
 
-    fn draw_style_ops(&mut self, rect: &LayoutRect, style: &NodeStyle) -> io::Result<()> {
+    fn draw_style_ops_with_clip(
+        &mut self,
+        rect: &LayoutRect,
+        style: &NodeStyle,
+        row_shift: i32,
+        clip_rows: Option<(u16, u16)>,
+    ) -> io::Result<()> {
         let mut layer = *rect;
         let mut border_color: Option<String> = None;
 
         for op in &style.ops {
             match op {
                 StyleOp::BgColor(color) => {
-                    self.draw_filled_rect(&layer, Some(color.as_str()), None)?;
+                    self.draw_filled_rect(
+                        &layer,
+                        Some(color.as_str()),
+                        None,
+                        row_shift,
+                        clip_rows,
+                    )?;
                 }
                 StyleOp::BorderColor(color) => {
                     border_color = Some(color.clone());
                 }
                 StyleOp::BorderWidth(width) => {
-                    self.draw_border_rect(&layer, *width, border_color.as_deref())?;
+                    self.draw_border_rect(
+                        &layer,
+                        *width,
+                        border_color.as_deref(),
+                        row_shift,
+                        clip_rows,
+                    )?;
                     inset_rect(&mut layer, *width);
                 }
                 StyleOp::Padding(width) => {
@@ -173,6 +235,8 @@ impl TuiRenderer {
         rect: &LayoutRect,
         bg_hex: Option<&str>,
         fg_hex: Option<&str>,
+        row_shift: i32,
+        clip_rows: Option<(u16, u16)>,
     ) -> io::Result<()> {
         if rect.width == 0 || rect.height == 0 {
             return Ok(());
@@ -187,7 +251,13 @@ impl TuiRenderer {
         let spaces = " ".repeat(rect.width as usize);
 
         for dy in 0..rect.height {
-            let row = self.origin_row + rect.row + dy;
+            let base_row = i32::from(self.origin_row + rect.row + dy) + row_shift;
+            let Some(row) = row_with_offset(base_row, 0) else {
+                continue;
+            };
+            if !row_visible(row, clip_rows) {
+                continue;
+            }
             if style_prefix.is_empty() {
                 self.terminal.queue_write_at(row, rect.col, &spaces)?;
             } else {
@@ -204,6 +274,8 @@ impl TuiRenderer {
         rect: &LayoutRect,
         border_width: u16,
         border_color: Option<&str>,
+        row_shift: i32,
+        clip_rows: Option<(u16, u16)>,
     ) -> io::Result<()> {
         if border_width == 0 || rect.width == 0 || rect.height == 0 {
             return Ok(());
@@ -222,8 +294,11 @@ impl TuiRenderer {
         };
 
         for i in 0..bw {
-            let top_row = self.origin_row + rect.row + i;
-            let bottom_row = self.origin_row + rect.row + rect.height - 1 - i;
+            let top_row_i32 = i32::from(self.origin_row + rect.row + i) + row_shift;
+            let bottom_row_i32 =
+                i32::from(self.origin_row + rect.row + rect.height - 1 - i) + row_shift;
+            let top_row = row_with_offset(top_row_i32, 0);
+            let bottom_row = row_with_offset(bottom_row_i32, 0);
             let left_col = rect.col + i;
             let right_col = rect.col + rect.width - 1 - i;
             let horiz_width = rect.width.saturating_sub(i.saturating_mul(2));
@@ -237,7 +312,11 @@ impl TuiRenderer {
                 "#".repeat(horiz_width as usize),
                 style_reset
             );
-            self.terminal.queue_write_at(top_row, left_col, &top_line)?;
+            if let Some(row) = top_row
+                && row_visible(row, clip_rows)
+            {
+                self.terminal.queue_write_at(row, left_col, &top_line)?;
+            }
             if bottom_row != top_row {
                 let bottom_line = format!(
                     "{}{}{}",
@@ -245,12 +324,21 @@ impl TuiRenderer {
                     "#".repeat(horiz_width as usize),
                     style_reset
                 );
-                self.terminal
-                    .queue_write_at(bottom_row, left_col, &bottom_line)?;
+                if let Some(row) = bottom_row
+                    && row_visible(row, clip_rows)
+                {
+                    self.terminal.queue_write_at(row, left_col, &bottom_line)?;
+                }
             }
 
             if rect.height > i.saturating_mul(2).saturating_add(2) {
-                for dy in (top_row + 1)..bottom_row {
+                for logical_row in (top_row_i32 + 1)..bottom_row_i32 {
+                    let Some(dy) = row_with_offset(logical_row, 0) else {
+                        continue;
+                    };
+                    if !row_visible(dy, clip_rows) {
+                        continue;
+                    }
                     let side = format!("{}#{}", style_prefix, style_reset);
                     self.terminal.queue_write_at(dy, left_col, &side)?;
                     if right_col != left_col {
@@ -263,12 +351,13 @@ impl TuiRenderer {
         Ok(())
     }
 
-    /// Walk the tree and render all leaf nodes.
-    fn render_tree(
+    fn render_tree_with_clip(
         &mut self,
         registry: &UiRegistry,
         node_id: NodeId,
         inherited_bg: Option<&str>,
+        row_shift: i32,
+        clip_rows: Option<(u16, u16)>,
     ) -> io::Result<()> {
         let node = match registry.get_node(node_id) {
             Some(n) => n,
@@ -291,12 +380,21 @@ impl TuiRenderer {
                     .map(style_inset)
                     .unwrap_or(0);
                 if let Some(style) = registry.get_node_style(node_id) {
-                    self.draw_style_ops(&rect, style)?;
+                    self.draw_style_ops_with_clip(&rect, style, row_shift, clip_rows)?;
                 }
                 let fg = registry
                     .get_node_style(node_id)
                     .and_then(|style| style.color.as_deref());
-                self.render_leaf(node_id, &content, &rect, inset, fg, effective_bg.as_deref())?;
+                self.render_leaf(
+                    node_id,
+                    &content,
+                    &rect,
+                    inset,
+                    fg,
+                    effective_bg.as_deref(),
+                    row_shift,
+                    clip_rows,
+                )?;
             }
             return Ok(());
         }
@@ -304,8 +402,45 @@ impl TuiRenderer {
         if let Some(rect) = self.layout.get(node_id) {
             let rect = *rect;
             if let Some(style) = registry.get_node_style(node_id) {
-                self.draw_style_ops(&rect, style)?;
+                self.draw_style_ops_with_clip(&rect, style, row_shift, clip_rows)?;
             }
+        }
+
+        if let UiNode::ScrollBox {
+            child,
+            stick_bottom,
+        } = node
+        {
+            if let Some(scroll_rect) = self.layout.get(node_id).copied() {
+                let inset = registry
+                    .get_node_style(node_id)
+                    .map(style_inset)
+                    .unwrap_or(0);
+                let clip_start = row_with_offset(
+                    i32::from(self.origin_row + scroll_rect.row.saturating_add(inset)) + row_shift,
+                    0,
+                )
+                .unwrap_or(0);
+                let clip_height = scroll_rect.height.saturating_sub(inset.saturating_mul(2));
+                let clip_end = clip_start.saturating_add(clip_height);
+                let next_clip = intersect_clip_rows(clip_rows, Some((clip_start, clip_end)));
+                if let Some(child_id) = child {
+                    let child_height = self.layout.get(*child_id).map(|r| r.height).unwrap_or(0);
+                    let offset = if *stick_bottom && child_height > clip_height {
+                        child_height - clip_height
+                    } else {
+                        0
+                    };
+                    self.render_tree_with_clip(
+                        registry,
+                        *child_id,
+                        effective_bg.as_deref(),
+                        row_shift - offset as i32,
+                        next_clip,
+                    )?;
+                }
+            }
+            return Ok(());
         }
 
         // Container: recurse into children
@@ -315,6 +450,7 @@ impl TuiRenderer {
             | UiNode::View { children }
             | UiNode::Stack { children }
             | UiNode::List { children, .. } => flatten_list_nodes(registry, children),
+            UiNode::ScrollBox { child, .. } => child.iter().copied().collect(),
             UiNode::Conditional { child, .. } => {
                 let raw: Vec<NodeId> = child.iter().copied().collect();
                 flatten_list_nodes(registry, &raw)
@@ -331,7 +467,13 @@ impl TuiRenderer {
         };
 
         for child_id in children {
-            self.render_tree(registry, child_id, effective_bg.as_deref())?;
+            self.render_tree_with_clip(
+                registry,
+                child_id,
+                effective_bg.as_deref(),
+                row_shift,
+                clip_rows,
+            )?;
         }
 
         Ok(())
@@ -352,7 +494,12 @@ impl TuiRenderer {
     /// Used by the runner to show a blinking cursor inside the focused input.
     pub fn show_cursor_at(&mut self, node_id: NodeId, col_offset: u16) -> io::Result<()> {
         if let Some(rect) = self.layout.get(node_id) {
-            let abs_row = self.origin_row + rect.row;
+            let Some(abs_row) = row_with_offset(
+                i32::from(self.origin_row + rect.row) + self.current_row_shift(),
+                0,
+            ) else {
+                return Ok(());
+            };
             let abs_col = rect.col + col_offset;
             self.terminal.show_cursor_at(abs_row, abs_col)?;
         }
@@ -362,6 +509,38 @@ impl TuiRenderer {
     /// Hide the terminal cursor.
     pub fn hide_cursor(&mut self) -> io::Result<()> {
         self.terminal.hide_cursor()
+    }
+}
+
+fn row_visible(row: u16, clip_rows: Option<(u16, u16)>) -> bool {
+    match clip_rows {
+        Some((start, end)) => row >= start && row < end,
+        None => true,
+    }
+}
+
+fn intersect_clip_rows(a: Option<(u16, u16)>, b: Option<(u16, u16)>) -> Option<(u16, u16)> {
+    match (a, b) {
+        (None, x) => x,
+        (x, None) => x,
+        (Some((a0, a1)), Some((b0, b1))) => {
+            let start = a0.max(b0);
+            let end = a1.min(b1);
+            if end <= start {
+                Some((start, start))
+            } else {
+                Some((start, end))
+            }
+        }
+    }
+}
+
+fn row_with_offset(base_row: i32, delta: i32) -> Option<u16> {
+    let row = base_row.saturating_add(delta);
+    if row < 0 || row > i32::from(u16::MAX) {
+        None
+    } else {
+        Some(row as u16)
     }
 }
 
@@ -424,6 +603,8 @@ impl Renderer for TuiRenderer {
             }
             resolve_full_sizes(registry, root, &mut self.layout);
             resolve_alignment(registry, root, &mut self.layout);
+            resolve_fixed_positions(registry, root, &mut self.layout);
+            self.inline_row_shift = 0;
         } else {
             // Enter inline mode — reserves space and sets origin_row
             if let Err(e) = self.terminal.enter_inline(height) {
@@ -433,10 +614,14 @@ impl Renderer for TuiRenderer {
             self.origin_row = self.terminal.origin_row();
             resolve_full_sizes(registry, root, &mut self.layout);
             resolve_alignment(registry, root, &mut self.layout);
+            resolve_fixed_positions(registry, root, &mut self.layout);
+            self.inline_row_shift = self.compute_inline_row_shift(root);
         }
 
         // Render all nodes
-        if let Err(e) = self.render_tree(registry, root, None) {
+        if let Err(e) =
+            self.render_tree_with_clip(registry, root, None, self.current_row_shift(), None)
+        {
             eprintln!("rover-tui: render error: {}", e);
             return;
         }
@@ -482,6 +667,8 @@ impl Renderer for TuiRenderer {
                 }
                 resolve_full_sizes(registry, root, &mut self.layout);
                 resolve_alignment(registry, root, &mut self.layout);
+                resolve_fixed_positions(registry, root, &mut self.layout);
+                self.inline_row_shift = self.compute_inline_row_shift(root);
 
                 if self.mounted_fullscreen {
                     if let Err(e) = self.terminal.clear() {
@@ -504,13 +691,16 @@ impl Renderer for TuiRenderer {
                         return;
                     }
                 }
-                if let Err(e) = self.render_tree(registry, root, None) {
+                if let Err(e) =
+                    self.render_tree_with_clip(registry, root, None, self.current_row_shift(), None)
+                {
                     eprintln!("rover-tui: render error: {}", e);
                     return;
                 }
             }
         } else {
             // Content-only changes: update individual leaf nodes
+            let row_shift = self.current_row_shift();
             for &node_id in dirty_nodes {
                 let node = match registry.get_node(node_id) {
                     Some(n) => n,
@@ -532,7 +722,7 @@ impl Renderer for TuiRenderer {
                     .map(style_inset)
                     .unwrap_or(0);
                 if let Some(style) = registry.get_node_style(node_id) {
-                    if let Err(e) = self.draw_style_ops(&rect, style) {
+                    if let Err(e) = self.draw_style_ops_with_clip(&rect, style, row_shift, None) {
                         eprintln!("rover-tui: style draw error for node {:?}: {}", node_id, e);
                         continue;
                     }
@@ -542,8 +732,16 @@ impl Renderer for TuiRenderer {
                     .get_node_style(node_id)
                     .and_then(|style| style.color.as_deref());
                 let bg = self.get_effective_bg(node_id);
-                if let Err(e) = self.render_leaf(node_id, &content, &rect, inset, fg, bg.as_deref())
-                {
+                if let Err(e) = self.render_leaf(
+                    node_id,
+                    &content,
+                    &rect,
+                    inset,
+                    fg,
+                    bg.as_deref(),
+                    row_shift,
+                    None,
+                ) {
                     eprintln!("rover-tui: update error for node {:?}: {}", node_id, e);
                 }
             }
@@ -564,6 +762,8 @@ impl Renderer for TuiRenderer {
         compute_layout(registry, root, 0, 0, &mut self.layout);
         resolve_full_sizes(registry, root, &mut self.layout);
         resolve_alignment(registry, root, &mut self.layout);
+        resolve_fixed_positions(registry, root, &mut self.layout);
+        self.inline_row_shift = self.compute_inline_row_shift(root);
 
         // Clear and redraw
         let clear_result = if self.mounted_fullscreen {
@@ -576,7 +776,9 @@ impl Renderer for TuiRenderer {
             return;
         }
 
-        if let Err(e) = self.render_tree(registry, root, None) {
+        if let Err(e) =
+            self.render_tree_with_clip(registry, root, None, self.current_row_shift(), None)
+        {
             eprintln!("rover-tui: render error: {}", e);
             return;
         }

@@ -1,7 +1,7 @@
+use crate::platform::{UiRuntimeConfig, UiTarget, ViewportSignals};
 use crate::signal::{DerivedId, SignalId};
 use crate::ui::registry::UiRegistry;
 use crate::{SharedSignalRuntime, scheduler::SharedScheduler};
-use crate::{platform::UiRuntimeConfig, platform::UiTarget};
 use mlua::{AppDataRef, Lua, Result, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -53,4 +53,11 @@ pub fn get_runtime_config(lua: &Lua) -> Result<AppDataRef<'_, UiRuntimeConfig>> 
 /// Get active renderer target.
 pub fn get_target(lua: &Lua) -> Result<UiTarget> {
     Ok(get_runtime_config(lua)?.target())
+}
+
+/// Get viewport signal IDs from Lua app_data.
+pub fn get_viewport_signals(lua: &Lua) -> Result<ViewportSignals> {
+    lua.app_data_ref::<ViewportSignals>()
+        .ok_or_else(|| mlua::Error::RuntimeError("Viewport signals not initialized".into()))
+        .map(|s| *s)
 }

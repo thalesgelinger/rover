@@ -307,6 +307,30 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
+        // rover.ui.scroll_box({ child or [1], stick_bottom = bool })
+        methods.add_function("scroll_box", |lua, props: Table| {
+            let registry_rc = get_registry_rc(lua)?;
+
+            let child = match props.get::<Value>(1) {
+                Ok(Value::Nil) | Err(_) => match props.get::<Value>("child") {
+                    Ok(Value::Nil) | Err(_) => None,
+                    Ok(v) => Some(extract_node_id(lua, v)?),
+                },
+                Ok(v) => Some(extract_node_id(lua, v)?),
+            };
+
+            let stick_bottom = matches!(props.get::<Value>("stick_bottom")?, Value::Boolean(true));
+
+            let node = UiNode::ScrollBox {
+                child,
+                stick_bottom,
+            };
+            let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
+
+            Ok(LuaNode::new(node_id))
+        });
+
         // rover.ui.stack({ children or varargs })
         methods.add_function("stack", |lua, props: Table| {
             let registry_rc = get_registry_rc(lua)?;

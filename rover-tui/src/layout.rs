@@ -128,6 +128,14 @@ pub fn compute_layout(
             let inner_col = origin_col.saturating_add(inset);
 
             for child_id in &children {
+                let child_style = registry
+                    .get_node_style(*child_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if child_style.position == PositionType::Fixed {
+                    let _ = compute_layout(registry, *child_id, inner_row, inner_col, layout);
+                    continue;
+                }
                 let (w, h) = compute_layout(
                     registry,
                     *child_id,
@@ -177,6 +185,8 @@ pub fn compute_layout(
                     let rel_h = child_row.saturating_sub(inner_row).saturating_add(h);
                     max_width = max_width.max(rel_w);
                     max_height = max_height.max(rel_h);
+                } else if child_style.position == PositionType::Fixed {
+                    let _ = compute_layout(registry, *child_id, inner_row, inner_col, layout);
                 } else {
                     let (w, h) = compute_layout(registry, *child_id, inner_row, inner_col, layout);
                     max_width = max_width.max(w);
@@ -248,6 +258,14 @@ pub fn compute_layout(
             let inner_col = origin_col.saturating_add(inset);
 
             for child_id in &children {
+                let child_style = registry
+                    .get_node_style(*child_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if child_style.position == PositionType::Fixed {
+                    let _ = compute_layout(registry, *child_id, inner_row, inner_col, layout);
+                    continue;
+                }
                 let (w, h) = compute_layout(
                     registry,
                     *child_id,
@@ -437,6 +455,8 @@ pub fn compute_layout(
                     let rel_h = child_row.saturating_sub(inner_row).saturating_add(h);
                     absolute_max_width = absolute_max_width.max(rel_w);
                     absolute_max_height = absolute_max_height.max(rel_h);
+                } else if child_style.position == PositionType::Fixed {
+                    let _ = compute_layout(registry, *child_id, inner_row, inner_col, layout);
                 } else {
                     let (w, h) = compute_layout(
                         registry,
@@ -469,6 +489,46 @@ pub fn compute_layout(
             (width, height)
         }
 
+        UiNode::ScrollBox { child, .. } => {
+            if let Some(child_id) = child {
+                let child_id = *child_id;
+                let (w, h) = compute_layout(
+                    registry,
+                    child_id,
+                    origin_row.saturating_add(inset),
+                    origin_col.saturating_add(inset),
+                    layout,
+                );
+                let mut width = w.saturating_add(inset.saturating_mul(2));
+                let mut height = h.saturating_add(inset.saturating_mul(2));
+                apply_size_overrides(&style, &mut width, &mut height);
+                layout.set(
+                    root,
+                    LayoutRect {
+                        row: origin_row,
+                        col: origin_col,
+                        width,
+                        height,
+                    },
+                );
+                (width, height)
+            } else {
+                let mut width = inset.saturating_mul(2);
+                let mut height = inset.saturating_mul(2);
+                apply_size_overrides(&style, &mut width, &mut height);
+                layout.set(
+                    root,
+                    LayoutRect {
+                        row: origin_row,
+                        col: origin_col,
+                        width,
+                        height,
+                    },
+                );
+                (width, height)
+            }
+        }
+
         UiNode::Image { .. } => {
             // Placeholder — images not supported in terminal yet
             let mut width = inset.saturating_mul(2);
@@ -494,6 +554,10 @@ pub fn resolve_full_sizes(registry: &UiRegistry, root: NodeId, layout: &mut Layo
 
 pub fn resolve_alignment(registry: &UiRegistry, root: NodeId, layout: &mut LayoutMap) {
     resolve_alignment_inner(registry, root, layout);
+}
+
+pub fn resolve_fixed_positions(registry: &UiRegistry, root: NodeId, layout: &mut LayoutMap) {
+    resolve_fixed_positions_inner(registry, root, layout);
 }
 
 fn resolve_full_sizes_inner(
@@ -559,15 +623,17 @@ fn resolve_alignment_inner(registry: &UiRegistry, node_id: NodeId, layout: &mut 
         .iter()
         .copied()
         .filter(|child_id| {
-            if matches!(registry.get_node(node_id), Some(UiNode::Stack { .. })) {
-                let child_style = registry
-                    .get_node_style(*child_id)
-                    .cloned()
-                    .unwrap_or_default();
-                child_style.position != PositionType::Absolute
-            } else {
-                true
+            let child_style = registry
+                .get_node_style(*child_id)
+                .cloned()
+                .unwrap_or_default();
+            if child_style.position == PositionType::Fixed {
+                return false;
             }
+            if matches!(registry.get_node(node_id), Some(UiNode::Stack { .. })) {
+                return child_style.position != PositionType::Absolute;
+            }
+            true
         })
         .collect::<Vec<_>>();
 
@@ -646,6 +712,59 @@ fn resolve_alignment_inner(registry: &UiRegistry, node_id: NodeId, layout: &mut 
     }
 }
 
+fn resolve_fixed_positions_inner(registry: &UiRegistry, node_id: NodeId, layout: &mut LayoutMap) {
+    let Some(parent_rect) = layout.get(node_id).copied() else {
+        return;
+    };
+    let parent_style = registry
+        .get_node_style(node_id)
+        .cloned()
+        .unwrap_or_default();
+    let inset = style_inset(&parent_style);
+    let inner_row = parent_rect.row.saturating_add(inset);
+    let inner_col = parent_rect.col.saturating_add(inset);
+    let inner_h = parent_rect.height.saturating_sub(inset.saturating_mul(2));
+    let inner_w = parent_rect.width.saturating_sub(inset.saturating_mul(2));
+
+    for child_id in child_nodes(registry, node_id) {
+        let child_style = registry
+            .get_node_style(child_id)
+            .cloned()
+            .unwrap_or_default();
+        if child_style.position == PositionType::Fixed
+            && let Some(child_rect) = layout.get(child_id).copied()
+        {
+            let target_row = if let Some(top) = child_style.top {
+                inner_row.saturating_add(top.max(0) as u16)
+            } else if let Some(bottom) = child_style.bottom {
+                inner_row
+                    .saturating_add(inner_h.saturating_sub(child_rect.height))
+                    .saturating_sub(bottom.max(0) as u16)
+            } else {
+                child_rect.row
+            };
+
+            let target_col = if let Some(left) = child_style.left {
+                inner_col.saturating_add(left.max(0) as u16)
+            } else if let Some(right) = child_style.right {
+                inner_col
+                    .saturating_add(inner_w.saturating_sub(child_rect.width))
+                    .saturating_sub(right.max(0) as u16)
+            } else {
+                child_rect.col
+            };
+
+            let delta_row = target_row as i32 - child_rect.row as i32;
+            let delta_col = target_col as i32 - child_rect.col as i32;
+            if delta_row != 0 || delta_col != 0 {
+                offset_subtree(layout, registry, child_id, delta_row, delta_col);
+            }
+        }
+
+        resolve_fixed_positions_inner(registry, child_id, layout);
+    }
+}
+
 fn offset_subtree(
     layout: &mut LayoutMap,
     registry: &UiRegistry,
@@ -683,6 +802,10 @@ fn child_nodes(registry: &UiRegistry, node_id: NodeId) -> Vec<NodeId> {
         | UiNode::View { children }
         | UiNode::Stack { children }
         | UiNode::List { children, .. } => children.clone(),
+        UiNode::ScrollBox {
+            child: Some(child),
+            stick_bottom: _,
+        } => vec![*child],
         UiNode::Conditional { child, .. }
         | UiNode::KeyArea { child, .. }
         | UiNode::FullScreen { child, .. } => child.iter().copied().collect(),
@@ -789,6 +912,7 @@ pub fn node_content(node: &UiNode) -> Option<String> {
         UiNode::Column { .. }
         | UiNode::Row { .. }
         | UiNode::View { .. }
+        | UiNode::ScrollBox { .. }
         | UiNode::Stack { .. }
         | UiNode::FullScreen { .. }
         | UiNode::Conditional { .. }

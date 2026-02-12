@@ -1,7 +1,6 @@
 use crossterm::{
-    cursor,
+    ExecutableCommand, QueueableCommand, cursor,
     terminal::{self, ClearType},
-    ExecutableCommand, QueueableCommand,
 };
 use std::io::{self, Stdout, Write};
 
@@ -32,6 +31,8 @@ pub struct Terminal {
     origin_row: u16,
     /// Height of rendered content in rows (inline mode).
     content_height: u16,
+    /// Visible height capped to terminal rows (for inline viewport).
+    visible_height: u16,
 }
 
 impl Terminal {
@@ -43,6 +44,7 @@ impl Terminal {
             size,
             origin_row: 0,
             content_height: 0,
+            visible_height: 0,
         })
     }
 
@@ -58,9 +60,12 @@ impl Terminal {
         terminal::enable_raw_mode()?;
         self.size = terminal::size().unwrap_or(self.size);
 
+        // Cap visible height to terminal rows
+        let visible_height = content_height.min(self.size.1);
+
         // Reserve vertical space by emitting newlines.
         // This scrolls the terminal if we're near the bottom.
-        let needed = content_height.max(1);
+        let needed = visible_height.max(1);
         for _ in 0..needed {
             self.stdout.write_all(b"\r\n")?;
         }
@@ -70,6 +75,7 @@ impl Terminal {
         let (_, cursor_row) = cursor::position()?;
         self.origin_row = origin_from_cursor(cursor_row, needed);
         self.content_height = content_height;
+        self.visible_height = visible_height;
 
         self.stdout.execute(cursor::Hide)?;
         self.mode = TerminalMode::Inline;
@@ -124,7 +130,8 @@ impl Terminal {
     /// Clear only the inline render region by overwriting with spaces.
     pub fn clear_inline_region(&mut self) -> io::Result<()> {
         let cols = self.size.0;
-        for row in 0..self.content_height {
+        let visible = self.visible_height.max(1);
+        for row in 0..visible {
             self.queue_clear_region(self.origin_row + row, 0, cols)?;
         }
         Ok(())
@@ -134,8 +141,19 @@ impl Terminal {
     /// Does NOT flush — call `flush()` after batching all writes.
     #[inline]
     pub fn queue_write_at(&mut self, row: u16, col: u16, text: &str) -> io::Result<()> {
+        if row >= self.size.1 || col >= self.size.0 || text.is_empty() {
+            return Ok(());
+        }
+        let max_cols = self.size.0.saturating_sub(col);
+        if max_cols == 0 {
+            return Ok(());
+        }
+        let clipped = clip_text_to_cols(text, max_cols);
+        if clipped.is_empty() {
+            return Ok(());
+        }
         self.stdout.queue(cursor::MoveTo(col, row))?;
-        self.stdout.write_all(text.as_bytes())?;
+        self.stdout.write_all(clipped.as_bytes())?;
         Ok(())
     }
 
@@ -143,6 +161,10 @@ impl Terminal {
     /// Does NOT flush.
     #[inline]
     pub fn queue_clear_region(&mut self, row: u16, col: u16, width: u16) -> io::Result<()> {
+        if width == 0 || row >= self.size.1 || col >= self.size.0 {
+            return Ok(());
+        }
+        let width = width.min(self.size.0.saturating_sub(col));
         if width == 0 {
             return Ok(());
         }
@@ -187,6 +209,12 @@ impl Terminal {
         self.content_height
     }
 
+    /// Current visible height in rows, capped to terminal (inline mode).
+    #[inline]
+    pub fn visible_height(&self) -> u16 {
+        self.visible_height
+    }
+
     /// Grow the inline render region to accommodate a taller layout.
     ///
     /// Emits additional newlines to reserve space, then re-queries the
@@ -196,23 +224,30 @@ impl Terminal {
             return Ok(());
         }
 
-        let extra = new_height - self.content_height;
+        let old_visible = self.visible_height;
+        let new_visible = new_height.min(self.size.1);
 
-        // Move cursor to the end of the current content region
-        let end_row = self.origin_row + self.content_height;
-        self.stdout.queue(cursor::MoveTo(0, end_row))?;
+        // Only grow if visible height increases
+        if new_visible > old_visible {
+            let extra = new_visible - old_visible;
 
-        // Emit newlines to reserve additional space
-        for _ in 0..extra {
-            self.stdout.write_all(b"\r\n")?;
+            // Move cursor to the end of the current visible region
+            let end_row = self.origin_row + old_visible;
+            self.stdout.queue(cursor::MoveTo(0, end_row))?;
+
+            // Emit newlines to reserve additional space
+            for _ in 0..extra {
+                self.stdout.write_all(b"\r\n")?;
+            }
+            self.stdout.flush()?;
+
+            // Re-query cursor position and recalculate origin
+            let (_, cursor_row) = cursor::position()?;
+            self.origin_row = origin_from_cursor(cursor_row, new_visible);
+            self.visible_height = new_visible;
         }
-        self.stdout.flush()?;
 
-        // Re-query cursor position and recalculate origin
-        let (_, cursor_row) = cursor::position()?;
         self.content_height = new_height;
-        self.origin_row = origin_from_cursor(cursor_row, new_height);
-
         Ok(())
     }
 
@@ -225,7 +260,10 @@ impl Terminal {
 
     /// Show the terminal cursor at an absolute (row, col) position.
     pub fn show_cursor_at(&mut self, row: u16, col: u16) -> io::Result<()> {
-        self.stdout.execute(cursor::MoveTo(col, row))?;
+        let max_row = self.size.1.saturating_sub(1);
+        let max_col = self.size.0.saturating_sub(1);
+        self.stdout
+            .execute(cursor::MoveTo(col.min(max_col), row.min(max_row)))?;
         self.stdout.execute(cursor::Show)?;
         Ok(())
     }
@@ -252,6 +290,24 @@ impl Drop for Terminal {
 #[inline]
 fn origin_from_cursor(cursor_row: u16, reserved_height: u16) -> u16 {
     cursor_row.saturating_sub(reserved_height)
+}
+
+fn clip_text_to_cols(text: &str, max_cols: u16) -> String {
+    if max_cols == 0 || text.is_empty() {
+        return String::new();
+    }
+    let max_cols = max_cols as usize;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let w = if ch == '\t' { 4 } else { 1 };
+        if used + w > max_cols {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out
 }
 
 #[cfg(test)]

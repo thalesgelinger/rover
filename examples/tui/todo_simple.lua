@@ -3,6 +3,19 @@ require "rover.tui"
 local ui = rover.ui
 local PAGE_SIZE = 5
 
+local function separator()
+	local width = rover.signal(0)
+
+	rover.interval(100, function()
+		width.val = width.val + 1
+	end)
+
+	return ui.column {
+		ui.separator { width = width, char = "-" },
+        ui.text { width }
+	}
+end
+
 function rover.render()
 	local items = rover.signal {
 		"buy milk",
@@ -139,7 +152,7 @@ function rover.render()
 		ui.text { "todo app (simple)" },
 		ui.badge { label = "a add | e edit", tone = "info" },
 		ui.text { "visible: " .. range_text.val },
-		ui.separator { width = 50, char = "-" },
+		separator(),
 
 		ui.nav_list {
 			title = "items",

@@ -6,6 +6,7 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use unicode_width::UnicodeWidthStr;
 
 /// Runs an `App<TuiRenderer>` with a combined timer + terminal-input event loop.
 ///
@@ -235,7 +236,7 @@ impl TuiRunner {
     /// Position the terminal cursor at the focused input's edit position.
     fn update_cursor(&mut self) {
         if let Some(node_id) = self.focused_input_node() {
-            let col_offset = self.input_buffer.len() as u16;
+            let col_offset = UnicodeWidthStr::width(self.input_buffer.as_str()) as u16;
             let _ = self.app.renderer().show_cursor_at(node_id, col_offset);
         } else {
             let _ = self.app.renderer().hide_cursor();
@@ -321,6 +322,11 @@ fn collect_focusable_nodes(registry: &UiRegistry, node_id: NodeId, out: &mut Vec
             let children = children.clone();
             for child_id in children {
                 collect_focusable_nodes(registry, child_id, out);
+            }
+        }
+        UiNode::ScrollBox { child, .. } => {
+            if let Some(child_id) = child {
+                collect_focusable_nodes(registry, *child_id, out);
             }
         }
         UiNode::FullScreen { child, on_key } => {

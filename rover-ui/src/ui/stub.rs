@@ -100,6 +100,21 @@ impl StubRenderer {
                     }
                     self.log(&format!("{}}}", indent_str));
                 }
+                UiNode::ScrollBox {
+                    child,
+                    stick_bottom,
+                } => {
+                    self.log(&format!(
+                        "{}ScrollBox(id={:?}, stick_bottom={}) {{",
+                        indent_str, node_id, stick_bottom
+                    ));
+                    if let Some(child_id) = child {
+                        self.print_node(registry, *child_id, indent + 1);
+                    } else {
+                        self.log(&format!("{}  (empty)", indent_str));
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
                 UiNode::Stack { children } => {
                     self.log(&format!("{}Stack(id={:?}) {{", indent_str, node_id));
                     for &child_id in children {
@@ -272,6 +287,21 @@ impl Renderer for StubRenderer {
                     }
                     UiNode::View { .. } => {
                         self.log(&format!("  Updated View(id={:?})", node_id));
+                    }
+                    UiNode::ScrollBox {
+                        child,
+                        stick_bottom,
+                    } => {
+                        self.log(&format!(
+                            "  Updated ScrollBox(id={:?}, stick_bottom={}) {{",
+                            node_id, stick_bottom
+                        ));
+                        if let Some(child_id) = child {
+                            self.print_node(registry, *child_id, 3);
+                        } else {
+                            self.log("    (empty)");
+                        }
+                        self.log("  }");
                     }
                     UiNode::Stack { .. } => {
                         self.log(&format!("  Updated Stack(id={:?})", node_id));

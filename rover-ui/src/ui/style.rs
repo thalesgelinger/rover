@@ -18,6 +18,7 @@ pub enum StyleSize {
 pub enum PositionType {
     Relative,
     Absolute,
+    Fixed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,10 +101,10 @@ impl NodeStyle {
         style.color = to_string(table.get::<Value>("color")?);
 
         if let Some(pos) = to_string(table.get::<Value>("position")?) {
-            style.position = if pos == "absolute" {
-                PositionType::Absolute
-            } else {
-                PositionType::Relative
+            style.position = match pos.as_str() {
+                "absolute" => PositionType::Absolute,
+                "fixed" => PositionType::Fixed,
+                _ => PositionType::Relative,
             };
         }
 

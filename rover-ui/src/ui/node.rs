@@ -99,6 +99,10 @@ pub enum UiNode {
     View {
         children: Vec<NodeId>,
     },
+    ScrollBox {
+        child: Option<NodeId>,
+        stick_bottom: bool,
+    },
     Stack {
         children: Vec<NodeId>,
     },

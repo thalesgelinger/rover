@@ -133,11 +133,7 @@ end
 
 function M.scroll_box(props)
   props = props or {}
-  local child = props[1]
-  if child ~= nil then
-    return ui.view { child }
-  end
-  return ui.view { ui.text { "scroll_box(empty)" } }
+  return ui.scroll_box(props)
 end
 
 function M.textarea(props)
