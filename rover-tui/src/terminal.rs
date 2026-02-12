@@ -1,6 +1,7 @@
 use crossterm::{
-    ExecutableCommand, QueueableCommand, cursor,
+    cursor,
     terminal::{self, ClearType},
+    ExecutableCommand, QueueableCommand,
 };
 use std::io::{self, Stdout, Write};
 
@@ -67,7 +68,7 @@ impl Terminal {
 
         // Query where the cursor ended up after scrolling
         let (_, cursor_row) = cursor::position()?;
-        self.origin_row = cursor_row.saturating_sub(needed.saturating_sub(1));
+        self.origin_row = origin_from_cursor(cursor_row, needed);
         self.content_height = content_height;
 
         self.stdout.execute(cursor::Hide)?;
@@ -210,7 +211,7 @@ impl Terminal {
         // Re-query cursor position and recalculate origin
         let (_, cursor_row) = cursor::position()?;
         self.content_height = new_height;
-        self.origin_row = cursor_row.saturating_sub(new_height.saturating_sub(1));
+        self.origin_row = origin_from_cursor(cursor_row, new_height);
 
         Ok(())
     }
@@ -248,6 +249,11 @@ impl Drop for Terminal {
     }
 }
 
+#[inline]
+fn origin_from_cursor(cursor_row: u16, reserved_height: u16) -> u16 {
+    cursor_row.saturating_sub(reserved_height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +286,12 @@ mod tests {
     fn test_origin_row_defaults_to_zero() {
         let term = Terminal::new().unwrap();
         assert_eq!(term.origin_row(), 0);
+    }
+
+    #[test]
+    fn test_origin_from_cursor_math() {
+        assert_eq!(origin_from_cursor(10, 5), 5);
+        assert_eq!(origin_from_cursor(0, 1), 0);
+        assert_eq!(origin_from_cursor(3, 10), 0);
     }
 }
