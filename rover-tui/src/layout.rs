@@ -1,4 +1,5 @@
 use rover_ui::ui::{NodeId, NodeStyle, PositionType, StyleOp, StyleSize, UiNode, UiRegistry};
+use unicode_width::UnicodeWidthStr;
 
 /// Screen position and dimensions for a laid-out node.
 #[derive(Debug, Clone, Copy, Default)]
@@ -75,8 +76,8 @@ impl Default for LayoutMap {
 ///   next row after the previous child ends.
 /// - **Row**: children are placed horizontally. Each child starts at the
 ///   column after the previous child ends.
-/// - **Text**: leaf node, width = string length in bytes (ASCII assumption
-///   for now), height = 1.
+/// - **Text**: leaf node, width = max display width among lines,
+///   height = number of lines.
 /// - **Button**: rendered as `[label]`, width = label.len() + 2, height = 1.
 /// - **Input**: rendered as current value text, width = value.len(), height = 1.
 /// - **Checkbox**: rendered as `[x]` or `[ ]`, width = 3, height = 1.
@@ -102,9 +103,8 @@ pub fn compute_layout(
 
     match node {
         UiNode::Text { content } => {
-            let text = content.value();
-            let content_width = text.len() as u16;
-            let content_height: u16 = if content_width > 0 { 1 } else { 0 };
+            let text = normalize_text_content(content.value());
+            let (content_width, content_height) = text_dimensions(&text);
             let mut width = content_width.saturating_add(inset.saturating_mul(2));
             let mut height = content_height.saturating_add(inset.saturating_mul(2));
             apply_size_overrides(&style, &mut width, &mut height);
@@ -734,11 +734,54 @@ fn apply_size_overrides(style: &NodeStyle, width: &mut u16, height: &mut u16) {
     }
 }
 
+fn text_dimensions(text: &str) -> (u16, u16) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+
+    let mut max_width: usize = 0;
+    let mut height: usize = 0;
+    for line in text.split('\n') {
+        max_width = max_width.max(UnicodeWidthStr::width(line));
+        height += 1;
+    }
+
+    (
+        max_width.min(u16::MAX as usize) as u16,
+        height.min(u16::MAX as usize) as u16,
+    )
+}
+
+pub fn normalize_text_content(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut start = 0usize;
+    let mut end = lines.len();
+
+    while start < end && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+
+    if start >= end {
+        String::new()
+    } else if start == 0 && end == lines.len() {
+        text.to_string()
+    } else {
+        lines[start..end].join("\n")
+    }
+}
+
 /// Get the renderable text for a node (leaf content only).
 /// Returns `None` for container nodes.
 pub fn node_content(node: &UiNode) -> Option<String> {
     match node {
-        UiNode::Text { content } => Some(content.value().to_string()),
+        UiNode::Text { content } => Some(normalize_text_content(content.value())),
         UiNode::Button { label, .. } => Some(format!("[{}]", label)),
         UiNode::Input { value, .. } => Some(value.value().to_string()),
         UiNode::Checkbox { checked, .. } => Some(if *checked { "[x]" } else { "[ ]" }.to_string()),
@@ -798,6 +841,32 @@ mod tests {
 
         assert_eq!(w, 0);
         assert_eq!(h, 0);
+    }
+
+    #[test]
+    fn test_multiline_text_node_trims_edges() {
+        let (registry, root) = build_registry(UiNode::Text {
+            content: TextContent::Static("\nline 1\nline 2\n\n".into()),
+        });
+
+        let mut layout = LayoutMap::new();
+        let (w, h) = compute_layout(&registry, root, 0, 0, &mut layout);
+
+        assert_eq!(w, 6);
+        assert_eq!(h, 2);
+    }
+
+    #[test]
+    fn test_unicode_text_uses_display_width() {
+        let (registry, root) = build_registry(UiNode::Text {
+            content: TextContent::Static("▐▛███▜▌".into()),
+        });
+
+        let mut layout = LayoutMap::new();
+        let (w, h) = compute_layout(&registry, root, 0, 0, &mut layout);
+
+        assert_eq!(w, 7);
+        assert_eq!(h, 1);
     }
 
     #[test]
@@ -1011,6 +1080,14 @@ mod tests {
             content: TextContent::Static("hello".into()),
         };
         assert_eq!(node_content(&node).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_node_content_text_trims_edge_blank_lines() {
+        let node = UiNode::Text {
+            content: TextContent::Static("\n  a\n b\n\n".into()),
+        };
+        assert_eq!(node_content(&node).unwrap(), "  a\n b");
     }
 
     #[test]

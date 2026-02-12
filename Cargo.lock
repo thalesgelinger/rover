@@ -2203,6 +2203,7 @@ dependencies = [
  "crossterm",
  "mlua",
  "rover_ui",
+ "unicode-width",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@ use crate::terminal::Terminal;
 use rover_ui::platform::UiTarget;
 use rover_ui::ui::{NodeId, NodeStyle, Renderer, StyleOp, StyleSize, UiNode, UiRegistry};
 use std::io;
+use unicode_width::UnicodeWidthStr;
 
 /// TUI renderer — draws the UI node tree to the terminal.
 ///
@@ -18,8 +19,8 @@ use std::io;
 pub struct TuiRenderer {
     terminal: Terminal,
     layout: LayoutMap,
-    /// Previous rendered width per node, indexed by NodeId.
-    previous_widths: Vec<u16>,
+    /// Previous rendered size per node, indexed by NodeId.
+    previous_sizes: Vec<(u16, u16)>,
     /// Origin row offset — layout positions are relative (starting at 0),
     /// so we add origin_row to get absolute screen positions.
     origin_row: u16,
@@ -32,28 +33,28 @@ impl TuiRenderer {
         Ok(Self {
             terminal: Terminal::new()?,
             layout: LayoutMap::new(),
-            previous_widths: Vec::new(),
+            previous_sizes: Vec::new(),
             origin_row: 0,
             mounted_fullscreen: false,
         })
     }
 
     #[inline]
-    fn set_prev_width(&mut self, id: NodeId, width: u16) {
+    fn set_prev_size(&mut self, id: NodeId, width: u16, height: u16) {
         let idx = id.index();
-        if idx >= self.previous_widths.len() {
-            self.previous_widths.resize(idx + 1, 0);
+        if idx >= self.previous_sizes.len() {
+            self.previous_sizes.resize(idx + 1, (0, 0));
         }
-        self.previous_widths[idx] = width;
+        self.previous_sizes[idx] = (width, height);
     }
 
     #[inline]
-    fn get_prev_width(&self, id: NodeId) -> u16 {
+    fn get_prev_size(&self, id: NodeId) -> (u16, u16) {
         let idx = id.index();
-        if idx < self.previous_widths.len() {
-            self.previous_widths[idx]
+        if idx < self.previous_sizes.len() {
+            self.previous_sizes[idx]
         } else {
-            0
+            (0, 0)
         }
     }
 
@@ -66,31 +67,45 @@ impl TuiRenderer {
         inset: u16,
         fg_hex: Option<&str>,
     ) -> io::Result<()> {
-        let old_width = self.get_prev_width(id);
-        let new_width = content.len() as u16;
+        let (old_width, old_height) = self.get_prev_size(id);
+        let lines: Vec<&str> = if content.is_empty() {
+            Vec::new()
+        } else {
+            content.split('\n').collect()
+        };
+        let new_height = lines.len().min(u16::MAX as usize) as u16;
+        let new_width = lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(*line))
+            .max()
+            .unwrap_or(0)
+            .min(u16::MAX as usize) as u16;
         let abs_row = self.origin_row + rect.row + inset;
         let abs_col = rect.col + inset;
 
-        if old_width > new_width {
-            self.terminal.queue_clear_region(
-                abs_row,
-                abs_col + new_width,
-                old_width - new_width,
-            )?;
+        let clear_width = old_width.max(new_width);
+        let clear_height = old_height.max(new_height);
+        for dy in 0..clear_height {
+            self.terminal
+                .queue_clear_region(abs_row + dy, abs_col, clear_width)?;
         }
 
-        if let Some(fg) = fg_hex {
-            let style_prefix = ansi_prefix(None, Some(fg));
-            if style_prefix.is_empty() {
-                self.terminal.queue_write_at(abs_row, abs_col, content)?;
+        for (dy, line) in lines.iter().enumerate() {
+            let row = abs_row + dy as u16;
+            if let Some(fg) = fg_hex {
+                let style_prefix = ansi_prefix(None, Some(fg));
+                if style_prefix.is_empty() {
+                    self.terminal.queue_write_at(row, abs_col, line)?;
+                } else {
+                    let rendered = format!("{}{}\x1b[0m", style_prefix, line);
+                    self.terminal.queue_write_at(row, abs_col, &rendered)?;
+                }
             } else {
-                let line = format!("{}{}\x1b[0m", style_prefix, content);
-                self.terminal.queue_write_at(abs_row, abs_col, &line)?;
+                self.terminal.queue_write_at(row, abs_col, line)?;
             }
-        } else {
-            self.terminal.queue_write_at(abs_row, abs_col, content)?;
         }
-        self.set_prev_width(id, new_width);
+
+        self.set_prev_size(id, new_width, new_height);
         Ok(())
     }
 
@@ -525,8 +540,8 @@ impl Renderer for TuiRenderer {
     fn node_removed(&mut self, node_id: NodeId) {
         self.layout.remove(node_id);
         let idx = node_id.index();
-        if idx < self.previous_widths.len() {
-            self.previous_widths[idx] = 0;
+        if idx < self.previous_sizes.len() {
+            self.previous_sizes[idx] = (0, 0);
         }
     }
 
@@ -585,16 +600,16 @@ mod tests {
     use rover_ui::ui::TextContent;
 
     #[test]
-    fn test_prev_width_tracking() {
-        let mut widths: Vec<u16> = Vec::new();
+    fn test_prev_size_tracking() {
+        let mut sizes: Vec<(u16, u16)> = Vec::new();
         let id = NodeId::from_u32(3);
         let idx = id.index();
 
-        if idx >= widths.len() {
-            widths.resize(idx + 1, 0);
+        if idx >= sizes.len() {
+            sizes.resize(idx + 1, (0, 0));
         }
-        widths[idx] = 10;
-        assert_eq!(widths[idx], 10);
+        sizes[idx] = (10, 2);
+        assert_eq!(sizes[idx], (10, 2));
     }
 
     #[test]
