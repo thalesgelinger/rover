@@ -139,8 +139,21 @@ end)
 
 `items` can be a table or a signal/derived table.
 
-`key_fn` is optional (reserved for keyed reconciliation). `ru.each` is a transparent helper: it does not add a visual/container layer,
-its children are treated as direct children of the parent container.
+`ru.each` now reconciles rows by key:
+
+- if `key_fn` is provided, its return value is used as row identity
+- if omitted, index is used as fallback key
+- duplicate keys throw a runtime error
+
+For stable keys, rows are reused (render function is not re-called) and row values update through per-item signals.
+
+Behavior notes:
+
+- table items are exposed as reactive fields (`item.x`, `item.name`, etc.)
+- signal/derived items in arrays are passed through unchanged
+- for conditional UI, prefer `ru.when(item.flag, ...)` over plain Lua `if`
+
+`ru.each` is a transparent helper: it does not add a visual/container layer, its children are treated as direct children of the parent container.
 
 ## Tasks + Delay
 

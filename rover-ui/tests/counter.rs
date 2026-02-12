@@ -695,19 +695,18 @@ fn test_conditional_reactive_toggle() {
 /// Test rover.ui.each() with reactive list updates
 #[test]
 fn test_list_reactive_updates() {
-    let log_buffer = Rc::new(RefCell::new(Vec::new()));
-    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let renderer = StubRenderer::new();
     let mut app = App::new(renderer).unwrap();
 
     let script = r#"
         local ru = rover.ui
         _G.items = rover.signal({ "one", "two" })
+        _G.render_calls = 0
 
         function rover.render()
             return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
                 return ru.text { item }
-            end, function(item, index)
-                return item .. index
             end)
         end
     "#;
@@ -715,32 +714,194 @@ fn test_list_reactive_updates() {
     app.lua().load(script).exec().unwrap();
     app.tick().unwrap();
 
-    // Should see initial items
-    let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("one")));
-    assert!(log.iter().any(|line| line.contains("two")));
-    assert!(!log.iter().any(|line| line.contains("three")));
-
-    drop(log); // Release borrow
+    let initial_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(initial_calls, 2);
 
     // Update the list
     app.lua()
         .load(
             r#"
-        _G.items.val = { "one", "two", "three" }
+        _G.items.val = { "uno", "dos" }
     "#,
         )
         .exec()
         .unwrap();
 
-    log_buffer.borrow_mut().clear();
     app.tick().unwrap();
 
-    // Should see all three items
-    let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("one")));
-    assert!(log.iter().any(|line| line.contains("two")));
-    assert!(log.iter().any(|line| line.contains("three")));
+    let after_update_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(after_update_calls, 2);
+}
+
+#[test]
+fn test_list_keyed_reuse_avoids_render_fn_rerun() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({
+            { id = "a", x = 1 },
+            { id = "b", x = 3 },
+        })
+        _G.render_calls = 0
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
+                return ru.view {
+                    mod = ru.mod:position("absolute"):left(item.x):top(1),
+                    ru.text { item.id .. ":" .. index }
+                }
+            end, function(item)
+                return item.id
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let initial_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(initial_calls, 2);
+
+    app.lua()
+        .load(
+            r#"
+        _G.items.val = {
+            { id = "a", x = 10 },
+            { id = "b", x = 12 },
+        }
+    "#,
+        )
+        .exec()
+        .unwrap();
+    app.tick().unwrap();
+
+    let after_update_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(after_update_calls, 2);
+}
+
+#[test]
+fn test_list_fallback_index_reuses_rows() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({ "one", "two" })
+        _G.render_calls = 0
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
+                return ru.text { item .. ":" .. index }
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let initial_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(initial_calls, 2);
+
+    app.lua()
+        .load(
+            r#"
+        _G.items.val = { "uno", "dos" }
+    "#,
+        )
+        .exec()
+        .unwrap();
+    app.tick().unwrap();
+
+    let after_update_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(after_update_calls, 2);
+}
+
+#[test]
+fn test_list_duplicate_keys_error() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({
+            { id = "dup" },
+            { id = "dup" },
+        })
+
+        function rover.render()
+            return ru.each(_G.items, function(item)
+                return ru.text { item.id }
+            end, function(item)
+                return item.id
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    let err = app.tick().unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("Duplicate key"),
+        "unexpected error: {}",
+        err_str
+    );
+}
+
+#[test]
+fn test_list_table_field_signal_updates_on_reuse() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({
+            { id = "a", x = 1, y = 1 },
+            { id = "b", x = 2, y = 1 },
+        })
+        _G.render_calls = 0
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
+                if index.val == 1 then
+                    _G.first_x = item.x
+                end
+                return ru.text { item.id }
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let calls_before: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(calls_before, 2);
+
+    let first_x_before: i64 = app.lua().load("return _G.first_x.val").eval().unwrap();
+    assert_eq!(first_x_before, 1);
+
+    app.lua()
+        .load(
+            r#"
+        _G.items.val = {
+            { id = "a", x = 9, y = 1 },
+            { id = "b", x = 2, y = 1 },
+        }
+    "#,
+        )
+        .exec()
+        .unwrap();
+    app.tick().unwrap();
+
+    let calls_after: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(calls_after, 2);
+
+    let first_x_after: i64 = app.lua().load("return _G.first_x.val").eval().unwrap();
+    assert_eq!(first_x_after, 9);
 }
 
 /// Test that derived signals reactively update UI when the source signal changes.

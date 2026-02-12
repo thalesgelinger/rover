@@ -136,6 +136,8 @@ impl UiRegistry {
         // Remove from dirty set if present
         self.dirty_nodes.remove(&node_id);
         self.node_styles.remove(&node_id);
+        self.condition_state.remove(&node_id);
+        self.list_items.remove(&node_id);
 
         Some((node, effects))
     }
@@ -207,13 +209,11 @@ impl UiRegistry {
     }
 
     /// Remove the child of a conditional node
-    pub fn remove_condition_child(&mut self, node_id: NodeId) {
+    pub fn remove_condition_child(&mut self, node_id: NodeId) -> Option<NodeId> {
         if let Some(UiNode::Conditional { child, .. }) = self.nodes.get_mut(node_id) {
-            if let Some(child_id) = child.take() {
-                // Remove the child node
-                let _ = self.remove_node(child_id);
-            }
+            return child.take();
         }
+        None
     }
 
     // ===== List node methods =====

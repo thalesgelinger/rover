@@ -5,6 +5,7 @@ use super::style::NodeStyle;
 use crate::lua::{derived::LuaDerived, signal::LuaSignal};
 use mlua::{AnyUserData, Function, Table, UserData, UserDataMethods, Value};
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub struct UiTree {}
@@ -471,10 +472,20 @@ impl UserData for LuaUi {
                     };
 
                     if let Some(_id) = child_id {
-                        // Child mounted, remove it
-                        let mut registry = registry_for_callback.borrow_mut();
-                        registry.remove_condition_child(node_id);
-                        registry.mark_dirty(node_id);
+                        let removed_child_id = {
+                            let mut registry = registry_for_callback.borrow_mut();
+                            registry.remove_condition_child(node_id)
+                        };
+
+                        if let Some(child_to_remove) = removed_child_id {
+                            remove_node_subtree(
+                                lua,
+                                registry_for_callback.clone(),
+                                child_to_remove,
+                            )?;
+                        }
+
+                        registry_for_callback.borrow_mut().mark_dirty(node_id);
                     }
                 }
 
@@ -513,10 +524,9 @@ impl UserData for LuaUi {
         });
 
         // rover.ui.each(items, render_fn, key_fn?)
-        // key_fn is optional (reserved for keyed reconciliation)
         methods.add_function(
             "each",
-            |lua, (items, render_fn, _key_fn): (Value, Function, Value)| {
+            |lua, (items, render_fn, key_fn_value): (Value, Function, Value)| {
                 let registry_rc = get_registry_rc(lua)?;
                 let runtime = crate::lua::helpers::get_runtime(lua)?;
 
@@ -525,6 +535,10 @@ impl UserData for LuaUi {
 
                 // Store render function in registry
                 let render_fn_key = lua.create_registry_value(render_fn.clone())?;
+                let key_fn_key = match key_fn_value {
+                    Value::Function(f) => Some(lua.create_registry_value(f)?),
+                    _ => None,
+                };
 
                 // Determine if items is a signal/derived and extract the source info
                 let reactive_source = if let Value::UserData(ref ud) = items {
@@ -544,14 +558,17 @@ impl UserData for LuaUi {
                 // Clone for effect callback
                 let registry_for_callback = registry_rc.clone();
                 let render_fn_key_clone = render_fn_key;
+                let row_cache_for_callback =
+                    Rc::new(RefCell::new(HashMap::<String, ListRowState>::new()));
 
                 // Create the effect callback that updates the list when items change
                 // If reactive, read from the signal/derived to track dependencies
                 let effect_callback = lua.create_function(move |lua, ()| {
+                    let runtime = crate::lua::helpers::get_runtime(lua)?;
+
                     // Read the items (this tracks signal/derived dependencies)
                     let items_value = if let Some(source) = &reactive_source {
                         // Reactive source - read from it to track dependency
-                        let runtime = crate::lua::helpers::get_runtime(lua)?;
                         source.get_value(lua, &runtime)?
                     } else {
                         // Static items - use stored value
@@ -561,53 +578,87 @@ impl UserData for LuaUi {
                             .clone()
                     };
 
-                    // Extract items table
+                    // Extract items table (non-table means empty list)
                     let items_array = match &items_value {
-                        Value::Table(t) => t.clone(),
-                        _ => return Ok(()), // No items, nothing to do
+                        Value::Table(t) => Some(t.clone()),
+                        _ => None,
                     };
-
-                    // Get current children to remove them (immutable borrow, scoped to be dropped)
-                    let current_children = {
-                        let registry = registry_for_callback.borrow();
-                        registry.get_list_children(node_id).to_vec()
-                    };
-
-                    // Remove all current children (single mutable borrow)
-                    {
-                        let mut registry = registry_for_callback.borrow_mut();
-                        for child_id in current_children {
-                            registry.remove_node(child_id);
-                        }
-                    }
 
                     let mut new_children = Vec::new();
+                    let mut new_cache = HashMap::<String, ListRowState>::new();
+                    let mut seen_keys = HashSet::<String>::new();
+                    let mut old_cache = std::mem::take(&mut *row_cache_for_callback.borrow_mut());
 
-                    // Iterate through items and create new children
-                    let mut i = 1;
-                    while let Ok(item) = items_array.get::<Value>(i) {
-                        if item == Value::Nil {
-                            break;
+                    // Iterate through items and reconcile by key
+                    if let Some(items_array) = items_array {
+                        let len = items_array.raw_len();
+                        let mut i = 1usize;
+                        while i <= len {
+                            let item = items_array.get::<Value>(i)?;
+                            if item == Value::Nil {
+                                i += 1;
+                                continue;
+                            }
+
+                            let key = resolve_list_item_key(lua, key_fn_key.as_ref(), &item, i)?;
+                            if !seen_keys.insert(key.clone()) {
+                                return Err(mlua::Error::RuntimeError(format!(
+                                    "Duplicate key '{}' in rover.ui.each",
+                                    key
+                                )));
+                            }
+
+                            if let Some(mut row_state) = old_cache.remove(&key) {
+                                update_row_state(lua, &runtime, &mut row_state, item.clone(), i)?;
+                                new_children.push(row_state.child_id);
+                                new_cache.insert(key, row_state);
+                            } else {
+                                // Create new child
+                                let render_fn: Function =
+                                    lua.registry_value(&render_fn_key_clone).map_err(|e| {
+                                        mlua::Error::RuntimeError(format!(
+                                            "Failed to get render function: {}",
+                                            e
+                                        ))
+                                    })?;
+
+                                let (render_item, render_index, item_binding, index_signal) =
+                                    create_row_binding(lua, &runtime, item.clone(), i)?;
+
+                                let child_node: LuaNode =
+                                    render_fn.call((render_item, render_index)).map_err(|e| {
+                                        mlua::Error::RuntimeError(format!(
+                                            "Render function error: {}",
+                                            e
+                                        ))
+                                    })?;
+
+                                let row_state = ListRowState {
+                                    child_id: child_node.id(),
+                                    index_signal,
+                                    item_binding,
+                                };
+
+                                new_children.push(row_state.child_id);
+                                new_cache.insert(key, row_state);
+                            }
+
+                            i += 1;
                         }
-
-                        // Create new child (NO registry borrow held during this call)
-                        let render_fn: Function =
-                            lua.registry_value(&render_fn_key_clone).map_err(|e| {
-                                mlua::Error::RuntimeError(format!(
-                                    "Failed to get render function: {}",
-                                    e
-                                ))
-                            })?;
-
-                        let child_node: LuaNode = render_fn.call((item, i)).map_err(|e| {
-                            mlua::Error::RuntimeError(format!("Render function error: {}", e))
-                        })?;
-
-                        new_children.push(child_node.id());
-                        i += 1;
                     }
 
-                    // Update the list node's children (mutable borrow after all children created)
+                    // Remove old rows not present anymore
+                    for (_, stale_row) in old_cache {
+                        remove_node_subtree(
+                            lua,
+                            registry_for_callback.clone(),
+                            stale_row.child_id,
+                        )?;
+                    }
+
+                    *row_cache_for_callback.borrow_mut() = new_cache;
+
+                    // Update the list node's children after reconciliation
                     registry_for_callback
                         .borrow_mut()
                         .update_list_children(node_id, new_children);
@@ -738,6 +789,259 @@ impl ReactiveSource {
                 .map_err(|e| mlua::Error::RuntimeError(e.to_string())),
         }
     }
+}
+
+struct ListRowState {
+    child_id: super::node::NodeId,
+    index_signal: crate::signal::arena::SignalId,
+    item_binding: RowItemBinding,
+}
+
+enum RowItemBinding {
+    PassThrough,
+    Primitive {
+        signal_id: crate::signal::arena::SignalId,
+    },
+    TableFields {
+        proxy_table_key: mlua::RegistryKey,
+        field_signals: HashMap<String, crate::signal::arena::SignalId>,
+    },
+}
+
+fn resolve_list_item_key(
+    lua: &mlua::Lua,
+    key_fn_key: Option<&mlua::RegistryKey>,
+    item: &Value,
+    index: usize,
+) -> mlua::Result<String> {
+    let key_value = if let Some(key_fn_key) = key_fn_key {
+        let key_fn: Function = lua.registry_value(key_fn_key).map_err(|e| {
+            mlua::Error::RuntimeError(format!("Failed to get each key function: {}", e))
+        })?;
+        key_fn
+            .call::<Value>((item.clone(), index as i64))
+            .map_err(|e| mlua::Error::RuntimeError(format!("each key function error: {}", e)))?
+    } else {
+        Value::Integer(index as i64)
+    };
+
+    key_value_to_string(&key_value)
+}
+
+fn key_value_to_string(value: &Value) -> mlua::Result<String> {
+    match value {
+        Value::String(s) => Ok(format!("s:{}", s.to_str()?)),
+        Value::Integer(n) => Ok(format!("i:{}", n)),
+        Value::Number(n) => Ok(format!("n:{:016x}", n.to_bits())),
+        Value::Boolean(b) => Ok(format!("b:{}", b)),
+        Value::Nil => Err(mlua::Error::RuntimeError(
+            "each key function returned nil".to_string(),
+        )),
+        Value::UserData(ud) => {
+            if let Ok(signal) = ud.borrow::<LuaSignal>() {
+                Ok(format!("us:{}", signal.id.0))
+            } else if let Ok(derived) = ud.borrow::<LuaDerived>() {
+                Ok(format!("ud:{}", derived.id.0))
+            } else {
+                Err(mlua::Error::RuntimeError(
+                    "each key function returned unsupported userdata key".to_string(),
+                ))
+            }
+        }
+        _ => Err(mlua::Error::RuntimeError(
+            "each key function must return string/number/integer/boolean".to_string(),
+        )),
+    }
+}
+
+fn create_row_binding(
+    lua: &mlua::Lua,
+    runtime: &crate::SharedSignalRuntime,
+    item: Value,
+    index: usize,
+) -> mlua::Result<(Value, Value, RowItemBinding, crate::signal::arena::SignalId)> {
+    let index_signal = runtime.create_signal(crate::signal::SignalValue::Int(index as i64));
+    let index_value = Value::UserData(lua.create_userdata(LuaSignal::new(index_signal))?);
+
+    if let Value::UserData(ref ud) = item {
+        if ud.is::<LuaSignal>() || ud.is::<LuaDerived>() {
+            return Ok((item, index_value, RowItemBinding::PassThrough, index_signal));
+        }
+    }
+
+    if let Value::Table(table) = item {
+        let proxy = lua.create_table()?;
+        let mut field_signals = HashMap::new();
+
+        for pair in table.pairs::<Value, Value>() {
+            let (key, value) = pair?;
+            match &key {
+                Value::String(s) => {
+                    let field_name = s.to_str()?.to_string();
+                    let signal_value = crate::signal::SignalValue::from_lua(lua, value)?;
+                    let field_signal_id = runtime.create_signal(signal_value);
+                    let field_ud = lua.create_userdata(LuaSignal::new(field_signal_id))?;
+                    proxy.set(key, Value::UserData(field_ud))?;
+                    field_signals.insert(field_name, field_signal_id);
+                }
+                _ => {
+                    proxy.set(key, value)?;
+                }
+            }
+        }
+
+        let proxy_key = lua.create_registry_value(proxy.clone())?;
+        return Ok((
+            Value::Table(proxy),
+            index_value,
+            RowItemBinding::TableFields {
+                proxy_table_key: proxy_key,
+                field_signals,
+            },
+            index_signal,
+        ));
+    }
+
+    let signal_value = crate::signal::SignalValue::from_lua(lua, item)?;
+    let item_signal_id = runtime.create_signal(signal_value);
+    let item_value = Value::UserData(lua.create_userdata(LuaSignal::new(item_signal_id))?);
+
+    Ok((
+        item_value,
+        index_value,
+        RowItemBinding::Primitive {
+            signal_id: item_signal_id,
+        },
+        index_signal,
+    ))
+}
+
+fn update_row_state(
+    lua: &mlua::Lua,
+    runtime: &crate::SharedSignalRuntime,
+    row_state: &mut ListRowState,
+    item: Value,
+    index: usize,
+) -> mlua::Result<()> {
+    runtime.set_signal(
+        lua,
+        row_state.index_signal,
+        crate::signal::SignalValue::Int(index as i64),
+    );
+
+    match &mut row_state.item_binding {
+        RowItemBinding::PassThrough => Ok(()),
+        RowItemBinding::Primitive { signal_id } => {
+            let signal_value = crate::signal::SignalValue::from_lua(lua, item)?;
+            runtime.set_signal(lua, *signal_id, signal_value);
+            Ok(())
+        }
+        RowItemBinding::TableFields {
+            proxy_table_key,
+            field_signals,
+        } => {
+            let table = match item {
+                Value::Table(t) => t,
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "List item type changed from table to non-table for existing key"
+                            .to_string(),
+                    ));
+                }
+            };
+
+            let proxy_table: Table = lua.registry_value(proxy_table_key).map_err(|e| {
+                mlua::Error::RuntimeError(format!("Failed to load list item proxy table: {}", e))
+            })?;
+
+            let mut seen = HashSet::new();
+            for pair in table.pairs::<Value, Value>() {
+                let (key, value) = pair?;
+                if let Value::String(s) = &key {
+                    let field_name = s.to_str()?.to_string();
+                    seen.insert(field_name.clone());
+                    if let Some(signal_id) = field_signals.get(&field_name).copied() {
+                        let signal_value = crate::signal::SignalValue::from_lua(lua, value)?;
+                        runtime.set_signal(lua, signal_id, signal_value);
+                    } else {
+                        let signal_value = crate::signal::SignalValue::from_lua(lua, value)?;
+                        let signal_id = runtime.create_signal(signal_value);
+                        field_signals.insert(field_name.clone(), signal_id);
+                        let signal_ud = lua.create_userdata(LuaSignal::new(signal_id))?;
+                        proxy_table.set(key, Value::UserData(signal_ud))?;
+                    }
+                }
+            }
+
+            // Keys that disappeared become nil, preserving existing signal identity.
+            for (field_name, signal_id) in field_signals.iter() {
+                if !seen.contains(field_name) {
+                    runtime.set_signal(lua, *signal_id, crate::signal::SignalValue::Nil);
+                }
+            }
+
+            Ok(())
+        }
+    }
+}
+
+fn list_child_ids(node: &UiNode) -> Vec<super::node::NodeId> {
+    match node {
+        UiNode::Column { children }
+        | UiNode::Row { children }
+        | UiNode::View { children }
+        | UiNode::Stack { children }
+        | UiNode::List { children, .. } => children.clone(),
+        UiNode::Conditional { child, .. }
+        | UiNode::KeyArea { child, .. }
+        | UiNode::FullScreen { child, .. } => child.iter().copied().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn collect_subtree_postorder(
+    registry: &UiRegistry,
+    node_id: super::node::NodeId,
+    out: &mut Vec<super::node::NodeId>,
+) {
+    if let Some(node) = registry.get_node(node_id) {
+        for child_id in list_child_ids(node) {
+            collect_subtree_postorder(registry, child_id, out);
+        }
+    }
+    out.push(node_id);
+}
+
+fn remove_node_subtree(
+    lua: &mlua::Lua,
+    registry_rc: Rc<RefCell<UiRegistry>>,
+    root_id: super::node::NodeId,
+) -> mlua::Result<()> {
+    let runtime = crate::lua::helpers::get_runtime(lua)?;
+
+    let mut postorder = Vec::new();
+    {
+        let registry = registry_rc.borrow();
+        collect_subtree_postorder(&registry, root_id, &mut postorder);
+    }
+
+    let mut effects_to_dispose = Vec::new();
+    {
+        let mut registry = registry_rc.borrow_mut();
+        for node_id in postorder {
+            if let Some((_node, effects)) = registry.remove_node(node_id) {
+                effects_to_dispose.extend(effects);
+            }
+        }
+    }
+
+    for effect_id in effects_to_dispose {
+        runtime
+            .dispose_effect(lua, effect_id)
+            .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+    }
+
+    Ok(())
 }
 
 /// Create a reactive text node backed by a signal or derived

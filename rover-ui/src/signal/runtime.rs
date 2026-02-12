@@ -143,35 +143,13 @@ impl SignalRuntime {
 
         let subscriber = SubscriberId::Derived(id);
 
-        // Save parent's tracking state (if we're being called from within another effect/derived)
-        let (_parent_reads, parent_derived_reads, parent_stack_len) = {
-            let tracking = self.tracking.borrow();
-            let stack_len = tracking.stack.len();
-            if stack_len > 0 {
-                // We're being called from within another effect/derived - save its tracking state
-                (
-                    tracking.reads.clone(),
-                    tracking.derived_reads.clone(),
-                    stack_len,
-                )
-            } else {
-                (Vec::new(), Vec::new(), 0)
-            }
-        };
-
-        {
+        let (parent_reads, parent_derived_reads) = {
             let mut tracking = self.tracking.borrow_mut();
+            let parent_reads = std::mem::take(&mut tracking.reads);
+            let parent_derived_reads = std::mem::take(&mut tracking.derived_reads);
             tracking.stack.push(subscriber);
-            // Only clear if we're the top-level computation
-            if parent_stack_len == 0 {
-                tracking.reads.clear();
-                tracking.derived_reads.clear();
-            } else {
-                // We're nested - preserve the parent's reads for derived signals
-                tracking.reads.clear();
-                // DON'T clear derived_reads - parent effect's tracking needs to be preserved
-            }
-        }
+            (parent_reads, parent_derived_reads)
+        };
 
         let result = compute_fn
             .call::<Value>(())
@@ -183,31 +161,22 @@ impl SignalRuntime {
 
             let mut signal_deps: SmallVec<[SignalId; 4]> = SmallVec::new();
             let mut seen = HashSet::new();
-            for &signal in &tracking.reads {
+            for signal in std::mem::take(&mut tracking.reads) {
                 if seen.insert(signal.0) {
                     signal_deps.push(signal);
                 }
             }
-            tracking.reads.clear();
 
-            // For nested computation, the derived_reads contains both:
-            // 1. Parent's reads (which we preserved)
-            // 2. This derived's reads (added during computation)
-            // We need to extract only THIS derived's reads (those that aren't the parent's)
             let mut derived_deps: SmallVec<[DerivedId; 4]> = SmallVec::new();
             let mut seen_d = HashSet::new();
-            for &did in &tracking.derived_reads {
+            for did in std::mem::take(&mut tracking.derived_reads) {
                 if seen_d.insert(did.0) {
                     derived_deps.push(did);
                 }
             }
 
-            if parent_stack_len > 0 {
-                // Restore parent's tracking state
-                tracking.derived_reads = parent_derived_reads;
-            } else {
-                tracking.derived_reads.clear();
-            }
+            tracking.reads = parent_reads;
+            tracking.derived_reads = parent_derived_reads;
 
             (signal_deps, derived_deps)
         };
@@ -344,12 +313,13 @@ impl SignalRuntime {
 
         // Get and call callback
         let subscriber = SubscriberId::Effect(id);
-        {
+        let (parent_reads, parent_derived_reads) = {
             let mut tracking = self.tracking.borrow_mut();
+            let parent_reads = std::mem::take(&mut tracking.reads);
+            let parent_derived_reads = std::mem::take(&mut tracking.derived_reads);
             tracking.stack.push(subscriber);
-            tracking.reads.clear();
-            tracking.derived_reads.clear();
-        }
+            (parent_reads, parent_derived_reads)
+        };
 
         // Get the callback key and drop the borrow before calling Lua
         // (Lua call might create more effects, which would cause a RefCell panic)
@@ -368,21 +338,22 @@ impl SignalRuntime {
 
             let mut signal_deps: SmallVec<[SignalId; 4]> = SmallVec::new();
             let mut seen = HashSet::new();
-            for &signal in &tracking.reads {
+            for signal in std::mem::take(&mut tracking.reads) {
                 if seen.insert(signal.0) {
                     signal_deps.push(signal);
                 }
             }
-            tracking.reads.clear();
 
             let mut derived_deps: SmallVec<[DerivedId; 4]> = SmallVec::new();
             let mut seen_d = HashSet::new();
-            for &did in &tracking.derived_reads {
+            for did in std::mem::take(&mut tracking.derived_reads) {
                 if seen_d.insert(did.0) {
                     derived_deps.push(did);
                 }
             }
-            tracking.derived_reads.clear();
+
+            tracking.reads = parent_reads;
+            tracking.derived_reads = parent_derived_reads;
 
             (signal_deps, derived_deps)
         };
