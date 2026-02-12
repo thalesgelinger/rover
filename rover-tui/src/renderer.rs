@@ -21,6 +21,8 @@ pub struct TuiRenderer {
     layout: LayoutMap,
     /// Previous rendered size per node, indexed by NodeId.
     previous_sizes: Vec<(u16, u16)>,
+    /// Effective inherited background per node.
+    effective_bgs: Vec<Option<String>>,
     /// Origin row offset — layout positions are relative (starting at 0),
     /// so we add origin_row to get absolute screen positions.
     origin_row: u16,
@@ -34,6 +36,7 @@ impl TuiRenderer {
             terminal: Terminal::new()?,
             layout: LayoutMap::new(),
             previous_sizes: Vec::new(),
+            effective_bgs: Vec::new(),
             origin_row: 0,
             mounted_fullscreen: false,
         })
@@ -58,6 +61,25 @@ impl TuiRenderer {
         }
     }
 
+    #[inline]
+    fn set_effective_bg(&mut self, id: NodeId, bg: Option<&str>) {
+        let idx = id.index();
+        if idx >= self.effective_bgs.len() {
+            self.effective_bgs.resize(idx + 1, None);
+        }
+        self.effective_bgs[idx] = bg.map(str::to_string);
+    }
+
+    #[inline]
+    fn get_effective_bg(&self, id: NodeId) -> Option<String> {
+        let idx = id.index();
+        if idx < self.effective_bgs.len() {
+            self.effective_bgs[idx].clone()
+        } else {
+            None
+        }
+    }
+
     /// Render a single leaf node at its layout position + origin offset.
     fn render_leaf(
         &mut self,
@@ -66,6 +88,7 @@ impl TuiRenderer {
         rect: &LayoutRect,
         inset: u16,
         fg_hex: Option<&str>,
+        bg_hex: Option<&str>,
     ) -> io::Result<()> {
         let (old_width, old_height) = self.get_prev_size(id);
         let lines: Vec<&str> = if content.is_empty() {
@@ -86,22 +109,33 @@ impl TuiRenderer {
         let clear_width = old_width.max(new_width);
         let clear_height = old_height.max(new_height);
         for dy in 0..clear_height {
-            self.terminal
-                .queue_clear_region(abs_row + dy, abs_col, clear_width)?;
+            if clear_width == 0 {
+                continue;
+            }
+            if let Some(bg) = bg_hex {
+                let style_prefix = ansi_prefix(Some(bg), None);
+                if style_prefix.is_empty() {
+                    self.terminal
+                        .queue_clear_region(abs_row + dy, abs_col, clear_width)?;
+                } else {
+                    let spaces = " ".repeat(clear_width as usize);
+                    let line = format!("{}{}\x1b[0m", style_prefix, spaces);
+                    self.terminal.queue_write_at(abs_row + dy, abs_col, &line)?;
+                }
+            } else {
+                self.terminal
+                    .queue_clear_region(abs_row + dy, abs_col, clear_width)?;
+            }
         }
 
         for (dy, line) in lines.iter().enumerate() {
             let row = abs_row + dy as u16;
-            if let Some(fg) = fg_hex {
-                let style_prefix = ansi_prefix(None, Some(fg));
-                if style_prefix.is_empty() {
-                    self.terminal.queue_write_at(row, abs_col, line)?;
-                } else {
-                    let rendered = format!("{}{}\x1b[0m", style_prefix, line);
-                    self.terminal.queue_write_at(row, abs_col, &rendered)?;
-                }
-            } else {
+            let style_prefix = ansi_prefix(bg_hex, fg_hex);
+            if style_prefix.is_empty() {
                 self.terminal.queue_write_at(row, abs_col, line)?;
+            } else {
+                let rendered = format!("{}{}\x1b[0m", style_prefix, line);
+                self.terminal.queue_write_at(row, abs_col, &rendered)?;
             }
         }
 
@@ -230,11 +264,24 @@ impl TuiRenderer {
     }
 
     /// Walk the tree and render all leaf nodes.
-    fn render_tree(&mut self, registry: &UiRegistry, node_id: NodeId) -> io::Result<()> {
+    fn render_tree(
+        &mut self,
+        registry: &UiRegistry,
+        node_id: NodeId,
+        inherited_bg: Option<&str>,
+    ) -> io::Result<()> {
         let node = match registry.get_node(node_id) {
             Some(n) => n,
             None => return Ok(()),
         };
+
+        let mut effective_bg = inherited_bg.map(str::to_string);
+        if let Some(style) = registry.get_node_style(node_id)
+            && let Some(node_bg) = style_bg_color(style)
+        {
+            effective_bg = Some(node_bg.to_string());
+        }
+        self.set_effective_bg(node_id, effective_bg.as_deref());
 
         if let Some(content) = node_content(node) {
             if let Some(rect) = self.layout.get(node_id) {
@@ -249,7 +296,7 @@ impl TuiRenderer {
                 let fg = registry
                     .get_node_style(node_id)
                     .and_then(|style| style.color.as_deref());
-                self.render_leaf(node_id, &content, &rect, inset, fg)?;
+                self.render_leaf(node_id, &content, &rect, inset, fg, effective_bg.as_deref())?;
             }
             return Ok(());
         }
@@ -284,7 +331,7 @@ impl TuiRenderer {
         };
 
         for child_id in children {
-            self.render_tree(registry, child_id)?;
+            self.render_tree(registry, child_id, effective_bg.as_deref())?;
         }
 
         Ok(())
@@ -389,7 +436,7 @@ impl Renderer for TuiRenderer {
         }
 
         // Render all nodes
-        if let Err(e) = self.render_tree(registry, root) {
+        if let Err(e) = self.render_tree(registry, root, None) {
             eprintln!("rover-tui: render error: {}", e);
             return;
         }
@@ -457,7 +504,7 @@ impl Renderer for TuiRenderer {
                         return;
                     }
                 }
-                if let Err(e) = self.render_tree(registry, root) {
+                if let Err(e) = self.render_tree(registry, root, None) {
                     eprintln!("rover-tui: render error: {}", e);
                     return;
                 }
@@ -494,7 +541,9 @@ impl Renderer for TuiRenderer {
                 let fg = registry
                     .get_node_style(node_id)
                     .and_then(|style| style.color.as_deref());
-                if let Err(e) = self.render_leaf(node_id, &content, &rect, inset, fg) {
+                let bg = self.get_effective_bg(node_id);
+                if let Err(e) = self.render_leaf(node_id, &content, &rect, inset, fg, bg.as_deref())
+                {
                     eprintln!("rover-tui: update error for node {:?}: {}", node_id, e);
                 }
             }
@@ -527,7 +576,7 @@ impl Renderer for TuiRenderer {
             return;
         }
 
-        if let Err(e) = self.render_tree(registry, root) {
+        if let Err(e) = self.render_tree(registry, root, None) {
             eprintln!("rover-tui: render error: {}", e);
             return;
         }
@@ -542,6 +591,9 @@ impl Renderer for TuiRenderer {
         let idx = node_id.index();
         if idx < self.previous_sizes.len() {
             self.previous_sizes[idx] = (0, 0);
+        }
+        if idx < self.effective_bgs.len() {
+            self.effective_bgs[idx] = None;
         }
     }
 
@@ -581,6 +633,16 @@ fn ansi_prefix(bg_hex: Option<&str>, fg_hex: Option<&str>) -> String {
     } else {
         format!("\x1b[{}m", parts.join(";"))
     }
+}
+
+fn style_bg_color(style: &NodeStyle) -> Option<&str> {
+    let mut bg: Option<&str> = None;
+    for op in &style.ops {
+        if let StyleOp::BgColor(color) = op {
+            bg = Some(color.as_str());
+        }
+    }
+    bg
 }
 
 fn inset_rect(rect: &mut LayoutRect, amount: u16) {
