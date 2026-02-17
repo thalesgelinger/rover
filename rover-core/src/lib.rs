@@ -7,6 +7,7 @@ pub mod http;
 pub mod io;
 pub mod server;
 pub mod template;
+pub mod ws_client;
 
 use html::create_html_module;
 use http::create_http_module;
@@ -131,6 +132,14 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     let http_module = http::create_http_module(&lua)?;
     rover.set("http", http_module)?;
 
+    // Add WebSocket client module
+    rover.set(
+        "ws_client",
+        lua.create_function(|lua, (url, opts): (String, Option<Table>)| {
+            ws_client::create_ws_client(lua, url, opts)
+        })?,
+    )?;
+
     // Add rover.html global templating function
     let html_module = create_html_module(&lua)?;
     rover.set("html", html_module)?;
@@ -210,6 +219,14 @@ pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     // Add HTTP client module
     let http_module = create_http_module(lua)?;
     rover.set("http", http_module)?;
+
+    // Add WebSocket client module
+    rover.set(
+        "ws_client",
+        lua.create_function(|lua, (url, opts): (String, Option<Table>)| {
+            ws_client::create_ws_client(lua, url, opts)
+        })?,
+    )?;
 
     // Add rover.html global templating function
     let html_module = create_html_module(lua)?;
@@ -389,6 +406,14 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     // Add HTTP client module
     let http_module = http::create_http_module(&lua)?;
     rover.set("http", http_module)?;
+
+    // Add WebSocket client module
+    rover.set(
+        "ws_client",
+        lua.create_function(|lua, (url, opts): (String, Option<Table>)| {
+            ws_client::create_ws_client(lua, url, opts)
+        })?,
+    )?;
 
     // Add rover.html global templating function
     let html_module = create_html_module(&lua)?;

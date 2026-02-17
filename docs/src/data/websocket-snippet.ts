@@ -1,16 +1,16 @@
 export default `local api = rover.server {}
 
-function api.chat.ws(ctx, ws)
-    function ws.on.open()
-        print("connected")
+function api.chat.ws(ws)
+    function ws.join(ctx)
+        ws.send.connected { message = "connected" }
+        return {}
     end
 
-    function ws.on.message(msg)
-        ws.send("echo: " .. msg)
+    function ws.listen.echo(msg, ctx, state)
+        ws.send.echo(msg)
     end
 
-    function ws.on.close()
-        print("bye")
+    function ws.leave(state)
     end
 end
 

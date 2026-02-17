@@ -21,6 +21,8 @@ curl = "0.4"
 urlencoding = "2.1"
 colored = "2.2"
 tempfile = "3.8"
+tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+url = "2.5"
 
 [dev-dependencies]
 
