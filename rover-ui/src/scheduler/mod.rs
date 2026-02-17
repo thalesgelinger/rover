@@ -61,6 +61,14 @@ impl Scheduler {
         let id = self.next_id;
         self.next_id += 1;
 
+        self.schedule_delay_with_id(id, thread, delay_ms)
+    }
+
+    /// Schedule a coroutine to resume after a delay using a fixed ID
+    pub fn schedule_delay_with_id(&mut self, id: usize, thread: LuaThread, delay_ms: u64) -> usize {
+        // Replace any existing pending entry for this ID
+        self.pending.remove(&id);
+
         let wake_time = Instant::now() + std::time::Duration::from_millis(delay_ms);
         self.timers.schedule(id, wake_time);
         self.pending.insert(id, PendingCoroutine { thread });

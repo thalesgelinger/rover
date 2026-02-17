@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use rover_db::load_schemas_from_dir;
+use rover_parser::db_intent::{DbSchema, analyze_db_intent, db_warnings_from_intent};
 use rover_parser::{AnalyzeOptions, ParsingError, SemanticModel, analyze_with_options};
 use std::fs;
 use std::path::PathBuf;
@@ -20,13 +22,17 @@ pub fn run_check(options: CheckOptions) -> Result<()> {
     let code = fs::read_to_string(&options.file)
         .with_context(|| format!("Failed to read file: {}", options.file.display()))?;
 
+    let db_schema = load_db_schema();
+    let db_intent = analyze_db_intent(&code);
+
     // Analyze the code with type inference enabled
-    let model = analyze_with_options(
+    let mut model = analyze_with_options(
         &code,
         AnalyzeOptions {
             type_inference: true,
         },
     );
+    model.warnings = db_warnings_from_intent(&db_intent, &db_schema);
 
     // Display results
     match options.format {
@@ -48,13 +54,17 @@ pub fn pre_run_check(file: &PathBuf) -> Result<bool> {
     let code = fs::read_to_string(file)
         .with_context(|| format!("Failed to read file: {}", file.display()))?;
 
+    let db_schema = load_db_schema();
+    let db_intent = analyze_db_intent(&code);
+
     // Analyze the code with type inference enabled
-    let model = analyze_with_options(
+    let mut model = analyze_with_options(
         &code,
         AnalyzeOptions {
             type_inference: true,
         },
     );
+    model.warnings = db_warnings_from_intent(&db_intent, &db_schema);
 
     let file_display = file.display().to_string();
 
@@ -79,7 +89,39 @@ pub fn pre_run_check(file: &PathBuf) -> Result<bool> {
         return Ok(false);
     }
 
+    if !model.warnings.is_empty() {
+        println!("{}", "─".repeat(60).dimmed());
+        println!(
+            "{} {}",
+            "Rover Check:".bold().cyan(),
+            format!("found {} warning(s)", model.warnings.len()).yellow()
+        );
+        println!("{}", "─".repeat(60).dimmed());
+
+        for warning in &model.warnings {
+            display_warning_compact(warning, &file_display);
+        }
+
+        println!("{}", "─".repeat(60).dimmed());
+        println!();
+    }
+
     Ok(true)
+}
+
+fn load_db_schema() -> DbSchema {
+    let schemas_dir = PathBuf::from("db/schemas");
+    let Ok(schemas) = load_schemas_from_dir(&schemas_dir) else {
+        return DbSchema::default();
+    };
+    let table_fields = schemas
+        .into_iter()
+        .map(|(name, def)| {
+            let fields = def.fields.into_iter().map(|field| field.name).collect();
+            (name, fields)
+        })
+        .collect();
+    DbSchema::from_table_fields(table_fields)
 }
 
 fn display_error_compact(error: &ParsingError, file: &str) {
@@ -107,13 +149,33 @@ fn display_error_compact(error: &ParsingError, file: &str) {
     }
 }
 
+fn display_warning_compact(warning: &ParsingError, file: &str) {
+    if let Some(range) = &warning.range {
+        println!(
+            "  {} {}:{}:{} - {}",
+            "!".yellow(),
+            file.bright_white(),
+            format!("{}", range.start.line + 1).yellow(),
+            format!("{}", range.start.column + 1).yellow(),
+            warning.message.white()
+        );
+    } else {
+        println!(
+            "  {} {} - {}",
+            "!".yellow(),
+            file.bright_white(),
+            warning.message.white()
+        );
+    }
+}
+
 fn display_pretty(model: &SemanticModel, file: &PathBuf, verbose: bool) -> Result<()> {
     println!("\n{}", "Analyzing Rover code...".bold().cyan());
     println!("{}", "=".repeat(60).cyan());
 
     let file_display = file.display().to_string();
 
-    if model.errors.is_empty() && model.type_errors.is_empty() {
+    if model.errors.is_empty() && model.type_errors.is_empty() && model.warnings.is_empty() {
         println!("\n{}", "✓ No errors found!".green().bold());
 
         if verbose {
@@ -125,23 +187,40 @@ fn display_pretty(model: &SemanticModel, file: &PathBuf, verbose: bool) -> Resul
 
     let total_errors = model.errors.len() + model.type_errors.len();
 
-    // Print errors
-    println!(
-        "\n{} {} found:\n",
-        "✗".red().bold(),
-        if total_errors == 1 {
-            "error".red()
-        } else {
-            format!("{} errors", total_errors).red()
-        }
-    );
+    if total_errors > 0 {
+        println!(
+            "\n{} {} found:\n",
+            "✗".red().bold(),
+            if total_errors == 1 {
+                "error".red()
+            } else {
+                format!("{} errors", total_errors).red()
+            }
+        );
 
-    for error in &model.errors {
-        display_error(error, &file_display);
+        for error in &model.errors {
+            display_error(error, &file_display);
+        }
+
+        for error in &model.type_errors {
+            display_type_error(error, &file_display);
+        }
     }
 
-    for error in &model.type_errors {
-        display_type_error(error, &file_display);
+    if !model.warnings.is_empty() {
+        println!(
+            "\n{} {} found:\n",
+            "!".yellow().bold(),
+            if model.warnings.len() == 1 {
+                "warning".yellow()
+            } else {
+                format!("{} warnings", model.warnings.len()).yellow()
+            }
+        );
+
+        for warning in &model.warnings {
+            display_warning(warning, &file_display);
+        }
     }
 
     if verbose {
@@ -173,6 +252,25 @@ fn display_error(error: &ParsingError, file: &str) {
         println!("  {} {}", "help:".cyan().bold(), suggestion.cyan());
     }
 
+    println!();
+}
+
+fn display_warning(warning: &ParsingError, file: &str) {
+    let warning_marker = "warning:".yellow().bold();
+
+    if let Some(range) = &warning.range {
+        println!(
+            "{} {}:{}:{}",
+            warning_marker,
+            file.bright_white(),
+            format!("{}", range.start.line + 1).yellow(),
+            format!("{}", range.start.column + 1).yellow()
+        );
+    } else {
+        println!("{} {}", warning_marker, file.bright_white());
+    }
+
+    println!("  {}", warning.message.white());
     println!();
 }
 
@@ -335,6 +433,35 @@ fn display_json(model: &SemanticModel, file: &PathBuf) -> Result<()> {
         })
         .collect();
 
+    let warnings: Vec<_> = model
+        .warnings
+        .iter()
+        .map(|e| {
+            let mut warn = json!({
+                "message": e.message,
+            });
+
+            if let Some(range) = &e.range {
+                warn["range"] = json!({
+                    "start": {
+                        "line": range.start.line,
+                        "column": range.start.column,
+                    },
+                    "end": {
+                        "line": range.end.line,
+                        "column": range.end.column,
+                    }
+                });
+            }
+
+            if let Some(func) = &e.function_name {
+                warn["function"] = json!(func);
+            }
+
+            warn
+        })
+        .collect();
+
     let symbols: Vec<_> = model
         .symbol_specs
         .iter()
@@ -367,6 +494,8 @@ fn display_json(model: &SemanticModel, file: &PathBuf) -> Result<()> {
         "file": file.display().to_string(),
         "errors": errors,
         "error_count": model.errors.len(),
+        "warnings": warnings,
+        "warning_count": model.warnings.len(),
         "server_found": model.server.is_some(),
         "routes_count": model.server.as_ref().map_or(0, |s| s.routes.len()),
         "functions_count": model.functions.len(),

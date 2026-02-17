@@ -55,11 +55,13 @@ Define schema to generate query helpers:
 
 ```lua
 rover.db.schema.users {
-  id = rover.guard:integer():primary():auto(),
-  email = rover.guard:string():unique(),
-  status = rover.guard:string():default("active")
+  id = rover.db.guard:integer():primary():auto(),
+  email = rover.db.guard:string():unique(),
+  status = rover.db.guard:string():default("active")
 }
 ```
+
+Use `rover.db.guard` for database schemas — it extends `rover.guard` with schema modifiers like `:primary()`, `:auto()`, `:unique()`, `:references()`, and `:index()`. `rover.guard` is base validation only.
 
 ## Next Steps
 

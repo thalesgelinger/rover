@@ -2,6 +2,7 @@ use anyhow::Result;
 use colored::Colorize;
 use rover_core::register_extra_modules;
 use rover_db::run_pending_migrations;
+use rover_tui::{TuiRenderer, TuiRunner};
 use rover_ui::app::App;
 use rover_ui::ui::StubRenderer;
 use std::io::BufRead;
@@ -9,7 +10,6 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::build::{BuildOptions, run_build};
-use crate::check;
 use crate::cli::Platform;
 
 pub fn run_file(
@@ -18,12 +18,12 @@ pub fn run_file(
     platform: Option<Platform>,
     args: Vec<String>,
 ) -> Result<()> {
-    check::pre_run_check(&file)?;
     pre_run_db_analysis(&file, yolo)?;
 
     match platform {
         None => rover_core::run(file.to_str().unwrap(), &args, false),
         Some(Platform::Stub) => run_with_stub(file),
+        Some(Platform::Tui) => run_with_tui(file),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
@@ -43,6 +43,24 @@ fn run_with_stub(file: PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn run_with_tui(file: PathBuf) -> Result<()> {
+    let renderer =
+        TuiRenderer::new().map_err(|e| anyhow::anyhow!("Failed to create TUI renderer: {}", e))?;
+    let app = App::new(renderer).map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
+    let mut runner = TuiRunner::new(app);
+    register_extra_modules(runner.app().lua())?;
+    let content = std::fs::read_to_string(&file)
+        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+    runner
+        .app_mut()
+        .run_script(&content)
+        .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
+    runner
+        .run()
+        .map_err(|e| anyhow::anyhow!("TUI error: {}", e))?;
+    Ok(())
+}
+
 pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
     use rover_db::TableStatus;
     use rover_parser::db_intent::analyze_db_intent;
@@ -57,9 +75,11 @@ pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("\n{}", "🔍 Analyzing code intent...".cyan());
+    // Check which tables have at least one migration
+    let tables_with_migrations = get_tables_with_migrations(&migrations_dir)?;
 
-    let schemas = rover_db::load_schemas_from_dir(&schemas_dir).unwrap_or_default();
+    let schemas = rover_db::load_schemas_from_dir(&schemas_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to load schemas: {}", e))?;
     let comparison = rover_db::compare_intent_with_schemas(&intent, &schemas);
 
     let mut needs_migration = false;
@@ -122,6 +142,11 @@ pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
                             format!("✓ Created db/migrations/{}", mig_name).green()
                         );
                         needs_migration = true;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Aborted - migration needed for '{}' but not created. Generate migration manually or say yes to create.",
+                            diff.table_name
+                        ));
                     }
                 } else {
                     return Err(anyhow::anyhow!(
@@ -187,10 +212,41 @@ pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
                 }
             }
             TableStatus::Exists => {
-                println!(
-                    "\n{}",
-                    format!("✅ Table '{}' - schema up to date", diff.table_name).green()
-                );
+                // Check if there's at least one migration for this table
+                if !tables_with_migrations.contains(&diff.table_name) {
+                    println!(
+                        "   {}",
+                        format!("⚠️  No migration found for '{}'", diff.table_name).yellow()
+                    );
+
+                    let create_migration = confirm_or_yolo(
+                        yolo_mode,
+                        &format!("   Create migration for '{}'?", diff.table_name),
+                    )?;
+
+                    if create_migration {
+                        let table = intent.tables.get(&diff.table_name).unwrap();
+                        let fields: Vec<_> = table.fields.values().cloned().collect();
+                        let mig_content =
+                            rover_db::generate_migration_content(&diff.table_name, &fields, true);
+                        let mig_name = rover_db::write_migration_file(
+                            &migrations_dir,
+                            &format!("create_{}", diff.table_name),
+                            &mig_content,
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to write migration: {}", e))?;
+                        println!(
+                            "   {}",
+                            format!("✓ Created db/migrations/{}", mig_name).green()
+                        );
+                        needs_migration = true;
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "Aborted - migration needed for '{}' but not created. Generate migration manually or say yes to create.",
+                            diff.table_name
+                        ));
+                    }
+                }
             }
         }
     }
@@ -214,6 +270,57 @@ pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
 
 fn confirm_or_yolo(yolo_mode: bool, msg: &str) -> Result<bool> {
     if yolo_mode { Ok(true) } else { prompt_yn(msg) }
+}
+
+/// Get set of table names that have at least one migration file
+fn get_tables_with_migrations(
+    migrations_dir: &PathBuf,
+) -> Result<std::collections::HashSet<String>> {
+    let mut tables = std::collections::HashSet::new();
+
+    if !migrations_dir.exists() {
+        return Ok(tables);
+    }
+
+    let entries = std::fs::read_dir(migrations_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to read migrations dir: {}", e))?;
+
+    for entry in entries.flatten() {
+        if let Ok(name) = entry.file_name().into_string() {
+            if name.ends_with(".lua") {
+                // Extract table name from migration filename
+                // Format: 001_create_users.lua -> users
+                // Format: 002_add_users_fields.lua -> users
+                if let Some(table_name) = extract_table_from_migration(&name) {
+                    tables.insert(table_name);
+                }
+            }
+        }
+    }
+
+    Ok(tables)
+}
+
+/// Extract table name from migration filename
+fn extract_table_from_migration(filename: &str) -> Option<String> {
+    // Remove .lua extension
+    let name = filename.strip_suffix(".lua")?;
+
+    // Remove number prefix
+    let name = name.split('_').skip(1).collect::<Vec<_>>().join("_");
+
+    // Handle patterns like:
+    // - create_users -> users
+    // - add_users_fields -> users
+    // - users -> users
+    let table_name = name
+        .replace("create_", "")
+        .replace("add_", "")
+        .split('_')
+        .next()?
+        .to_string();
+
+    Some(table_name)
 }
 
 fn run_pending_migrations_or_exit(db_path: &str, migrations_dir: &PathBuf) -> Result<()> {

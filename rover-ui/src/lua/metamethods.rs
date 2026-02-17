@@ -254,6 +254,38 @@ fn perform_le(lhs: Value, rhs: Value) -> Result<Value> {
     }
 }
 
+/// Get the length of a value (for __len metamethod)
+fn perform_len(value: Value) -> Result<Value> {
+    match value {
+        Value::String(s) => Ok(Value::Integer(s.to_str()?.len() as i64)),
+        Value::Table(t) => {
+            // Use Lua's length operator on the table
+            // Note: For tables with holes, this may return the first border index
+            let len = t.raw_len();
+            Ok(Value::Integer(len as i64))
+        }
+        _ => Err(mlua::Error::RuntimeError(format!(
+            "Cannot get length of {}",
+            value.type_name()
+        ))),
+    }
+}
+
+/// Create a derived signal from a length operation
+fn create_len_derived(lua: &Lua, operand: Value) -> Result<LuaDerived> {
+    let compute_fn = lua.create_function(move |lua, ()| {
+        let val = get_signal_value(lua, operand.clone())?;
+        perform_len(val)
+    })?;
+
+    let key = lua.create_registry_value(compute_fn)?;
+
+    let runtime = get_runtime(lua)?;
+
+    let id = runtime.create_derived(key);
+    Ok(LuaDerived::new(id))
+}
+
 /// Generic metamethods for reactive types (Signal and Derived)
 pub fn add_reactive_metamethods<T, M>(methods: &mut M)
 where
@@ -288,6 +320,11 @@ where
     // Unary
     methods.add_meta_method(MetaMethod::Unm, |lua, this, ()| {
         create_unary_op_derived(lua, this.to_value(lua)?, "unm")
+    });
+
+    // Length
+    methods.add_meta_method(MetaMethod::Len, |lua, this, ()| {
+        create_len_derived(lua, this.to_value(lua)?)
     });
 
     // Concatenation

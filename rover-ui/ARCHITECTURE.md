@@ -1,5 +1,15 @@
 # Rover UI Reactivity System
 
+## Namespace Contract
+
+- `rover.ui`: portable primitives intended to work across TUI/web/mobile.
+- `rover.tui`: TUI module namespace for terminal-only components (`select`, `tab_select`, `scroll_box`, `textarea`).
+
+Guard behavior:
+
+- Requiring `rover.tui` on non-`tui` target throws runtime error.
+- TUI-only APIs are unavailable outside the `rover.tui` namespace.
+
 ## Architecture Overview
 
 ```

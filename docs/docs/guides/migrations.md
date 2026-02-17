@@ -6,6 +6,8 @@ sidebar_position: 6
 
 Rover provides a migration DSL under `migration` (alias of `rover.db.migration`).
 
+Migrations are the only path that changes the database. Schema DSL + intent only generate files; use `rover db` for manual changes.
+
 ## Migration File Shape
 
 You can define either:
@@ -18,9 +20,9 @@ You can define either:
 ```lua
 function change()
   migration.users:create({
-    id = rover.guard:integer():primary():auto(),
-    email = rover.guard:string():unique(),
-    created_at = rover.guard:string()
+    id = rover.db.guard:integer():primary():auto(),
+    email = rover.db.guard:string():unique(),
+    created_at = rover.db.guard:string()
   })
 end
 ```
@@ -29,7 +31,7 @@ end
 
 ```lua
 function up()
-  migration.users:add_column("name", rover.guard:string())
+  migration.users:add_column("name", rover.db.guard:string())
 end
 
 function down()

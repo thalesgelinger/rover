@@ -1,4 +1,5 @@
 use super::node::{NodeArena, NodeId, UiNode};
+use super::style::NodeStyle;
 
 use super::super::signal::graph::EffectId;
 #[cfg(test)]
@@ -22,6 +23,8 @@ pub struct UiRegistry {
     condition_state: HashMap<NodeId, bool>,
     /// List node items tracking
     list_items: HashMap<NodeId, Value>,
+    /// Resolved style per node
+    node_styles: HashMap<NodeId, NodeStyle>,
 }
 
 impl UiRegistry {
@@ -35,6 +38,7 @@ impl UiRegistry {
             on_destroy_callbacks: Vec::new(),
             condition_state: HashMap::new(),
             list_items: HashMap::new(),
+            node_styles: HashMap::new(),
         }
     }
 
@@ -97,13 +101,22 @@ impl UiRegistry {
 
     /// Update text content of a node and mark it dirty
     /// Returns true if the node was found and updated
+    ///
+    /// This handles both `UiNode::Text` and `UiNode::Input` (which stores its value as `TextContent`)
     pub fn update_text_content(&mut self, node_id: NodeId, new_value: String) -> bool {
-        if let Some(UiNode::Text { content }) = self.nodes.get_mut(node_id) {
-            content.update(new_value);
-            self.mark_dirty(node_id);
-            true
-        } else {
-            false
+        let node = self.nodes.get_mut(node_id);
+        match node {
+            Some(UiNode::Text { content }) => {
+                content.update(new_value);
+                self.mark_dirty(node_id);
+                true
+            }
+            Some(UiNode::Input { value, .. }) => {
+                value.update(new_value);
+                self.mark_dirty(node_id);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -122,8 +135,29 @@ impl UiRegistry {
 
         // Remove from dirty set if present
         self.dirty_nodes.remove(&node_id);
+        self.node_styles.remove(&node_id);
+        self.condition_state.remove(&node_id);
+        self.list_items.remove(&node_id);
 
         Some((node, effects))
+    }
+
+    /// Get style for a node, if present.
+    pub fn get_node_style(&self, node_id: NodeId) -> Option<&NodeStyle> {
+        self.node_styles.get(&node_id)
+    }
+
+    /// Set style for a node and mark it dirty if changed.
+    pub fn set_node_style(&mut self, node_id: NodeId, style: NodeStyle) {
+        let changed = self
+            .node_styles
+            .get(&node_id)
+            .map(|existing| existing != &style)
+            .unwrap_or(true);
+        self.node_styles.insert(node_id, style);
+        if changed {
+            self.mark_dirty(node_id);
+        }
     }
 
     /// Take all dirty nodes (clears the dirty set and returns it)
@@ -175,13 +209,11 @@ impl UiRegistry {
     }
 
     /// Remove the child of a conditional node
-    pub fn remove_condition_child(&mut self, node_id: NodeId) {
+    pub fn remove_condition_child(&mut self, node_id: NodeId) -> Option<NodeId> {
         if let Some(UiNode::Conditional { child, .. }) = self.nodes.get_mut(node_id) {
-            if let Some(child_id) = child.take() {
-                // Remove the child node
-                let _ = self.remove_node(child_id);
-            }
+            return child.take();
         }
+        None
     }
 
     // ===== List node methods =====
@@ -264,6 +296,7 @@ mod tests {
             content: TextContent::Reactive {
                 current_value: "Test".to_string(),
                 effect_id: EffectId(0),
+                signal_id: None,
             },
         };
         let node_id = registry.create_node(node);
@@ -281,6 +314,7 @@ mod tests {
             content: TextContent::Reactive {
                 current_value: "Old".to_string(),
                 effect_id: EffectId(0),
+                signal_id: None,
             },
         };
         let node_id = registry.create_node(node);
@@ -322,6 +356,7 @@ mod tests {
             content: TextContent::Reactive {
                 current_value: "Test".to_string(),
                 effect_id: EffectId(0),
+                signal_id: None,
             },
         };
         let node_id = registry.create_node(node);

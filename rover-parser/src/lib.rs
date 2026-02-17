@@ -852,7 +852,7 @@ fn detect_features_recursive(node: &tree_sitter::Node, code: &str, features: &mu
             // Check for function rover.render() ... end
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "function_name" {
+                if matches!(child.kind(), "function_name" | "dot_index_expression") {
                     let name = &code[child.start_byte()..child.end_byte()];
                     if name == "rover.render" {
                         features.ui = true;

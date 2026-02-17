@@ -1,0 +1,10 @@
+[package]
+name = "rover_tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rover_ui = { path = "../rover-ui" }
+crossterm = "0.28"
+mlua = { version = "0.11.5", features = ["anyhow", "vendored", "luajit52"] }
+unicode-width = "0.2"

@@ -1,12 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use rover_db::load_schemas_from_dir;
 use rover_parser::{
     FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, LuaType, MemberKind, Route,
     SemanticModel, SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata,
-    analyze_with_options, lookup_spec,
+    analyze_with_options,
+    db_intent::{DbIntent, DbSchema, analyze_db_intent, db_warnings_from_intent},
+    lookup_spec,
 };
 
 // Alias to avoid collision with rover_parser::SymbolKind
@@ -17,6 +21,23 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 const DEBOUNCE_MS: u64 = 75;
+
+const DB_BY_OPERATORS: &[&str] = &[
+    "equals",
+    "not_equals",
+    "bigger_than",
+    "smaller_than",
+    "bigger_than_or_equals",
+    "smaller_than_or_equals",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "between",
+    "in_list",
+    "not_in_list",
+    "is_null",
+    "is_not_null",
+];
 
 // Semantic token types - order matters (index used in token data)
 const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
@@ -47,6 +68,8 @@ const SEMANTIC_TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
 struct DocumentState {
     text: String,
     model: SemanticModel,
+    db_schema: DbSchema,
+    db_intent: DbIntent,
 }
 
 #[derive(Debug)]
@@ -103,12 +126,15 @@ impl Backend {
 
             // Perform the actual analysis with type inference
             use rover_parser::AnalyzeOptions;
-            let model = analyze_with_options(
+            let db_schema = load_db_schema();
+            let db_intent = analyze_db_intent(&text);
+            let mut model = analyze_with_options(
                 &text,
                 AnalyzeOptions {
                     type_inference: true,
                 },
             );
+            model.warnings = db_warnings_from_intent(&db_intent, &db_schema);
             {
                 let mut docs = documents.write().await;
                 docs.insert(
@@ -116,6 +142,8 @@ impl Backend {
                     DocumentState {
                         text: text.clone(),
                         model: model.clone(),
+                        db_schema,
+                        db_intent,
                     },
                 );
             }
@@ -131,12 +159,15 @@ impl Backend {
     /// Update document immediately without debouncing (for did_open)
     async fn update_document_immediate(&self, uri: Url, text: String) {
         use rover_parser::AnalyzeOptions;
-        let model = analyze_with_options(
+        let db_schema = load_db_schema();
+        let db_intent = analyze_db_intent(&text);
+        let mut model = analyze_with_options(
             &text,
             AnalyzeOptions {
                 type_inference: true,
             },
         );
+        model.warnings = db_warnings_from_intent(&db_intent, &db_schema);
         {
             let mut docs = self.documents.write().await;
             docs.insert(
@@ -144,6 +175,8 @@ impl Backend {
                 DocumentState {
                     text: text.clone(),
                     model: model.clone(),
+                    db_schema,
+                    db_intent,
                 },
             );
         }
@@ -269,7 +302,13 @@ impl LanguageServer for Backend {
         let position = params.text_document_position.position;
         let docs = self.documents.read().await;
         if let Some(doc) = docs.get(&uri) {
-            let items = compute_completions(&doc.text, &doc.model, position);
+            let items = compute_completions(
+                &doc.text,
+                &doc.model,
+                &doc.db_schema,
+                &doc.db_intent,
+                position,
+            );
             if items.is_empty() {
                 Ok(None)
             } else {
@@ -583,6 +622,21 @@ impl LanguageServer for Backend {
     }
 }
 
+fn load_db_schema() -> DbSchema {
+    let schemas_dir = PathBuf::from("db/schemas");
+    let Ok(schemas) = load_schemas_from_dir(&schemas_dir) else {
+        return DbSchema::default();
+    };
+    let table_fields = schemas
+        .into_iter()
+        .map(|(name, def)| {
+            let fields = def.fields.into_iter().map(|field| field.name).collect();
+            (name, fields)
+        })
+        .collect();
+    DbSchema::from_table_fields(table_fields)
+}
+
 fn diagnostics_from_model(model: &SemanticModel) -> Vec<Diagnostic> {
     let mut diagnostics: Vec<Diagnostic> = model
         .errors
@@ -595,6 +649,14 @@ fn diagnostics_from_model(model: &SemanticModel) -> Vec<Diagnostic> {
             ..Diagnostic::default()
         })
         .collect();
+
+    diagnostics.extend(model.warnings.iter().map(|warning| Diagnostic {
+        range: source_range_to_range(warning.range.as_ref()),
+        severity: Some(DiagnosticSeverity::WARNING),
+        source: Some("rover".into()),
+        message: warning.message.clone(),
+        ..Diagnostic::default()
+    }));
 
     // Add type errors from type inference
     diagnostics.extend(compute_type_errors(model));
@@ -675,6 +737,8 @@ fn compute_unused_variable_warnings(model: &SemanticModel) -> Vec<Diagnostic> {
 fn compute_completions(
     text: &str,
     model: &SemanticModel,
+    db_schema: &DbSchema,
+    db_intent: &DbIntent,
     position: Position,
 ) -> Vec<CompletionItem> {
     let line_prefix = match line_prefix(text, position) {
@@ -683,6 +747,50 @@ fn compute_completions(
     };
 
     let mut items = Vec::new();
+
+    let db_instances = &db_intent.db_instances;
+
+    if let Some((table, partial)) = detect_db_table_constructor_context(&line_prefix, db_instances)
+    {
+        items.extend(db_field_completions(db_schema, &table, &partial));
+        if !items.is_empty() {
+            return items;
+        }
+    }
+
+    if let Some((table, partial)) = detect_db_by_context(&line_prefix, db_instances) {
+        items.extend(db_by_completions(db_schema, &table, &partial));
+        if !items.is_empty() {
+            return items;
+        }
+    }
+
+    if let Some((table, partial)) =
+        detect_db_column_argument_context(&line_prefix, db_instances, "select")
+    {
+        items.extend(db_field_completions(db_schema, &table, &partial));
+        if !items.is_empty() {
+            return items;
+        }
+    }
+
+    if let Some((table, partial)) =
+        detect_db_column_argument_context(&line_prefix, db_instances, "group_by")
+    {
+        items.extend(db_field_completions(db_schema, &table, &partial));
+        if !items.is_empty() {
+            return items;
+        }
+    }
+
+    if let Some((table, partial)) =
+        detect_db_column_argument_context(&line_prefix, db_instances, "order_by")
+    {
+        items.extend(db_field_completions(db_schema, &table, &partial));
+        if !items.is_empty() {
+            return items;
+        }
+    }
 
     // Table constructor completions (rover.server { ... })
     if let Some((constructor, partial)) = detect_table_constructor_context(&line_prefix) {
@@ -698,6 +806,13 @@ fn compute_completions(
 
     // Symbol spec completions (rover., ctx:, g., etc.)
     if let Some((base, partial)) = detect_member_access(&line_prefix) {
+        if db_instances.contains(&base) {
+            items.extend(db_table_completions(db_schema, &partial));
+            if !items.is_empty() {
+                return items;
+            }
+        }
+
         // Check for stdlib module completions first (string., math., table., etc.)
         let stdlib_modules = [
             "string",
@@ -1889,6 +2004,83 @@ fn extract_field_partial(segment: &str) -> String {
     up_to_equals.trim().to_string()
 }
 
+fn detect_db_table_constructor_context(
+    line: &str,
+    db_instances: &HashSet<String>,
+) -> Option<(String, String)> {
+    if !line.contains('{') {
+        return None;
+    }
+    let brace_idx = line.rfind('{')?;
+    let before_brace = line[..brace_idx].trim();
+    if !before_brace.contains(":insert") && !before_brace.contains(":set") {
+        return None;
+    }
+    let table = extract_db_table_from_line(before_brace, db_instances)?;
+    let after_brace = line[brace_idx + 1..].trim();
+    let partial = if let Some(comma_idx) = after_brace.rfind(',') {
+        let after_comma = after_brace[comma_idx + 1..].trim();
+        extract_field_partial(after_comma)
+    } else {
+        extract_field_partial(after_brace)
+    };
+    Some((table, partial))
+}
+
+fn detect_db_by_context(line: &str, db_instances: &HashSet<String>) -> Option<(String, String)> {
+    let idx = line.rfind(":by_")?;
+    let table = extract_db_table_from_line(&line[..idx], db_instances)?;
+    let partial = line[idx + 4..].to_string();
+    Some((table, partial))
+}
+
+fn detect_db_column_argument_context(
+    line: &str,
+    db_instances: &HashSet<String>,
+    method: &str,
+) -> Option<(String, String)> {
+    let pattern = format!(":{}(", method);
+    let idx = line.rfind(&pattern)?;
+    let table = extract_db_table_from_line(&line[..idx], db_instances)?;
+    let after = &line[idx + pattern.len()..];
+    let partial = extract_db_field_partial(after);
+    Some((table, partial))
+}
+
+fn extract_db_field_partial(segment: &str) -> String {
+    let trimmed = segment.trim_start();
+    let trimmed = trimmed.trim_start_matches('"').trim_start_matches('\'');
+    let bytes = trimmed.as_bytes();
+    let mut end = 0usize;
+    while end < bytes.len() && is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+    trimmed[..end].to_string()
+}
+
+fn extract_db_table_from_line(line: &str, db_instances: &HashSet<String>) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for instance in db_instances {
+        let needle = format!("{}.", instance);
+        if let Some(idx) = line.rfind(&needle) {
+            let after = &line[idx + needle.len()..];
+            let bytes = after.as_bytes();
+            let mut end = 0usize;
+            while end < bytes.len() && is_ident_byte(bytes[end]) {
+                end += 1;
+            }
+            if end == 0 {
+                continue;
+            }
+            let table = after[..end].to_string();
+            if best.as_ref().map_or(true, |(best_idx, _)| idx > *best_idx) {
+                best = Some((idx, table));
+            }
+        }
+    }
+    best.map(|(_, table)| table)
+}
+
 fn detect_member_access(line: &str) -> Option<(String, String)> {
     if line.is_empty() {
         return None;
@@ -2041,6 +2233,62 @@ fn guard_property_completions(
             label: name.clone(),
             kind: Some(CompletionItemKind::FIELD),
             detail: Some(guard_type_label(&schema.guard_type)),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
+fn db_table_completions(schema: &DbSchema, partial: &str) -> Vec<CompletionItem> {
+    schema
+        .table_names()
+        .into_iter()
+        .filter(|name| partial.is_empty() || name.starts_with(partial))
+        .map(|name| CompletionItem {
+            label: name,
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some("db table".into()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
+fn db_field_completions(schema: &DbSchema, table: &str, partial: &str) -> Vec<CompletionItem> {
+    let Some(fields) = schema.table_fields(table) else {
+        return Vec::new();
+    };
+    let mut items: Vec<CompletionItem> = fields
+        .iter()
+        .filter(|name| partial.is_empty() || name.starts_with(partial))
+        .map(|name| CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::FIELD),
+            detail: Some("db field".into()),
+            ..CompletionItem::default()
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
+}
+
+fn db_by_completions(schema: &DbSchema, table: &str, partial: &str) -> Vec<CompletionItem> {
+    let Some(fields) = schema.table_fields(table) else {
+        return Vec::new();
+    };
+    let mut labels = Vec::new();
+    for field in fields {
+        labels.push(format!("by_{}", field));
+        for op in DB_BY_OPERATORS {
+            labels.push(format!("by_{}_{}", field, op));
+        }
+    }
+    labels.sort();
+    labels
+        .into_iter()
+        .filter(|label| partial.is_empty() || label.starts_with(partial))
+        .map(|label| CompletionItem {
+            label,
+            kind: Some(CompletionItemKind::METHOD),
+            detail: Some("db filter".into()),
             ..CompletionItem::default()
         })
         .collect()

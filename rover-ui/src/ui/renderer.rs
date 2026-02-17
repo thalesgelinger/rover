@@ -1,5 +1,6 @@
 use super::node::NodeId;
 use super::registry::UiRegistry;
+use crate::platform::UiTarget;
 
 /// Platform-specific renderer trait
 ///
@@ -18,4 +19,9 @@ pub trait Renderer: 'static {
 
     /// Called when a node is removed from the tree
     fn node_removed(&mut self, node_id: NodeId);
+
+    /// Runtime target used for namespace capability checks.
+    fn target(&self) -> UiTarget {
+        UiTarget::Unknown
+    }
 }

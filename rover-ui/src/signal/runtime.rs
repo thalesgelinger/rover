@@ -24,6 +24,7 @@ pub type Result<T> = std::result::Result<T, RuntimeError>;
 struct TrackingState {
     stack: Vec<SubscriberId>,
     reads: Vec<SignalId>,
+    derived_reads: Vec<DerivedId>,
 }
 
 struct BatchState {
@@ -57,6 +58,7 @@ impl SignalRuntime {
             tracking: RefCell::new(TrackingState {
                 stack: Vec::new(),
                 reads: Vec::new(),
+                derived_reads: Vec::new(),
             }),
             batch: RefCell::new(BatchState {
                 depth: 0,
@@ -110,6 +112,14 @@ impl SignalRuntime {
     }
 
     pub fn get_derived(&self, lua: &Lua, id: DerivedId) -> Result<Value> {
+        // Track this derived read (so effects/derived that read us get subscribed)
+        {
+            let mut tracking = self.tracking.borrow_mut();
+            if !tracking.stack.is_empty() {
+                tracking.derived_reads.push(id);
+            }
+        }
+
         let is_dirty = {
             let derived = self.derived.borrow();
             derived[id.0 as usize].is_dirty()
@@ -132,45 +142,73 @@ impl SignalRuntime {
         };
 
         let subscriber = SubscriberId::Derived(id);
-        {
+
+        let (parent_reads, parent_derived_reads) = {
             let mut tracking = self.tracking.borrow_mut();
+            let parent_reads = std::mem::take(&mut tracking.reads);
+            let parent_derived_reads = std::mem::take(&mut tracking.derived_reads);
             tracking.stack.push(subscriber);
-            tracking.reads.clear();
-        }
+            (parent_reads, parent_derived_reads)
+        };
 
         let result = compute_fn
             .call::<Value>(())
             .map_err(RuntimeError::LuaError)?;
 
-        let deps = {
+        let (signal_deps, derived_deps) = {
             let mut tracking = self.tracking.borrow_mut();
             tracking.stack.pop();
 
-            let mut deps: SmallVec<[SignalId; 4]> = SmallVec::new();
+            let mut signal_deps: SmallVec<[SignalId; 4]> = SmallVec::new();
             let mut seen = HashSet::new();
-            for &signal in &tracking.reads {
-                if seen.insert(signal) {
-                    deps.push(signal);
+            for signal in std::mem::take(&mut tracking.reads) {
+                if seen.insert(signal.0) {
+                    signal_deps.push(signal);
                 }
             }
-            tracking.reads.clear();
-            deps
+
+            let mut derived_deps: SmallVec<[DerivedId; 4]> = SmallVec::new();
+            let mut seen_d = HashSet::new();
+            for did in std::mem::take(&mut tracking.derived_reads) {
+                if seen_d.insert(did.0) {
+                    derived_deps.push(did);
+                }
+            }
+
+            tracking.reads = parent_reads;
+            tracking.derived_reads = parent_derived_reads;
+
+            (signal_deps, derived_deps)
         };
 
         let value = SignalValue::from_lua(lua, result)?;
 
+        // Save the current subscribers to this derived signal before clearing
+        // (we need to preserve effects that depend on this derived signal)
+        let subscribers_to_preserve = {
+            let graph = self.graph.borrow();
+            graph.get_derived_subscribers(id).to_vec()
+        };
+
         {
             let mut graph = self.graph.borrow_mut();
             graph.clear_for(subscriber);
-            for &signal in &deps {
+            for &signal in &signal_deps {
                 graph.subscribe(signal, subscriber);
+            }
+            for &did in &derived_deps {
+                graph.subscribe_derived(did, subscriber);
+            }
+            // Restore the subscribers that depend on this derived signal
+            for &sub in &subscribers_to_preserve {
+                graph.subscribe_derived(id, sub);
             }
         }
 
         {
             let mut derived = self.derived.borrow_mut();
             derived[id.0 as usize].set_cached_value(value);
-            derived[id.0 as usize].set_dependencies(deps);
+            derived[id.0 as usize].set_dependencies(signal_deps);
         }
 
         Ok(())
@@ -194,6 +232,29 @@ impl SignalRuntime {
         drop(effects);
 
         self.run_effect(lua, id)?;
+        Ok(id)
+    }
+
+    /// Register a callback without running it immediately.
+    /// Used for event handlers that should only run in response to events.
+    pub fn register_callback(&self, lua: &Lua, callback: Function) -> Result<EffectId> {
+        let callback_key = lua.create_registry_value(callback)?;
+
+        let id = if let Some(idx) = self.effects_free.borrow_mut().pop() {
+            EffectId(idx)
+        } else {
+            EffectId(self.effects.borrow().len() as u32)
+        };
+
+        let effect = Effect::new(id, callback_key);
+
+        let mut effects = self.effects.borrow_mut();
+        if id.0 as usize >= effects.len() {
+            effects.push(effect);
+        } else {
+            effects[id.0 as usize] = effect;
+        }
+
         Ok(id)
     }
 
@@ -252,11 +313,13 @@ impl SignalRuntime {
 
         // Get and call callback
         let subscriber = SubscriberId::Effect(id);
-        {
+        let (parent_reads, parent_derived_reads) = {
             let mut tracking = self.tracking.borrow_mut();
+            let parent_reads = std::mem::take(&mut tracking.reads);
+            let parent_derived_reads = std::mem::take(&mut tracking.derived_reads);
             tracking.stack.push(subscriber);
-            tracking.reads.clear();
-        }
+            (parent_reads, parent_derived_reads)
+        };
 
         // Get the callback key and drop the borrow before calling Lua
         // (Lua call might create more effects, which would cause a RefCell panic)
@@ -269,19 +332,30 @@ impl SignalRuntime {
         // Now call the Lua callback (effects borrow is released)
         let result = callback.call::<Value>(()).map_err(RuntimeError::LuaError)?;
 
-        let deps = {
+        let (signal_deps, derived_deps) = {
             let mut tracking = self.tracking.borrow_mut();
             tracking.stack.pop();
 
-            let mut deps: SmallVec<[SignalId; 4]> = SmallVec::new();
+            let mut signal_deps: SmallVec<[SignalId; 4]> = SmallVec::new();
             let mut seen = HashSet::new();
-            for &signal in &tracking.reads {
-                if seen.insert(signal) {
-                    deps.push(signal);
+            for signal in std::mem::take(&mut tracking.reads) {
+                if seen.insert(signal.0) {
+                    signal_deps.push(signal);
                 }
             }
-            tracking.reads.clear();
-            deps
+
+            let mut derived_deps: SmallVec<[DerivedId; 4]> = SmallVec::new();
+            let mut seen_d = HashSet::new();
+            for did in std::mem::take(&mut tracking.derived_reads) {
+                if seen_d.insert(did.0) {
+                    derived_deps.push(did);
+                }
+            }
+
+            tracking.reads = parent_reads;
+            tracking.derived_reads = parent_derived_reads;
+
+            (signal_deps, derived_deps)
         };
 
         let cleanup = if let Value::Function(f) = result {
@@ -293,8 +367,11 @@ impl SignalRuntime {
         {
             let mut graph = self.graph.borrow_mut();
             graph.clear_for(subscriber);
-            for &signal in &deps {
+            for &signal in &signal_deps {
                 graph.subscribe(signal, subscriber);
+            }
+            for &did in &derived_deps {
+                graph.subscribe_derived(did, subscriber);
             }
         }
 
@@ -370,9 +447,10 @@ impl SignalRuntime {
                 batch.dirty_derived.push(id);
             }
 
+            // Look up who subscribes to THIS derived signal
             let subscribers = {
                 let graph = self.graph.borrow();
-                graph.get_subscribers(SignalId(id.0)).to_vec()
+                graph.get_derived_subscribers(id).to_vec()
             };
 
             for subscriber in subscribers {

@@ -172,6 +172,26 @@ fn setup_migration_lua(
     let guard_lua = include_str!("../../rover-core/src/guard.lua");
     let guard: LuaTable = lua.load(guard_lua).set_name("guard.lua").eval()?;
 
+    // Extend guard with DB-specific modifiers (primary, auto, unique, references, index)
+    // First, make guard available as a global for the extend chunk
+    let globals = lua.globals();
+    globals.set("_guard_to_extend", guard.clone())?;
+
+    let extend_code = r#"
+        local db_modifiers = {
+            primary = function(self) self._primary = true; return self end,
+            auto = function(self) self._auto = true; return self end,
+            unique = function(self) self._unique = true; return self end,
+            references = function(self, table, column)
+                self._references = {table = table, column = column or "id"}
+                return self
+            end,
+            index = function(self) self._index = true; return self end,
+        }
+        return _guard_to_extend:extend(db_modifiers)
+    "#;
+    let db_guard: LuaTable = lua.load(extend_code).set_name("guard_extend.lua").eval()?;
+
     let migration_dsl = include_str!("migration_dsl.lua");
     let migration_table: LuaTable = lua
         .load(migration_dsl)
@@ -181,7 +201,13 @@ fn setup_migration_lua(
     let globals = lua.globals();
 
     let rover = lua.create_table()?;
+    let db = lua.create_table()?;
+
+    // Set up rover.guard (base guard) and rover.db.guard (extended with DB modifiers)
     rover.set("guard", guard)?;
+    db.set("guard", db_guard)?;
+    rover.set("db", db)?;
+
     globals.set("rover", rover)?;
     globals.set("migration", migration_table)?;
     globals.set("_rollback_mode", is_rollback)?;
@@ -211,6 +237,16 @@ fn execute_migration_lua(
     let has_up = globals.get::<LuaFunction>("up").is_ok();
     let has_down = globals.get::<LuaFunction>("down").is_ok();
 
+    // Validate: cannot have both change() and up()/down()
+    if has_change && (has_up || has_down) {
+        return Err("migration cannot define both change() and up()/down(). Use either change() OR up()/down(), not both.".into());
+    }
+
+    // Validate: must have at least one migration function
+    if !has_change && !has_up && !has_down {
+        return Err("migration must define change() or up()/down() functions.".into());
+    }
+
     // Call the appropriate function
     if has_change {
         let change_fn: LuaFunction = globals.get("change")?;
@@ -222,7 +258,6 @@ fn execute_migration_lua(
         let up_fn: LuaFunction = globals.get("up")?;
         up_fn.call::<()>(())?;
     }
-    // If no functions defined, assume DSL calls are at top-level (legacy/test support)
 
     // Get recorded operations
     let operations: LuaTable = migration
@@ -256,6 +291,11 @@ fn execute_migration_lua(
         if let Some(sql) = operation_to_sql(op)? {
             sql_statements.push(sql);
         }
+    }
+
+    // Error if no operations were generated
+    if sql_statements.is_empty() {
+        return Err("migration generated zero SQL operations. Ensure your migration defines actual database changes.".into());
     }
 
     Ok(sql_statements)

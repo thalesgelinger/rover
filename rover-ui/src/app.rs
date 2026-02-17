@@ -1,7 +1,11 @@
 use crate::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use crate::events::{EventQueue, UiEvent};
+use crate::platform::{
+    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiRuntimeConfig, ViewportSignals,
+};
 use crate::scheduler::{Scheduler, SharedScheduler};
-use crate::signal::SignalRuntime;
+use crate::signal::{SignalRuntime, SignalValue};
+use crate::ui::node::UiNode;
 use crate::ui::registry::UiRegistry;
 use crate::ui::renderer::Renderer;
 use mlua::prelude::*;
@@ -31,14 +35,23 @@ impl<R: Renderer> App<R> {
     /// Create a new App with the given renderer
     pub fn new(renderer: R) -> mlua::Result<Self> {
         let lua = Lua::new();
+        let target = renderer.target();
         let runtime = Rc::new(SignalRuntime::new());
         let registry = Rc::new(RefCell::new(UiRegistry::new()));
         let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
+        let runtime_config = UiRuntimeConfig::new(target);
+        // TODO: replace these defaults with per-platform viewport providers (web/mobile/etc).
+        let viewport_signals = ViewportSignals {
+            width: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_WIDTH as i64)),
+            height: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_HEIGHT as i64)),
+        };
 
         // Store runtime, registry, and scheduler in Lua app_data for access from Lua
         lua.set_app_data(runtime.clone());
         lua.set_app_data(registry.clone());
         lua.set_app_data(scheduler.clone());
+        lua.set_app_data(runtime_config);
+        lua.set_app_data(viewport_signals);
 
         // Register rover module
         let rover_table = lua.create_table()?;
@@ -130,7 +143,9 @@ impl<R: Renderer> App<R> {
         // 1. Resume ready timers
         let ready_ids = self.scheduler.borrow_mut().tick(now);
         for id in ready_ids {
-            let pending = self.scheduler.borrow_mut().take_pending(id)?;
+            let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
+                continue;
+            };
             match run_coroutine_with_delay(
                 &self.lua,
                 &self.runtime,
@@ -142,10 +157,11 @@ impl<R: Renderer> App<R> {
                 }
                 CoroutineResult::YieldedDelay { delay_ms } => {
                     // Re-schedule with delay
-                    let _new_id = self
-                        .scheduler
-                        .borrow_mut()
-                        .schedule_delay(pending.thread, delay_ms);
+                    self.scheduler.borrow_mut().schedule_delay_with_id(
+                        id,
+                        pending.thread,
+                        delay_ms,
+                    );
                 }
                 CoroutineResult::YieldedOther => {
                     // Unknown yield - could be an error
@@ -186,7 +202,9 @@ impl<R: Renderer> App<R> {
             // Resume ready timers
             let ready_ids = self.scheduler.borrow_mut().tick(now);
             for id in ready_ids {
-                let pending = self.scheduler.borrow_mut().take_pending(id)?;
+                let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
+                    continue;
+                };
                 match run_coroutine_with_delay(
                     &self.lua,
                     &self.runtime,
@@ -195,10 +213,11 @@ impl<R: Renderer> App<R> {
                 )? {
                     CoroutineResult::Completed => {}
                     CoroutineResult::YieldedDelay { delay_ms } => {
-                        let _new_id = self
-                            .scheduler
-                            .borrow_mut()
-                            .schedule_delay(pending.thread, delay_ms);
+                        self.scheduler.borrow_mut().schedule_delay_with_id(
+                            id,
+                            pending.thread,
+                            delay_ms,
+                        );
                     }
                     CoroutineResult::YieldedOther => {}
                 }
@@ -266,25 +285,64 @@ impl<R: Renderer> App<R> {
         Ok(())
     }
 
-    /// Dispatch a single event to its target node
+    /// Dispatch a single event to the specific handler on its target node.
+    ///
+    /// Each event type maps to a specific effect field on the node:
+    /// - Click → Button.on_click
+    /// - Change → Input.on_change (and updates the bound signal for two-way binding)
+    /// - Submit → Input.on_submit
+    /// - Toggle → Checkbox.on_toggle
+    /// - Key → KeyArea.on_key / FullScreen.on_key
     fn dispatch_event(&mut self, event: UiEvent) -> mlua::Result<()> {
         let node_id = event.node_id();
-        let registry = self.registry.borrow();
 
-        // Get effects attached to this node
-        let effect_ids = registry.get_effects_for_node(node_id);
+        // For Change events, update the bound signal first (two-way binding)
+        if let UiEvent::Change { value, .. } = &event {
+            let registry = self.registry.borrow();
+            if let Some(UiNode::Input {
+                value: text_content,
+                ..
+            }) = registry.get_node(node_id)
+            {
+                if let Some(signal_id) = text_content.signal_id() {
+                    // Update the signal with the new value (two-way binding)
+                    drop(registry);
+                    self.runtime.set_signal(
+                        &self.lua,
+                        signal_id,
+                        SignalValue::String(value.clone().into()),
+                    );
+                }
+            }
+        }
+
+        let registry = self.registry.borrow();
+        let node = match registry.get_node(node_id) {
+            Some(n) => n,
+            None => return Ok(()),
+        };
+
+        let effect_id = match (&event, node) {
+            (UiEvent::Click { .. }, UiNode::Button { on_click, .. }) => *on_click,
+            (UiEvent::Change { .. }, UiNode::Input { on_change, .. }) => *on_change,
+            (UiEvent::Submit { .. }, UiNode::Input { on_submit, .. }) => *on_submit,
+            (UiEvent::Toggle { .. }, UiNode::Checkbox { on_toggle, .. }) => *on_toggle,
+            (UiEvent::Key { .. }, UiNode::KeyArea { on_key, .. }) => *on_key,
+            (UiEvent::Key { .. }, UiNode::FullScreen { on_key, .. }) => *on_key,
+            _ => None,
+        };
         drop(registry);
 
-        // For each effect, call it with the event data
-        for effect_id in effect_ids {
-            // Call the effect with appropriate arguments
+        if let Some(effect_id) = effect_id {
             let args = match &event {
                 UiEvent::Click { .. } => LuaValue::Nil,
-                UiEvent::Change { value, .. } => LuaValue::String(self.lua.create_string(value)?),
+                UiEvent::Change { value, .. } | UiEvent::Submit { value, .. } => {
+                    LuaValue::String(self.lua.create_string(value)?)
+                }
                 UiEvent::Toggle { checked, .. } => LuaValue::Boolean(*checked),
+                UiEvent::Key { key, .. } => LuaValue::String(self.lua.create_string(key)?),
             };
 
-            // Call the effect
             if let Err(e) = self
                 .runtime
                 .call_effect(&self.lua, effect_id, args)
@@ -310,6 +368,18 @@ impl<R: Renderer> App<R> {
     /// Stop the application
     pub fn stop(&mut self) {
         self.running = false;
+    }
+
+    /// Update reactive viewport size signals.
+    pub fn set_viewport_size(&mut self, cols: u16, rows: u16) {
+        let Some(viewport) = self.lua.app_data_ref::<ViewportSignals>().map(|s| *s) else {
+            return;
+        };
+
+        self.runtime
+            .set_signal(&self.lua, viewport.width, SignalValue::Int(cols as i64));
+        self.runtime
+            .set_signal(&self.lua, viewport.height, SignalValue::Int(rows as i64));
     }
 
     /// Run the application loop (blocking)
@@ -367,7 +437,22 @@ impl<R: Renderer> Drop for App<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::UiTarget;
+    use crate::ui::registry::UiRegistry;
+    use crate::ui::renderer::Renderer;
     use crate::ui::stub::StubRenderer;
+
+    struct TestTuiRenderer;
+
+    impl Renderer for TestTuiRenderer {
+        fn mount(&mut self, _registry: &UiRegistry) {}
+        fn update(&mut self, _registry: &UiRegistry, _dirty_nodes: &[crate::ui::node::NodeId]) {}
+        fn node_added(&mut self, _registry: &UiRegistry, _node_id: crate::ui::node::NodeId) {}
+        fn node_removed(&mut self, _node_id: crate::ui::node::NodeId) {}
+        fn target(&self) -> UiTarget {
+            UiTarget::Tui
+        }
+    }
 
     #[test]
     fn test_app_creation() {
@@ -428,5 +513,153 @@ mod tests {
         let result = app.tick();
         assert!(result.is_ok());
         assert_eq!(app.events.len(), 0);
+    }
+
+    #[test]
+    fn test_require_rover_tui_fails_on_non_tui() {
+        let renderer = StubRenderer::new();
+        let app = App::new(renderer).unwrap();
+
+        let (ok, err): (bool, String) = app
+            .lua
+            .load(
+                r#"
+                local ok, err = pcall(function()
+                    require("rover.tui")
+                end)
+                return ok, tostring(err)
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert!(!ok);
+        assert!(err.contains("require(\"rover.tui\") requires target=tui"));
+
+        let is_nil: bool = app.lua.load("return rover.tui == nil").eval().unwrap();
+        assert!(is_nil);
+    }
+
+    #[test]
+    fn test_tui_namespace_available_on_tui_target() {
+        let renderer = TestTuiRenderer;
+        let app = App::new(renderer).unwrap();
+
+        let (ui_select, ui_full_screen, tui_select, tui_nav_list, tui_progress): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = app
+            .lua
+            .load(
+                r#"
+                local ui_select = type(rover.ui.select)
+                local ui_full_screen = type(rover.ui.full_screen)
+                local tui_select = type(rover.tui.select)
+                local tui_nav_list = type(rover.tui.nav_list)
+                local tui_progress = type(rover.tui.progress)
+                return ui_select, ui_full_screen, tui_select, tui_nav_list, tui_progress
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert_eq!(ui_select, "nil");
+        assert_eq!(ui_full_screen, "nil");
+        assert_eq!(tui_select, "function");
+        assert_eq!(tui_nav_list, "function");
+        assert_eq!(tui_progress, "function");
+    }
+
+    #[test]
+    fn test_tui_components_render_nodes_from_namespace() {
+        let renderer = TestTuiRenderer;
+        let app = App::new(renderer).unwrap();
+
+        let node_kind: String = app
+            .lua
+            .load(
+                r#"
+                local node = rover.tui.select({
+                    title = "x",
+                    items = { "a", "b" },
+                })
+                return type(node) == "userdata" and "userdata" or type(node)
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert_eq!(node_kind, "userdata");
+    }
+
+    #[test]
+    fn test_full_screen_on_key_dispatches() {
+        let renderer = TestTuiRenderer;
+        let mut app = App::new(renderer).unwrap();
+
+        app.lua
+            .load(
+                r#"
+                _G.hit = rover.signal(0)
+                function rover.render()
+                    return rover.tui.full_screen {
+                        on_key = function(key)
+                            if key == "left" then
+                                _G.hit.val = _G.hit.val + 1
+                            end
+                        end,
+                        rover.ui.text { "x" },
+                    }
+                end
+            "#,
+            )
+            .exec()
+            .unwrap();
+
+        app.mount().unwrap();
+
+        let full_screen_id = {
+            let reg = app.registry.borrow();
+            let root = reg.root().unwrap();
+            match reg.get_node(root).unwrap() {
+                UiNode::FullScreen { on_key, .. } if on_key.is_some() => root,
+                _ => panic!("expected full_screen root with on_key"),
+            }
+        };
+
+        app.push_event(UiEvent::Key {
+            node_id: full_screen_id,
+            key: "left".to_string(),
+        });
+        app.tick().unwrap();
+
+        let hit: i64 = app.lua.load("return _G.hit.val").eval().unwrap();
+        assert_eq!(hit, 1);
+    }
+
+    #[test]
+    fn test_ui_screen_signals_exposed_and_mutable() {
+        let renderer = StubRenderer::new();
+        let mut app = App::new(renderer).unwrap();
+
+        let (w0, h0): (i64, i64) = app
+            .lua
+            .load("return rover.ui.screen.width.val, rover.ui.screen.height.val")
+            .eval()
+            .unwrap();
+        assert_eq!(w0, 80);
+        assert_eq!(h0, 24);
+
+        app.set_viewport_size(123, 45);
+        let (w1, h1): (i64, i64) = app
+            .lua
+            .load("return rover.ui.screen.width.val, rover.ui.screen.height.val")
+            .eval()
+            .unwrap();
+        assert_eq!(w1, 123);
+        assert_eq!(h1, 45);
     }
 }
