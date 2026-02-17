@@ -120,9 +120,12 @@ impl UserData for Task {
                                                 ud.borrow::<crate::lua::DelayMarker>()
                                             {
                                                 task.set_status(TaskStatus::Yielded);
-                                                let timer_id = scheduler
-                                                    .borrow_mut()
-                                                    .schedule_delay(thread, marker.delay_ms);
+                                                let timer_id =
+                                                    scheduler.borrow_mut().schedule_delay_with_id(
+                                                        task.id,
+                                                        thread,
+                                                        marker.delay_ms,
+                                                    );
                                                 *task.timer_id.borrow_mut() = Some(timer_id);
                                                 return Ok(mlua::MultiValue::new());
                                             }
@@ -161,6 +164,15 @@ impl UserData for Task {
             Ok(())
         });
 
+        // Add kill() alias to match process-style API
+        methods.add_method("kill", |_lua, this, ()| {
+            this.cancel();
+            Ok(())
+        });
+
+        // Add pid() method
+        methods.add_method("pid", |_lua, this, ()| Ok(this.id()));
+
         // Add status() method
         methods.add_method("status", |_lua, this, ()| {
             let status = this.get_status();
@@ -184,6 +196,14 @@ pub fn cancel_task(_lua: &Lua, task_ud: AnyUserData) -> mlua::Result<()> {
     } else {
         Err(mlua::Error::RuntimeError("Expected a Task".to_string()))
     }
+}
+
+/// Start a task from Lua userdata by invoking its callable metamethod
+pub fn start_task(_lua: &Lua, task_ud: &AnyUserData) -> mlua::Result<()> {
+    let mt = task_ud.metatable()?;
+    let call_fn: mlua::Function = mt.get(MetaMethod::Call.name())?;
+    let _: mlua::MultiValue = call_fn.call((task_ud.clone(), mlua::Value::Nil))?;
+    Ok(())
 }
 
 /// Create a new task from a Lua function
@@ -266,9 +286,7 @@ pub fn task_all(lua: &Lua, args: mlua::MultiValue) -> mlua::Result<mlua::MultiVa
             // Call the task to start it
             drop(task); // Drop borrow before calling
 
-            // Create a call string that invokes the task
-            let task_value = mlua::Value::UserData(task_ud.clone());
-            let result: mlua::Result<mlua::MultiValue> = lua.load("return ...()").call(task_value);
+            let result = start_task(lua, task_ud);
 
             if let Err(e) = result {
                 eprintln!("Error starting task: {:?}", e);

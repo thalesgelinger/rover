@@ -118,6 +118,103 @@ fn test_task_cancellation() {
     assert_eq!(status, "cancelled");
 }
 
+#[test]
+fn test_spawn_auto_starts_and_has_pid() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.spawn_count = 0
+        local proc = rover.spawn(function()
+            _G.spawn_count = _G.spawn_count + 1
+        end)
+
+        _G.spawn_pid = proc:pid()
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let count: i32 = app.lua().load("return _G.spawn_count").eval().unwrap();
+    let pid: i64 = app.lua().load("return _G.spawn_pid").eval().unwrap();
+
+    assert_eq!(count, 1);
+    assert!(pid > 0);
+}
+
+#[test]
+fn test_interval_runs_immediately_then_waits() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.interval_count = 0
+        _G.proc = rover.interval(50, function()
+            _G.interval_count = _G.interval_count + 1
+        end)
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+
+    let first: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(first, 1);
+
+    app.tick_ms(30).unwrap();
+    let still_one: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(still_one, 1);
+
+    app.tick_ms(40).unwrap();
+    let second: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert!(second >= 2);
+}
+
+#[test]
+fn test_interval_kill_stops_future_runs() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.interval_count = 0
+        _G.proc = rover.interval(10, function()
+            _G.interval_count = _G.interval_count + 1
+        end)
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick_ms(30).unwrap();
+
+    let before_kill: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+
+    app.lua().load("_G.proc:kill()").exec().unwrap();
+    app.tick_ms(50).unwrap();
+
+    let after_kill: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(after_kill, before_kill);
+}
+
+#[test]
+fn test_interval_error_stops_task() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        _G.interval_count = 0
+        _G.proc = rover.interval(10, function()
+            _G.interval_count = _G.interval_count + 1
+            if _G.interval_count == 2 then
+                error("boom")
+            end
+        end)
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    let run_result = app.tick_ms(60);
+    assert!(run_result.is_err());
+
+    let count: i32 = app.lua().load("return _G.interval_count").eval().unwrap();
+    assert_eq!(count, 2);
+}
+
 /// Test rover.on_destroy() for cleanup callbacks
 #[test]
 fn test_on_destroy_callback() {
@@ -524,6 +621,32 @@ fn test_list_rendering() {
     assert!(log.iter().any(|line| line.contains("cherry")));
 }
 
+/// Test rover.ui.each() without key function
+#[test]
+fn test_list_rendering_without_key_fn() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({ "apple", "banana" })
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                return ru.text { item .. " (" .. index .. ")" }
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let log = log_buffer.borrow();
+    assert!(log.iter().any(|line| line.contains("apple")));
+    assert!(log.iter().any(|line| line.contains("banana")));
+}
+
 /// Test rover.ui.when() with reactive condition
 #[test]
 fn test_conditional_reactive_toggle() {
@@ -572,19 +695,18 @@ fn test_conditional_reactive_toggle() {
 /// Test rover.ui.each() with reactive list updates
 #[test]
 fn test_list_reactive_updates() {
-    let log_buffer = Rc::new(RefCell::new(Vec::new()));
-    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let renderer = StubRenderer::new();
     let mut app = App::new(renderer).unwrap();
 
     let script = r#"
         local ru = rover.ui
         _G.items = rover.signal({ "one", "two" })
+        _G.render_calls = 0
 
         function rover.render()
             return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
                 return ru.text { item }
-            end, function(item, index)
-                return item .. index
             end)
         end
     "#;
@@ -592,30 +714,329 @@ fn test_list_reactive_updates() {
     app.lua().load(script).exec().unwrap();
     app.tick().unwrap();
 
-    // Should see initial items
-    let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("one")));
-    assert!(log.iter().any(|line| line.contains("two")));
-    assert!(!log.iter().any(|line| line.contains("three")));
-
-    drop(log); // Release borrow
+    let initial_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(initial_calls, 2);
 
     // Update the list
     app.lua()
         .load(
             r#"
-        _G.items.val = { "one", "two", "three" }
+        _G.items.val = { "uno", "dos" }
+    "#,
+        )
+        .exec()
+        .unwrap();
+
+    app.tick().unwrap();
+
+    let after_update_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(after_update_calls, 2);
+}
+
+#[test]
+fn test_list_keyed_reuse_avoids_render_fn_rerun() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({
+            { id = "a", x = 1 },
+            { id = "b", x = 3 },
+        })
+        _G.render_calls = 0
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
+                return ru.view {
+                    mod = ru.mod:position("absolute"):left(item.x):top(1),
+                    ru.text { item.id .. ":" .. index }
+                }
+            end, function(item)
+                return item.id
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let initial_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(initial_calls, 2);
+
+    app.lua()
+        .load(
+            r#"
+        _G.items.val = {
+            { id = "a", x = 10 },
+            { id = "b", x = 12 },
+        }
+    "#,
+        )
+        .exec()
+        .unwrap();
+    app.tick().unwrap();
+
+    let after_update_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(after_update_calls, 2);
+}
+
+#[test]
+fn test_list_fallback_index_reuses_rows() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({ "one", "two" })
+        _G.render_calls = 0
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
+                return ru.text { item .. ":" .. index }
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let initial_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(initial_calls, 2);
+
+    app.lua()
+        .load(
+            r#"
+        _G.items.val = { "uno", "dos" }
+    "#,
+        )
+        .exec()
+        .unwrap();
+    app.tick().unwrap();
+
+    let after_update_calls: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(after_update_calls, 2);
+}
+
+#[test]
+fn test_list_duplicate_keys_error() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({
+            { id = "dup" },
+            { id = "dup" },
+        })
+
+        function rover.render()
+            return ru.each(_G.items, function(item)
+                return ru.text { item.id }
+            end, function(item)
+                return item.id
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    let err = app.tick().unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("Duplicate key"),
+        "unexpected error: {}",
+        err_str
+    );
+}
+
+#[test]
+fn test_list_table_field_signal_updates_on_reuse() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.items = rover.signal({
+            { id = "a", x = 1, y = 1 },
+            { id = "b", x = 2, y = 1 },
+        })
+        _G.render_calls = 0
+
+        function rover.render()
+            return ru.each(_G.items, function(item, index)
+                _G.render_calls = _G.render_calls + 1
+                if index.val == 1 then
+                    _G.first_x = item.x
+                end
+                return ru.text { item.id }
+            end)
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+    app.tick().unwrap();
+
+    let calls_before: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(calls_before, 2);
+
+    let first_x_before: i64 = app.lua().load("return _G.first_x.val").eval().unwrap();
+    assert_eq!(first_x_before, 1);
+
+    app.lua()
+        .load(
+            r#"
+        _G.items.val = {
+            { id = "a", x = 9, y = 1 },
+            { id = "b", x = 2, y = 1 },
+        }
+    "#,
+        )
+        .exec()
+        .unwrap();
+    app.tick().unwrap();
+
+    let calls_after: i64 = app.lua().load("return _G.render_calls").eval().unwrap();
+    assert_eq!(calls_after, 2);
+
+    let first_x_after: i64 = app.lua().load("return _G.first_x.val").eval().unwrap();
+    assert_eq!(first_x_after, 9);
+}
+
+/// Test that derived signals reactively update UI when the source signal changes.
+/// This verifies the full chain: signal mutation → derived dirty → effect re-run → UI update.
+#[test]
+fn test_derived_signal_reactivity() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.count = rover.signal(5)
+        local doubled = rover.derive(function()
+            return _G.count.val * 2
+        end)
+
+        function rover.render()
+            return ru.text { doubled }
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+
+    // Tick to mount and render initial value
+    app.tick().unwrap();
+
+    // Initial: 5 * 2 = 10
+    {
+        let log = log_buffer.borrow();
+        assert!(
+            log.iter().any(|line| line.contains("\"10\"")),
+            "Expected initial derived value 10, got: {:?}",
+            *log
+        );
+    }
+
+    // Update source signal: 5 → 20
+    app.lua()
+        .load(
+            r#"
+        local updater = rover.task(function()
+            _G.count.val = 20
+            rover.delay(1)
+        end)
+        updater()
     "#,
         )
         .exec()
         .unwrap();
 
     log_buffer.borrow_mut().clear();
+    app.tick_ms(10).unwrap();
+
+    // Derived should now be 20 * 2 = 40
+    let log = log_buffer.borrow();
+    assert!(
+        log.iter().any(|line| line.contains("\"40\"")),
+        "Expected derived value 40 after signal update, got: {:?}",
+        *log
+    );
+}
+
+/// Test chained derived signals: derived_a depends on signal, derived_b depends on derived_a.
+#[test]
+fn test_chained_derived_signals() {
+    let log_buffer = Rc::new(RefCell::new(Vec::new()));
+    let renderer = StubRenderer::with_buffer(log_buffer.clone());
+    let mut app = App::new(renderer).unwrap();
+
+    let script = r#"
+        local ru = rover.ui
+        _G.base = rover.signal(3)
+        local doubled = rover.derive(function()
+            return _G.base.val * 2
+        end)
+        local quadrupled = rover.derive(function()
+            return doubled.val * 2
+        end)
+
+        function rover.render()
+            return ru.column {
+                ru.text { doubled },
+                ru.text { quadrupled },
+            }
+        end
+    "#;
+
+    app.lua().load(script).exec().unwrap();
+
+    // Tick to mount
     app.tick().unwrap();
 
-    // Should see all three items
+    // Initial: 3*2=6, 3*2*2=12
+    {
+        let log = log_buffer.borrow();
+        assert!(
+            log.iter().any(|line| line.contains("\"6\"")),
+            "Expected doubled=6, got: {:?}",
+            *log
+        );
+        assert!(
+            log.iter().any(|line| line.contains("\"12\"")),
+            "Expected quadrupled=12, got: {:?}",
+            *log
+        );
+    }
+
+    // Update base: 3 → 10
+    app.lua()
+        .load(
+            r#"
+        local updater = rover.task(function()
+            _G.base.val = 10
+            rover.delay(1)
+        end)
+        updater()
+    "#,
+        )
+        .exec()
+        .unwrap();
+
+    log_buffer.borrow_mut().clear();
+    app.tick_ms(10).unwrap();
+
+    // Should be 10*2=20 and 10*2*2=40
     let log = log_buffer.borrow();
-    assert!(log.iter().any(|line| line.contains("one")));
-    assert!(log.iter().any(|line| line.contains("two")));
-    assert!(log.iter().any(|line| line.contains("three")));
+    assert!(
+        log.iter().any(|line| line.contains("\"20\"")),
+        "Expected doubled=20 after update, got: {:?}",
+        *log
+    );
+    assert!(
+        log.iter().any(|line| line.contains("\"40\"")),
+        "Expected quadrupled=40 after update, got: {:?}",
+        *log
+    );
 }

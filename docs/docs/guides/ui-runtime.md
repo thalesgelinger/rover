@@ -41,8 +41,83 @@ end
 - `ru.column { ...children }`
 - `ru.row { ...children }`
 - `ru.view { ...children }`
+- `ru.stack { ...children }`
 
 Signals and derived values can be concatenated with strings (e.g., `"Count: " .. count`).
+
+TUI-only helpers are in `rover.tui`.
+
+See [TUI Runtime](./tui-runtime).
+
+## Modifiers
+
+`ru.mod` is a chainable style builder.
+
+```lua
+local ru = rover.ui
+local mod = ru.mod
+
+ru.view {
+  mod = mod:width("full"):height("full"):bg_color("surface"):padding("md"),
+}
+```
+
+- Order matters for wrapper ops (`bg_color`, `padding`, `border_*`).
+- You can extend globally:
+
+```lua
+function rover.ui.mod:debug()
+  return self:border_color("danger"):border_width(1)
+end
+```
+
+- Theme tokens are available at `rover.ui.theme` (`space.*`, `color.*`).
+
+### Theme
+
+Default shape:
+
+```lua
+rover.ui.theme = {
+  space = { none = 0, xs = 1, sm = 2, md = 3, lg = 4, xl = 6 },
+  color = {
+    surface = "#1f2937",
+    surface_alt = "#374151",
+    text = "#f9fafb",
+    border = "#6b7280",
+    accent = "#22c55e",
+    danger = "#ef4444",
+    warning = "#f59e0b",
+    info = "#3b82f6",
+  },
+}
+```
+
+Modify theme in 3 ways:
+
+```lua
+local ui = rover.ui
+
+-- merge patch (keeps missing keys)
+ui.extend_theme({
+  color = { accent = "#00d084" },
+  space = { sm = 3 },
+})
+
+-- replace theme
+ui.set_theme({
+  space = { none = 0, sm = 2, md = 4 },
+  color = { surface = "#101828", accent = "#00d084" },
+})
+
+-- assignment also replaces
+ui.theme = {
+  space = { sm = 2 },
+  color = { accent = "#00d084" },
+}
+```
+
+All modifiers resolve from current theme, including existing `ui.mod` chains.
 
 ## Conditional Rendering
 
@@ -59,19 +134,37 @@ end)
 ```lua
 ru.each(items, function(item, index)
   return ru.text { index .. ": " .. item }
-end, function(item, index)
-  return item .. index
 end)
 ```
 
 `items` can be a table or a signal/derived table.
 
+`ru.each` now reconciles rows by key:
+
+- if `key_fn` is provided, its return value is used as row identity
+- if omitted, index is used as fallback key
+- duplicate keys throw a runtime error
+
+For stable keys, rows are reused (render function is not re-called) and row values update through per-item signals.
+
+Behavior notes:
+
+- table items are exposed as reactive fields (`item.x`, `item.name`, etc.)
+- signal/derived items in arrays are passed through unchanged
+- for conditional UI, prefer `ru.when(item.flag, ...)` over plain Lua `if`
+
+`ru.each` is a transparent helper: it does not add a visual/container layer, its children are treated as direct children of the parent container.
+
 ## Tasks + Delay
 
 - `rover.task(fn)` creates a task
+- `rover.spawn(fn)` creates and starts a background task immediately
 - `rover.delay(ms)` yields inside tasks
+- `rover.interval(ms, fn)` runs `fn` now, then every `ms`
 - `rover.task.cancel(task)` stops a task
 - `rover.task.all(task1, task2, ...)` runs tasks in parallel
+- `task:pid()` returns task id
+- `task:kill()` cancels task (alias of `task:cancel()`)
 
 ## Cleanup
 

@@ -2,6 +2,7 @@ use anyhow::Result;
 use colored::Colorize;
 use rover_core::register_extra_modules;
 use rover_db::run_pending_migrations;
+use rover_tui::{TuiRenderer, TuiRunner};
 use rover_ui::app::App;
 use rover_ui::ui::StubRenderer;
 use std::io::BufRead;
@@ -9,7 +10,6 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::build::{BuildOptions, run_build};
-use crate::check;
 use crate::cli::Platform;
 
 pub fn run_file(
@@ -18,12 +18,12 @@ pub fn run_file(
     platform: Option<Platform>,
     args: Vec<String>,
 ) -> Result<()> {
-    check::pre_run_check(&file)?;
     pre_run_db_analysis(&file, yolo)?;
 
     match platform {
         None => rover_core::run(file.to_str().unwrap(), &args, false),
         Some(Platform::Stub) => run_with_stub(file),
+        Some(Platform::Tui) => run_with_tui(file),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
@@ -40,6 +40,24 @@ fn run_with_stub(file: PathBuf) -> Result<()> {
     app.run_script(&content)
         .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
     app.run().map_err(|e| anyhow::anyhow!("App error: {}", e))?;
+    Ok(())
+}
+
+fn run_with_tui(file: PathBuf) -> Result<()> {
+    let renderer =
+        TuiRenderer::new().map_err(|e| anyhow::anyhow!("Failed to create TUI renderer: {}", e))?;
+    let app = App::new(renderer).map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
+    let mut runner = TuiRunner::new(app);
+    register_extra_modules(runner.app().lua())?;
+    let content = std::fs::read_to_string(&file)
+        .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+    runner
+        .app_mut()
+        .run_script(&content)
+        .map_err(|e| anyhow::anyhow!("Script error: {}", e))?;
+    runner
+        .run()
+        .map_err(|e| anyhow::anyhow!("TUI error: {}", e))?;
     Ok(())
 }
 

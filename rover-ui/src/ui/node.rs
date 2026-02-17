@@ -9,6 +9,12 @@ impl NodeId {
     pub fn from_u32(id: u32) -> Self {
         NodeId(id)
     }
+
+    /// Get the underlying index (for Vec-based lookups in renderers)
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
 }
 
 /// Arena-based storage for UI nodes
@@ -93,6 +99,17 @@ pub enum UiNode {
     View {
         children: Vec<NodeId>,
     },
+    ScrollBox {
+        child: Option<NodeId>,
+        stick_bottom: bool,
+    },
+    Stack {
+        children: Vec<NodeId>,
+    },
+    FullScreen {
+        child: Option<NodeId>,
+        on_key: Option<EffectId>,
+    },
     Button {
         label: String,
         on_click: Option<EffectId>,
@@ -100,6 +117,7 @@ pub enum UiNode {
     Input {
         value: TextContent,
         on_change: Option<EffectId>,
+        on_submit: Option<EffectId>,
     },
     Checkbox {
         checked: bool,
@@ -111,6 +129,10 @@ pub enum UiNode {
     Conditional {
         condition_effect: EffectId,
         child: Option<NodeId>,
+    },
+    KeyArea {
+        child: Option<NodeId>,
+        on_key: Option<EffectId>,
     },
     List {
         items_effect: EffectId,
@@ -127,6 +149,8 @@ pub enum TextContent {
     Reactive {
         current_value: String,
         effect_id: EffectId,
+        /// Signal ID for two-way binding (e.g., input fields that update their signal)
+        signal_id: Option<super::super::signal::arena::SignalId>,
     },
 }
 
@@ -151,6 +175,14 @@ impl TextContent {
         match self {
             TextContent::Static(_) => None,
             TextContent::Reactive { effect_id, .. } => Some(*effect_id),
+        }
+    }
+
+    /// Get the signal ID if this is reactive text with a bound signal
+    pub fn signal_id(&self) -> Option<super::super::signal::arena::SignalId> {
+        match self {
+            TextContent::Static(_) => None,
+            TextContent::Reactive { signal_id, .. } => *signal_id,
         }
     }
 }
@@ -215,6 +247,7 @@ mod tests {
         let reactive_text = TextContent::Reactive {
             current_value: "Reactive".to_string(),
             effect_id: EffectId(0),
+            signal_id: None,
         };
         assert_eq!(reactive_text.value(), "Reactive");
     }
@@ -224,6 +257,7 @@ mod tests {
         let mut text = TextContent::Reactive {
             current_value: "Old".to_string(),
             effect_id: EffectId(0),
+            signal_id: None,
         };
 
         text.update("New".to_string());
