@@ -4,34 +4,34 @@ sidebar_position: 8
 
 # TUI Runtime
 
-Use `rover.ui` + `require("rover.tui")` for terminal-specific components.
+Use `rover.ui` for core nodes and `rover.tui` for terminal-specific components.
 
 ## Setup
 
 ```lua
-require("rover.tui")
 local ui = rover.ui
+local tui = rover.tui
 ```
 
 ## TUI Helpers
 
-- `ui.select { title = "...", items = table_or_signal }`
-- `ui.tab_select { value = signal, options = {...}, on_change = fn }`
-- `ui.scroll_box { content }`
-- `ui.textarea { value = signal_or_string, on_change = fn, on_submit = fn }`
-- `ui.nav_list { title, items, selected, query?, on_key? }`
-- `ui.separator { width = 40, char = "-" }`
-- `ui.badge { label = "...", tone = "info|success|warning|danger|neutral" }`
-- `ui.progress { value, max, width?, label? }`
-- `ui.paginator { page, total_pages, on_change?, on_key? }`
-- `ui.full_screen { child }` (alternate screen + full terminal canvas)
+- `tui.select { title = "...", items = table_or_signal }`
+- `tui.tab_select { value = signal, options = {...}, on_change = fn }`
+- `tui.scroll_box { content }`
+- `tui.textarea { value = signal_or_string, on_change = fn, on_submit = fn }`
+- `tui.nav_list { title, items, selected, query?, on_key? }`
+- `tui.separator { width = 40, char = "-" }`
+- `tui.badge { label = "...", tone = "info|success|warning|danger|neutral" }`
+- `tui.progress { value, max, width?, label? }`
+- `tui.paginator { page, total_pages, on_change?, on_key? }`
+- `tui.full_screen { child }` (alternate screen + full terminal canvas)
 
 ## Table Style
 
 Use positional content, not `child` / `children` props.
 
 ```lua
-ui.key_area {
+tui.key_area {
   on_key = function(key) end,
   content,
 }
@@ -50,15 +50,15 @@ Runner forwards key tokens. App handles behavior.
 ## App-Controlled Pattern
 
 ```lua
-require("rover.tui")
 local ui = rover.ui
+local tui = rover.tui
 
 function rover.render()
   local items = rover.signal({ "Parser", "TUI", "Docs" })
   local selected = rover.signal(1)
   local status = rover.signal("idle")
 
-  return ui.nav_list {
+  return tui.nav_list {
     title = "Tasks",
     items = items,
     selected = selected,

@@ -3,12 +3,12 @@
 ## Namespace Contract
 
 - `rover.ui`: portable primitives intended to work across TUI/web/mobile.
-- `require("rover.tui")`: TUI module that extends `rover.ui` with terminal-only components (`select`, `tab_select`, `scroll_box`, `textarea`).
+- `rover.tui`: TUI module namespace for terminal-only components (`select`, `tab_select`, `scroll_box`, `textarea`).
 
 Guard behavior:
 
 - Requiring `rover.tui` on non-`tui` target throws runtime error.
-- TUI-only APIs are unavailable until `require("rover.tui")` runs.
+- TUI-only APIs are unavailable outside the `rover.tui` namespace.
 
 ## Architecture Overview
 

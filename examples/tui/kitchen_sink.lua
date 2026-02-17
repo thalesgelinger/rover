@@ -1,6 +1,5 @@
-require("rover.tui")
-
 local ui = rover.ui
+local tui = rover.tui
 
 function rover.render()
   local status = rover.signal("ready")
@@ -79,11 +78,11 @@ function rover.render()
 
   return ui.column {
     ui.text { "tui kitchen sink" },
-    ui.badge { label = "all components", tone = "info" },
-    ui.separator { width = 60, char = "=" },
+    tui.badge { label = "all components", tone = "info" },
+    tui.separator { width = 60, char = "=" },
 
     ui.text { "tab_select" },
-    ui.tab_select {
+    tui.tab_select {
       value = tab,
       options = {
         { id = "all", label = "All" },
@@ -95,10 +94,10 @@ function rover.render()
       end,
     },
 
-    ui.separator { width = 60, char = "-" },
+    tui.separator { width = 60, char = "-" },
 
     ui.text { "nav_list (app-controlled keys + search)" },
-    ui.nav_list {
+    tui.nav_list {
       title = "Tasks",
       items = visible,
       selected = selected,
@@ -149,30 +148,30 @@ function rover.render()
       end,
     },
 
-    ui.separator { width = 60, char = "-" },
+    tui.separator { width = 60, char = "-" },
 
     ui.text { "scroll_box + select" },
-    ui.scroll_box {
-      ui.select {
+    tui.scroll_box {
+      tui.select {
         title = "Visible items",
         items = visible,
       },
     },
 
-    ui.separator { width = 60, char = "-" },
+    tui.separator { width = 60, char = "-" },
 
     ui.text { "textarea" },
-    ui.textarea {
+    tui.textarea {
       value = notes,
       on_submit = function(val)
         status.val = "notes submitted -> " .. tostring(val)
       end,
     },
 
-    ui.separator { width = 60, char = "-" },
+    tui.separator { width = 60, char = "-" },
 
     ui.text { "progress" },
-    ui.progress {
+    tui.progress {
       label = "Build",
       value = progress_value,
       max = progress_max,
@@ -203,10 +202,10 @@ function rover.render()
       },
     },
 
-    ui.separator { width = 60, char = "-" },
+    tui.separator { width = 60, char = "-" },
 
     ui.text { "paginator" },
-    ui.paginator {
+    tui.paginator {
       page = page,
       total_pages = total_pages,
       on_change = function(next)
@@ -214,9 +213,9 @@ function rover.render()
       end,
     },
 
-    ui.separator { width = 60, char = "=" },
+    tui.separator { width = 60, char = "=" },
 
     ui.text { status },
-    ui.badge { label = "keys: arrows, j/k, enter, esc, backspace, tab", tone = "neutral" },
+    tui.badge { label = "keys: arrows, j/k, enter, esc, backspace, tab", tone = "neutral" },
   }
 end

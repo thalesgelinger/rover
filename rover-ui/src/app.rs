@@ -535,14 +535,18 @@ mod tests {
 
         assert!(!ok);
         assert!(err.contains("require(\"rover.tui\") requires target=tui"));
+
+        let is_nil: bool = app.lua.load("return rover.tui == nil").eval().unwrap();
+        assert!(is_nil);
     }
 
     #[test]
-    fn test_require_rover_tui_attaches_components_to_rover_ui() {
+    fn test_tui_namespace_available_on_tui_target() {
         let renderer = TestTuiRenderer;
         let app = App::new(renderer).unwrap();
 
-        let (before_select, after_select, after_nav_list, after_progress): (
+        let (ui_select, ui_full_screen, tui_select, tui_nav_list, tui_progress): (
+            String,
             String,
             String,
             String,
@@ -551,25 +555,26 @@ mod tests {
             .lua
             .load(
                 r#"
-                local before_type = type(rover.ui.select)
-                require("rover.tui")
-                local after_select = type(rover.ui.select)
-                local after_nav_list = type(rover.ui.nav_list)
-                local after_progress = type(rover.ui.progress)
-                return before_type, after_select, after_nav_list, after_progress
+                local ui_select = type(rover.ui.select)
+                local ui_full_screen = type(rover.ui.full_screen)
+                local tui_select = type(rover.tui.select)
+                local tui_nav_list = type(rover.tui.nav_list)
+                local tui_progress = type(rover.tui.progress)
+                return ui_select, ui_full_screen, tui_select, tui_nav_list, tui_progress
             "#,
             )
             .eval()
             .unwrap();
 
-        assert_eq!(before_select, "nil");
-        assert_eq!(after_select, "function");
-        assert_eq!(after_nav_list, "function");
-        assert_eq!(after_progress, "function");
+        assert_eq!(ui_select, "nil");
+        assert_eq!(ui_full_screen, "nil");
+        assert_eq!(tui_select, "function");
+        assert_eq!(tui_nav_list, "function");
+        assert_eq!(tui_progress, "function");
     }
 
     #[test]
-    fn test_tui_components_render_nodes_after_require() {
+    fn test_tui_components_render_nodes_from_namespace() {
         let renderer = TestTuiRenderer;
         let app = App::new(renderer).unwrap();
 
@@ -577,8 +582,7 @@ mod tests {
             .lua
             .load(
                 r#"
-                require("rover.tui")
-                local node = rover.ui.select({
+                local node = rover.tui.select({
                     title = "x",
                     items = { "a", "b" },
                 })
@@ -599,10 +603,9 @@ mod tests {
         app.lua
             .load(
                 r#"
-                require("rover.tui")
                 _G.hit = rover.signal(0)
                 function rover.render()
-                    return rover.ui.full_screen {
+                    return rover.tui.full_screen {
                         on_key = function(key)
                             if key == "left" then
                                 _G.hit.val = _G.hit.val + 1

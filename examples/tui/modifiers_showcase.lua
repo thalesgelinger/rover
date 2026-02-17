@@ -1,6 +1,5 @@
-require "rover.tui"
-
 local ui = rover.ui
+local tui = rover.tui
 local mod = ui.mod
 
 local tick = rover.signal(0)
@@ -17,7 +16,7 @@ function rover.render()
 		return "warning"
 	end)
 
-	return ui.full_screen {
+	return tui.full_screen {
 		ui.view {
 			mod = mod:width("full"):height("full"):bg_color("surface"):padding "md",
 			ui.stack {

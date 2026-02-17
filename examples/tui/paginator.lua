@@ -1,6 +1,5 @@
-require("rover.tui")
-
 local ui = rover.ui
+local tui = rover.tui
 
 function rover.render()
   local page = rover.signal(1)
@@ -15,8 +14,8 @@ function rover.render()
 
   return ui.column {
     ui.text { "paginator example" },
-    ui.separator { width = 44, char = "=" },
-    ui.paginator {
+    tui.separator { width = 44, char = "=" },
+    tui.paginator {
       page = page,
       total_pages = total,
       on_change = function(next_page)
@@ -24,7 +23,7 @@ function rover.render()
       end,
     },
     ui.text { range },
-    ui.badge { label = "h/l works too", tone = "neutral" },
+    tui.badge { label = "h/l works too", tone = "neutral" },
     ui.text { status },
   }
 end

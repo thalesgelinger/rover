@@ -1,5 +1,5 @@
-require "rover.tui"
 local ru = rover.ui
+local tui = rover.tui
 local mod = rover.ui.mod
 local fill = "█"
 
@@ -153,7 +153,7 @@ end
 function rover.render()
 	start_once()
 
-	return ru.full_screen {
+	return tui.full_screen {
 		on_key = on_key,
 		ru.stack {
 			mod = mod:width("full"):height("full"):bg_color "surface",

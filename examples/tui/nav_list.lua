@@ -1,6 +1,5 @@
-require("rover.tui")
-
 local ui = rover.ui
+local tui = rover.tui
 
 function rover.render()
   local items = rover.signal({
@@ -47,12 +46,12 @@ function rover.render()
 
   return ui.column {
     ui.text { "nav_list example" },
-    ui.badge { label = "app-controlled", tone = "info" },
-    ui.separator { width = 48, char = "-" },
+    tui.badge { label = "app-controlled", tone = "info" },
+    tui.separator { width = 48, char = "-" },
     ui.text { rover.derive(function()
       return "query: " .. tostring(query.val)
     end) },
-    ui.nav_list {
+    tui.nav_list {
       title = "Tasks",
       items = visible,
       selected = selected,
@@ -103,7 +102,7 @@ function rover.render()
         end
       end,
     },
-    ui.separator { width = 48, char = "-" },
+    tui.separator { width = 48, char = "-" },
     ui.text { status },
     ui.text { "tokens: up/down/home/end/enter/esc/backspace/char:*" },
     ui.text { "vim: j/k" },

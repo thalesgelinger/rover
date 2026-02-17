@@ -38,6 +38,18 @@ fn get_ui_user_value_table(lua: &mlua::Lua) -> mlua::Result<Table> {
     ui_ud.user_value()
 }
 
+fn ensure_tui_target(lua: &mlua::Lua) -> mlua::Result<()> {
+    let target = crate::lua::helpers::get_target(lua)?;
+    if target == crate::platform::UiTarget::Tui {
+        return Ok(());
+    }
+
+    Err(mlua::Error::RuntimeError(format!(
+        "TUI node constructor requires target=tui, got {}",
+        target.as_str()
+    )))
+}
+
 impl UserData for LuaUi {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_function("text", |lua, props: Table| {
@@ -307,8 +319,9 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
-        // rover.ui.scroll_box({ child or [1], stick_bottom = bool })
-        methods.add_function("scroll_box", |lua, props: Table| {
+        // Internal TUI-only constructor (exposed via rover.tui.scroll_box)
+        methods.add_function("__tui_scroll_box", |lua, props: Table| {
+            ensure_tui_target(lua)?;
             let registry_rc = get_registry_rc(lua)?;
 
             let child = match props.get::<Value>(1) {
@@ -344,8 +357,9 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
-        // rover.ui.full_screen({ on_key = function(key) end, child })
-        methods.add_function("full_screen", |lua, props: Table| {
+        // Internal TUI-only constructor (exposed via rover.tui.full_screen)
+        methods.add_function("__tui_full_screen", |lua, props: Table| {
+            ensure_tui_target(lua)?;
             let registry_rc = get_registry_rc(lua)?;
             let runtime = crate::lua::helpers::get_runtime(lua)?;
 
@@ -374,8 +388,9 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
-        // rover.ui.key_area({ on_key = function(key) end, node })
-        methods.add_function("key_area", |lua, props: Table| {
+        // Internal TUI-only constructor (exposed via rover.tui.key_area)
+        methods.add_function("__tui_key_area", |lua, props: Table| {
+            ensure_tui_target(lua)?;
             let registry_rc = get_registry_rc(lua)?;
             let runtime = crate::lua::helpers::get_runtime(lua)?;
 

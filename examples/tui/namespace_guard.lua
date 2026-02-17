@@ -1,6 +1,5 @@
-require("rover.tui")
-
 local ui = rover.ui
+local tui = rover.tui
 
 function rover.render()
   local loaded = rover.signal(true)
@@ -11,7 +10,7 @@ function rover.render()
   local items = rover.signal({
     { id = "all", label = "Fix parser" },
     { id = "all", label = "Ship tui module" },
-    { id = "done", label = "Add require('rover.tui')" },
+    { id = "done", label = "Use rover.tui namespace" },
   })
 
   local visible = rover.derive(function()
@@ -27,9 +26,9 @@ function rover.render()
 
   local load_label = rover.derive(function()
     if loaded.val then
-      return "rover.tui loaded: rover.ui extended"
+      return "rover.tui available"
     end
-    return "rover.tui not loaded"
+    return "rover.tui missing"
   end)
 
   return ui.column {
@@ -46,13 +45,13 @@ function rover.render()
 
     ui.when(show_help, function()
       return ui.column {
-        ui.text { "require(\"rover.tui\") adds TUI APIs to rover.ui" },
-        ui.text { "added APIs: select, tab_select, scroll_box, textarea, nav_list, separator, badge, progress, paginator" },
+        ui.text { "TUI APIs live under rover.tui" },
+        ui.text { "APIs: select, tab_select, scroll_box, textarea, nav_list, separator, badge, progress, paginator" },
       }
     end),
 
     ui.text { "tabs" },
-    ui.tab_select {
+    tui.tab_select {
       value = tab,
       options = {
         { id = "all", label = "All" },
@@ -64,15 +63,15 @@ function rover.render()
     },
 
     ui.text { "items" },
-    ui.scroll_box {
-      ui.select {
+    tui.scroll_box {
+      tui.select {
         title = "Task list",
         items = visible,
       },
     },
 
     ui.text { "notes" },
-    ui.textarea {
+    tui.textarea {
       value = notes,
       on_submit = function(val)
         status.val = "submitted: " .. tostring(val)

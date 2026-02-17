@@ -45,7 +45,7 @@ end
 
 Signals and derived values can be concatenated with strings (e.g., `"Count: " .. count`).
 
-TUI-only helpers are in `require("rover.tui")`.
+TUI-only helpers are in `rover.tui`.
 
 See [TUI Runtime](./tui-runtime).
 

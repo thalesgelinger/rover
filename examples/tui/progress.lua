@@ -1,6 +1,5 @@
-require("rover.tui")
-
 local ui = rover.ui
+local tui = rover.tui
 
 function rover.render()
   local value = rover.signal(0)
@@ -30,7 +29,7 @@ function rover.render()
 
   return ui.column {
     ui.text { "progress example" },
-    ui.progress {
+    tui.progress {
       label = "build",
       value = value,
       max = max,

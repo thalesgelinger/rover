@@ -10,7 +10,7 @@ use crate::platform::UiTarget;
 use crate::platform::ViewportSignals;
 use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
-use mlua::{AnyUserData, Function, Lua, Result, Table, UserData, Value};
+use mlua::{Function, Lua, Result, Table, UserData, Value};
 use signal::LuaSignal;
 
 /// Marker for delayed coroutine execution
@@ -27,6 +27,9 @@ impl UserData for DelayMarker {
 
 /// Register the UI module with Lua (adds rover.signal, rover.derive, rover.effect, etc.)
 pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
+    // Ensure Lua scripts can resolve global `rover` during module setup.
+    lua.globals().set("rover", rover_table.clone())?;
+
     // rover.signal(value) - create a signal
     let signal_fn = lua.create_function(|lua, value: Value| {
         let runtime = crate::lua::helpers::get_runtime(lua)?;
@@ -159,6 +162,11 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     lua_ui.set_user_value(uv)?;
     rover_table.set("ui", lua_ui)?;
 
+    if crate::lua::helpers::get_target(lua)? == UiTarget::Tui {
+        let tui_module = create_tui_module(lua)?;
+        rover_table.set("tui", tui_module)?;
+    }
+
     register_tui_preload_module(lua)?;
 
     Ok(())
@@ -179,39 +187,22 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
             }
 
             let rover_table: Table = lua.globals().get("rover")?;
-            let ui_ud: AnyUserData = rover_table.get("ui")?;
-            let uv: Table = ui_ud.user_value()?;
-
-            let module: Table = lua
-                .load(include_str!("tui_module.lua"))
-                .set_name("rover_tui_module.lua")
-                .eval()?;
-
-            let select_fn: Function = module.get("select")?;
-            let tab_select_fn: Function = module.get("tab_select")?;
-            let scroll_box_fn: Function = module.get("scroll_box")?;
-            let textarea_fn: Function = module.get("textarea")?;
-            let nav_list_fn: Function = module.get("nav_list")?;
-            let separator_fn: Function = module.get("separator")?;
-            let badge_fn: Function = module.get("badge")?;
-            let progress_fn: Function = module.get("progress")?;
-            let paginator_fn: Function = module.get("paginator")?;
-            let full_screen_fn: Function = module.get("full_screen")?;
-
-            uv.set("select", select_fn.clone())?;
-            uv.set("tab_select", tab_select_fn.clone())?;
-            uv.set("scroll_box", scroll_box_fn.clone())?;
-            uv.set("textarea", textarea_fn.clone())?;
-            uv.set("nav_list", nav_list_fn.clone())?;
-            uv.set("separator", separator_fn.clone())?;
-            uv.set("badge", badge_fn.clone())?;
-            uv.set("progress", progress_fn.clone())?;
-            uv.set("paginator", paginator_fn.clone())?;
-            uv.set("full_screen", full_screen_fn.clone())?;
-
-            Ok(module)
+            match rover_table.get::<Value>("tui")? {
+                Value::Table(module) => Ok(module),
+                _ => {
+                    let module = create_tui_module(lua)?;
+                    rover_table.set("tui", module.clone())?;
+                    Ok(module)
+                }
+            }
         })?,
     )?;
 
     Ok(())
+}
+
+fn create_tui_module(lua: &Lua) -> Result<Table> {
+    lua.load(include_str!("tui/module.lua"))
+        .set_name("rover_tui_module.lua")
+        .eval()
 }

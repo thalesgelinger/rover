@@ -133,7 +133,12 @@ end
 
 function M.scroll_box(props)
   props = props or {}
-  return ui.scroll_box(props)
+  return ui.__tui_scroll_box(props)
+end
+
+function M.key_area(props)
+  props = props or {}
+  return ui.__tui_key_area(props)
 end
 
 function M.textarea(props)
@@ -246,7 +251,7 @@ function M.paginator(props)
     ui.text { ">" },
   }
 
-  return ui.key_area {
+  return ui.__tui_key_area {
     on_key = function(key)
       if type(on_key) == "function" then
         on_key(key)
@@ -382,7 +387,7 @@ function M.nav_list(props)
 
   local content = ui.column(children)
 
-  return ui.key_area {
+  return ui.__tui_key_area {
     on_key = function(key)
       if type(on_key) == "function" then
         on_key(key)
@@ -401,7 +406,7 @@ function M.full_screen(props)
   if child == nil then
     child = props.child
   end
-  return ui.full_screen {
+  return ui.__tui_full_screen {
     on_key = on_key,
     child,
   }

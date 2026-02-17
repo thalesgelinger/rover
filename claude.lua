@@ -1,4 +1,3 @@
-require "rover.tui"
 local ru = rover.ui
 local mod = ru.mod
 

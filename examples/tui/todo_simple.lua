@@ -1,6 +1,5 @@
-require "rover.tui"
-
 local ui = rover.ui
+local tui = rover.tui
 local PAGE_SIZE = 5
 
 local function separator()
@@ -11,7 +10,7 @@ local function separator()
 	end)
 
 	return ui.column {
-		ui.separator { width = width, char = "-" },
+		tui.separator { width = width, char = "-" },
         ui.text { width }
 	}
 end
@@ -150,11 +149,11 @@ function rover.render()
 
 	return ui.column {
 		ui.text { "todo app (simple)" },
-		ui.badge { label = "a add | e edit", tone = "info" },
+		tui.badge { label = "a add | e edit", tone = "info" },
 		ui.text { "visible: " .. range_text.val },
 		separator(),
 
-		ui.nav_list {
+		tui.nav_list {
 			title = "items",
 			items = visible_items,
 			selected = selected_visible,
@@ -196,7 +195,7 @@ function rover.render()
 
 		ui.when(show_input, function()
 			return ui.column {
-				ui.separator { width = 50, char = "-" },
+				tui.separator { width = 50, char = "-" },
 				ui.text {
 					rover.derive(function()
 						if mode.val == "adding" then
@@ -207,7 +206,7 @@ function rover.render()
 				},
 				ui.row {
 					ui.text { "> " },
-					ui.textarea {
+					tui.textarea {
 						value = draft,
 						on_change = function(val)
 							draft.val = val
@@ -221,7 +220,7 @@ function rover.render()
 			}
 		end),
 
-		ui.separator { width = 50, char = "-" },
+		tui.separator { width = 50, char = "-" },
 		ui.text { status },
 	}
 end
