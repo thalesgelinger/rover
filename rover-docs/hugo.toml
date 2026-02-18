@@ -1,0 +1,18 @@
+baseURL = 'https://rover.lu/'
+languageCode = 'en-us'
+title = 'Rover'
+
+[module]
+  proxy = "direct"
+
+  [module.hugoVersion]
+    extended = true
+    min = "0.155.3"
+
+  [[module.imports]]
+    path = "github.com/google/docsy"
+    disable = false
+
+  [[module.imports]]
+    path = "github.com/google/docsy/dependencies"
+    disable = false

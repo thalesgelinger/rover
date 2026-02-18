@@ -1,0 +1,3 @@
+[submodule "rover-docs/themes/docsy"]
+	path = rover-docs/themes/docsy
+	url = https://github.com/google/docsy
