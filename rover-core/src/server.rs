@@ -5,6 +5,8 @@ use rover_parser::analyze;
 use rover_server::to_json::ToJson;
 use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerConfig, WsRoute};
 use rover_types::ValidationErrors;
+use rover_ui::SharedSignalRuntime;
+use rover_ui::scheduler::SharedScheduler;
 
 use crate::html::{get_rover_html, render_template_with_components};
 use crate::{app_type::AppType, auto_table::AutoTable};
@@ -333,7 +335,18 @@ impl Server for Table {
             None
         };
 
-        rover_server::run(lua.clone(), routes, config, openapi_spec);
+        let runtime = lua.app_data_ref::<SharedSignalRuntime>().map(|r| r.clone());
+        let scheduler = lua.app_data_ref::<SharedScheduler>().map(|s| s.clone());
+
+        let server_lua = lua.clone();
+        if let Some(runtime) = runtime {
+            server_lua.set_app_data(runtime);
+        }
+        if let Some(scheduler) = scheduler {
+            server_lua.set_app_data(scheduler);
+        }
+
+        rover_server::run(server_lua, routes, config, openapi_spec);
         Ok(())
     }
 
@@ -378,8 +391,7 @@ impl Server for Table {
 
                         // WebSocket endpoint: function api.chat.ws(ws) ... end
                         if key_string == "ws" {
-                            let ws_route =
-                                extract_ws_endpoint(lua, &func, path, param_names)?;
+                            let ws_route = extract_ws_endpoint(lua, &func, path, param_names)?;
                             ws_routes.push(ws_route);
                             continue;
                         }

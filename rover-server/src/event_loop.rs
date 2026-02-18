@@ -4,12 +4,15 @@ use std::io;
 use std::mem;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Function, Lua, Thread, ThreadStatus, Value};
+use rover_ui::SharedSignalRuntime;
+use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
+use rover_ui::scheduler::SharedScheduler;
 use slab::Slab;
 use tracing::{debug, info, warn};
 
@@ -125,7 +128,8 @@ impl EventLoop {
         let mut events = Events::with_capacity(1024);
 
         loop {
-            self.poll.poll(&mut events, None)?;
+            let poll_timeout = self.next_poll_timeout().or(Some(Duration::from_millis(50)));
+            self.poll.poll(&mut events, poll_timeout)?;
 
             for event in events.iter() {
                 match event.token() {
@@ -134,11 +138,78 @@ impl EventLoop {
                 }
             }
 
+            self.tick_lua_scheduler();
+
             self.check_timeouts()?;
 
             if !self.yielded_coroutines.is_empty() {
                 self.resume_yielded_coroutines()?;
             }
+        }
+    }
+
+    #[inline]
+    fn next_poll_timeout(&self) -> Option<Duration> {
+        let scheduler = match self.lua.app_data_ref::<SharedScheduler>() {
+            Some(s) => s.clone(),
+            None => return None,
+        };
+
+        let next_wake = scheduler.borrow().next_wake_time()?;
+        let now = Instant::now();
+        if next_wake <= now {
+            Some(Duration::from_millis(0))
+        } else {
+            Some(next_wake.duration_since(now))
+        }
+    }
+
+    fn tick_lua_scheduler(&mut self) {
+        let scheduler = match self.lua.app_data_ref::<SharedScheduler>() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let runtime = match self.lua.app_data_ref::<SharedSignalRuntime>() {
+            Some(r) => r.clone(),
+            None => return,
+        };
+
+        let ready_ids = scheduler.borrow_mut().tick(Instant::now());
+        if ready_ids.is_empty() {
+            return;
+        }
+
+        let mut resumed_any = false;
+
+        for id in ready_ids {
+            if scheduler.borrow().is_cancelled(id) {
+                continue;
+            }
+
+            let pending = match scheduler.borrow_mut().take_pending(id) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            resumed_any = true;
+
+            match run_coroutine_with_delay(&self.lua, &runtime, &pending.thread, Value::Nil) {
+                Ok(CoroutineResult::Completed) => {}
+                Ok(CoroutineResult::YieldedDelay { delay_ms }) => {
+                    scheduler
+                        .borrow_mut()
+                        .schedule_delay_with_id(id, pending.thread, delay_ms);
+                }
+                Ok(CoroutineResult::YieldedOther) => {}
+                Err(e) => {
+                    warn!("scheduled task error: {}", e);
+                }
+            }
+        }
+
+        if resumed_any {
+            self.reregister_ws_writers();
         }
     }
 
@@ -290,15 +361,18 @@ impl EventLoop {
         let keep_alive = conn.keep_alive;
 
         // ── Check for WebSocket upgrade ──
-        let has_upgrade = conn.header_offsets.iter().any(|&(name_off, name_len, val_off, val_len)| {
-            let name = unsafe {
-                std::str::from_utf8_unchecked(&buf_ref[name_off..name_off + name_len])
-            };
-            let val = unsafe {
-                std::str::from_utf8_unchecked(&buf_ref[val_off..val_off + val_len])
-            };
-            name.eq_ignore_ascii_case("upgrade") && val.eq_ignore_ascii_case("websocket")
-        });
+        let has_upgrade =
+            conn.header_offsets
+                .iter()
+                .any(|&(name_off, name_len, val_off, val_len)| {
+                    let name = unsafe {
+                        std::str::from_utf8_unchecked(&buf_ref[name_off..name_off + name_len])
+                    };
+                    let val = unsafe {
+                        std::str::from_utf8_unchecked(&buf_ref[val_off..val_off + val_len])
+                    };
+                    name.eq_ignore_ascii_case("upgrade") && val.eq_ignore_ascii_case("websocket")
+                });
 
         if has_upgrade {
             let path_owned = path.to_string();
@@ -497,12 +571,7 @@ impl EventLoop {
 
     // ── WebSocket upgrade handling ──
 
-    fn handle_ws_upgrade(
-        &mut self,
-        conn_idx: usize,
-        path: &str,
-        keep_alive: bool,
-    ) -> Result<()> {
+    fn handle_ws_upgrade(&mut self, conn_idx: usize, path: &str, keep_alive: bool) -> Result<()> {
         // Match against WS router
         let (endpoint_idx, _params) = match self.router.match_ws_route(path) {
             Some((idx, p)) => (idx, p),
@@ -511,7 +580,12 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(404, b"WebSocket route not found", Some("text/plain"), buf);
+                conn.set_response_with_buf(
+                    404,
+                    b"WebSocket route not found",
+                    Some("text/plain"),
+                    buf,
+                );
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
@@ -564,7 +638,10 @@ impl EventLoop {
             let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
         }
 
-        info!("WS upgrade initiated for conn {} -> endpoint #{}", conn_idx, endpoint_idx);
+        info!(
+            "WS upgrade initiated for conn {} -> endpoint #{}",
+            conn_idx, endpoint_idx
+        );
 
         Ok(())
     }
@@ -579,7 +656,16 @@ impl EventLoop {
         };
 
         // Collect info needed for join handler before upgrading
-        let (buf, header_offsets, query_offsets, params, path_off, path_len, method_off, method_len) = {
+        let (
+            buf,
+            header_offsets,
+            query_offsets,
+            params,
+            path_off,
+            path_len,
+            method_off,
+            method_len,
+        ) = {
             let conns = self.connections.borrow();
             let conn = &conns[conn_idx];
             let buf = if !conn.parsed_buf.is_empty() {
@@ -595,7 +681,16 @@ impl EventLoop {
             let (po, pl) = conn.path_offset.unwrap_or((0, 0));
             let (mo, ml) = conn.method_offset.unwrap_or((0, 0));
             // For now, pass empty query/params (upgrade request already parsed)
-            (buf, header_offsets, Vec::new(), Vec::new(), po as u16, pl as u16, mo as u16, ml as u8)
+            (
+                buf,
+                header_offsets,
+                Vec::new(),
+                Vec::new(),
+                po as u16,
+                pl as u16,
+                mo as u16,
+                ml as u8,
+            )
         };
 
         // Upgrade the connection
@@ -607,7 +702,9 @@ impl EventLoop {
         }
 
         // Track the connection
-        self.ws_manager.borrow_mut().add_connection(endpoint_idx, conn_idx);
+        self.ws_manager
+            .borrow_mut()
+            .add_connection(endpoint_idx, conn_idx);
 
         // Call ws.join(ctx) handler
         let mgr = self.ws_manager.borrow();
@@ -624,7 +721,8 @@ impl EventLoop {
                 method_len,
                 path_off,
                 path_len,
-                0, 0, // no body
+                0,
+                0, // no body
                 header_offsets,
                 query_offsets,
                 &params,
@@ -660,9 +758,15 @@ impl EventLoop {
             }
 
             self.request_pool.release(ctx_idx);
+
+            // Join handler may have queued frames for other WS connections.
+            self.reregister_ws_writers();
         }
 
-        info!("WS connection {} upgraded to endpoint #{}", conn_idx, endpoint_idx);
+        info!(
+            "WS connection {} upgraded to endpoint #{}",
+            conn_idx, endpoint_idx
+        );
         Ok(())
     }
 
@@ -707,11 +811,22 @@ impl EventLoop {
                 let conns = self.connections.borrow();
                 let conn = &conns[conn_idx];
                 let unprocessed = &conn.read_buf[..conn.read_pos];
-                ws_frame::try_parse_frame(unprocessed)
-                    .map(|h| (h.fin, h.opcode, h.masked, h.mask, h.payload_offset, h.payload_len, h.total_frame_len))
+                ws_frame::try_parse_frame(unprocessed).map(|h| {
+                    (
+                        h.fin,
+                        h.opcode,
+                        h.masked,
+                        h.mask,
+                        h.payload_offset,
+                        h.payload_len,
+                        h.total_frame_len,
+                    )
+                })
             };
 
-            let Some((fin, opcode, masked, mask, payload_offset, payload_len, total_frame_len)) = frame_result else {
+            let Some((fin, opcode, masked, mask, payload_offset, payload_len, total_frame_len)) =
+                frame_result
+            else {
                 break; // incomplete frame, wait for more data
             };
 
@@ -780,7 +895,10 @@ impl EventLoop {
                     let mut conns = self.connections.borrow_mut();
                     if let Some(conn) = conns.get_mut(conn_idx) {
                         conn.queue_ws_frame(frame);
-                        let _ = conn.reregister(&self.poll.registry(), Interest::READABLE | Interest::WRITABLE);
+                        let _ = conn.reregister(
+                            &self.poll.registry(),
+                            Interest::READABLE | Interest::WRITABLE,
+                        );
                     }
                 }
                 WsOpcode::Pong => {
@@ -790,7 +908,8 @@ impl EventLoop {
                     // Send close frame back if we haven't already
                     let should_close = {
                         let conns = self.connections.borrow();
-                        conns.get(conn_idx)
+                        conns
+                            .get(conn_idx)
                             .and_then(|c| c.ws_data.as_ref())
                             .map(|ws| !ws.close_sent)
                             .unwrap_or(false)
@@ -920,7 +1039,8 @@ impl EventLoop {
 
         let endpoint_idx = {
             let conns = self.connections.borrow();
-            conns.get(conn_idx)
+            conns
+                .get(conn_idx)
                 .and_then(|c| c.ws_data.as_ref())
                 .map(|ws| ws.endpoint_idx)
                 .unwrap_or(0)
@@ -935,12 +1055,16 @@ impl EventLoop {
                         self.lua.registry_value(key).ok()
                     } else {
                         // Try "message" catch-all
-                        endpoint.event_handlers.get("message")
+                        endpoint
+                            .event_handlers
+                            .get("message")
                             .and_then(|key| self.lua.registry_value(key).ok())
                     }
                 } else {
                     // No type field, try "message" catch-all
-                    endpoint.event_handlers.get("message")
+                    endpoint
+                        .event_handlers
+                        .get("message")
                         .and_then(|key| self.lua.registry_value(key).ok())
                 }
             } else {
@@ -949,12 +1073,17 @@ impl EventLoop {
         };
 
         let Some(handler_fn) = handler_fn else {
-            debug!("WS no handler for event {:?} on endpoint {}", event_name, endpoint_idx);
+            debug!(
+                "WS no handler for event {:?} on endpoint {}",
+                event_name, endpoint_idx
+            );
             return Ok(());
         };
 
         // Set WsManager context
-        self.ws_manager.borrow_mut().set_context(conn_idx, endpoint_idx);
+        self.ws_manager
+            .borrow_mut()
+            .set_context(conn_idx, endpoint_idx);
 
         // Get the connection state for the handler
         let state_value: Value = {
@@ -1003,24 +1132,8 @@ impl EventLoop {
             }
         }
 
-        // If handler queued frames, make sure we're registered for writing
-        {
-            let conns = self.connections.borrow();
-            if let Some(conn) = conns.get(conn_idx) {
-                if let Some(ref ws) = conn.ws_data {
-                    if !ws.write_queue.is_empty() {
-                        drop(conns);
-                        let mut conns = self.connections.borrow_mut();
-                        if let Some(conn) = conns.get_mut(conn_idx) {
-                            let _ = conn.reregister(
-                                &self.poll.registry(),
-                                Interest::READABLE | Interest::WRITABLE,
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        // Handler may have queued frames for sender and/or other WS connections.
+        self.reregister_ws_writers();
 
         Ok(())
     }
@@ -1037,7 +1150,9 @@ impl EventLoop {
         };
 
         // Set context for leave handler
-        self.ws_manager.borrow_mut().set_context(conn_idx, endpoint_idx);
+        self.ws_manager
+            .borrow_mut()
+            .set_context(conn_idx, endpoint_idx);
 
         // Call leave handler
         let leave_fn: Option<Function> = {
@@ -1051,7 +1166,8 @@ impl EventLoop {
         if let Some(leave_fn) = leave_fn {
             let state_value: Value = {
                 let conns = self.connections.borrow();
-                conns.get(conn_idx)
+                conns
+                    .get(conn_idx)
                     .and_then(|c| c.ws_data.as_ref())
                     .and_then(|ws| ws.state_key.as_ref())
                     .and_then(|key| self.lua.registry_value(key).ok())
@@ -1070,14 +1186,21 @@ impl EventLoop {
             }
         }
 
+        // Leave handler may have queued frames for other WS connections.
+        self.reregister_ws_writers();
+
         // Unsubscribe from all topics
         {
             let conns = self.connections.borrow();
-            self.ws_manager.borrow_mut().unsubscribe_all(conn_idx, &conns);
+            self.ws_manager
+                .borrow_mut()
+                .unsubscribe_all(conn_idx, &conns);
         }
 
         // Remove from endpoint tracking
-        self.ws_manager.borrow_mut().remove_connection(endpoint_idx, conn_idx);
+        self.ws_manager
+            .borrow_mut()
+            .remove_connection(endpoint_idx, conn_idx);
 
         // Remove state from Lua registry
         {
@@ -1100,7 +1223,10 @@ impl EventLoop {
             }
         }
 
-        info!("WS connection {} disconnected from endpoint #{}", conn_idx, endpoint_idx);
+        info!(
+            "WS connection {} disconnected from endpoint #{}",
+            conn_idx, endpoint_idx
+        );
         Ok(())
     }
 
@@ -1113,7 +1239,11 @@ impl EventLoop {
             // Skip WS connections -- they're long-lived
             {
                 let conns = self.connections.borrow();
-                if conns.get(conn_idx).map(|c| c.is_websocket()).unwrap_or(false) {
+                if conns
+                    .get(conn_idx)
+                    .map(|c| c.is_websocket())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
             }
@@ -1137,6 +1267,35 @@ impl EventLoop {
         }
 
         Ok(())
+    }
+
+    #[inline]
+    fn reregister_ws_writers(&mut self) {
+        let pending: Vec<usize> = {
+            let conns = self.connections.borrow();
+            conns
+                .iter()
+                .filter_map(|(idx, conn)| {
+                    conn.ws_data
+                        .as_ref()
+                        .and_then(|ws| (!ws.write_queue.is_empty()).then_some(idx))
+                })
+                .collect()
+        };
+
+        if pending.is_empty() {
+            return;
+        }
+
+        let mut conns = self.connections.borrow_mut();
+        for idx in pending {
+            if let Some(conn) = conns.get_mut(idx) {
+                let _ = conn.reregister(
+                    &self.poll.registry(),
+                    Interest::READABLE | Interest::WRITABLE,
+                );
+            }
+        }
     }
 
     fn resume_yielded_coroutines(&mut self) -> Result<()> {

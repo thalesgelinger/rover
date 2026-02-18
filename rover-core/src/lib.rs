@@ -13,6 +13,11 @@ use html::create_html_module;
 use http::create_http_module;
 use io::create_io_module;
 use rover_db::create_db_module;
+use rover_ui::platform::{
+    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiRuntimeConfig, UiTarget, ViewportSignals,
+};
+use rover_ui::scheduler::{Scheduler, SharedScheduler};
+use rover_ui::signal::SignalValue;
 use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module, ui::UiRegistry};
 use server::{AppServer, Server};
 use std::cell::RefCell;
@@ -50,11 +55,26 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
 
     // Initialize signal runtime (interior mutability now handled by runtime itself)
     let runtime: SharedSignalRuntime = Rc::new(SignalRuntime::new());
-    lua.set_app_data(runtime);
+    lua.set_app_data(runtime.clone());
 
     // Initialize UI registry for reactive UI (wrapped in Rc<RefCell> for interior mutability)
     let ui_registry = Rc::new(RefCell::new(UiRegistry::new()));
     lua.set_app_data(ui_registry);
+
+    // Initialize scheduler for rover.task/rover.interval runtime support
+    let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
+    lua.set_app_data(scheduler);
+
+    // Initialize UI runtime config with TUI as default (needed for server/scripts)
+    let runtime_config = UiRuntimeConfig::new(UiTarget::Tui);
+    lua.set_app_data(runtime_config);
+
+    // Initialize viewport signals with defaults
+    let viewport_signals = ViewportSignals {
+        width: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_WIDTH as i64)),
+        height: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_HEIGHT as i64)),
+    };
+    lua.set_app_data(viewport_signals);
 
     let rover = lua.create_table()?;
 
@@ -329,11 +349,26 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
 
     // Initialize signal runtime
     let runtime: SharedSignalRuntime = Rc::new(SignalRuntime::new());
-    lua.set_app_data(runtime);
+    lua.set_app_data(runtime.clone());
 
     // Initialize UI registry
     let ui_registry = Rc::new(RefCell::new(UiRegistry::new()));
     lua.set_app_data(ui_registry);
+
+    // Initialize scheduler for rover.task/rover.interval runtime support
+    let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
+    lua.set_app_data(scheduler);
+
+    // Initialize UI runtime config with TUI as default (needed for server/scripts)
+    let runtime_config = UiRuntimeConfig::new(UiTarget::Tui);
+    lua.set_app_data(runtime_config);
+
+    // Initialize viewport signals with defaults
+    let viewport_signals = ViewportSignals {
+        width: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_WIDTH as i64)),
+        height: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_HEIGHT as i64)),
+    };
+    lua.set_app_data(viewport_signals);
 
     let rover = lua.create_table()?;
 
