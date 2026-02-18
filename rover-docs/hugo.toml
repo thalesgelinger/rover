@@ -2,6 +2,19 @@ baseURL = 'https://rover.lu/'
 languageCode = 'en-us'
 title = 'Rover'
 
+[params]
+  [params.ui]
+    showLightDarkModeMenu = true
+    sidebar_menu_compact = true
+    sidebar_menu_foldable = true
+    ul_show = 1
+    sidebar_menu_truncate = 200
+    breadcrumb_disable = false
+    taxonomy_breadcrumb_disable = true
+
+    [params.ui.scrollSpy]
+      rootMargin = "0px 0px -15%"
+
 [module]
   proxy = "direct"
 
