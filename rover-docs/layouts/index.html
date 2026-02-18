@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rover - The Lua Runtime for Full-Stack Applications</title>
+    <meta
+      name="description"
+      content="High-performance Lua runtime for building full-stack applications. Backend server, frontend UI, mobile, and desktop - all in Lua."
+    />
+    <meta name="theme-color" content="#1a1a1f" />
+    <link rel="icon" type="image/svg+xml" href="/img/rover-icon.svg" />
+    <link rel="stylesheet" href="/css/landing.css" />
+    <link rel="stylesheet" href="/css/site-theme.css" />
+    <script src="/vendor/lucide.min.js" defer></script>
+    <script src="/js/site-header.js" defer></script>
+    <script defer src="/js/landing.js"></script>
+  </head>
+  <body>
+    <main class="min-h-screen bg-background text-foreground">
+      {{ partial "landing/navbar.html" . }}
+      {{ partial "landing/hero.html" . }}
+      {{ partial "landing/separator.html" . }}
+      {{ partial "landing/features.html" . }}
+      {{ partial "landing/separator.html" . }}
+      {{ partial "landing/code-showcase.html" . }}
+      {{ partial "landing/separator.html" . }}
+      {{ partial "landing/roadmap.html" . }}
+      {{ partial "landing/footer.html" . }}
+    </main>
+  </body>
+</html>

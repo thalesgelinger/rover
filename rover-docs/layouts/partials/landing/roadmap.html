@@ -1,0 +1,83 @@
+<section id="roadmap" class="relative px-6 py-32">
+  <div class="mx-auto max-w-6xl">
+    <div class="mb-16 max-w-2xl">
+      <p class="mb-3 font-mono text-sm tracking-wide text-primary">// roadmap</p>
+      <h2 class="mb-4 text-balance text-3xl font-bold tracking-tight text-foreground md:text-4xl">Where we're headed</h2>
+      <p class="text-lg leading-relaxed text-muted-foreground">Rover is actively being developed. Here's what's done and what's coming.</p>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div class="relative rounded-lg border border-border bg-card p-6">
+        <div class="mb-4 flex items-center gap-3">
+          <div class="h-2.5 w-2.5 rounded-full bg-primary"></div>
+          <span class="font-mono text-xs text-muted-foreground">Phase 1</span>
+        </div>
+        <h3 class="mb-1 text-lg font-semibold text-foreground">Backend Runtime</h3>
+        <div class="mb-4 flex items-center gap-1.5">
+          <i data-lucide="check" class="h-3 w-3 text-primary"></i>
+          <span class="font-mono text-xs text-primary">Complete</span>
+        </div>
+        <ul class="flex flex-col gap-2.5">
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>HTTP server with routing</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Middleware pipeline</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>JSON request/response</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Zero-copy response handling</li>
+        </ul>
+      </div>
+
+      <div class="relative rounded-lg border border-border bg-card p-6">
+        <div class="mb-4 flex items-center gap-3">
+          <div class="h-2.5 w-2.5 animate-pulse rounded-full bg-primary"></div>
+          <span class="font-mono text-xs text-muted-foreground">Phase 2</span>
+        </div>
+        <h3 class="mb-1 text-lg font-semibold text-foreground">Developer Experience</h3>
+        <div class="mb-4 flex items-center gap-1.5">
+          <i data-lucide="clock" class="h-3 w-3 text-primary"></i>
+          <span class="font-mono text-xs text-primary">In Progress</span>
+        </div>
+        <ul class="flex flex-col gap-2.5">
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Package manager</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Hot module reload</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Built-in testing framework</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Debug tooling</li>
+        </ul>
+      </div>
+
+      <div class="relative rounded-lg border border-border bg-card p-6">
+        <div class="mb-4 flex items-center gap-3">
+          <div class="h-2.5 w-2.5 rounded-full bg-muted-foreground/30"></div>
+          <span class="font-mono text-xs text-muted-foreground">Phase 3</span>
+        </div>
+        <h3 class="mb-1 text-lg font-semibold text-foreground">Frontend and UI</h3>
+        <div class="mb-4 flex items-center gap-1.5">
+          <i data-lucide="circle" class="h-3 w-3 text-muted-foreground"></i>
+          <span class="font-mono text-xs text-muted-foreground">Planned</span>
+        </div>
+        <ul class="flex flex-col gap-2.5">
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Component-based UI system</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Reactive state management</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Browser-side Lua runtime</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>SSR support</li>
+        </ul>
+      </div>
+
+      <div class="relative rounded-lg border border-border bg-card p-6">
+        <div class="mb-4 flex items-center gap-3">
+          <div class="h-2.5 w-2.5 rounded-full bg-muted-foreground/30"></div>
+          <span class="font-mono text-xs text-muted-foreground">Phase 4</span>
+        </div>
+        <h3 class="mb-1 text-lg font-semibold text-foreground">Mobile and Desktop</h3>
+        <div class="mb-4 flex items-center gap-1.5">
+          <i data-lucide="circle" class="h-3 w-3 text-muted-foreground"></i>
+          <span class="font-mono text-xs text-muted-foreground">Planned</span>
+        </div>
+        <ul class="flex flex-col gap-2.5">
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>iOS and Android support</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Native API bindings</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Desktop app framework</li>
+          <li class="flex items-start gap-2 text-sm text-muted-foreground"><span class="mt-1.5 block h-1 w-1 shrink-0 rounded-full bg-muted-foreground/30"></span>Cross-platform shared code</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>

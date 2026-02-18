@@ -1,0 +1,256 @@
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap");
+
+:root {
+  --background: oklch(0.13 0.005 285);
+  --foreground: oklch(0.95 0 0);
+  --card: oklch(0.16 0.005 285);
+  --primary: oklch(0.62 0.22 20);
+  --primary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.2 0.005 285);
+  --muted-foreground: oklch(0.74 0 0);
+  --border: oklch(0.25 0.005 285);
+}
+
+:root,
+[data-bs-theme="light"],
+[data-bs-theme="dark"] {
+  --bs-primary: oklch(0.62 0.22 20);
+  --bs-primary-rgb: 239, 61, 94;
+  --bs-link-color: oklch(0.62 0.22 20);
+  --bs-link-hover-color: oklch(0.68 0.22 20);
+}
+
+html,
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+}
+
+code,
+pre,
+.highlight,
+.chroma,
+kbd,
+.font-mono {
+  font-family: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+}
+
+.td-content a,
+.td-breadcrumb a,
+.td-page-meta a,
+.breadcrumb a,
+.td-toc a,
+.td-toc .nav-link {
+  color: var(--primary);
+}
+
+.td-content a:hover,
+.td-breadcrumb a:hover,
+.td-page-meta a:hover,
+.breadcrumb a:hover,
+.td-toc a:hover,
+.td-toc .nav-link:hover,
+.td-toc .nav-link.active {
+  color: color-mix(in oklch, var(--primary) 85%, white);
+}
+
+.td-outer {
+  padding-top: 88px;
+}
+
+.site-header {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 999;
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  background: color-mix(in oklch, var(--background) 92%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.site-header-nav {
+  margin: 0 auto;
+  display: flex;
+  max-width: 72rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+}
+
+.site-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.site-brand-logo {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.375rem;
+}
+
+.site-brand-text {
+  font-family: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--foreground);
+}
+
+.site-links,
+.site-actions {
+  display: none;
+}
+
+.site-link {
+  color: var(--muted-foreground);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.site-link:hover {
+  color: var(--foreground);
+}
+
+.site-github-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid color-mix(in oklch, var(--border) 75%, transparent);
+  border-radius: 0.5rem;
+  padding: 0.375rem 0.75rem;
+  color: var(--muted-foreground);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.site-github-button:hover {
+  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
+  color: var(--foreground);
+}
+
+.site-cta {
+  border-radius: 0.5rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  text-decoration: none;
+  padding: 0.375rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.site-cta:hover {
+  opacity: 0.92;
+}
+
+.site-mobile-button {
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.site-mobile-button:hover {
+  color: var(--foreground);
+}
+
+.site-mobile-menu {
+  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  background: color-mix(in oklch, var(--background) 96%, transparent);
+  padding: 1rem 1.5rem;
+}
+
+.site-mobile-actions {
+  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  padding-top: 0.5rem;
+}
+
+@media (min-width: 768px) {
+  .site-links,
+  .site-actions {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .site-mobile-button,
+  .site-mobile-menu {
+    display: none;
+  }
+}
+
+.td-main,
+.td-content,
+.td-sidebar,
+.td-sidebar-nav,
+.td-default {
+  background: transparent;
+  color: var(--foreground);
+}
+
+.td-sidebar {
+  background: color-mix(in oklch, var(--card) 85%, transparent);
+  border-right: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  margin-top: 0 !important;
+}
+
+.td-toc {
+  margin-top: 0 !important;
+}
+
+.td-page-meta,
+.td-breadcrumb,
+.td-footer {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.td-footer {
+  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+}
+
+.td-sidebar-nav .td-sidebar-link,
+.td-sidebar-nav__section-title {
+  color: var(--muted-foreground) !important;
+}
+
+.td-sidebar-nav .td-sidebar-link:hover,
+.td-sidebar-nav .td-sidebar-link.active,
+.td-sidebar-nav__section-title:hover {
+  color: var(--foreground) !important;
+}
+
+.td-sidebar-nav .td-sidebar-link,
+.td-sidebar-nav__section,
+.td-sidebar-nav__section ul,
+.td-sidebar-nav .collapse,
+.td-sidebar-nav label,
+.td-sidebar-nav input {
+  visibility: visible !important;
+}
+
+.td-content pre,
+.td-content .highlight {
+  background: var(--card);
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 8px;
+}
+
+.alert,
+.admonition,
+.td-box,
+.card,
+.td-content .lead {
+  background: color-mix(in oklch, var(--card) 88%, transparent);
+  border-color: color-mix(in oklch, var(--border) 70%, transparent);
+}
+
+.breadcrumb-item + .breadcrumb-item::before,
+.td-breadcrumb a,
+.td-page-meta a {
+  color: var(--muted-foreground);
+}

@@ -2,16 +2,18 @@
   "name": "rover-docs",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build:css": "postcss assets/css/landing.css -o static/css/landing.css",
+    "watch:css": "postcss assets/css/landing.css -o static/css/landing.css --watch"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.13",
     "autoprefixer": "^10.4.24",
     "postcss": "^8.5.6",
-    "postcss-cli": "^11.0.1"
+    "postcss-cli": "^11.0.1",
+    "tailwindcss": "^4.1.13"
   }
 }

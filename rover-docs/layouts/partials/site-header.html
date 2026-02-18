@@ -1,0 +1,67 @@
+{{ $is_home := .IsHome }}
+{{ $features_href := cond $is_home "#features" "/#features" }}
+{{ $code_href := cond $is_home "#code" "/#code" }}
+{{ $roadmap_href := cond $is_home "#roadmap" "/#roadmap" }}
+{{ $get_started_href := cond $is_home "#get-started" "/#get-started" }}
+
+<div class="site-header fixed left-0 right-0 top-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-xl" role="banner">
+  <nav class="site-header-nav mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+    <a href="/" class="site-brand flex items-center gap-2.5" aria-label="Rover home">
+      <img src="/img/rover-icon.svg" alt="Rover" class="site-brand-logo h-8 w-8" />
+      <span class="site-brand-text font-mono text-lg font-bold tracking-tight text-foreground">rover</span>
+    </a>
+
+    <div class="site-links hidden items-center gap-8 md:flex">
+      <a href="{{ $features_href }}" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Features</a>
+      <a href="{{ $code_href }}" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Examples</a>
+      <a href="{{ $roadmap_href }}" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Roadmap</a>
+      <a href="/docs/" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Docs</a>
+    </div>
+
+    <div class="site-actions hidden items-center gap-3 md:flex">
+      <a
+        href="https://github.com/thalesgelinger/rover"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="site-github-button flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+      >
+        <i data-lucide="github" class="site-icon h-4 w-4"></i>
+        GitHub
+      </a>
+      <a href="{{ $get_started_href }}" class="site-cta rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90">Get Started</a>
+    </div>
+
+    <button
+      id="mobile-menu-button"
+      class="site-mobile-button text-muted-foreground hover:text-foreground md:hidden"
+      aria-label="Open menu"
+      aria-expanded="false"
+      aria-controls="mobile-menu"
+      type="button"
+    >
+      <i id="menu-icon" data-lucide="menu" class="site-icon h-5 w-5"></i>
+      <i id="close-icon" data-lucide="x" class="site-icon hidden h-5 w-5"></i>
+    </button>
+  </nav>
+
+  <div id="mobile-menu" class="site-mobile-menu hidden border-t border-border/50 bg-background px-6 py-4 md:hidden">
+    <div class="flex flex-col gap-4">
+      <a href="{{ $features_href }}" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Features</a>
+      <a href="{{ $code_href }}" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Examples</a>
+      <a href="{{ $roadmap_href }}" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Roadmap</a>
+      <a href="/docs/" class="site-link text-sm text-muted-foreground transition-colors hover:text-foreground">Docs</a>
+      <div class="site-mobile-actions flex items-center gap-3 border-t border-border/50 pt-2">
+        <a
+          href="https://github.com/thalesgelinger/rover"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="site-github-button flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <i data-lucide="github" class="site-icon h-4 w-4"></i>
+          GitHub
+        </a>
+        <a href="{{ $get_started_href }}" class="site-cta rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90">Get Started</a>
+      </div>
+    </div>
+  </div>
+</div>
