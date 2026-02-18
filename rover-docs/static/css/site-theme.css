@@ -9,6 +9,14 @@
   --muted: oklch(0.2 0.005 285);
   --muted-foreground: oklch(0.74 0 0);
   --border: oklch(0.25 0.005 285);
+  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --text-base: 1rem;
+  --line-height-base: 1.6;
+  --text-h1: clamp(2rem, 1.6rem + 1.4vw, 2.6rem);
+  --text-h2: clamp(1.5rem, 1.3rem + 0.8vw, 2rem);
+  --text-h3: clamp(1.25rem, 1.15rem + 0.45vw, 1.5rem);
+  --site-header-height: 80px;
 }
 
 :root,
@@ -16,15 +24,28 @@
 [data-bs-theme="dark"] {
   --bs-primary: oklch(0.62 0.22 20);
   --bs-primary-rgb: 239, 61, 94;
+  --bs-primary-text-emphasis: color-mix(in oklch, var(--primary) 88%, white);
+  --bs-primary-bg-subtle: color-mix(in oklch, var(--primary) 14%, var(--background));
+  --bs-primary-border-subtle: color-mix(in oklch, var(--primary) 48%, var(--border));
   --bs-link-color: oklch(0.62 0.22 20);
   --bs-link-hover-color: oklch(0.68 0.22 20);
+  --bs-body-font-family: var(--font-sans);
+  --bs-font-monospace: var(--font-mono);
+  --bs-body-font-size: var(--text-base);
+  --bs-body-line-height: var(--line-height-base);
+  --bs-body-color: var(--foreground);
+  --bs-secondary-color: var(--muted-foreground);
+  --bs-heading-color: var(--foreground);
+  --bs-border-color: color-mix(in oklch, var(--border) 75%, transparent);
 }
 
 html,
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--line-height-base);
 }
 
 code,
@@ -33,7 +54,7 @@ pre,
 .chroma,
 kbd,
 .font-mono {
-  font-family: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 
 .td-content a,
@@ -56,7 +77,7 @@ kbd,
 }
 
 .td-outer {
-  padding-top: 88px;
+  padding-top: var(--site-header-height);
 }
 
 .site-header {
@@ -192,6 +213,57 @@ kbd,
   color: var(--foreground);
 }
 
+.td-main main,
+.td-404 main {
+  padding-top: 0.75rem !important;
+}
+
+.td-default main > section:first-of-type {
+  padding-top: 0 !important;
+}
+
+.td-content,
+.td-content p,
+.td-content li,
+.td-content table,
+.td-content blockquote {
+  font-size: var(--text-base);
+  line-height: var(--line-height-base);
+}
+
+.td-content h1,
+.td-content h2,
+.td-content h3,
+.td-content h4,
+.td-content h5,
+.td-content h6,
+.td-content .h1,
+.td-content .h2,
+.td-content .h3,
+.td-content .h4,
+.td-content .h5,
+.td-content .h6 {
+  font-family: var(--font-sans);
+  color: var(--foreground);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.td-content h1,
+.td-content .h1 {
+  font-size: var(--text-h1);
+}
+
+.td-content h2,
+.td-content .h2 {
+  font-size: var(--text-h2);
+}
+
+.td-content h3,
+.td-content .h3 {
+  font-size: var(--text-h3);
+}
+
 .td-sidebar {
   background: color-mix(in oklch, var(--card) 85%, transparent);
   border-right: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
@@ -200,6 +272,20 @@ kbd,
 
 .td-toc {
   margin-top: 0 !important;
+}
+
+.td-toc #TableOfContents a {
+  color: var(--muted-foreground);
+}
+
+.td-toc #TableOfContents a:hover,
+.td-toc #TableOfContents a:focus {
+  color: var(--foreground);
+}
+
+.td-toc #TableOfContents a.active {
+  color: var(--bs-primary-text-emphasis);
+  border-left-color: var(--primary);
 }
 
 .td-page-meta,
