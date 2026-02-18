@@ -3,7 +3,6 @@
 /// Owns endpoint configurations, topic pub/sub state, per-endpoint connection
 /// tracking, and frame buffer pools. Single-threaded -- context fields are safe
 /// because the mio event loop is non-preemptive.
-
 use ahash::AHashMap;
 use mlua::RegistryKey;
 use slab::Slab;

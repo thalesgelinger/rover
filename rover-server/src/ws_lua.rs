@@ -18,7 +18,6 @@
 ///     __index       -> returns SendEventBuilder for any event name
 ///   error(code, msg) -> reject connection during join
 /// ```
-
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -214,11 +213,10 @@ fn create_target_selector(lua: &Lua, event_name: String) -> mlua::Result<Table> 
         lua.create_function(move |lua, (_self, topic): (Table, String)| {
             let event_capture = event_to.clone();
             let topic_capture = topic.clone();
-            let send_fn =
-                lua.create_function(move |lua, data: Table| {
-                    broadcast_to_topic(lua, &event_capture, &topic_capture, &data)?;
-                    Ok(())
-                })?;
+            let send_fn = lua.create_function(move |lua, data: Table| {
+                broadcast_to_topic(lua, &event_capture, &topic_capture, &data)?;
+                Ok(())
+            })?;
             Ok(send_fn)
         })?,
     )?;
@@ -230,11 +228,7 @@ fn create_target_selector(lua: &Lua, event_name: String) -> mlua::Result<Table> 
 
 /// Serialize a Lua table as a JSON WebSocket message with injected "type" field.
 /// Writes into the provided buffer.
-fn serialize_event_json(
-    event_name: &str,
-    data: &Table,
-    buf: &mut Vec<u8>,
-) -> mlua::Result<()> {
+fn serialize_event_json(event_name: &str, data: &Table, buf: &mut Vec<u8>) -> mlua::Result<()> {
     use crate::to_json::ToJson;
 
     // Serialize the data table to JSON first
@@ -335,10 +329,7 @@ fn broadcast_all(
     mgr.borrow_mut().return_frame_buf(json_buf);
 
     // Get target list (clone to avoid borrow conflict)
-    let targets: Vec<usize> = mgr
-        .borrow()
-        .get_endpoint_connections(endpoint_idx)
-        .to_vec();
+    let targets: Vec<usize> = mgr.borrow().get_endpoint_connections(endpoint_idx).to_vec();
 
     // Queue frame on each target (Bytes::clone is O(1) refcount bump)
     let conns = lua
@@ -360,12 +351,7 @@ fn broadcast_all(
 }
 
 /// Broadcast a message to all connections subscribed to a topic.
-fn broadcast_to_topic(
-    lua: &Lua,
-    event_name: &str,
-    topic: &str,
-    data: &Table,
-) -> mlua::Result<()> {
+fn broadcast_to_topic(lua: &Lua, event_name: &str, topic: &str, data: &Table) -> mlua::Result<()> {
     let mgr = lua
         .app_data_ref::<SharedWsManager>()
         .ok_or_else(|| mlua::Error::RuntimeError("WsManager not available".into()))?;

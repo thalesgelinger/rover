@@ -23,8 +23,8 @@ pub struct FastRouter {
     static_routes: HashMap<(u64, HttpMethod), usize>,
 
     // WebSocket routing (separate from HTTP to avoid polluting hot path)
-    ws_router: Router<u16>,         // path pattern -> endpoint_idx
-    ws_static: HashMap<u64, u16>,   // hash(path) -> endpoint_idx (static WS paths)
+    ws_router: Router<u16>,       // path pattern -> endpoint_idx
+    ws_static: HashMap<u64, u16>, // hash(path) -> endpoint_idx (static WS paths)
     has_ws_routes: bool,
 }
 

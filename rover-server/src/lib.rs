@@ -205,7 +205,14 @@ pub fn run(
 
     let sock_addr = SocketAddr::from((host, config.port));
 
-    match http_server::run_server(lua, routes.routes, routes.ws_routes, config, openapi_spec, sock_addr) {
+    match http_server::run_server(
+        lua,
+        routes.routes,
+        routes.ws_routes,
+        config,
+        openapi_spec,
+        sock_addr,
+    ) {
         Ok(_) => {}
         Err(e) => {
             if let Some(io_err) = e.downcast_ref::<std::io::Error>() {

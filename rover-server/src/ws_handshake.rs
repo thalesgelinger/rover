@@ -1,14 +1,13 @@
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 /// WebSocket handshake (RFC 6455 sec 4.2).
 ///
 /// Validates HTTP Upgrade headers using the connection's offset-based header access,
 /// computes the Sec-WebSocket-Accept key, and builds the 101 Switching Protocols response.
-
 use sha1::{Digest, Sha1};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 
 /// RFC 6455 magic GUID for Sec-WebSocket-Accept computation.
-const WS_MAGIC_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-5AB5C0F84F11";
+const WS_MAGIC_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[derive(Debug)]
 pub enum HandshakeError {
@@ -123,12 +122,13 @@ mod tests {
 
     #[test]
     fn test_compute_accept_key() {
-        // Verify accept key is deterministic and non-empty
         let key = compute_accept_key("dGhlIHNhbXBsZSBub25jZQ==");
-        assert!(!key.is_empty());
+        assert_eq!(key, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+
         // Same input always produces same output
         let key2 = compute_accept_key("dGhlIHNhbXBsZSBub25jZQ==");
         assert_eq!(key, key2);
+
         // Different input produces different output
         let key3 = compute_accept_key("aGVsbG8gd29ybGQ=");
         assert_ne!(key, key3);
@@ -152,9 +152,9 @@ mod tests {
         let raw = b"GET /chat HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
         // Manually compute header offsets (name_off, name_len, val_off, val_len)
         let headers = vec![
-            (20, 7, 29, 9),   // Upgrade: websocket
-            (40, 10, 52, 7),  // Connection: Upgrade
-            (61, 17, 80, 24), // Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+            (20, 7, 29, 9),    // Upgrade: websocket
+            (40, 10, 52, 7),   // Connection: Upgrade
+            (61, 17, 80, 24),  // Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
             (106, 21, 129, 2), // Sec-WebSocket-Version: 13
         ];
         let result = validate_upgrade_headers(raw, &headers);
@@ -167,9 +167,9 @@ mod tests {
         // Only Connection, Key, Version — no Upgrade header
         let raw = b"Connection: Upgrade\0Sec-WebSocket-Key: key=\0Sec-WebSocket-Version: 13\0";
         let headers = vec![
-            (0, 10, 12, 7),   // Connection: Upgrade
-            (20, 17, 39, 4),  // Sec-WebSocket-Key: key=
-            (44, 21, 67, 2),  // Sec-WebSocket-Version: 13
+            (0, 10, 12, 7),  // Connection: Upgrade
+            (20, 17, 39, 4), // Sec-WebSocket-Key: key=
+            (44, 21, 67, 2), // Sec-WebSocket-Version: 13
         ];
         let result = validate_upgrade_headers(raw, &headers);
         assert!(matches!(result, Err(HandshakeError::MissingUpgradeHeader)));
@@ -180,9 +180,9 @@ mod tests {
     fn test_validate_missing_key() {
         let raw = b"Upgrade: websocket\0Connection: Upgrade\0Sec-WebSocket-Version: 13\0";
         let headers = vec![
-            (0, 7, 9, 9),     // Upgrade: websocket
-            (19, 10, 31, 7),  // Connection: Upgrade
-            (39, 21, 62, 2),  // Sec-WebSocket-Version: 13
+            (0, 7, 9, 9),    // Upgrade: websocket
+            (19, 10, 31, 7), // Connection: Upgrade
+            (39, 21, 62, 2), // Sec-WebSocket-Version: 13
         ];
         let result = validate_upgrade_headers(raw, &headers);
         assert!(matches!(result, Err(HandshakeError::MissingKey)));
@@ -192,10 +192,10 @@ mod tests {
     fn test_validate_wrong_version() {
         let raw = b"Upgrade: websocket\0Connection: Upgrade\0Sec-WebSocket-Key: testkey=\0Sec-WebSocket-Version: 8\0";
         let headers = vec![
-            (0, 7, 9, 9),     // Upgrade: websocket
-            (19, 10, 31, 7),  // Connection: Upgrade
-            (39, 17, 58, 8),  // Sec-WebSocket-Key: testkey=
-            (67, 21, 90, 1),  // Sec-WebSocket-Version: 8
+            (0, 7, 9, 9),    // Upgrade: websocket
+            (19, 10, 31, 7), // Connection: Upgrade
+            (39, 17, 58, 8), // Sec-WebSocket-Key: testkey=
+            (67, 21, 90, 1), // Sec-WebSocket-Version: 8
         ];
         let result = validate_upgrade_headers(raw, &headers);
         assert!(matches!(result, Err(HandshakeError::UnsupportedVersion)));

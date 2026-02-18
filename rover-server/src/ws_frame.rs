@@ -111,29 +111,11 @@ pub fn try_parse_frame(buf: &[u8]) -> Option<WsFrameHeader> {
     })
 }
 
-/// XOR-unmask payload in-place. 4-byte unrolled loop for auto-vectorization.
+/// XOR-unmask payload in-place.
 #[inline]
 pub fn unmask_payload_in_place(buf: &mut [u8], mask: [u8; 4]) {
-    let mask_u32 = u32::from_ne_bytes(mask);
-    let len = buf.len();
-    let chunks = len / 4;
-    let remainder = len % 4;
-
-    // Process 4 bytes at a time
-    let (prefix, aligned, _) = unsafe { buf[..chunks * 4].align_to_mut::<u32>() };
-    // Handle any unaligned prefix bytes
-    for (i, byte) in prefix.iter_mut().enumerate() {
+    for (i, byte) in buf.iter_mut().enumerate() {
         *byte ^= mask[i % 4];
-    }
-    // Fast path: XOR 4 bytes at a time
-    for word in aligned.iter_mut() {
-        *word ^= mask_u32;
-    }
-
-    // Handle remainder
-    let start = chunks * 4;
-    for i in 0..remainder {
-        buf[start + i] ^= mask[i % 4];
     }
 }
 
@@ -199,7 +181,10 @@ mod tests {
         assert_eq!(header.payload_len, 5);
         assert_eq!(header.payload_offset, 2);
         assert_eq!(header.total_frame_len, 7);
-        assert_eq!(&frame[header.payload_offset..header.payload_offset + header.payload_len], b"hello");
+        assert_eq!(
+            &frame[header.payload_offset..header.payload_offset + header.payload_len],
+            b"hello"
+        );
     }
 
     #[test]
@@ -225,7 +210,8 @@ mod tests {
         assert_eq!(header.total_frame_len, 11);
 
         // Unmask
-        let mut payload_buf = frame[header.payload_offset..header.payload_offset + header.payload_len].to_vec();
+        let mut payload_buf =
+            frame[header.payload_offset..header.payload_offset + header.payload_len].to_vec();
         unmask_payload_in_place(&mut payload_buf, header.mask);
         assert_eq!(&payload_buf, b"hello");
     }
@@ -243,7 +229,7 @@ mod tests {
         let mut buf = Vec::new();
         write_frame(&mut buf, WsOpcode::Text, b"hello");
         assert_eq!(buf[0], 0x81); // FIN | Text
-        assert_eq!(buf[1], 5);    // length, no MASK bit
+        assert_eq!(buf[1], 5); // length, no MASK bit
         assert_eq!(&buf[2..], b"hello");
     }
 
@@ -264,7 +250,7 @@ mod tests {
         let mut buf = Vec::new();
         write_close_frame(&mut buf, 1000, "bye");
         assert_eq!(buf[0], 0x88); // FIN | Close
-        assert_eq!(buf[1], 5);    // 2 (status) + 3 (reason)
+        assert_eq!(buf[1], 5); // 2 (status) + 3 (reason)
         let code = u16::from_be_bytes([buf[2], buf[3]]);
         assert_eq!(code, 1000);
         assert_eq!(&buf[4..], b"bye");
@@ -273,8 +259,16 @@ mod tests {
     #[test]
     fn test_unmask_aligned() {
         let mask = [0xAA, 0xBB, 0xCC, 0xDD];
-        let mut data = vec![0xAA ^ b'H', 0xBB ^ b'e', 0xCC ^ b'l', 0xDD ^ b'l',
-                            0xAA ^ b'o', 0xBB ^ b'!', 0xCC ^ b' ', 0xDD ^ b' '];
+        let mut data = vec![
+            0xAA ^ b'H',
+            0xBB ^ b'e',
+            0xCC ^ b'l',
+            0xDD ^ b'l',
+            0xAA ^ b'o',
+            0xBB ^ b'!',
+            0xCC ^ b' ',
+            0xDD ^ b' ',
+        ];
         unmask_payload_in_place(&mut data, mask);
         assert_eq!(&data, b"Hello!  ");
     }
@@ -283,7 +277,9 @@ mod tests {
     fn test_unmask_odd_length() {
         let mask = [0x11, 0x22, 0x33, 0x44];
         let original = b"Hey";
-        let mut masked: Vec<u8> = original.iter().enumerate()
+        let mut masked: Vec<u8> = original
+            .iter()
+            .enumerate()
             .map(|(i, &b)| b ^ mask[i % 4])
             .collect();
         unmask_payload_in_place(&mut masked, mask);
@@ -354,8 +350,10 @@ mod tests {
         let mut buf = Vec::new();
         write_frame(&mut buf, WsOpcode::Binary, &payload);
         assert_eq!(buf[0], 0x82); // FIN | Binary
-        assert_eq!(buf[1], 127);  // 64-bit length marker
-        let len = u64::from_be_bytes([buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]]) as usize;
+        assert_eq!(buf[1], 127); // 64-bit length marker
+        let len = u64::from_be_bytes([
+            buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9],
+        ]) as usize;
         assert_eq!(len, 70000);
         assert_eq!(buf.len(), 10 + 70000);
     }
@@ -378,8 +376,23 @@ mod tests {
         assert!(header.masked);
         assert_eq!(header.payload_len, payload.len());
 
-        let mut buf = frame[header.payload_offset..header.payload_offset + header.payload_len].to_vec();
+        let mut buf =
+            frame[header.payload_offset..header.payload_offset + header.payload_len].to_vec();
         unmask_payload_in_place(&mut buf, header.mask);
         assert_eq!(&buf, payload);
+    }
+
+    #[test]
+    fn test_unmask_unaligned_slice() {
+        let mask = [0x37, 0xfa, 0x21, 0x3d];
+        let payload = b"hello";
+        let mut storage = vec![0u8; 16];
+
+        for (i, &b) in payload.iter().enumerate() {
+            storage[1 + i] = b ^ mask[i % 4];
+        }
+
+        unmask_payload_in_place(&mut storage[1..1 + payload.len()], mask);
+        assert_eq!(&storage[1..1 + payload.len()], payload);
     }
 }
