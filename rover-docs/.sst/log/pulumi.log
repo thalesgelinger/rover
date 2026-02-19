@@ -1,0 +1,42 @@
+Updating (production):
+
+@ updating.....
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]; Start building sites … 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]; hugo v0.155.3+extended+withdeploy darwin/arm64 BuildDate=2026-02-08T16:40:42Z VendorInfo=Homebrew
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]; 
+@ updating....
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]; 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];                   │ EN 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]; ──────────────────┼────
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];  Pages            │ 39 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];  Paginator pages  │  0 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];  Non-page files   │  0 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];  Static files     │ 36 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];  Processed images │  0 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];  Aliases          │  0 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ];  Cleaned          │  0 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]; 
+ ++ command:local:Command RoverDocsBuilder creating replacement (0s) [diff: ]; Total in 712 ms
+ ++ command:local:Command RoverDocsBuilder created replacement (0.80s) [diff: ]; Total in 712 ms
+ +- command:local:Command RoverDocsBuilder replacing (0s) [diff: ]; Total in 712 ms
+ +- command:local:Command RoverDocsBuilder replaced (0.00s) [diff: ]; Total in 712 ms
+ ~  pulumi-nodejs:dynamic:Resource RoverDocsAssetFiles.sst.cloudflare.KvPairs updating (0s) [diff: ~entries]
+@ updating........
+ ~  pulumi-nodejs:dynamic:Resource RoverDocsAssetFiles.sst.cloudflare.KvPairs updated (4s) [diff: ~entries]
+ ~  cloudflare:index:WorkersScript RoverDocsRouterScript updating (0s) [diff: ~contentSha256]
+@ updating.....
+ ~  cloudflare:index:WorkersScript RoverDocsRouterScript updated (2s) [diff: ~contentSha256]
+ -- command:local:Command RoverDocsBuilder deleting original (0s) [diff: ]; Total in 712 ms
+ -- command:local:Command RoverDocsBuilder deleted original (0.00s) [diff: ]; Total in 712 ms
+    pulumi:pulumi:Stack rover-docs-production  
+Outputs:
+    _protect: true
+
+Resources:
+    ~ 2 updated
+    +-1 replaced
+    3 changes. 7 unchanged
+
+Duration: 11s
+

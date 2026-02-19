@@ -1,0 +1,55 @@
+time=2026-02-18T18:05:38.328-03:00 level=INFO msg="checking for pulumi" path="/Users/thalesgelinger/Library/Application Support/sst/bin/pulumi"
+time=2026-02-18T18:05:39.239-03:00 level=INFO msg="checking for bun" path="/Users/thalesgelinger/Library/Application Support/sst/bin/bun"
+time=2026-02-18T18:05:39.249-03:00 level=INFO msg="initializing project" version=3.18.10
+time=2026-02-18T18:05:39.250-03:00 level=INFO msg="esbuild building" out=/Users/thalesgelinger/Projects/personal/rover/rover-docs/.sst/platform/sst.config.1771448739250.mjs
+time=2026-02-18T18:05:39.257-03:00 level=INFO msg="esbuild built" outfile=/Users/thalesgelinger/Projects/personal/rover/rover-docs/.sst/platform/sst.config.1771448739250.mjs
+time=2026-02-18T18:05:39.257-03:00 level=INFO msg="evaluating config"
+time=2026-02-18T18:05:39.278-03:00 level=INFO msg="config evaluated"
+time=2026-02-18T18:05:39.279-03:00 level=INFO msg="checking platform"
+time=2026-02-18T18:05:39.279-03:00 level=INFO msg="loading home"
+time=2026-02-18T18:05:39.279-03:00 level=INFO msg="cloudflare account selected" account=0ce568cf4f1111a72e6ac176558fd638
+time=2026-02-18T18:05:40.175-03:00 level=INFO msg="found existing bucket" bucket=sst-state
+time=2026-02-18T18:05:40.175-03:00 level=INFO msg="loaded config" app=rover-docs stage=production
+time=2026-02-18T18:05:40.175-03:00 level=INFO msg="initializing ui" isTTY=true
+time=2026-02-18T18:05:40.176-03:00 level=INFO msg="server port assigned" port=13557
+time=2026-02-18T18:05:40.177-03:00 level=INFO msg="running stack command" service=project.run cmd=deploy
+time=2026-02-18T18:05:40.177-03:00 level=INFO msg="INFO locking app=rover-docs stage=production"
+time=2026-02-18T18:05:40.177-03:00 level=INFO msg="INFO getting data key=lock app=rover-docs stage=production"
+time=2026-02-18T18:05:40.177-03:00 level=INFO msg=starting service=server
+time=2026-02-18T18:05:40.178-03:00 level=INFO msg=server service=server addr=0.0.0.0:13557
+time=2026-02-18T18:05:40.178-03:00 level=INFO msg="server ready to accept connections" service=server
+time=2026-02-18T18:05:41.519-03:00 level=INFO msg="INFO putting update app=rover-docs stage=production"
+time=2026-02-18T18:05:42.319-03:00 level=INFO msg="INFO getting passphrase app=rover-docs stage=production"
+time=2026-02-18T18:05:42.935-03:00 level=INFO msg="INFO pulling state app=rover-docs stage=production out=/Users/thalesgelinger/Projects/personal/rover/rover-docs/.sst/pulumi/fe638d6d56aeb5769714912a/.pulumi/stacks/rover-docs/production.json"
+time=2026-02-18T18:05:43.671-03:00 level=INFO msg="got previous deployment" service=project.run updateID=fe638d6d56aeb5769714912a
+time=2026-02-18T18:05:43.671-03:00 level=INFO msg="esbuild building" out=/Users/thalesgelinger/Projects/personal/rover/rover-docs/.sst/platform/sst.config.1771448742935.mjs
+time=2026-02-18T18:05:43.694-03:00 level=INFO msg="esbuild built" outfile=/Users/thalesgelinger/Projects/personal/rover/rover-docs/.sst/platform/sst.config.1771448742935.mjs
+time=2026-02-18T18:05:43.698-03:00 level=INFO msg="built sst.config.ts" service=project.run updateID=fe638d6d56aeb5769714912a to=/Users/thalesgelinger/Projects/personal/rover/rover-docs/.sst/platform/sst.config.1771448742935.mjs
+time=2026-02-18T18:05:43.700-03:00 level=INFO msg="tracked files" service=project.run updateID=fe638d6d56aeb5769714912a
+time=2026-02-18T18:05:43.700-03:00 level=INFO msg="INFO getting data key=secret app=rover-docs stage=_fallback"
+time=2026-02-18T18:05:43.700-03:00 level=INFO msg="INFO getting data key=secret app=rover-docs stage=production"
+time=2026-02-18T18:05:44.590-03:00 level=INFO msg="starting pulumi" service=project.run updateID=fe638d6d56aeb5769714912a args="[/Users/thalesgelinger/Library/Application Support/sst/bin/pulumi up --yes -f --stack organization/rover-docs/production --non-interactive --event-log /Users/thalesgelinger/Projects/personal/rover/rover-docs/.sst/pulumi/fe638d6d56aeb5769714912a/eventlog.json]"
+time=2026-02-18T18:05:47.115-03:00 level=INFO msg="INFO pushing partial state updateID=fe638d6d56aeb5769714912a"
+time=2026-02-18T18:05:48.423-03:00 level=INFO msg="rpc request" method=POST url=/rpc
+time=2026-02-18T18:05:48.424-03:00 level=INFO msg="building function" runtime=worker functionID=RoverDocsRouter
+time=2026-02-18T18:05:48.426-03:00 level=INFO msg="loader info" loader=map[]
+time=2026-02-18T18:05:48.438-03:00 level=INFO msg="function built" runtime=worker functionID=RoverDocsRouter
+time=2026-02-18T18:05:48.706-03:00 level=INFO msg="INFO pushing partial state updateID=fe638d6d56aeb5769714912a"
+time=2026-02-18T18:05:49.702-03:00 level=INFO msg="INFO pushing partial state updateID=fe638d6d56aeb5769714912a"
+time=2026-02-18T18:05:53.172-03:00 level=INFO msg="INFO pushing partial state updateID=fe638d6d56aeb5769714912a"
+time=2026-02-18T18:05:55.983-03:00 level=INFO msg="INFO pushing partial state updateID=fe638d6d56aeb5769714912a"
+time=2026-02-18T18:05:55.984-03:00 level=INFO msg="pulumi exited" service=project.run updateID=fe638d6d56aeb5769714912a err=<nil>
+time=2026-02-18T18:05:55.984-03:00 level=INFO msg="eof and exited" service=project.run updateID=fe638d6d56aeb5769714912a eofs=0
+time=2026-02-18T18:05:55.984-03:00 level=INFO msg="eof and exited" service=project.run updateID=fe638d6d56aeb5769714912a eofs=1
+time=2026-02-18T18:05:55.984-03:00 level=INFO msg="breaking out of tail loop" service=project.run updateID=fe638d6d56aeb5769714912a
+time=2026-02-18T18:05:55.984-03:00 level=INFO msg="parsing state" service=project.run updateID=fe638d6d56aeb5769714912a
+time=2026-02-18T18:05:56.080-03:00 level=INFO msg="generating types" root=/Users/thalesgelinger/Projects/personal/rover/rover-docs
+time=2026-02-18T18:05:56.084-03:00 level=INFO msg="canceling partial" service=project.run updateID=fe638d6d56aeb5769714912a
+time=2026-02-18T18:05:56.084-03:00 level=INFO msg="waiting for partial to exit" service=project.run updateID=fe638d6d56aeb5769714912a
+time=2026-02-18T18:05:57.459-03:00 level=INFO msg="INFO pushing eventlog updateID=fe638d6d56aeb5769714912a"
+time=2026-02-18T18:05:57.459-03:00 level=INFO msg="INFO pushing snapshot updateID=fe638d6d56aeb5769714912a"
+time=2026-02-18T18:05:59.482-03:00 level=INFO msg="INFO putting update app=rover-docs stage=production"
+time=2026-02-18T18:06:00.285-03:00 level=INFO msg="done running stack command" service=project.run updateID=fe638d6d56aeb5769714912a resources=13
+time=2026-02-18T18:06:00.287-03:00 level=INFO msg="INFO unlocking app=rover-docs stage=production"
+time=2026-02-18T18:06:00.783-03:00 level=INFO msg="shutting down server" service=server
+time=2026-02-18T18:06:00.784-03:00 level=INFO msg="server done" service=server

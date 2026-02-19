@@ -1,12 +1,12 @@
-<section class="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6 pt-20">
+<section class="relative flex min-h-[calc(100svh-80px)] flex-col items-center justify-center overflow-hidden px-4 pt-24 pb-12 sm:px-6 md:min-h-screen md:pt-20 md:pb-0">
   <div
     class="pointer-events-none absolute inset-0 opacity-[0.03]"
     style="background-image: linear-gradient(oklch(0.95 0 0) 1px, transparent 1px), linear-gradient(90deg, oklch(0.95 0 0) 1px, transparent 1px); background-size: 60px 60px;"
   ></div>
-  <div class="pointer-events-none absolute left-1/2 top-1/4 h-[500px] w-[800px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/5 blur-[120px]"></div>
-  <div class="relative z-10 mx-auto flex max-w-4xl flex-col items-center text-center">
-    <div class="mb-8 select-none">
-      <pre class="font-mono text-[10px] leading-tight text-primary sm:text-xs md:text-sm" aria-hidden="true"> ███████████      ███████    █████   █████ ██████████ ███████████  
+  <div class="pointer-events-none absolute left-1/2 top-1/4 h-[360px] w-[560px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/5 blur-[96px] md:h-[500px] md:w-[800px] md:blur-[120px]"></div>
+  <div class="relative z-10 mx-auto flex w-full max-w-4xl flex-col items-center text-center">
+    <div class="ascii-hero-wrap mb-6 select-none md:mb-8">
+      <pre class="ascii-hero font-mono text-primary" aria-hidden="true"> ███████████      ███████    █████   █████ ██████████ ███████████  
 ░░███░░░░░███   ███░░░░░███ ░░███   ░░███ ░░███░░░░░█░░███░░░░░███ 
  ░███    ░███  ███     ░░███ ░███    ░███  ░███  █ ░  ░███    ░███ 
  ░██████████  ░███      ░███ ░███    ░███  ░██████    ░██████████  
@@ -17,20 +17,20 @@
                                                                    </pre>
     </div>
     <h1 class="sr-only">Rover - The Lua runtime for full-stack applications</h1>
-    <p class="mb-6 max-w-2xl text-lg leading-relaxed text-muted-foreground md:text-xl">
+    <p class="mb-6 max-w-xl text-lg leading-relaxed text-muted-foreground md:max-w-2xl md:text-xl">
       The
       <span class="font-medium text-foreground">Lua runtime</span>
       for full-stack applications. High-performance server, modern tooling, zero compromises.
     </p>
     <div
       id="get-started"
-      class="group mb-8 flex flex-wrap items-center justify-center gap-3 rounded-lg border border-border bg-secondary px-5 py-3 transition-colors hover:border-primary/30"
+      class="group mb-8 flex w-full max-w-md flex-wrap items-center justify-center gap-2 rounded-lg border border-border bg-secondary px-4 py-3 transition-colors hover:border-primary/30 md:max-w-none md:gap-3 md:px-5"
     >
       <span class="font-mono text-sm text-primary">$</span>
-      <code id="install-command" class="font-mono text-sm text-foreground/80">curl -fsSL https://rover.lu/install | sh</code>
+      <code id="install-command" class="max-w-full break-all font-mono text-xs text-foreground/80 sm:text-sm">curl -fsSL https://rover.lu/install | sh</code>
       <button
         id="copy-install-command"
-        class="ml-2 text-muted-foreground transition-colors hover:text-foreground"
+        class="text-muted-foreground transition-colors hover:text-foreground md:ml-2"
         aria-label="Copy install command"
         type="button"
       >
@@ -38,8 +38,8 @@
         <i id="check-icon" data-lucide="check" class="hidden h-4 w-4 text-primary"></i>
       </button>
     </div>
-    <div class="flex flex-wrap items-center justify-center gap-4">
-      <a href="/docs/" class="group flex items-center gap-2 rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90">
+    <div class="flex w-full flex-col items-center justify-center gap-3 sm:w-auto sm:flex-row sm:gap-4">
+      <a href="/docs/" class="group flex w-full items-center justify-center gap-2 rounded-md bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 sm:w-auto">
         Documentation
         <i data-lucide="arrow-right" class="h-4 w-4 transition-transform group-hover:translate-x-0.5"></i>
       </a>
@@ -47,13 +47,13 @@
         href="https://github.com/thalesgelinger/rover"
         target="_blank"
         rel="noopener noreferrer"
-        class="rounded-md border border-border px-6 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+        class="w-full rounded-md border border-border px-6 py-2.5 text-center text-sm font-medium text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground sm:w-auto"
       >
         View on GitHub
       </a>
     </div>
   </div>
-  <div class="absolute bottom-8 left-1/2 -translate-x-1/2">
+  <div class="absolute bottom-8 left-1/2 hidden -translate-x-1/2 md:block">
     <div class="flex flex-col items-center gap-2">
       <span class="text-xs uppercase tracking-widest text-muted-foreground/50">scroll</span>
       <div class="h-8 w-px bg-border"></div>

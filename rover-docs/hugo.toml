@@ -29,3 +29,23 @@ title = 'Rover'
   [[module.imports]]
     path = "github.com/google/docsy/dependencies"
     disable = false
+
+[[menu.main]]
+  name = "Features"
+  url = "/#features"
+  weight = 10
+
+[[menu.main]]
+  name = "Examples"
+  url = "/#code"
+  weight = 20
+
+[[menu.main]]
+  name = "Roadmap"
+  url = "/#roadmap"
+  weight = 30
+
+[[menu.main]]
+  name = "Docs"
+  url = "/docs/"
+  weight = 40

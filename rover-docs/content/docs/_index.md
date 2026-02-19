@@ -1,9 +1,6 @@
 ---
 title: Documentation
 linkTitle: Docs
-menu:
-  main:
-    weight: 20
 ---
 
 # Welcome to Rover Docs

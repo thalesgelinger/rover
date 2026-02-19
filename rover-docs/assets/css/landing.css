@@ -92,11 +92,47 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-geist-sans), "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+    overflow-x: hidden;
   }
 
   code,
   pre,
   .font-mono {
     font-family: var(--font-geist-mono), "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  }
+}
+
+.ascii-hero-wrap {
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+
+.ascii-hero {
+  display: inline-block;
+  margin: 0;
+  white-space: pre;
+  text-align: left;
+  font-size: 0.195rem;
+  line-height: 1.02;
+}
+
+@media (min-width: 430px) {
+  .ascii-hero {
+    font-size: 0.215rem;
+  }
+}
+
+@media (min-width: 640px) {
+  .ascii-hero {
+    font-size: 0.42rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .ascii-hero {
+    font-size: 0.875rem;
+    line-height: 1.25;
   }
 }
