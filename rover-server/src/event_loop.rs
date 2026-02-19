@@ -680,11 +680,71 @@ impl EventLoop {
                 .collect();
             let (po, pl) = conn.path_offset.unwrap_or((0, 0));
             let (mo, ml) = conn.method_offset.unwrap_or((0, 0));
-            // For now, pass empty query/params (upgrade request already parsed)
+            let query_offsets = {
+                let search_start = po;
+                let search_end = (po + pl).min(buf.len());
+                if let Some(q_pos) = buf[search_start..search_end]
+                    .iter()
+                    .position(|&b| b == b'?')
+                {
+                    let qs_start_abs = po + q_pos + 1;
+                    let qs_len = search_end.saturating_sub(qs_start_abs);
+                    let mut offsets = Vec::new();
+                    let mut pos = 0usize;
+
+                    while pos < qs_len {
+                        let key_start = pos as u16;
+
+                        while pos < qs_len
+                            && buf[qs_start_abs + pos] != b'='
+                            && buf[qs_start_abs + pos] != b'&'
+                        {
+                            pos += 1;
+                        }
+
+                        let key_len_raw = (pos - key_start as usize) as u8;
+
+                        if pos >= qs_len || buf[qs_start_abs + pos] == b'&' {
+                            if key_len_raw > 0 {
+                                offsets.push((
+                                    (qs_start_abs + key_start as usize) as u16,
+                                    key_len_raw,
+                                    (qs_start_abs + key_start as usize) as u16,
+                                    key_len_raw as u16,
+                                ));
+                            }
+                            pos += 1;
+                            continue;
+                        }
+
+                        pos += 1;
+                        let val_start = pos as u16;
+
+                        while pos < qs_len && buf[qs_start_abs + pos] != b'&' {
+                            pos += 1;
+                        }
+
+                        let val_len_raw = (pos - val_start as usize) as u16;
+                        offsets.push((
+                            (qs_start_abs + key_start as usize) as u16,
+                            key_len_raw,
+                            (qs_start_abs + val_start as usize) as u16,
+                            val_len_raw,
+                        ));
+
+                        pos += 1;
+                    }
+
+                    offsets
+                } else {
+                    Vec::new()
+                }
+            };
+
             (
                 buf,
                 header_offsets,
-                Vec::new(),
+                query_offsets,
                 Vec::new(),
                 po as u16,
                 pl as u16,

@@ -22,8 +22,8 @@ pub fn run_file(
 
     match platform {
         None => rover_core::run(file.to_str().unwrap(), &args, false),
-        Some(Platform::Stub) => run_with_stub(file),
-        Some(Platform::Tui) => run_with_tui(file),
+        Some(Platform::Stub) => run_with_stub(file, args),
+        Some(Platform::Tui) => run_with_tui(file, args),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
@@ -31,10 +31,22 @@ pub fn run_file(
     }
 }
 
-fn run_with_stub(file: PathBuf) -> Result<()> {
+fn set_lua_args(lua: &mlua::Lua, file: &PathBuf, args: &[String]) -> Result<()> {
+    let arg_table = lua.create_table()?;
+    arg_table.set(0, file.to_string_lossy().to_string())?;
+    for (i, arg) in args.iter().enumerate() {
+        arg_table.set(i + 1, arg.as_str())?;
+    }
+    arg_table.set(-1, "rover")?;
+    lua.globals().set("arg", arg_table)?;
+    Ok(())
+}
+
+fn run_with_stub(file: PathBuf, args: Vec<String>) -> Result<()> {
     let renderer = StubRenderer::new();
     let mut app = App::new(renderer).map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
     register_extra_modules(app.lua())?;
+    set_lua_args(app.lua(), &file, &args)?;
     let content = std::fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
     app.run_script(&content)
@@ -43,12 +55,13 @@ fn run_with_stub(file: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn run_with_tui(file: PathBuf) -> Result<()> {
+fn run_with_tui(file: PathBuf, args: Vec<String>) -> Result<()> {
     let renderer =
         TuiRenderer::new().map_err(|e| anyhow::anyhow!("Failed to create TUI renderer: {}", e))?;
     let app = App::new(renderer).map_err(|e| anyhow::anyhow!("Failed to create app: {}", e))?;
     let mut runner = TuiRunner::new(app);
     register_extra_modules(runner.app().lua())?;
+    set_lua_args(runner.app().lua(), &file, &args)?;
     let content = std::fs::read_to_string(&file)
         .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
     runner

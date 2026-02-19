@@ -1,19 +1,38 @@
 local ru = rover.ui
-local ws = rover.ws_client "ws://localhost:4242/chat"
+local function resolve_user_id()
+	if arg ~= nil then
+		for i = 1, 8 do
+			local v = arg[i]
+			if type(v) == "string" and v ~= "" and not v:match("%.lua$") then
+				return v:gsub("%s+", "_")
+			end
+		end
+	end
+
+	local addr = tostring({}):match("0x(%x+)")
+	local salt = tonumber(addr or "0", 16) or 0
+	math.randomseed(os.time() + (salt % 1000000))
+	return "u" .. tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
+end
+
+local user_id = resolve_user_id()
+local ws = rover.ws_client("ws://localhost:4242/chat?user_id=" .. user_id)
 local started = false
 
 local messages = rover.signal {}
 
-function ws.join(ctx) end
+function ws.join(ctx)
+	print("connected as", user_id)
+end
 
 function ws.error(err)
 	print("ws error:", tostring(err.message or "unknown"))
 end
 
 function ws.listen.message(msg)
-	print "Echoed"
+	print("recv from", tostring(msg.user_id or "unknown"))
 	local list = messages.val
-	list[#list + 1] = msg.message
+	list[#list + 1] = tostring(msg.user_id or "unknown") .. ": " .. tostring(msg.message or "")
 	messages.val = list
 end
 
@@ -40,11 +59,12 @@ function rover.render()
 		ChatInput {
 			on_new_message = function(new_message)
 				local list = messages.val
-				list[#list + 1] = new_message
+				list[#list + 1] = "you: " .. new_message
 				messages.val = list
 				ws.send.new_message { message = new_message }
 			end,
 		},
+		ru.text { "user_id: " .. user_id },
 	}
 end
 
