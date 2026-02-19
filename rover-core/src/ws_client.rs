@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use mlua::prelude::*;
-use mlua::{Function, LuaSerdeExt, RegistryKey, Table, Value};
+use mlua::{AnyUserData, Function, LuaSerdeExt, RegistryKey, Table, Value};
 use serde_json::{Map, Value as JsonValue};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::{HeaderName, HeaderValue};
@@ -18,6 +18,8 @@ pub struct WsClientOptions {
     pub handshake_timeout_ms: u64,
     pub max_message_bytes: usize,
     pub auto_pong: bool,
+    pub auto_pump: bool,
+    pub pump_interval_ms: u64,
     pub reconnect: ReconnectOptions,
     pub tls: TlsOptions,
 }
@@ -48,6 +50,8 @@ impl Default for WsClientOptions {
             handshake_timeout_ms: 10_000,
             max_message_bytes: 4 * 1024 * 1024,
             auto_pong: true,
+            auto_pump: true,
+            pump_interval_ms: 16,
             reconnect: ReconnectOptions {
                 enabled: false,
                 min_ms: 250,
@@ -84,6 +88,7 @@ struct WsClientInner {
     send_queue: VecDeque<OutboundMessage>,
     connected: bool,
     negotiated_protocol: Option<String>,
+    auto_pump_task_key: Option<RegistryKey>,
 }
 
 impl WsClientInner {
@@ -96,6 +101,7 @@ impl WsClientInner {
             send_queue: VecDeque::with_capacity(16),
             connected: false,
             negotiated_protocol: None,
+            auto_pump_task_key: None,
         }
     }
 }
@@ -277,6 +283,7 @@ fn connect_client(
     inner: &Rc<RefCell<WsClientInner>>,
 ) -> LuaResult<bool> {
     if inner.borrow().connected {
+        let _ = start_auto_pump(lua, client_tbl, inner);
         return Ok(true);
     }
 
@@ -370,7 +377,95 @@ fn connect_client(
         }
     }
 
+    if let Err(err) = start_auto_pump(lua, client_tbl, inner) {
+        let _ = emit_error(
+            lua,
+            client_tbl,
+            inner,
+            format!("auto pump start failed: {err}"),
+        );
+    }
+
     Ok(true)
+}
+
+fn start_auto_pump(
+    lua: &Lua,
+    client_tbl: &Table,
+    inner: &Rc<RefCell<WsClientInner>>,
+) -> LuaResult<()> {
+    let (enabled, interval_ms, has_task) = {
+        let b = inner.borrow();
+        (
+            b.opts.auto_pump,
+            b.opts.pump_interval_ms.max(1),
+            b.auto_pump_task_key.is_some(),
+        )
+    };
+
+    if !enabled || has_task {
+        return Ok(());
+    }
+
+    let rover: Table = lua.globals().get("rover")?;
+    let spawn: Function = rover.get("spawn")?;
+
+    let pump_factory: Function = lua
+        .load(
+            r#"
+            return function(ws, interval_ms)
+                return function()
+                    while ws:is_connected() do
+                        ws:pump(0)
+                        if not ws:is_connected() then
+                            break
+                        end
+                        rover.delay(interval_ms)
+                    end
+                end
+            end
+            "#,
+        )
+        .eval()?;
+
+    let task_fn: Function = pump_factory.call((client_tbl.clone(), interval_ms))?;
+    let task_ud: AnyUserData = spawn.call((task_fn,))?;
+    let task_key = lua.create_registry_value(task_ud)?;
+    inner.borrow_mut().auto_pump_task_key = Some(task_key);
+
+    Ok(())
+}
+
+fn stop_auto_pump(lua: &Lua, inner: &Rc<RefCell<WsClientInner>>) -> LuaResult<()> {
+    let Some(task_key) = inner.borrow_mut().auto_pump_task_key.take() else {
+        return Ok(());
+    };
+
+    let task_ud: AnyUserData = match lua.registry_value(&task_key) {
+        Ok(task) => task,
+        Err(_) => {
+            let _ = lua.remove_registry_value(task_key);
+            return Ok(());
+        }
+    };
+
+    let _ = lua.remove_registry_value(task_key);
+
+    let rover: Table = match lua.globals().get("rover") {
+        Ok(tbl) => tbl,
+        Err(_) => return Ok(()),
+    };
+    let task_table: Table = match rover.get("task") {
+        Ok(tbl) => tbl,
+        Err(_) => return Ok(()),
+    };
+    let cancel_fn: Function = match task_table.get("cancel") {
+        Ok(f) => f,
+        Err(_) => return Ok(()),
+    };
+
+    let _ = cancel_fn.call::<()>((task_ud,));
+    Ok(())
 }
 
 fn pump_client(
@@ -670,6 +765,8 @@ fn emit_leave(
     code: u16,
     reason: &str,
 ) -> LuaResult<()> {
+    stop_auto_pump(lua, inner)?;
+
     let leave_fn = client_tbl.get::<Value>("leave")?;
     if let Value::Function(func) = leave_fn {
         let info = lua.create_table()?;
@@ -809,6 +906,12 @@ fn parse_ws_client_options(opts: Option<Table>) -> LuaResult<WsClientOptions> {
     if let Ok(v) = opts.get::<bool>("auto_pong") {
         out.auto_pong = v;
     }
+    if let Ok(v) = opts.get::<bool>("auto_pump") {
+        out.auto_pump = v;
+    }
+    if let Ok(v) = opts.get::<u64>("pump_interval_ms") {
+        out.pump_interval_ms = v.max(1);
+    }
 
     if let Ok(reconnect) = opts.get::<Table>("reconnect") {
         if let Ok(v) = reconnect.get::<bool>("enabled") {
@@ -909,14 +1012,25 @@ mod tests {
         opts.set("protocols", protocols).unwrap();
 
         opts.set("max_message_bytes", 1024).unwrap();
+        opts.set("auto_pump", false).unwrap();
+        opts.set("pump_interval_ms", 32).unwrap();
 
         let parsed = parse_ws_client_options(Some(opts)).unwrap();
         assert_eq!(parsed.max_message_bytes, 1024);
+        assert!(!parsed.auto_pump);
+        assert_eq!(parsed.pump_interval_ms, 32);
         assert_eq!(parsed.protocols, vec!["chat.v1".to_string()]);
         assert_eq!(
             parsed.headers.get("Authorization").cloned(),
             Some("Bearer x".to_string())
         );
+    }
+
+    #[test]
+    fn should_parse_default_auto_pump_options() {
+        let parsed = parse_ws_client_options(None).unwrap();
+        assert!(parsed.auto_pump);
+        assert_eq!(parsed.pump_interval_ms, 16);
     }
 
     #[test]

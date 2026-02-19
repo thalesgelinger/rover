@@ -25,6 +25,7 @@ ws.error = function(err, ctx, state)
 end
 
 ws:connect()
+-- optional: manual pump loop (disable auto_pump to require this)
 while ws:is_connected() do
   ws:pump(16)
 end
@@ -74,6 +75,8 @@ Raw send methods:
 - `handshake_timeout_ms = 10000`
 - `max_message_bytes = 4194304`
 - `auto_pong = true`
+- `auto_pump = true`
+- `pump_interval_ms = 16`
 - `reconnect = { enabled=false, min_ms=250, max_ms=10000, factor=2.0, jitter=true, max_attempts=0 }`
 - `tls = { roots="bundled", ca_file=nil, insecure=false, pin_sha256={} }`
 
@@ -81,6 +84,7 @@ Raw send methods:
 
 - If `protocols` is provided, handshake enforces server-selected subprotocol.
 - Advanced TLS options are parsed but not fully implemented yet.
+- Auto pump runs in background after `ws:connect()` by default.
 
 ## Valid Samples
 
