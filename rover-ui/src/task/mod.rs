@@ -222,18 +222,13 @@ pub fn create_task(lua: &Lua, func: mlua::Function) -> mlua::Result<AnyUserData>
                 end
 
                 -- Call user function (may yield via rover.delay)
-                local results = table.pack(pcall(user_fn, ...))
+                local results = table.pack(user_fn(...))
 
-                -- Restore original delay
+                -- Restore original delay on normal completion
                 rover.delay = original_delay
 
-                -- Check for errors
-                if not results[1] then
-                    error(results[2], 0)
-                end
-
-                -- Return results normally
-                return table.unpack(results, 2, results.n)
+                -- Return results
+                return table.unpack(results, 1, results.n)
             end
         end
     "#;

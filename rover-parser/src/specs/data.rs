@@ -278,7 +278,36 @@ pub(super) fn build_specs() -> Vec<ApiSpec> {
             [
                 api_member!("server" => "rover_server_constructor", "Create a Rover server.", method),
                 api_member!("guard" => "rover_guard", "Guard builder namespace.", field),
-                api_member!("db" => "rover_db", "Database namespace.", field)
+                api_member!("db" => "rover_db", "Database namespace.", field),
+                api_member!("ws_client" => "rover_ws_client_constructor", "Create a WebSocket client.", method)
+            ]
+        ),
+        api_function!(
+            "rover_ws_client_constructor",
+            "Create a Rover WebSocket client.",
+            [
+                api_param!("url", "string", "WebSocket URL"),
+                api_param!("opts", "table", "WebSocket options")
+            ],
+            Some("rover_ws_client")
+        ),
+        api_object!(
+            "rover_ws_client",
+            "Rover WebSocket client instance.",
+            [
+                api_member!("connect" => "function", "Connect socket.", method),
+                api_member!("pump" => "function", "Pump socket I/O.", method),
+                api_member!("run" => "function", "Pump loop helper.", method),
+                api_member!("close" => "function", "Close socket.", method),
+                api_member!("is_connected" => "function", "Connection status.", method),
+                api_member!("send_text" => "function", "Send raw text.", method),
+                api_member!("send_binary" => "function", "Send raw bytes.", method),
+                api_member!("ping" => "function", "Send ping.", method),
+                api_member!("join" => "function", "Join callback.", field),
+                api_member!("leave" => "function", "Leave callback.", field),
+                api_member!("error" => "function", "Error callback.", field),
+                api_member!("listen" => "table", "Event listeners table.", field),
+                api_member!("send" => "table", "Typed event sender table.", field)
             ]
         ),
         api_object!(

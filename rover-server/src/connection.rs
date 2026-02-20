@@ -1,8 +1,11 @@
 use crate::Bytes;
+use crate::ws_frame;
 use bytes::BytesMut;
 use mio::net::TcpStream;
 use mio::{Interest, Registry, Token};
-use mlua::Thread;
+use mlua::{RegistryKey, Thread};
+use smallvec::SmallVec;
+use std::collections::VecDeque;
 use std::io::{IoSlice, Read, Write};
 use std::time::Instant;
 
@@ -13,7 +16,29 @@ const MAX_HEADERS: usize = 32;
 pub enum ConnectionState {
     Reading,
     Writing,
+    WsActive,
+    WsClosed,
     Closed,
+}
+
+/// WebSocket-specific per-connection data. Only allocated after HTTP upgrade.
+pub struct WsConnectionData {
+    /// Which WsEndpoint this connection belongs to
+    pub endpoint_idx: u16,
+    /// Lua state returned by ws.join(), stored in registry
+    pub state_key: Option<RegistryKey>,
+    /// Pre-built frames waiting to be written (Bytes is ref-counted, clone is O(1))
+    pub write_queue: VecDeque<Bytes>,
+    /// Current write position within the front frame
+    pub write_pos: usize,
+    /// Fragment accumulator for multi-frame messages
+    pub fragment_buf: Option<Vec<u8>>,
+    /// Subscribed topic indices (inline for <=4 topics, no heap)
+    pub subscriptions: SmallVec<[u16; 4]>,
+    /// Whether a close frame has been sent
+    pub close_sent: bool,
+    /// Opcode of the first fragment (for continuation frames)
+    pub fragment_opcode: Option<ws_frame::WsOpcode>,
 }
 
 pub struct Connection {
@@ -42,6 +67,11 @@ pub struct Connection {
 
     yielded_at: Option<Instant>,
     request_ctx_idx: Option<usize>,
+
+    /// WebSocket state -- only populated after upgrade (Option avoids cost for HTTP conns)
+    pub ws_data: Option<Box<WsConnectionData>>,
+    /// Pending WS upgrade: endpoint_idx set during 101 write, consumed after write completes
+    pub pending_ws_upgrade: Option<u16>,
 }
 
 impl Connection {
@@ -67,6 +97,8 @@ impl Connection {
             thread: None,
             yielded_at: None,
             request_ctx_idx: None,
+            ws_data: None,
+            pending_ws_upgrade: None,
         }
     }
 
@@ -442,5 +474,114 @@ impl Connection {
         self.thread = None;
         self.yielded_at = None;
         self.request_ctx_idx = None;
+    }
+
+    // ── WebSocket methods ──
+
+    #[inline]
+    pub fn is_websocket(&self) -> bool {
+        self.ws_data.is_some()
+    }
+
+    /// Transition from HTTP to WebSocket after 101 response is fully written.
+    /// Clears HTTP parsing state, initializes WsConnectionData.
+    pub fn upgrade_to_ws(&mut self, endpoint_idx: u16) {
+        self.read_buf.clear();
+        self.parsed_buf = Bytes::new();
+        self.read_pos = 0;
+        self.write_buf.clear();
+        self.write_pos = 0;
+        self.body_buf = Bytes::new();
+        self.body_pos = 0;
+        self.method_offset = None;
+        self.path_offset = None;
+        self.header_offsets.clear();
+        self.body = None;
+        self.content_length = 0;
+        self.headers_complete = false;
+        self.thread = None;
+        self.pending_ws_upgrade = None;
+
+        self.ws_data = Some(Box::new(WsConnectionData {
+            endpoint_idx,
+            state_key: None,
+            write_queue: VecDeque::with_capacity(8),
+            write_pos: 0,
+            fragment_buf: None,
+            subscriptions: SmallVec::new(),
+            close_sent: false,
+            fragment_opcode: None,
+        }));
+
+        self.state = ConnectionState::WsActive;
+    }
+
+    /// Read data from the socket into read_buf for WebSocket frame parsing.
+    /// Returns Ok(bytes_read) or Err. Returns Ok(0) on EOF.
+    pub fn ws_read(&mut self) -> std::io::Result<usize> {
+        if self.read_buf.len() < self.read_pos + 1024 {
+            self.read_buf.resize(self.read_pos + READ_BUF_SIZE, 0);
+        }
+
+        let mut total = 0;
+        loop {
+            match self.socket.read(&mut self.read_buf[self.read_pos..]) {
+                Ok(0) => return Ok(total),
+                Ok(n) => {
+                    self.read_pos += n;
+                    total += n;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(total);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Queue a pre-built WebSocket frame for writing. Frame is ref-counted Bytes.
+    #[inline]
+    pub fn queue_ws_frame(&mut self, frame: Bytes) {
+        if let Some(ref mut ws) = self.ws_data {
+            ws.write_queue.push_back(frame);
+        }
+    }
+
+    /// Drain the WebSocket write queue to the socket.
+    /// Returns Ok(true) when queue is fully drained, Ok(false) on WouldBlock.
+    pub fn try_write_ws(&mut self) -> std::io::Result<bool> {
+        let ws = match self.ws_data {
+            Some(ref mut ws) => ws,
+            None => return Ok(true),
+        };
+
+        while let Some(front) = ws.write_queue.front() {
+            let remaining = &front[ws.write_pos..];
+            if remaining.is_empty() {
+                ws.write_queue.pop_front();
+                ws.write_pos = 0;
+                continue;
+            }
+
+            match self.socket.write(remaining) {
+                Ok(0) => {
+                    self.state = ConnectionState::Closed;
+                    return Ok(false);
+                }
+                Ok(n) => {
+                    ws.write_pos += n;
+                    if ws.write_pos >= front.len() {
+                        ws.write_queue.pop_front();
+                        ws.write_pos = 0;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(true) // queue fully drained
     }
 }
