@@ -6,6 +6,7 @@ pub mod guard;
 pub mod html;
 pub mod http;
 pub mod io;
+pub mod middleware;
 pub mod server;
 pub mod template;
 pub mod ws_client;

@@ -20,9 +20,10 @@ use std::net::SocketAddr;
 use anyhow::anyhow;
 
 use mlua::{
-    FromLua, Function, Lua,
+    FromLua, Function, Lua, RegistryKey,
     Value::{self},
 };
+use std::sync::Arc;
 use tracing::info;
 
 pub type Bytes = bytes::Bytes;
@@ -96,6 +97,26 @@ impl std::fmt::Display for HttpMethod {
     }
 }
 
+/// Middleware function with shared ownership
+#[derive(Clone)]
+pub struct MiddlewareHandler {
+    pub name: String,
+    pub handler: Arc<RegistryKey>,
+}
+
+/// Chain of middlewares to execute before/after the route handler
+#[derive(Default, Clone)]
+pub struct MiddlewareChain {
+    pub before: Vec<MiddlewareHandler>,
+    pub after: Vec<MiddlewareHandler>,
+}
+
+impl MiddlewareChain {
+    pub fn is_empty(&self) -> bool {
+        self.before.is_empty() && self.after.is_empty()
+    }
+}
+
 #[derive(Clone)]
 pub struct Route {
     pub method: HttpMethod,
@@ -103,6 +124,7 @@ pub struct Route {
     pub param_names: Vec<String>,
     pub handler: Function,
     pub is_static: bool,
+    pub middlewares: MiddlewareChain,
 }
 
 pub struct WsRoute {
