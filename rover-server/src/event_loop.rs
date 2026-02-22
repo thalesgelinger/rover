@@ -509,6 +509,29 @@ impl EventLoop {
             .map(|(off, len)| (off as u32, len as u32))
             .unwrap_or((0, 0));
 
+        // Check body size limit if configured
+        if let Some(max_size) = self.config.body_size_limit {
+            if (body_len as usize) > max_size {
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                let error_body = format!(
+                    "{{\"error\":\"Request body too large: {} bytes exceeds limit of {} bytes\"}}",
+                    body_len, max_size
+                );
+                conn.set_response_with_buf(
+                    413,
+                    error_body.as_bytes(),
+                    Some("application/json"),
+                    buf,
+                );
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
+        }
+
         // Drop the borrow before calling into Lua
         drop(conns);
 
