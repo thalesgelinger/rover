@@ -7,6 +7,7 @@ edition = "2024"
 ahash = "0.8"
 anyhow = "1.0.100"
 bytes = "1.10"
+dotenvy = "0.15"
 mlua = { version="0.11.5", features = ["anyhow", "vendored", "luajit52", "serialize"] }
 rover_server = {path = "../rover-server"}
 rover-parser = {path = "../rover-parser"}

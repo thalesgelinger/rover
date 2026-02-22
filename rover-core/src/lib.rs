@@ -1,5 +1,6 @@
 mod app_type;
 mod auto_table;
+mod env;
 mod error_reporter;
 pub mod guard;
 pub mod html;
@@ -9,6 +10,7 @@ pub mod server;
 pub mod template;
 pub mod ws_client;
 
+use env::{create_config_module, create_env_module, load_dotenv};
 use html::create_html_module;
 use http::create_http_module;
 use io::create_io_module;
@@ -42,6 +44,9 @@ impl RoverApp for Table {
 }
 
 pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
+    // Load .env file from current directory (before creating Lua state)
+    let _ = load_dotenv()?;
+
     let lua = Lua::new();
     let content = std::fs::read_to_string(path)?;
 
@@ -137,6 +142,14 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
 
     rover.set("guard", guard)?;
 
+    // Add rover.env environment variables module
+    let env_module = create_env_module(&lua)?;
+    rover.set("env", env_module)?;
+
+    // Add rover.config module for loading config files
+    let config_module = create_config_module(&lua)?;
+    rover.set("config", config_module)?;
+
     // Override global io module with async version
     let io_module = io::create_io_module(&lua)?;
     lua.globals().set("io", io_module)?;
@@ -231,10 +244,18 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     }
 }
 
-/// Register extra rover modules (http, html, db, io, debug, guard) on an existing Lua instance
+/// Register extra rover modules (http, html, db, io, debug, guard, env, config) on an existing Lua instance
 /// This is useful when using a custom renderer with rover_ui::App
 pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     let rover: Table = lua.globals().get("rover")?;
+
+    // Add rover.env environment variables module
+    let env_module = create_env_module(lua)?;
+    rover.set("env", env_module)?;
+
+    // Add rover.config module for loading config files
+    let config_module = create_config_module(lua)?;
+    rover.set("config", config_module)?;
 
     // Add HTTP client module
     let http_module = create_http_module(lua)?;
@@ -337,6 +358,9 @@ impl FromLua for Config {
 
 /// Run Lua code from a string (used by bundled applications)
 pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> {
+    // Load .env file from current directory
+    let _ = load_dotenv()?;
+
     let lua = Lua::new();
 
     let arg_table = lua.create_table()?;
@@ -426,6 +450,14 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
 
     let _ = guard.set_metatable(Some(guard_meta));
     rover.set("guard", guard)?;
+
+    // Add rover.env environment variables module
+    let env_module = create_env_module(&lua)?;
+    rover.set("env", env_module)?;
+
+    // Add rover.config module for loading config files
+    let config_module = create_config_module(&lua)?;
+    rover.set("config", config_module)?;
 
     // Override global io module
     let io_module = io::create_io_module(&lua)?;
