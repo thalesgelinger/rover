@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
 use crate::table_pool::LuaTablePool;
-use crate::{Bytes, MiddlewareChain, response::RoverResponse, to_json::ToJson};
+use crate::{response::RoverResponse, to_json::ToJson, Bytes, MiddlewareChain};
 use rover_ui::SharedSignalRuntime;
 
 pub struct RequestContext {
@@ -427,6 +427,7 @@ pub enum CoroutineResponse {
         status: u16,
         body: Bytes,
         content_type: Option<&'static str>,
+        headers: Option<std::collections::HashMap<String, String>>,
     },
     Yielded {
         thread: Thread,
@@ -489,6 +490,7 @@ pub fn execute_handler_coroutine(
                 status,
                 body: Bytes::from(error_msg),
                 content_type: None,
+                headers: None,
             });
         }
     };
@@ -522,19 +524,23 @@ pub fn execute_handler_coroutine(
                 _ => {
                     // Handler completed without yielding (or died)
                     // Fast path: check for RoverResponse directly to avoid function call overhead
-                    let (status, body, content_type) = if let Value::UserData(ref ud) = result {
-                        if let Ok(response) = ud.borrow::<RoverResponse>() {
-                            (
-                                response.status,
-                                response.body.clone(),
-                                Some(response.content_type),
-                            )
+                    let (status, body, content_type, headers) =
+                        if let Value::UserData(ref ud) = result {
+                            if let Ok(response) = ud.borrow::<RoverResponse>() {
+                                (
+                                    response.status,
+                                    response.body.clone(),
+                                    Some(response.content_type),
+                                    response.headers.clone(),
+                                )
+                            } else {
+                                let (s, b, ct) = convert_lua_response(lua, result, buffer_pool);
+                                (s, b, ct, None)
+                            }
                         } else {
-                            convert_lua_response(lua, result, buffer_pool)
-                        }
-                    } else {
-                        convert_lua_response(lua, result, buffer_pool)
-                    };
+                            let (s, b, ct) = convert_lua_response(lua, result, buffer_pool);
+                            (s, b, ct, None)
+                        };
 
                     let elapsed = started_at.elapsed();
                     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
@@ -585,6 +591,7 @@ pub fn execute_handler_coroutine(
                         status,
                         body,
                         content_type,
+                        headers,
                     })
                 }
             }
@@ -672,6 +679,7 @@ fn convert_error_to_response(
         status,
         body,
         content_type: None,
+        headers: None,
     })
 }
 
