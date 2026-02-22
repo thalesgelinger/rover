@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 /// WebSocket handshake (RFC 6455 sec 4.2).
 ///
 /// Validates HTTP Upgrade headers using the connection's offset-based header access,

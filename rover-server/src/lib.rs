@@ -137,6 +137,8 @@ pub struct WsRoute {
 pub struct RouteTable {
     pub routes: Vec<Route>,
     pub ws_routes: Vec<WsRoute>,
+    /// Optional error handler function (api.on_error)
+    pub error_handler: Option<Arc<RegistryKey>>,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +201,7 @@ pub fn run(
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
 ) {
+    let error_handler = routes.error_handler.clone();
     if config.log_level != "nope" {
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -245,6 +248,7 @@ pub fn run(
         config,
         openapi_spec,
         sock_addr,
+        error_handler,
     ) {
         Ok(_) => {}
         Err(e) => {

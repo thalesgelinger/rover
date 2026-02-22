@@ -453,6 +453,7 @@ pub fn execute_handler_coroutine(
     request_pool: &mut RequestContextPool,
     _table_pool: &LuaTablePool,
     buffer_pool: &mut BufferPool,
+    error_handler: Option<&Arc<RegistryKey>>,
 ) -> Result<CoroutineResponse> {
     if tracing::event_enabled!(tracing::Level::DEBUG) {
         if !query.is_empty() {
@@ -599,6 +600,7 @@ pub fn execute_handler_coroutine(
         Err(e) => {
             request_pool.release(ctx_idx);
             convert_error_to_response(
+                lua,
                 e,
                 &buf,
                 method_off,
@@ -607,12 +609,14 @@ pub fn execute_handler_coroutine(
                 path_len,
                 started_at,
                 buffer_pool,
+                error_handler,
             )
         }
     }
 }
 
 fn convert_error_to_response(
+    lua: &Lua,
     e: mlua::Error,
     buf: &Bytes,
     method_off: u16,
@@ -621,7 +625,64 @@ fn convert_error_to_response(
     path_len: u16,
     started_at: Instant,
     _buffer_pool: &mut BufferPool,
+    error_handler: Option<&Arc<RegistryKey>>,
 ) -> Result<CoroutineResponse> {
+    // Try to use custom error handler if available
+    if let Some(handler_key) = error_handler {
+        let path_str = unsafe {
+            std::str::from_utf8_unchecked(&buf[path_off as usize..(path_off + path_len) as usize])
+        };
+
+        // Extract error message and try to parse as error table
+        let mut error_message = e.to_string();
+        if let Some(stack_pos) = error_message.find("\nstack traceback:") {
+            error_message = error_message[..stack_pos].to_string();
+        }
+        error_message = error_message
+            .trim_start_matches("runtime error: ")
+            .to_string();
+
+        // Create error table for the handler
+        let error_table = lua.create_table()?;
+        error_table.set("message", error_message.clone())?;
+        error_table.set("path", path_str)?;
+
+        // Try to parse status and code from the error if it was thrown as a table
+        // Default to 500 for server errors, 400 for validation
+        let default_status = if error_message.contains("not found") {
+            404
+        } else if error_message.contains("validation") || error_message.contains("required") {
+            400
+        } else {
+            500
+        };
+        error_table.set("status", default_status)?;
+        error_table.set("code", "ERROR")?;
+
+        // Call the error handler
+        let handler: Function = lua.registry_value(handler_key)?;
+        match handler.call::<Value>(error_table) {
+            Ok(result) => {
+                // Handler returned a response - extract it
+                if let Value::UserData(ud) = result {
+                    if let Ok(response) = ud.borrow::<RoverResponse>() {
+                        return Ok(CoroutineResponse::Ready {
+                            status: response.status,
+                            body: response.body.clone(),
+                            content_type: Some(response.content_type),
+                            headers: response.headers.clone(),
+                        });
+                    }
+                }
+                // Handler returned something else - fall through to default
+            }
+            Err(_) => {
+                // Handler failed - fall through to default error handling
+            }
+        }
+    }
+
+    // Default error handling
     let validation_err = match &e {
         mlua::Error::ExternalError(arc_err) => {
             arc_err.downcast_ref::<rover_types::ValidationErrors>()
