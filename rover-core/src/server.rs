@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use mlua::{Lua, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
@@ -7,8 +7,9 @@ use rover_server::{
     Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig, WsRoute,
 };
 use rover_types::ValidationErrors;
-use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
+use rover_ui::SharedSignalRuntime;
+use std::collections::HashMap;
 
 use crate::html::{get_rover_html, render_template_with_components};
 use crate::{app_type::AppType, auto_table::AutoTable};
@@ -25,32 +26,33 @@ impl AppServer for Lua {
 
         let json_helper = self.create_table()?;
 
-        let json_call = self.create_function(|_lua, (_self, data): (Table, Value)| match data {
-            Value::String(s) => {
-                let json_str = s.to_str()?;
-                Ok(RoverResponse::json(
-                    200,
-                    Bytes::copy_from_slice(json_str.as_bytes()),
-                    None,
-                ))
-            }
-            Value::Table(table) => {
-                let json = table.to_json_string().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
-                })?;
-                Ok(RoverResponse::json(200, Bytes::from(json), None))
-            }
-            _ => Err(mlua::Error::RuntimeError(
-                "api.json() requires a table or string".to_string(),
-            )),
-        })?;
+        let json_call = self.create_function(|lua, (_self, data): (Table, Value)| {
+            // Helper to extract headers from table
+            let extract_headers = |table: &Table| -> mlua::Result<
+                Option<std::collections::HashMap<String, String>>,
+            > {
+                let headers_val: Value = table.get("headers")?;
+                match headers_val {
+                    Value::Nil => Ok(None),
+                    Value::Table(headers_table) => {
+                        let mut headers = std::collections::HashMap::new();
+                        for pair in headers_table.pairs::<String, String>() {
+                            let (key, value) = pair?;
+                            headers.insert(key, value);
+                        }
+                        Ok(Some(headers))
+                    }
+                    _ => Err(mlua::Error::RuntimeError(
+                        "headers must be a table".to_string(),
+                    )),
+                }
+            };
 
-        let json_status_fn = self.create_function(
-            |_lua, (_self, status_code, data): (Table, u16, Value)| match data {
+            match data {
                 Value::String(s) => {
                     let json_str = s.to_str()?;
                     Ok(RoverResponse::json(
-                        status_code,
+                        200,
                         Bytes::copy_from_slice(json_str.as_bytes()),
                         None,
                     ))
@@ -59,13 +61,59 @@ impl AppServer for Lua {
                     let json = table.to_json_string().map_err(|e| {
                         mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
                     })?;
-                    Ok(RoverResponse::json(status_code, Bytes::from(json), None))
+                    let headers = extract_headers(&table)?;
+                    Ok(RoverResponse::json(200, Bytes::from(json), headers))
                 }
                 _ => Err(mlua::Error::RuntimeError(
-                    "api.json.status() requires a table or string".to_string(),
+                    "api.json() requires a table or string".to_string(),
                 )),
-            },
-        )?;
+            }
+        })?;
+
+        let json_status_fn =
+            self.create_function(|lua, (_self, status_code, data): (Table, u16, Value)| {
+                // Helper to extract headers from table
+                let extract_headers = |table: &Table| -> mlua::Result<
+                    Option<std::collections::HashMap<String, String>>,
+                > {
+                    let headers_val: Value = table.get("headers")?;
+                    match headers_val {
+                        Value::Nil => Ok(None),
+                        Value::Table(headers_table) => {
+                            let mut headers = std::collections::HashMap::new();
+                            for pair in headers_table.pairs::<String, String>() {
+                                let (key, value) = pair?;
+                                headers.insert(key, value);
+                            }
+                            Ok(Some(headers))
+                        }
+                        _ => Err(mlua::Error::RuntimeError(
+                            "headers must be a table".to_string(),
+                        )),
+                    }
+                };
+
+                match data {
+                    Value::String(s) => {
+                        let json_str = s.to_str()?;
+                        Ok(RoverResponse::json(
+                            status_code,
+                            Bytes::copy_from_slice(json_str.as_bytes()),
+                            None,
+                        ))
+                    }
+                    Value::Table(table) => {
+                        let json = table.to_json_string().map_err(|e| {
+                            mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                        })?;
+                        let headers = extract_headers(&table)?;
+                        Ok(RoverResponse::json(status_code, Bytes::from(json), headers))
+                    }
+                    _ => Err(mlua::Error::RuntimeError(
+                        "api.json.status() requires a table or string".to_string(),
+                    )),
+                }
+            })?;
         json_helper.set("status", json_status_fn)?;
 
         let meta = self.create_table()?;
