@@ -11,9 +11,9 @@ use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
-use rover_ui::SharedSignalRuntime;
-use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
+use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
 use rover_ui::scheduler::SharedScheduler;
+use rover_ui::SharedSignalRuntime;
 use slab::Slab;
 use tracing::{debug, info, warn};
 
@@ -21,7 +21,7 @@ use crate::buffer_pool::BufferPool;
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::{FastRouter, RouteMatch};
 use crate::http_task::{
-    CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
+    execute_handler_coroutine, CoroutineResponse, RequestContextPool, ThreadPool,
 };
 use crate::table_pool::LuaTablePool;
 use crate::ws_frame::{self, WsOpcode};
@@ -37,6 +37,40 @@ struct PendingCoroutine {
     thread: Thread,
     started_at: Instant,
     ctx_idx: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EventLoop;
+
+    #[test]
+    fn should_accept_wildcard_accept_header() {
+        assert!(EventLoop::accepts_content_type("*/*", "application/json"));
+    }
+
+    #[test]
+    fn should_accept_exact_content_type() {
+        assert!(EventLoop::accepts_content_type(
+            "application/json",
+            "application/json"
+        ));
+    }
+
+    #[test]
+    fn should_accept_major_wildcard() {
+        assert!(EventLoop::accepts_content_type(
+            "application/*",
+            "application/json"
+        ));
+    }
+
+    #[test]
+    fn should_reject_non_matching_accept() {
+        assert!(!EventLoop::accepts_content_type(
+            "text/plain",
+            "application/json"
+        ));
+    }
 }
 
 pub struct EventLoop {
@@ -58,6 +92,54 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
+    fn get_header_value(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+        name: &str,
+    ) -> Option<String> {
+        for &(name_off, name_len, val_off, val_len) in headers {
+            let key = unsafe { std::str::from_utf8_unchecked(&buf[name_off..name_off + name_len]) };
+            if key.eq_ignore_ascii_case(name) {
+                let value =
+                    unsafe { std::str::from_utf8_unchecked(&buf[val_off..val_off + val_len]) };
+                return Some(value.to_string());
+            }
+        }
+        None
+    }
+
+    fn accepts_content_type(accept: &str, content_type: &str) -> bool {
+        let ct = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+
+        for raw in accept.split(',') {
+            let media = raw
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+
+            if media.is_empty() || media == "*/*" {
+                return true;
+            }
+            if media == ct {
+                return true;
+            }
+            if let Some((major, _)) = media.split_once('/') {
+                if media.ends_with("/*") && ct.starts_with(&format!("{}/", major)) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     pub fn new(
         lua: Lua,
         routes: Vec<Route>,
@@ -562,6 +644,8 @@ impl EventLoop {
             ));
         }
 
+        let accept_header = Self::get_header_value(buf_ref, &conn.header_offsets, "accept");
+
         let (body_off, body_len) = conn
             .body
             .map(|(off, len)| (off as u32, len as u32))
@@ -622,8 +706,16 @@ impl EventLoop {
                 let mut conns = self.connections.borrow_mut();
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
-                let buf = self.buffer_pool.get_response_buf();
                 let body = if is_head_request { Bytes::new() } else { body };
+
+                if let (Some(accept), Some(ct)) = (accept_header.as_deref(), content_type) {
+                    if status < 400 && !Self::accepts_content_type(accept, ct) {
+                        conn.set_response_with_buf(406, b"Not Acceptable", Some("text/plain"), buf);
+                        let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                        return Ok(());
+                    }
+                }
+
                 conn.set_response_bytes_with_headers(
                     status,
                     body,

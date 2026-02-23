@@ -96,6 +96,11 @@ end
 - `:bytes()` - body as byte table
 - `:expect(schema)` - validate with `rover.guard`
 
+Content negotiation behavior:
+
+- Calling `ctx:body():json()` or `ctx:body():expect(...)` requires `Content-Type: application/json` (or `+json`); otherwise Rover returns `415 Unsupported Media Type`.
+- If the request `Accept` header does not allow the response media type, Rover returns `406 Not Acceptable`.
+
 Example validation:
 
 ```lua
