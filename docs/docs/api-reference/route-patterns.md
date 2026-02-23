@@ -75,6 +75,12 @@ Rover supports all standard HTTP methods as function suffixes:
 - `patch` - PATCH requests
 - `delete` - DELETE requests
 
+Incoming `HEAD` and `OPTIONS` are supported automatically:
+
+- `HEAD` uses the same handler as `GET` when no explicit `head` route exists.
+- `OPTIONS` returns `204 No Content` with an `Allow` header when the path exists.
+- When a path exists but method is not allowed, Rover returns `405 Method Not Allowed` with `Allow`.
+
 Example with multiple methods on the same resource:
 
 ```lua
@@ -107,6 +113,12 @@ function api.users.p_id.delete(ctx)
     return api.no_content()
 end
 ```
+
+## 404 / 405 / Allow Behavior
+
+- Unknown path: `404 Route not found`
+- Known path with unsupported method: `405 Method Not Allowed`
+- `Allow` includes supported methods plus implicit `HEAD` (when `GET` exists) and `OPTIONS`
 
 ## Best Practices
 
