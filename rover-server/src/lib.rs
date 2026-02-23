@@ -162,6 +162,10 @@ pub struct ServerConfig {
     pub docs: bool,
     /// Maximum body size in bytes (None = no limit)
     pub body_size_limit: Option<usize>,
+    pub cors_origin: Option<String>,
+    pub cors_methods: String,
+    pub cors_headers: String,
+    pub cors_credentials: bool,
 }
 
 impl FromLua for ServerConfig {
@@ -201,6 +205,26 @@ impl FromLua for ServerConfig {
                         _ => true,
                     },
                     body_size_limit,
+                    cors_origin: match config.get::<Value>("cors_origin")? {
+                        Value::Nil => None,
+                        Value::String(s) => Some(s.to_str()?.to_string()),
+                        _ => None,
+                    },
+                    cors_methods: match config.get::<Value>("cors_methods")? {
+                        Value::Nil => "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD".to_string(),
+                        Value::String(s) => s.to_str()?.to_string(),
+                        _ => "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD".to_string(),
+                    },
+                    cors_headers: match config.get::<Value>("cors_headers")? {
+                        Value::Nil => "Content-Type, Authorization".to_string(),
+                        Value::String(s) => s.to_str()?.to_string(),
+                        _ => "Content-Type, Authorization".to_string(),
+                    },
+                    cors_credentials: match config.get::<Value>("cors_credentials")? {
+                        Value::Nil => false,
+                        Value::Boolean(b) => b,
+                        _ => false,
+                    },
                 })
             }
             _ => Err(anyhow!("Server config must be a table"))?,

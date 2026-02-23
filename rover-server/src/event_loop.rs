@@ -139,7 +139,6 @@ impl EventLoop {
 
         false
     }
-
     pub fn new(
         lua: Lua,
         routes: Vec<Route>,
@@ -480,6 +479,55 @@ impl EventLoop {
             return Ok(());
         }
 
+        // CORS preflight handling before method parsing (OPTIONS may be auto-handled)
+        if method.eq_ignore_ascii_case("options") {
+            if let (Some(cors_origin), Some(origin), Some(_acr_method)) = (
+                self.config.cors_origin.as_ref(),
+                Self::get_header_value(buf_ref, &conn.header_offsets, "origin"),
+                Self::get_header_value(
+                    buf_ref,
+                    &conn.header_offsets,
+                    "access-control-request-method",
+                ),
+            ) {
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+                let mut headers = HashMap::new();
+                let allow_origin = if cors_origin == "*" {
+                    "*".to_string()
+                } else {
+                    origin
+                };
+                headers.insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+                headers.insert(
+                    "Access-Control-Allow-Methods".to_string(),
+                    self.config.cors_methods.clone(),
+                );
+                headers.insert(
+                    "Access-Control-Allow-Headers".to_string(),
+                    self.config.cors_headers.clone(),
+                );
+                if self.config.cors_credentials {
+                    headers.insert(
+                        "Access-Control-Allow-Credentials".to_string(),
+                        "true".to_string(),
+                    );
+                }
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_response_bytes_with_headers(
+                    204,
+                    Bytes::new(),
+                    Some("text/plain"),
+                    Some(&headers),
+                    buf,
+                );
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
+        }
+
         let http_method = match HttpMethod::from_str(method) {
             Some(m) => m,
             None => {
@@ -675,6 +723,7 @@ impl EventLoop {
         }
 
         // Drop the borrow before calling into Lua
+        let origin_header = Self::get_header_value(buf_ref, &conn.header_offsets, "origin");
         drop(conns);
 
         match execute_handler_coroutine(
@@ -722,13 +771,37 @@ impl EventLoop {
                     }
                 }
 
-                conn.set_response_bytes_with_headers(
-                    status,
-                    body,
-                    content_type,
-                    headers.as_ref(),
-                    buf,
-                );
+                let buf = self.buffer_pool.get_response_buf();
+                let mut response_headers = headers.unwrap_or_default();
+                if let (Some(cors_origin), Some(origin)) =
+                    (self.config.cors_origin.as_ref(), origin_header.as_ref())
+                {
+                    let allow_origin = if cors_origin == "*" {
+                        "*".to_string()
+                    } else {
+                        origin.clone()
+                    };
+                    response_headers
+                        .insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+                    if self.config.cors_credentials {
+                        response_headers.insert(
+                            "Access-Control-Allow-Credentials".to_string(),
+                            "true".to_string(),
+                        );
+                    }
+                }
+
+                if response_headers.is_empty() {
+                    conn.set_response_bytes_with_buf(status, body, content_type, buf);
+                } else {
+                    conn.set_response_bytes_with_headers(
+                        status,
+                        body,
+                        content_type,
+                        Some(&response_headers),
+                        buf,
+                    );
+                }
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
