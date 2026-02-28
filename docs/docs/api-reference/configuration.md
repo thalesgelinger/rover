@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Configuration
 
-Configure your Rover server with custom options.
+Configure your Rover server with custom options, environment variables, and external config files.
 
 ## Server Options
 
@@ -107,3 +107,151 @@ This configuration will:
 - Use port 8080
 - Show info-level logs and above
 - Expose OpenAPI docs at `/docs`
+
+## Environment Variables
+
+Rover provides direct access to environment variables via `rover.env`.
+
+### Loading .env Files
+
+Rover automatically loads `.env` files from your project root on startup. Create a `.env` file:
+
+```bash
+# .env
+API_KEY=your-secret-key
+DB_HOST=localhost
+DB_PORT=5432
+DEBUG=true
+```
+
+### Direct Access
+
+Access environment variables directly as properties:
+
+```lua
+-- Get env var (returns nil if not set)
+local api_key = rover.env.API_KEY
+local db_host = rover.env.DB_HOST
+
+-- With default using Lua's or operator
+local port = rover.env.PORT or "3000"
+local host = rover.env.HOST or "localhost"
+
+-- Check if set
+if rover.env.DEBUG then
+    -- Enable debug mode
+end
+```
+
+### Production Best Practices
+
+```lua
+local api = rover.server {}
+
+function api.config.get(ctx)
+    -- Direct access with defaults using Lua's or operator
+    local config = {
+        port = tonumber(rover.env.PORT or "3000"),
+        host = rover.env.HOST or "0.0.0.0",
+        log_level = rover.env.LOG_LEVEL or "info",
+    }
+    
+    -- Check if required var is set
+    if not rover.env.API_KEY then
+        return api.error(500, "API_KEY not configured")
+    end
+    
+    return api.json {
+        config = config,
+        has_api_key = true,
+    }
+end
+
+return api
+```
+
+## Config Files
+
+### `rover.config.load(path)`
+
+Load configuration from a Lua file:
+
+```lua
+-- config.lua
+return {
+    database = {
+        host = "localhost",
+        port = 5432,
+        name = "myapp"
+    },
+    features = {
+        "auth",
+        "websocket"
+    }
+}
+```
+
+```lua
+-- app.lua
+local api = rover.server {}
+
+local config = rover.config.load("config.lua")
+
+function api.db.host.get(ctx)
+    return api.json {
+        host = config.database.host
+    }
+end
+
+return api
+```
+
+### `rover.config.from_env(prefix)`
+
+Load nested configuration from environment variables with a prefix:
+
+```bash
+# .env
+MYAPP_DEBUG=true
+MYAPP_API_KEY=secret123
+MYAPP_DATABASE_HOST=db.example.com
+MYAPP_DATABASE_PORT=3306
+```
+
+```lua
+local config = rover.config.from_env("MYAPP")
+-- Results in:
+-- config.debug = "true"
+-- config.api_key = "secret123"
+-- config.database.host = "db.example.com"
+-- config.database.port = "3306"
+```
+
+## Complete Environment Example
+
+```lua
+local api = rover.server {
+    port = tonumber(rover.env.PORT or "4242"),
+    host = rover.env.HOST or "localhost",
+    log_level = rover.env.LOG_LEVEL or "debug",
+}
+
+-- Load external config
+local db_config = rover.config.load("database.lua")
+
+function api.health.get(ctx)
+    return api.json {
+        status = "healthy",
+        db_host = db_config.host,
+        environment = rover.env.ROVER_ENV or "development",
+    }
+end
+
+return api
+```
+
+This example demonstrates:
+- Server configuration from environment variables
+- Loading external config files
+- Safe defaults with Lua's `or` operator
+- Runtime environment detection
