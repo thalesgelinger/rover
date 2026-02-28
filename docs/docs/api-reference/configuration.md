@@ -15,7 +15,11 @@ local api = rover.server {
     host = "127.0.0.1",       -- default: "localhost"
     port = 3000,              -- default: 4242
     log_level = "debug",     -- default: "debug" ("debug" | "info" | "warn" | "error" | "nope")
-    docs = true               -- default: true (enable OpenAPI docs)
+    docs = true,              -- default: true (enable OpenAPI docs)
+    cors_origin = "*",       -- optional
+    cors_methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
+    cors_headers = "Content-Type, Authorization",
+    cors_credentials = false
 }
 
 function api.hello.get(ctx)
@@ -84,6 +88,30 @@ rover.server {
     docs = false  -- Disable docs endpoint
 }
 ```
+
+### `cors_origin`
+
+- **Type**: `string`
+- **Default**: `nil` (CORS disabled)
+- **Description**: Allowed CORS origin, e.g. `"*"` or `"https://app.example.com"`
+
+### `cors_methods`
+
+- **Type**: `string`
+- **Default**: `"GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"`
+- **Description**: Value for `Access-Control-Allow-Methods`
+
+### `cors_headers`
+
+- **Type**: `string`
+- **Default**: `"Content-Type, Authorization"`
+- **Description**: Value for `Access-Control-Allow-Headers`
+
+### `cors_credentials`
+
+- **Type**: `boolean`
+- **Default**: `false`
+- **Description**: Sets `Access-Control-Allow-Credentials: true` when enabled
 
 ## Complete Example
 

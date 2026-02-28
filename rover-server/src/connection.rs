@@ -470,14 +470,12 @@ impl Connection {
         )
         .unwrap();
 
-        // Add custom headers if provided
         if let Some(headers) = custom_headers {
             for (name, value) in headers {
                 write!(self.write_buf, "\r\n{}: {}", name, value).unwrap();
             }
         }
 
-        // End headers
         write!(self.write_buf, "\r\n\r\n").unwrap();
 
         // Store body directly (true zero-copy - no slice copy)
