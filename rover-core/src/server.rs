@@ -3,7 +3,9 @@ use mlua::{Lua, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
 use rover_server::to_json::ToJson;
-use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerConfig, WsRoute};
+use rover_server::{
+    Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig, WsRoute,
+};
 use rover_types::ValidationErrors;
 use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
@@ -351,6 +353,9 @@ impl Server for Table {
     }
 
     fn get_routes(&self, lua: &Lua) -> Result<RouteTable> {
+        // Collect global middlewares first
+        let global_middlewares = crate::middleware::collect_global_middlewares(lua, self)?;
+
         fn extract_recursive(
             lua: &Lua,
             table: &Table,
@@ -358,13 +363,17 @@ impl Server for Table {
             param_names: &mut Vec<String>,
             routes: &mut Vec<Route>,
             ws_routes: &mut Vec<WsRoute>,
+            global_middlewares: &crate::middleware::MiddlewareChain,
         ) -> Result<()> {
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
 
-                // Skip internal rover fields and API helpers
+                // Skip internal rover fields and API helpers at root level
+                // Note: "before" and "after" are only skipped at root level (current_path == "")
+                // At nested levels, they're route-specific middlewares and should be processed
                 if let Value::String(ref key_str) = key {
                     let key_str_val = key_str.to_str()?;
+                    let is_root = current_path.is_empty();
                     if key_str_val.starts_with("__rover_")
                         || key_str_val == "config"
                         || key_str_val == "json"
@@ -374,6 +383,7 @@ impl Server for Table {
                         || key_str_val == "error"
                         || key_str_val == "no_content"
                         || key_str_val == "raw"
+                        || (is_root && (key_str_val == "before" || key_str_val == "after"))
                     {
                         continue;
                     }
@@ -405,17 +415,37 @@ impl Server for Table {
                             )
                         })?;
 
+                        // Extract route-specific middlewares and merge with global
+                        let route_middlewares = crate::middleware::extract_middlewares(lua, table)?;
+                        let merged_middlewares = crate::middleware::merge_middleware_chains(
+                            global_middlewares,
+                            &route_middlewares,
+                        );
+
+                        // Create wrapped handler that executes middleware chain
+                        let wrapped_handler = if merged_middlewares.is_empty() {
+                            func.clone()
+                        } else {
+                            create_middleware_wrapper(lua, &func, &merged_middlewares)?
+                        };
+
                         let route = Route {
                             method,
                             pattern: Bytes::from(path.to_string()),
                             param_names: param_names.clone(),
-                            handler: func,
+                            handler: wrapped_handler,
                             is_static: param_names.is_empty(),
+                            middlewares: MiddlewareChain::default(), // Chain is now in the wrapper
                         };
                         routes.push(route);
                     }
                     (Value::String(key_str), Value::Table(nested_table)) => {
                         let key_string = key_str.to_str()?.to_string();
+
+                        // Skip middleware tables (before/after) - they're extracted separately
+                        if key_string == "before" || key_string == "after" {
+                            continue;
+                        }
 
                         // Check if this is a parameter segment - convert to matchit format immediately
                         let (segment, param_name) = if key_string.starts_with("p_") {
@@ -449,6 +479,7 @@ impl Server for Table {
                             param_names,
                             routes,
                             ws_routes,
+                            global_middlewares,
                         )?;
 
                         // Remove param name after recursion
@@ -471,6 +502,62 @@ impl Server for Table {
                 }
             }
             Ok(())
+        }
+
+        /// Create a wrapper function that executes middleware chain before/after the handler
+        fn create_middleware_wrapper(
+            lua: &Lua,
+            handler: &mlua::Function,
+            middlewares: &MiddlewareChain,
+        ) -> Result<mlua::Function> {
+            let before_handlers: Vec<_> = middlewares
+                .before
+                .iter()
+                .map(|mw| lua.registry_value::<mlua::Function>(&mw.handler))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Failed to get before middleware: {}", e))?;
+
+            let after_handlers: Vec<_> = middlewares
+                .after
+                .iter()
+                .map(|mw| lua.registry_value::<mlua::Function>(&mw.handler))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Failed to get after middleware: {}", e))?;
+
+            let handler = handler.clone();
+
+            // Create wrapper function
+            let wrapper = lua.create_function(move |lua, ctx: mlua::Value| {
+                // Execute before middlewares
+                for (i, mw) in before_handlers.iter().enumerate() {
+                    let result: mlua::Value = mw.call(ctx.clone())?;
+
+                    // Check if middleware returned a response (short-circuit)
+                    // If it's not nil and not the context, treat it as a response
+                    if !matches!(result, mlua::Value::Nil) {
+                        // If the middleware wants to short-circuit, return its result
+                        // We check if it's a RoverResponse by trying to borrow it
+                        if let Some(ud) = result.as_userdata() {
+                            if ud.borrow::<rover_server::RoverResponse>().is_ok() {
+                                return Ok(result);
+                            }
+                        }
+                    }
+                }
+
+                // Execute the actual handler
+                let result: mlua::Value = handler.call(ctx.clone())?;
+
+                // Execute after middlewares (in reverse order)
+                for mw in after_handlers.iter().rev() {
+                    let _after_result: mlua::Value = mw.call(ctx.clone())?;
+                    // After middlewares typically don't modify the response
+                }
+
+                Ok(result)
+            })?;
+
+            Ok(wrapper)
         }
 
         /// Extract a WebSocket endpoint from its setup function.
@@ -540,7 +627,15 @@ impl Server for Table {
         let mut routes = Vec::new();
         let mut ws_routes = Vec::new();
         let mut param_names = Vec::new();
-        extract_recursive(lua, self, "", &mut param_names, &mut routes, &mut ws_routes)?;
+        extract_recursive(
+            lua,
+            self,
+            "",
+            &mut param_names,
+            &mut routes,
+            &mut ws_routes,
+            &global_middlewares,
+        )?;
 
         // Sort routes: static routes first (for exact-match priority)
         routes.sort_by(|a, b| match (a.is_static, b.is_static) {

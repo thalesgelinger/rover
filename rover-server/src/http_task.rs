@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
 use crate::table_pool::LuaTablePool;
-use crate::{Bytes, response::RoverResponse, to_json::ToJson};
+use crate::{Bytes, MiddlewareChain, response::RoverResponse, to_json::ToJson};
 use rover_ui::SharedSignalRuntime;
 
 pub struct RequestContext {
@@ -29,6 +29,15 @@ pub struct RequestContext {
     query: Vec<(u16, u8, u16, u16)>,
 
     params: Vec<(Bytes, Bytes)>,
+
+    /// Context storage for request-scoped data (used by middleware)
+    context_data: std::cell::RefCell<std::collections::HashMap<String, Value>>,
+
+    /// Middleware chain to execute (if any)
+    middleware_chain: std::cell::RefCell<Option<MiddlewareChain>>,
+
+    /// Current position in middleware chain execution
+    chain_position: std::cell::Cell<usize>,
 }
 
 impl UserData for RequestContext {
@@ -89,6 +98,78 @@ impl UserData for RequestContext {
                 Err(mlua::Error::RuntimeError("Request has no body".to_string()))
             }
         });
+
+        // ctx:set(key, value) - Store request-scoped data
+        methods.add_method_mut("set", |_lua, this, (key, value): (String, Value)| {
+            this.context_data.borrow_mut().insert(key, value);
+            Ok(())
+        });
+
+        // ctx:get(key) - Retrieve request-scoped data
+        methods.add_method("get", |_lua, this, key: String| {
+            let data = this.context_data.borrow();
+            match data.get(&key) {
+                Some(value) => Ok(value.clone()),
+                None => Ok(Value::Nil),
+            }
+        });
+
+        // ctx:next() - Continue to next middleware/handler
+        // For now, this returns nil. The middleware chain is executed linearly
+        // by the request handler, not through Lua callbacks.
+        methods.add_method("next", |_lua, _this, ()| {
+            // The actual chain execution is handled by the request handler
+            // This method exists for API compatibility
+            Ok(Value::Nil)
+        });
+    }
+}
+
+impl RequestContext {
+    /// Set the middleware chain for this request
+    pub fn set_middleware_chain(&self, chain: MiddlewareChain) {
+        *self.middleware_chain.borrow_mut() = Some(chain);
+        self.chain_position.set(0);
+    }
+
+    /// Get the next middleware handler to execute
+    /// Returns None when the chain is complete
+    pub fn get_next_middleware(&self) -> Option<(String, Arc<RegistryKey>)> {
+        if let Some(ref chain) = *self.middleware_chain.borrow() {
+            let position = self.chain_position.get();
+            let total_before = chain.before.len();
+            let total_after = chain.after.len();
+
+            if position < total_before {
+                // Execute before middleware
+                let mw = &chain.before[position];
+                self.chain_position.set(position + 1);
+                Some((mw.name.clone(), Arc::clone(&mw.handler)))
+            } else if position == total_before && total_after > 0 {
+                // Execute after middleware (in reverse order)
+                let after_idx = position - total_before;
+                let rev_idx = total_after - 1 - after_idx;
+                let mw = &chain.after[rev_idx];
+                self.chain_position.set(position + 1);
+                Some((mw.name.clone(), Arc::clone(&mw.handler)))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Check if there are more after middlewares to execute
+    pub fn has_after_middlewares(&self) -> bool {
+        if let Some(ref chain) = *self.middleware_chain.borrow() {
+            let position = self.chain_position.get();
+            let total_before = chain.before.len();
+            let total_after = chain.after.len();
+            position > total_before && position < total_before + total_after
+        } else {
+            false
+        }
     }
 }
 
@@ -235,6 +316,9 @@ impl RequestContextPool {
                 headers: Vec::new(),
                 query: Vec::new(),
                 params: Vec::new(),
+                context_data: std::cell::RefCell::new(std::collections::HashMap::new()),
+                middleware_chain: std::cell::RefCell::new(None),
+                chain_position: std::cell::Cell::new(0),
             };
 
             let userdata = lua.create_userdata(ctx)?;
@@ -286,6 +370,10 @@ impl RequestContextPool {
         ctx.query.extend(query);
         ctx.params.clear();
         ctx.params.extend_from_slice(params);
+        // Clear context data and chain state from previous request
+        ctx.context_data.borrow_mut().clear();
+        ctx.middleware_chain.borrow_mut().take();
+        ctx.chain_position.set(0);
         drop(ctx);
 
         Ok((Value::UserData(userdata), idx))
