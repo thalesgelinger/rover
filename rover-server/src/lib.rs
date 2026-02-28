@@ -145,6 +145,8 @@ pub struct ServerConfig {
     pub host: String,
     pub log_level: String,
     pub docs: bool,
+    /// Maximum body size in bytes (None = no limit)
+    pub body_size_limit: Option<usize>,
 }
 
 impl FromLua for ServerConfig {
@@ -166,6 +168,14 @@ impl FromLua for ServerConfig {
                     _ => Err(anyhow!("log_level should be a string"))?,
                 };
 
+                // Parse body_size_limit - accepts number (bytes) or nil (no limit)
+                let body_size_limit = match config.get::<Value>("body_size_limit")? {
+                    Value::Nil => None,
+                    Value::Integer(n) if n > 0 => Some(n as usize),
+                    Value::Number(n) if n > 0.0 => Some(n as usize),
+                    _ => None, // Invalid value defaults to no limit
+                };
+
                 Ok(ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host: config.get::<String>("host").unwrap_or("localhost".into()),
@@ -175,6 +185,7 @@ impl FromLua for ServerConfig {
                         Value::Boolean(b) => b,
                         _ => true,
                     },
+                    body_size_limit,
                 })
             }
             _ => Err(anyhow!("Server config must be a table"))?,
