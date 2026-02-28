@@ -10,6 +10,7 @@ use rover_types::ValidationErrors;
 use rover_ui::scheduler::SharedScheduler;
 use rover_ui::SharedSignalRuntime;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::html::{get_rover_html, render_template_with_components};
 use crate::{app_type::AppType, auto_table::AutoTable};
@@ -417,8 +418,8 @@ impl Server for Table {
                 let (key, value) = pair?;
 
                 // Skip internal rover fields and API helpers at root level
-                // Note: "before" and "after" are only skipped at root level (current_path == "")
-                // At nested levels, they're route-specific middlewares and should be processed
+                // Note: "before", "after", and "on_error" are only skipped at root level
+                // At nested levels, they're route-specific and should be processed
                 if let Value::String(ref key_str) = key {
                     let key_str_val = key_str.to_str()?;
                     let is_root = current_path.is_empty();
@@ -431,7 +432,10 @@ impl Server for Table {
                         || key_str_val == "error"
                         || key_str_val == "no_content"
                         || key_str_val == "raw"
-                        || (is_root && (key_str_val == "before" || key_str_val == "after"))
+                        || (is_root
+                            && (key_str_val == "before"
+                                || key_str_val == "after"
+                                || key_str_val == "on_error"))
                     {
                         continue;
                     }
@@ -692,6 +696,17 @@ impl Server for Table {
             _ => std::cmp::Ordering::Equal,
         });
 
-        Ok(RouteTable { routes, ws_routes })
+        // Extract optional error handler (api.on_error)
+        let error_handler = if let Ok(Value::Function(handler)) = self.get("on_error") {
+            Some(Arc::new(lua.create_registry_value(handler)?))
+        } else {
+            None
+        };
+
+        Ok(RouteTable {
+            routes,
+            ws_routes,
+            error_handler,
+        })
     }
 }

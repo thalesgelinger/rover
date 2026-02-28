@@ -4,12 +4,13 @@ use std::io;
 use std::mem;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use mlua::{Function, Lua, Thread, ThreadStatus, Value};
+use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
 use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
 use rover_ui::scheduler::SharedScheduler;
 use rover_ui::SharedSignalRuntime;
@@ -52,6 +53,8 @@ pub struct EventLoop {
     table_pool: LuaTablePool,
     buffer_pool: BufferPool,
     ws_manager: SharedWsManager,
+    /// Optional error handler function for custom error formatting
+    error_handler: Option<Arc<RegistryKey>>,
 }
 
 impl EventLoop {
@@ -62,6 +65,7 @@ impl EventLoop {
         config: ServerConfig,
         openapi_spec: Option<serde_json::Value>,
         addr: SocketAddr,
+        error_handler: Option<Arc<RegistryKey>>,
     ) -> Result<Self> {
         let poll = Poll::new()?;
         let mut listener = TcpListener::bind(addr)?;
@@ -121,6 +125,7 @@ impl EventLoop {
             table_pool,
             buffer_pool,
             ws_manager,
+            error_handler,
         })
     }
 
@@ -553,6 +558,7 @@ impl EventLoop {
             &mut self.request_pool,
             &self.table_pool,
             &mut self.buffer_pool,
+            self.error_handler.as_ref(),
         ) {
             Ok(CoroutineResponse::Ready {
                 status,
