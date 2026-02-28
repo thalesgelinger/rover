@@ -710,7 +710,13 @@ impl EventLoop {
 
                 if let (Some(accept), Some(ct)) = (accept_header.as_deref(), content_type) {
                     if status < 400 && !Self::accepts_content_type(accept, ct) {
-                        conn.set_response_with_buf(406, b"Not Acceptable", Some("text/plain"), buf);
+                        let resp_buf = self.buffer_pool.get_response_buf();
+                        conn.set_response_with_buf(
+                            406,
+                            b"Not Acceptable",
+                            Some("text/plain"),
+                            resp_buf,
+                        );
                         let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                         return Ok(());
                     }
