@@ -32,10 +32,12 @@ pub type Bytes = bytes::Bytes;
 #[repr(u8)]
 pub enum HttpMethod {
     Get = 1,
-    Post = 2,
-    Put = 4,
-    Patch = 8,
-    Delete = 16,
+    Head = 2,
+    Options = 3,
+    Post = 4,
+    Put = 5,
+    Patch = 6,
+    Delete = 7,
 }
 
 impl HttpMethod {
@@ -54,6 +56,15 @@ impl HttpMethod {
             4 => {
                 if bytes.eq_ignore_ascii_case(b"post") {
                     Some(Self::Post)
+                } else if bytes.eq_ignore_ascii_case(b"head") {
+                    Some(Self::Head)
+                } else {
+                    None
+                }
+            }
+            7 => {
+                if bytes.eq_ignore_ascii_case(b"options") {
+                    Some(Self::Options)
                 } else {
                     None
                 }
@@ -79,6 +90,8 @@ impl HttpMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Get => "GET",
+            Self::Head => "HEAD",
+            Self::Options => "OPTIONS",
             Self::Post => "POST",
             Self::Put => "PUT",
             Self::Patch => "PATCH",
@@ -87,7 +100,7 @@ impl HttpMethod {
     }
 
     pub fn valid_methods() -> &'static [&'static str] {
-        &["get", "post", "put", "patch", "delete"]
+        &["get", "head", "options", "post", "put", "patch", "delete"]
     }
 }
 

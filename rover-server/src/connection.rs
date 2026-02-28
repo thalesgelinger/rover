@@ -1,5 +1,5 @@
-use crate::ws_frame;
 use crate::Bytes;
+use crate::ws_frame;
 use bytes::BytesMut;
 use mio::net::TcpStream;
 use mio::{Interest, Registry, Token};
@@ -380,6 +380,8 @@ impl Connection {
             201 => "Created",
             204 => "No Content",
             400 => "Bad Request",
+            405 => "Method Not Allowed",
+            413 => "Payload Too Large",
             404 => "Not Found",
             500 => "Internal Server Error",
             _ => "Unknown",
@@ -438,6 +440,8 @@ impl Connection {
             201 => "Created",
             204 => "No Content",
             400 => "Bad Request",
+            405 => "Method Not Allowed",
+            413 => "Payload Too Large",
             404 => "Not Found",
             500 => "Internal Server Error",
             _ => "Unknown",

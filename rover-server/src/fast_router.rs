@@ -10,6 +10,18 @@ use smallvec::SmallVec;
 
 use crate::{HttpMethod, Route};
 
+pub enum RouteMatch {
+    Found {
+        handler: Function,
+        params: Vec<(Bytes, Bytes)>,
+        is_head: bool,
+    },
+    MethodNotAllowed {
+        allowed: Vec<HttpMethod>,
+    },
+    NotFound,
+}
+
 #[inline]
 fn hash_path(path: &str) -> u64 {
     let mut hasher = AHasher::default();
@@ -21,11 +33,61 @@ pub struct FastRouter {
     router: Router<SmallVec<[(HttpMethod, usize); 2]>>,
     handlers: Vec<Function>,
     static_routes: HashMap<(u64, HttpMethod), usize>,
+    static_path_methods: HashMap<u64, SmallVec<[HttpMethod; 4]>>,
 
     // WebSocket routing (separate from HTTP to avoid polluting hot path)
     ws_router: Router<u16>,       // path pattern -> endpoint_idx
     ws_static: HashMap<u64, u16>, // hash(path) -> endpoint_idx (static WS paths)
     has_ws_routes: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlua::Lua;
+
+    fn dummy_route(lua: &Lua, method: HttpMethod, path: &str) -> Route {
+        Route {
+            method,
+            pattern: Bytes::copy_from_slice(path.as_bytes()),
+            param_names: Vec::new(),
+            handler: lua.create_function(|_, ()| Ok(())).unwrap(),
+            is_static: true,
+            middlewares: Default::default(),
+        }
+    }
+
+    #[test]
+    fn should_auto_map_head_to_get() {
+        let lua = Lua::new();
+        let router = FastRouter::from_routes(vec![dummy_route(&lua, HttpMethod::Get, "/items")])
+            .expect("router");
+
+        match router.match_route(HttpMethod::Head, "/items") {
+            RouteMatch::Found { is_head, .. } => assert!(is_head),
+            _ => panic!("expected HEAD to resolve from GET"),
+        }
+    }
+
+    #[test]
+    fn should_return_405_with_allow_for_known_path() {
+        let lua = Lua::new();
+        let router = FastRouter::from_routes(vec![
+            dummy_route(&lua, HttpMethod::Get, "/items"),
+            dummy_route(&lua, HttpMethod::Post, "/items"),
+        ])
+        .expect("router");
+
+        match router.match_route(HttpMethod::Patch, "/items") {
+            RouteMatch::MethodNotAllowed { allowed } => {
+                assert!(allowed.contains(&HttpMethod::Get));
+                assert!(allowed.contains(&HttpMethod::Post));
+                assert!(allowed.contains(&HttpMethod::Head));
+                assert!(allowed.contains(&HttpMethod::Options));
+            }
+            _ => panic!("expected 405 match"),
+        }
+    }
 }
 
 impl FastRouter {
@@ -34,6 +96,7 @@ impl FastRouter {
         let mut handlers = Vec::new();
         let mut pattern_map: HashMap<Vec<u8>, SmallVec<[(HttpMethod, usize); 2]>> = HashMap::new();
         let mut static_routes = HashMap::new();
+        let mut static_path_methods: HashMap<u64, SmallVec<[HttpMethod; 4]>> = HashMap::new();
 
         for route in routes {
             let handler_idx = handlers.len();
@@ -44,12 +107,25 @@ impl FastRouter {
                     .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?;
                 let path_hash = hash_path(pattern_str);
                 static_routes.insert((path_hash, route.method), handler_idx);
+                static_path_methods
+                    .entry(path_hash)
+                    .or_insert_with(SmallVec::new)
+                    .push(route.method);
             }
 
-            pattern_map
+            let methods = pattern_map
                 .entry(route.pattern.to_vec())
-                .or_insert_with(SmallVec::new)
-                .push((route.method, handler_idx));
+                .or_insert_with(SmallVec::new);
+            if methods.iter().any(|(m, _)| *m == route.method) {
+                if let Ok(pattern_str) = std::str::from_utf8(&route.pattern) {
+                    tracing::warn!(
+                        "Duplicate route method '{}' for path '{}'; last one wins",
+                        route.method,
+                        pattern_str
+                    );
+                }
+            }
+            methods.push((route.method, handler_idx));
         }
 
         for (pattern_bytes, methods) in pattern_map {
@@ -62,6 +138,7 @@ impl FastRouter {
             router,
             handlers,
             static_routes,
+            static_path_methods,
             ws_router: Router::new(),
             ws_static: HashMap::new(),
             has_ws_routes: false,
@@ -113,32 +190,108 @@ impl FastRouter {
         Some((endpoint_idx, params))
     }
 
-    /// Match route and return handler + params (zero-copy where possible)
-    pub fn match_route(
-        &self,
-        method: HttpMethod,
-        path: &str,
-    ) -> Option<(&Function, Vec<(Bytes, Bytes)>)> {
+    fn normalize_allowed_methods(methods: &[HttpMethod]) -> Vec<HttpMethod> {
+        let mut has_get = false;
+        let mut has_head = false;
+        let mut uniq = SmallVec::<[HttpMethod; 8]>::new();
+
+        for method in methods {
+            if !uniq.contains(method) {
+                if *method == HttpMethod::Get {
+                    has_get = true;
+                }
+                if *method == HttpMethod::Head {
+                    has_head = true;
+                }
+                uniq.push(*method);
+            }
+        }
+
+        if has_get && !has_head {
+            uniq.push(HttpMethod::Head);
+        }
+
+        if !uniq.contains(&HttpMethod::Options) {
+            uniq.push(HttpMethod::Options);
+        }
+
+        let mut out = uniq.to_vec();
+        out.sort_by_key(|m| match m {
+            HttpMethod::Get => 0,
+            HttpMethod::Head => 1,
+            HttpMethod::Post => 2,
+            HttpMethod::Put => 3,
+            HttpMethod::Patch => 4,
+            HttpMethod::Delete => 5,
+            HttpMethod::Options => 6,
+        });
+        out
+    }
+
+    /// Match route with proper 404/405 semantics and auto-HEAD support.
+    pub fn match_route(&self, method: HttpMethod, path: &str) -> RouteMatch {
         // Fast path: static routes (no params)
         let path_hash = hash_path(path);
         if let Some(&handler_idx) = self.static_routes.get(&(path_hash, method)) {
-            return Some((&self.handlers[handler_idx], Vec::new()));
+            return RouteMatch::Found {
+                handler: self.handlers[handler_idx].clone(),
+                params: Vec::new(),
+                is_head: method == HttpMethod::Head,
+            };
+        }
+
+        // Auto-HEAD -> GET for static routes
+        if method == HttpMethod::Head {
+            if let Some(&handler_idx) = self.static_routes.get(&(path_hash, HttpMethod::Get)) {
+                return RouteMatch::Found {
+                    handler: self.handlers[handler_idx].clone(),
+                    params: Vec::new(),
+                    is_head: true,
+                };
+            }
+        }
+
+        // Path exists but method not allowed (static)
+        if let Some(methods) = self.static_path_methods.get(&path_hash) {
+            return RouteMatch::MethodNotAllowed {
+                allowed: Self::normalize_allowed_methods(methods),
+            };
         }
 
         // Slow path: dynamic routes with parameters
-        let matched = self.router.at(path).ok()?;
+        let matched = match self.router.at(path) {
+            Ok(m) => m,
+            Err(_) => return RouteMatch::NotFound,
+        };
 
-        let handler_idx = matched
-            .value
-            .iter()
-            .find(|(m, _)| *m == method)
-            .map(|(_, idx)| *idx)?;
+        let handler_idx = if let Some((_, idx)) = matched.value.iter().find(|(m, _)| *m == method) {
+            *idx
+        } else if method == HttpMethod::Head {
+            if let Some((_, idx)) = matched.value.iter().find(|(m, _)| *m == HttpMethod::Get) {
+                *idx
+            } else {
+                return RouteMatch::MethodNotAllowed {
+                    allowed: Self::normalize_allowed_methods(
+                        &matched.value.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
+                    ),
+                };
+            }
+        } else {
+            return RouteMatch::MethodNotAllowed {
+                allowed: Self::normalize_allowed_methods(
+                    &matched.value.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
+                ),
+            };
+        };
 
         let mut params = Vec::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
-            let decoded = urlencoding::decode(value).ok()?.into_owned();
+            let decoded = match urlencoding::decode(value) {
+                Ok(v) => v.into_owned(),
+                Err(_) => return RouteMatch::NotFound,
+            };
             if decoded.is_empty() {
-                return None;
+                return RouteMatch::NotFound;
             }
             params.push((
                 Bytes::copy_from_slice(name.as_bytes()),
@@ -146,6 +299,10 @@ impl FastRouter {
             ));
         }
 
-        Some((&self.handlers[handler_idx], params))
+        RouteMatch::Found {
+            handler: self.handlers[handler_idx].clone(),
+            params,
+            is_head: method == HttpMethod::Head,
+        }
     }
 }

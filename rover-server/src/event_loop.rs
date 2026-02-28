@@ -11,17 +11,17 @@ use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
-use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
-use rover_ui::scheduler::SharedScheduler;
 use rover_ui::SharedSignalRuntime;
+use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
+use rover_ui::scheduler::SharedScheduler;
 use slab::Slab;
 use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
 use crate::connection::{Connection, ConnectionState};
-use crate::fast_router::FastRouter;
+use crate::fast_router::{FastRouter, RouteMatch};
 use crate::http_task::{
-    execute_handler_coroutine, CoroutineResponse, RequestContextPool, ThreadPool,
+    CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
 };
 use crate::table_pool::LuaTablePool;
 use crate::ws_frame::{self, WsOpcode};
@@ -418,19 +418,72 @@ impl EventLoop {
         };
 
         let path_owned = path.to_string();
-        let (handler, params) = match self.router.match_route(http_method, &path_owned) {
-            Some((h, p)) => (h.clone(), p),
-            None => {
-                drop(conns);
-                let mut conns = self.connections.borrow_mut();
-                let conn = &mut conns[conn_idx];
-                conn.keep_alive = keep_alive;
-                let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(404, b"Route not found", Some("text/plain"), buf);
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
-                return Ok(());
-            }
-        };
+        let (handler, params, is_head_request) =
+            match self.router.match_route(http_method, &path_owned) {
+                RouteMatch::Found {
+                    handler,
+                    params,
+                    is_head,
+                } => (handler, params, is_head),
+                RouteMatch::MethodNotAllowed { allowed } => {
+                    // OPTIONS auto-response when path exists
+                    if http_method == HttpMethod::Options {
+                        drop(conns);
+                        let mut conns = self.connections.borrow_mut();
+                        let conn = &mut conns[conn_idx];
+                        conn.keep_alive = keep_alive;
+                        let mut headers = HashMap::new();
+                        let allow = allowed
+                            .iter()
+                            .map(|m| m.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        headers.insert("Allow".to_string(), allow);
+                        let buf = self.buffer_pool.get_response_buf();
+                        conn.set_response_bytes_with_headers(
+                            204,
+                            Bytes::new(),
+                            Some("text/plain"),
+                            Some(&headers),
+                            buf,
+                        );
+                        let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                        return Ok(());
+                    }
+
+                    drop(conns);
+                    let mut conns = self.connections.borrow_mut();
+                    let conn = &mut conns[conn_idx];
+                    conn.keep_alive = keep_alive;
+                    let mut headers = HashMap::new();
+                    let allow = allowed
+                        .iter()
+                        .map(|m| m.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    headers.insert("Allow".to_string(), allow);
+                    let buf = self.buffer_pool.get_response_buf();
+                    conn.set_response_bytes_with_headers(
+                        405,
+                        Bytes::from_static(b"Method Not Allowed"),
+                        Some("text/plain"),
+                        Some(&headers),
+                        buf,
+                    );
+                    let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                    return Ok(());
+                }
+                RouteMatch::NotFound => {
+                    drop(conns);
+                    let mut conns = self.connections.borrow_mut();
+                    let conn = &mut conns[conn_idx];
+                    conn.keep_alive = keep_alive;
+                    let buf = self.buffer_pool.get_response_buf();
+                    conn.set_response_with_buf(404, b"Route not found", Some("text/plain"), buf);
+                    let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                    return Ok(());
+                }
+            };
 
         let buf = if !conn.parsed_buf.is_empty() {
             conn.parsed_buf.clone()
@@ -570,6 +623,7 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
+                let body = if is_head_request { Bytes::new() } else { body };
                 conn.set_response_bytes_with_headers(
                     status,
                     body,
