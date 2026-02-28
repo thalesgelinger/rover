@@ -10,9 +10,9 @@ use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Function, Lua, Thread, ThreadStatus, Value};
-use rover_ui::SharedSignalRuntime;
-use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
+use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
 use rover_ui::scheduler::SharedScheduler;
+use rover_ui::SharedSignalRuntime;
 use slab::Slab;
 use tracing::{debug, info, warn};
 
@@ -20,7 +20,7 @@ use crate::buffer_pool::BufferPool;
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::FastRouter;
 use crate::http_task::{
-    CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
+    execute_handler_coroutine, CoroutineResponse, RequestContextPool, ThreadPool,
 };
 use crate::table_pool::LuaTablePool;
 use crate::ws_frame::{self, WsOpcode};
@@ -558,12 +558,19 @@ impl EventLoop {
                 status,
                 body,
                 content_type,
+                headers,
             }) => {
                 let mut conns = self.connections.borrow_mut();
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_bytes_with_buf(status, body, content_type, buf);
+                conn.set_response_bytes_with_headers(
+                    status,
+                    body,
+                    content_type,
+                    headers.as_ref(),
+                    buf,
+                );
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {

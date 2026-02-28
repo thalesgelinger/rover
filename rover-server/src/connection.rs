@@ -1,5 +1,5 @@
-use crate::Bytes;
 use crate::ws_frame;
+use crate::Bytes;
 use bytes::BytesMut;
 use mio::net::TcpStream;
 use mio::{Interest, Registry, Token};
@@ -417,6 +417,17 @@ impl Connection {
         content_type: Option<&str>,
         mut buf: Vec<u8>,
     ) {
+        self.set_response_bytes_with_headers(status, body, content_type, None, buf)
+    }
+
+    pub fn set_response_bytes_with_headers(
+        &mut self,
+        status: u16,
+        body: Bytes,
+        content_type: Option<&str>,
+        custom_headers: Option<&std::collections::HashMap<String, String>>,
+        mut buf: Vec<u8>,
+    ) {
         buf.clear();
         self.write_buf = buf;
         self.write_pos = 0;
@@ -439,10 +450,10 @@ impl Connection {
             "close"
         };
 
-        // Build headers only
+        // Build headers
         write!(
             self.write_buf,
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}\r\n\r\n",
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: {}",
             status,
             status_text,
             ct,
@@ -450,6 +461,16 @@ impl Connection {
             conn
         )
         .unwrap();
+
+        // Add custom headers if provided
+        if let Some(headers) = custom_headers {
+            for (name, value) in headers {
+                write!(self.write_buf, "\r\n{}: {}", name, value).unwrap();
+            }
+        }
+
+        // End headers
+        write!(self.write_buf, "\r\n\r\n").unwrap();
 
         // Store body directly (true zero-copy - no slice copy)
         self.body_buf = body;
