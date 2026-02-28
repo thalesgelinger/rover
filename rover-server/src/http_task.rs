@@ -40,6 +40,21 @@ pub struct RequestContext {
     chain_position: std::cell::Cell<usize>,
 }
 
+impl RequestContext {
+    fn header_value(&self, name: &str) -> Option<String> {
+        for &(name_off, name_len, val_off, val_len) in &self.headers {
+            let name_bytes = &self.buf[name_off as usize..(name_off + name_len as u16) as usize];
+            let val_bytes = &self.buf[val_off as usize..(val_off + val_len) as usize];
+            let key = unsafe { std::str::from_utf8_unchecked(name_bytes) };
+            if key.eq_ignore_ascii_case(name) {
+                let value = unsafe { std::str::from_utf8_unchecked(val_bytes) };
+                return Some(value.to_string());
+            }
+        }
+        None
+    }
+}
+
 impl UserData for RequestContext {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("headers", |lua, this, ()| {
@@ -92,7 +107,8 @@ impl UserData for RequestContext {
                 let body_bytes = this
                     .buf
                     .slice(this.body_off as usize..(this.body_off + this.body_len) as usize);
-                let body_value = BodyValue::new(body_bytes);
+                let content_type = this.header_value("content-type");
+                let body_value = BodyValue::new(body_bytes, content_type);
                 lua.create_userdata(body_value).map(Value::UserData)
             } else {
                 Err(mlua::Error::RuntimeError("Request has no body".to_string()))
@@ -175,21 +191,46 @@ impl RequestContext {
 
 pub struct BodyValue {
     bytes: Bytes,
+    content_type: Option<String>,
 }
 
 impl BodyValue {
-    pub fn new(bytes: Bytes) -> Self {
-        Self { bytes }
+    pub fn new(bytes: Bytes, content_type: Option<String>) -> Self {
+        Self {
+            bytes,
+            content_type,
+        }
+    }
+
+    fn ensure_json_media_type(&self) -> mlua::Result<()> {
+        if let Some(ct) = &self.content_type {
+            let media_type = ct
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            let is_json = media_type == "application/json" || media_type.ends_with("+json");
+            if !is_json {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Unsupported Media Type (415): expected application/json, got {}",
+                    media_type
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
 impl UserData for BodyValue {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("json", |lua, this, ()| {
+            this.ensure_json_media_type()?;
             parse_json_with_expect(lua, &this.bytes)
         });
 
         methods.add_method("raw", |lua, this, ()| {
+            this.ensure_json_media_type()?;
             parse_json_with_expect(lua, &this.bytes)
         });
 
@@ -217,6 +258,7 @@ impl UserData for BodyValue {
         });
 
         methods.add_method("expect", |lua, this, schema: Table| {
+            this.ensure_json_media_type()?;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let parsed =
                     crate::direct_json_parser::json_bytes_ref_to_lua_direct(lua, &this.bytes)?;
@@ -705,8 +747,13 @@ fn convert_error_to_response(
             error_str = error_str[..stack_pos].to_string();
         }
         error_str = error_str.trim_start_matches("runtime error: ").to_string();
+        let status = if error_str.contains("Unsupported Media Type (415)") {
+            415
+        } else {
+            500
+        };
         (
-            500,
+            status,
             Bytes::from(format!(
                 "{{\"error\": \"{}\"}}",
                 error_str.replace("\"", "\\\"").replace("\n", "\\n")
@@ -801,4 +848,34 @@ fn lua_table_to_json(table: &Table, buffer_pool: &mut BufferPool) -> Result<Stri
     let json = String::from_utf8_lossy(&buf).to_string();
     buffer_pool.return_json_buf(buf);
     Ok(json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BodyValue;
+    use bytes::Bytes;
+
+    #[test]
+    fn should_allow_application_json_media_type() {
+        let body = BodyValue::new(
+            Bytes::from_static(br#"{"ok":true}"#),
+            Some("application/json".to_string()),
+        );
+        assert!(body.ensure_json_media_type().is_ok());
+    }
+
+    #[test]
+    fn should_allow_json_suffix_media_type() {
+        let body = BodyValue::new(
+            Bytes::from_static(br#"{"ok":true}"#),
+            Some("application/merge-patch+json".to_string()),
+        );
+        assert!(body.ensure_json_media_type().is_ok());
+    }
+
+    #[test]
+    fn should_reject_non_json_media_type() {
+        let body = BodyValue::new(Bytes::from_static(b"hello"), Some("text/plain".to_string()));
+        assert!(body.ensure_json_media_type().is_err());
+    }
 }
