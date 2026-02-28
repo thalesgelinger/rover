@@ -15,13 +15,14 @@ use env::{create_config_module, create_env_module, load_dotenv};
 use html::create_html_module;
 use http::create_http_module;
 use io::create_io_module;
+use rover_auth::create_auth_module;
 use rover_db::create_db_module;
 use rover_ui::platform::{
-    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiRuntimeConfig, UiTarget, ViewportSignals,
+    UiRuntimeConfig, UiTarget, ViewportSignals, DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
 };
 use rover_ui::scheduler::{Scheduler, SharedScheduler};
 use rover_ui::signal::SignalValue;
-use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module, ui::UiRegistry};
+use rover_ui::{register_ui_module, ui::UiRegistry, SharedSignalRuntime, SignalRuntime};
 use server::{AppServer, Server};
 use std::cell::RefCell;
 
@@ -104,7 +105,7 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{ValidationErrors, validate_table};
+            use crate::guard::{validate_table, ValidationErrors};
 
             // Extract the table from data
             let data_table = match data {
@@ -150,6 +151,10 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     // Add rover.config module for loading config files
     let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
+
+    // Add rover.auth JWT module
+    let auth_module = create_auth_module(&lua)?;
+    rover.set("auth", auth_module)?;
 
     // Override global io module with async version
     let io_module = io::create_io_module(&lua)?;
@@ -258,6 +263,10 @@ pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     let config_module = create_config_module(lua)?;
     rover.set("config", config_module)?;
 
+    // Add rover.auth JWT module
+    let auth_module = create_auth_module(lua)?;
+    rover.set("auth", auth_module)?;
+
     // Add HTTP client module
     let http_module = create_http_module(lua)?;
     rover.set("http", http_module)?;
@@ -301,7 +310,7 @@ pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{ValidationErrors, validate_table};
+            use crate::guard::{validate_table, ValidationErrors};
 
             // Extract the table from data
             let data_table = match data {
@@ -417,7 +426,7 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{ValidationErrors, validate_table};
+            use crate::guard::{validate_table, ValidationErrors};
 
             let data_table = match data {
                 Value::Table(ref t) => t.clone(),
@@ -459,6 +468,10 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     // Add rover.config module for loading config files
     let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
+
+    // Add rover.auth JWT module
+    let auth_module = create_auth_module(&lua)?;
+    rover.set("auth", auth_module)?;
 
     // Override global io module
     let io_module = io::create_io_module(&lua)?;
