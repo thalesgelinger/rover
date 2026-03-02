@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io;
 use std::mem;
 use std::net::SocketAddr;
@@ -11,9 +12,9 @@ use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
-use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
-use rover_ui::scheduler::SharedScheduler;
 use rover_ui::SharedSignalRuntime;
+use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
+use rover_ui::scheduler::SharedScheduler;
 use slab::Slab;
 use tracing::{debug, info, warn};
 
@@ -21,7 +22,7 @@ use crate::buffer_pool::BufferPool;
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::{FastRouter, RouteMatch};
 use crate::http_task::{
-    execute_handler_coroutine, CoroutineResponse, RequestContextPool, ThreadPool,
+    CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
 };
 use crate::table_pool::LuaTablePool;
 use crate::ws_frame::{self, WsOpcode};
@@ -39,9 +40,52 @@ struct PendingCoroutine {
     ctx_idx: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ConnKey {
+    slot: usize,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReadyEvent {
+    token: Token,
+    readable: bool,
+    writable: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::EventLoop;
+    use crate::ServerConfig;
+    use mlua::Lua;
+    use std::net::{SocketAddr, TcpStream};
+
+    fn test_server_config() -> ServerConfig {
+        ServerConfig {
+            port: 0,
+            host: "127.0.0.1".to_string(),
+            log_level: "nope".to_string(),
+            docs: false,
+            body_size_limit: None,
+            cors_origin: None,
+            cors_methods: "GET".to_string(),
+            cors_headers: "Content-Type".to_string(),
+            cors_credentials: false,
+        }
+    }
+
+    fn test_event_loop() -> EventLoop {
+        EventLoop::new(
+            Lua::new(),
+            Vec::new(),
+            Vec::new(),
+            test_server_config(),
+            None,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            None,
+        )
+        .expect("event loop")
+    }
 
     #[test]
     fn should_accept_wildcard_accept_header() {
@@ -71,6 +115,28 @@ mod tests {
             "application/json"
         ));
     }
+
+    #[test]
+    fn should_invalidate_old_conn_generation_after_slot_reuse() {
+        let mut event_loop = test_event_loop();
+        let addr = event_loop.listener.local_addr().expect("listener addr");
+
+        let _client_1 = TcpStream::connect(addr).expect("connect #1");
+        event_loop.accept_connections().expect("accept #1");
+
+        let first_key = event_loop.conn_key(0).expect("first conn key");
+        assert!(event_loop.is_conn_key_active(first_key));
+
+        event_loop.remove_connection(0);
+
+        let _client_2 = TcpStream::connect(addr).expect("connect #2");
+        event_loop.accept_connections().expect("accept #2");
+
+        let second_key = event_loop.conn_key(0).expect("second conn key");
+        assert_ne!(first_key.generation, second_key.generation);
+        assert!(!event_loop.is_conn_key_active(first_key));
+        assert!(event_loop.is_conn_key_active(second_key));
+    }
 }
 
 pub struct EventLoop {
@@ -81,7 +147,9 @@ pub struct EventLoop {
     router: FastRouter,
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
-    yielded_coroutines: HashMap<usize, PendingCoroutine>,
+    yielded_coroutines: HashMap<ConnKey, PendingCoroutine>,
+    conn_generations: Vec<u64>,
+    ready_queue: VecDeque<ReadyEvent>,
     thread_pool: ThreadPool,
     request_pool: RequestContextPool,
     table_pool: LuaTablePool,
@@ -201,6 +269,8 @@ impl EventLoop {
             config,
             openapi_spec,
             yielded_coroutines: HashMap::with_capacity(1024),
+            conn_generations: vec![0; 1024],
+            ready_queue: VecDeque::with_capacity(2048),
             thread_pool: ThreadPool::new(2048),
             request_pool,
             table_pool,
@@ -218,9 +288,17 @@ impl EventLoop {
             self.poll.poll(&mut events, poll_timeout)?;
 
             for event in events.iter() {
-                match event.token() {
+                self.ready_queue.push_back(ReadyEvent {
+                    token: event.token(),
+                    readable: event.is_readable(),
+                    writable: event.is_writable(),
+                });
+            }
+
+            while let Some(ready) = self.ready_queue.pop_front() {
+                match ready.token {
                     LISTENER => self.accept_connections()?,
-                    token => self.handle_connection(token, event)?,
+                    token => self.handle_connection(token, ready.readable, ready.writable)?,
                 }
             }
 
@@ -303,15 +381,23 @@ impl EventLoop {
         loop {
             match self.listener.accept() {
                 Ok((mut socket, _addr)) => {
-                    let mut conns = self.connections.borrow_mut();
-                    let entry = conns.vacant_entry();
-                    let token = Token(entry.key() + 1);
+                    let conn_idx = {
+                        let conns = self.connections.borrow();
+                        conns.vacant_key()
+                    };
+                    let token = Token(conn_idx + 1);
+                    let generation = self.bump_conn_generation(conn_idx);
 
                     self.poll
                         .registry()
                         .register(&mut socket, token, Interest::READABLE)?;
 
-                    entry.insert(Connection::new(socket, token));
+                    let mut conns = self.connections.borrow_mut();
+                    conns.insert(Connection::new(socket, token));
+
+                    if self.config.log_level == "debug" {
+                        debug!("accepted conn slot={} gen={}", conn_idx, generation);
+                    }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     break;
@@ -322,7 +408,7 @@ impl EventLoop {
         Ok(())
     }
 
-    fn handle_connection(&mut self, token: Token, event: &mio::event::Event) -> Result<()> {
+    fn handle_connection(&mut self, token: Token, readable: bool, writable: bool) -> Result<()> {
         let conn_idx = token.0 - 1;
 
         if !self.connections.borrow().contains(conn_idx) {
@@ -335,7 +421,7 @@ impl EventLoop {
             if let Some(conn) = conns.get(conn_idx) {
                 if conn.is_websocket() {
                     drop(conns);
-                    return self.handle_ws_event(conn_idx, event);
+                    return self.handle_ws_event(conn_idx, readable, writable);
                 }
             }
         }
@@ -345,7 +431,7 @@ impl EventLoop {
             let conn = &mut conns[conn_idx];
 
             match conn.state {
-                ConnectionState::Reading if event.is_readable() => match conn.try_read() {
+                ConnectionState::Reading if readable => match conn.try_read() {
                     Ok(true) => (true, false, false, false),
                     Ok(false) => (false, false, false, false),
                     Err(_) => {
@@ -353,7 +439,7 @@ impl EventLoop {
                         (false, true, false, false)
                     }
                 },
-                ConnectionState::Writing if event.is_writable() => match conn.try_write() {
+                ConnectionState::Writing if writable => match conn.try_write() {
                     Ok(true) => {
                         // Check if this was a WS upgrade 101 response
                         if conn.pending_ws_upgrade.is_some() {
@@ -389,10 +475,7 @@ impl EventLoop {
         };
 
         if should_close || is_closed_state {
-            self.recycle_write_buf(conn_idx);
-            let mut conns = self.connections.borrow_mut();
-            let mut conn = conns.remove(conn_idx);
-            let _ = self.poll.registry().deregister(&mut conn.socket);
+            self.remove_connection(conn_idx);
             return Ok(());
         }
 
@@ -808,14 +891,21 @@ impl EventLoop {
                 let mut conns = self.connections.borrow_mut();
                 let conn = &mut conns[conn_idx];
                 conn.thread = Some(thread.clone());
-                self.yielded_coroutines.insert(
-                    conn_idx,
-                    PendingCoroutine {
-                        thread,
-                        started_at: Instant::now(),
-                        ctx_idx,
-                    },
-                );
+                drop(conns);
+
+                if let Some(conn_key) = self.conn_key(conn_idx) {
+                    self.yielded_coroutines.insert(
+                        conn_key,
+                        PendingCoroutine {
+                            thread,
+                            started_at: Instant::now(),
+                            ctx_idx,
+                        },
+                    );
+                } else {
+                    self.thread_pool.release(thread);
+                    self.request_pool.release(ctx_idx);
+                }
             }
             Err(_) => {
                 let mut conns = self.connections.borrow_mut();
@@ -1093,12 +1183,12 @@ impl EventLoop {
 
     // ── WebSocket event handling ──
 
-    fn handle_ws_event(&mut self, conn_idx: usize, event: &mio::event::Event) -> Result<()> {
-        if event.is_readable() {
+    fn handle_ws_event(&mut self, conn_idx: usize, readable: bool, writable: bool) -> Result<()> {
+        if readable {
             self.handle_ws_readable(conn_idx)?;
         }
 
-        if event.is_writable() {
+        if writable {
             self.handle_ws_writable(conn_idx)?;
         }
 
@@ -1536,13 +1626,7 @@ impl EventLoop {
         }
 
         // Deregister and remove connection
-        {
-            let mut conns = self.connections.borrow_mut();
-            if conns.contains(conn_idx) {
-                let mut conn = conns.remove(conn_idx);
-                let _ = self.poll.registry().deregister(&mut conn.socket);
-            }
-        }
+        self.remove_connection(conn_idx);
 
         info!(
             "WS connection {} disconnected from endpoint #{}",
@@ -1555,8 +1639,15 @@ impl EventLoop {
 
     fn check_timeouts(&mut self) -> Result<()> {
         let mut to_timeout = Vec::new();
+        let mut stale_keys = Vec::new();
 
-        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
+        for (&conn_key, pending) in self.yielded_coroutines.iter() {
+            if !self.is_conn_key_active(conn_key) {
+                stale_keys.push(conn_key);
+                continue;
+            }
+
+            let conn_idx = conn_key.slot;
             // Skip WS connections -- they're long-lived
             {
                 let conns = self.connections.borrow();
@@ -1569,12 +1660,17 @@ impl EventLoop {
                 }
             }
             if pending.started_at.elapsed().as_millis() as u64 > DEFAULT_COROUTINE_TIMEOUT_MS {
-                to_timeout.push(conn_idx);
+                to_timeout.push(conn_key);
             }
         }
 
-        for conn_idx in to_timeout {
-            self.yielded_coroutines.remove(&conn_idx);
+        for conn_key in stale_keys {
+            self.cleanup_pending_coroutine(conn_key);
+        }
+
+        for conn_key in to_timeout {
+            self.cleanup_pending_coroutine(conn_key);
+            let conn_idx = conn_key.slot;
             let mut conns = self.connections.borrow_mut();
             if !conns.contains(conn_idx) {
                 continue;
@@ -1621,23 +1717,26 @@ impl EventLoop {
 
     fn resume_yielded_coroutines(&mut self) -> Result<()> {
         let mut to_resume = Vec::new();
+        let mut stale_keys = Vec::new();
 
-        for (&conn_idx, pending) in self.yielded_coroutines.iter() {
-            if !self.connections.borrow().contains(conn_idx) {
-                to_resume.push(conn_idx);
+        for (&conn_key, pending) in self.yielded_coroutines.iter() {
+            if !self.is_conn_key_active(conn_key) {
+                stale_keys.push(conn_key);
                 continue;
             }
 
-            match pending.thread.status() {
-                ThreadStatus::Resumable => {
-                    to_resume.push(conn_idx);
-                }
-                _ => {}
+            if pending.thread.status() == ThreadStatus::Resumable {
+                to_resume.push(conn_key);
             }
         }
 
-        for conn_idx in to_resume {
-            if let Some(pending) = self.yielded_coroutines.remove(&conn_idx) {
+        for conn_key in stale_keys {
+            self.cleanup_pending_coroutine(conn_key);
+        }
+
+        for conn_key in to_resume {
+            let conn_idx = conn_key.slot;
+            if let Some(pending) = self.yielded_coroutines.remove(&conn_key) {
                 match pending.thread.resume(()) {
                     Ok(mlua::Value::Nil) => {
                         self.thread_pool.release(pending.thread);
@@ -1670,5 +1769,78 @@ impl EventLoop {
         }
 
         Ok(())
+    }
+
+    #[inline]
+    fn bump_conn_generation(&mut self, conn_idx: usize) -> u64 {
+        if conn_idx >= self.conn_generations.len() {
+            self.conn_generations.resize(conn_idx + 1, 0);
+        }
+        let next = self.conn_generations[conn_idx].wrapping_add(1).max(1);
+        self.conn_generations[conn_idx] = next;
+        next
+    }
+
+    #[inline]
+    fn conn_key(&self, conn_idx: usize) -> Option<ConnKey> {
+        if !self.connections.borrow().contains(conn_idx) {
+            return None;
+        }
+        let generation = *self.conn_generations.get(conn_idx)?;
+        if generation == 0 {
+            return None;
+        }
+        Some(ConnKey {
+            slot: conn_idx,
+            generation,
+        })
+    }
+
+    #[inline]
+    fn is_conn_key_active(&self, conn_key: ConnKey) -> bool {
+        if !self.connections.borrow().contains(conn_key.slot) {
+            return false;
+        }
+        self.conn_generations
+            .get(conn_key.slot)
+            .copied()
+            .unwrap_or_default()
+            == conn_key.generation
+    }
+
+    fn cleanup_pending_coroutine(&mut self, conn_key: ConnKey) {
+        if let Some(pending) = self.yielded_coroutines.remove(&conn_key) {
+            self.thread_pool.release(pending.thread);
+            self.request_pool.release(pending.ctx_idx);
+        }
+    }
+
+    fn remove_connection(&mut self, conn_idx: usize) {
+        self.recycle_write_buf(conn_idx);
+
+        if let Some(generation) = self.conn_generations.get(conn_idx).copied() {
+            if generation != 0 {
+                self.cleanup_pending_coroutine(ConnKey {
+                    slot: conn_idx,
+                    generation,
+                });
+            }
+        }
+
+        let stale_keys: Vec<ConnKey> = self
+            .yielded_coroutines
+            .keys()
+            .copied()
+            .filter(|k| k.slot == conn_idx)
+            .collect();
+        for key in stale_keys {
+            self.cleanup_pending_coroutine(key);
+        }
+
+        let mut conns = self.connections.borrow_mut();
+        if conns.contains(conn_idx) {
+            let mut conn = conns.remove(conn_idx);
+            let _ = self.poll.registry().deregister(&mut conn.socket);
+        }
     }
 }

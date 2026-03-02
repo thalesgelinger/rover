@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Performance Metrics Tracker
 # Runs benchmark and saves results for comparison and regression detection
@@ -29,11 +30,14 @@ echo ""
 echo -e "${YELLOW}=== KEY METRICS ===${NC}"
 echo ""
 
-if grep -q "SUMMARY:" "$RESULT_FILE"; then
-    RPS=$(grep "requests_per_sec=" "$RESULT_FILE" | awk -F'=' '{print $2}')
-    ERRORS=$(grep "total_errors=" "$RESULT_FILE" | awk -F'=' '{print $2}')
-    P99=$(grep "p99=" "$RESULT_FILE" | grep "LATENCY_MS" -A 20 | grep "p99=" | head -1 | awk -F'=' '{print $2}')
-    MEAN=$(grep "mean=" "$RESULT_FILE" | grep "LATENCY_MS" -A 10 | head -1 | awk -F'=' '{print $2}')
+PERF_LINE=$(grep "perf: total=" "$RESULT_FILE" | tail -1 || true)
+if [ -n "$PERF_LINE" ]; then
+    RPS=$(echo "$PERF_LINE" | sed -E 's/.* rps=([0-9]+).*/\1/')
+    ERRORS=$(echo "$PERF_LINE" | sed -E 's/.* errors=([0-9]+).*/\1/')
+    MEAN_US=$(echo "$PERF_LINE" | sed -E 's/.* mean_us=([0-9]+).*/\1/')
+    P99_US=$(echo "$PERF_LINE" | sed -E 's/.* p99_us=([0-9]+).*/\1/')
+    MEAN=$(echo "scale=3; $MEAN_US/1000" | bc)
+    P99=$(echo "scale=3; $P99_US/1000" | bc)
 
     echo "Requests/sec:  $RPS"
     echo "Mean Latency:  ${MEAN} ms"
@@ -45,8 +49,10 @@ if grep -q "SUMMARY:" "$RESULT_FILE"; then
     PREV_FILE=$(ls -t "$RESULTS_DIR"/benchmark_*.txt 2>/dev/null | head -2 | tail -1)
     if [ -n "$PREV_FILE" ] && [ "$PREV_FILE" != "$RESULT_FILE" ]; then
         echo -e "${YELLOW}=== COMPARISON WITH PREVIOUS RUN ===${NC}"
-        PREV_RPS=$(grep "requests_per_sec=" "$PREV_FILE" | awk -F'=' '{print $2}')
-        PREV_P99=$(grep "p99=" "$PREV_FILE" | grep "LATENCY_MS" -A 20 | grep "p99=" | head -1 | awk -F'=' '{print $2}')
+        PREV_PERF_LINE=$(grep "perf: total=" "$PREV_FILE" | tail -1 || true)
+        PREV_RPS=$(echo "$PREV_PERF_LINE" | sed -E 's/.* rps=([0-9]+).*/\1/')
+        PREV_P99_US=$(echo "$PREV_PERF_LINE" | sed -E 's/.* p99_us=([0-9]+).*/\1/')
+        PREV_P99=$(echo "scale=3; $PREV_P99_US/1000" | bc)
 
         if [ -n "$PREV_RPS" ] && [ -n "$RPS" ]; then
             RPS_CHANGE=$(echo "scale=2; (($RPS - $PREV_RPS) / $PREV_RPS) * 100" | bc)
