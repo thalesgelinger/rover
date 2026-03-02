@@ -1,6 +1,6 @@
 # Rover Performance Benchmarking Suite
 
-A comprehensive performance testing framework for Rover using `wrk` (HTTP benchmarking tool).
+Rust-native perf regression suite. No external `wrk` dependency.
 
 ## Quick Start
 
@@ -10,20 +10,32 @@ bash run_benchmark.sh
 ```
 
 This will:
-1. Build Rover in release mode
-2. Start an echo server on port 3000
-3. Run the benchmark with 2 threads, 100 connections, 30 seconds
-4. Display detailed performance metrics in an AI-friendly format
-5. Stop the server
+1. Build/test in release mode
+2. Spawn Rover server from Rust integration test
+3. Generate concurrent HTTP load from Rust worker threads
+4. Assert throughput and p99 thresholds
+5. Print metrics for tracking regressions
 
 ## Files
 
 - **main.lua** - Simple echo server with GET and POST `/echo` endpoints
-- **benchmark.lua** - wrk Lua script with detailed metrics collection
-- **test.sh** - Basic wrk command (2 threads, 100 connections, 30s)
-- **run_benchmark.sh** - Complete automated benchmark suite
+- **benchmark.lua** - Legacy wrk script (kept for reference)
+- **test.sh** - Runs Rust perf integration test (`cargo test --release ...`)
+- **run_benchmark.sh** - Wrapper for full automated run
 - **track_metrics.sh** - Save results and compare with previous runs
 - **analyze.sh** - Performance analysis guide and bottleneck detection
+- **rover-cli/tests/perf_http_echo.rs** - Rust perf regression test harness
+
+## Environment knobs
+
+Use env vars to tune load/thresholds:
+
+```bash
+ROVER_PERF_THREADS=8
+ROVER_PERF_REQUESTS_PER_THREAD=2000
+ROVER_PERF_MIN_RPS=20000
+ROVER_PERF_MAX_P99_MS=15
+```
 
 ## Benchmark Metrics Explained
 
