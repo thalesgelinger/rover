@@ -63,19 +63,7 @@ if (status !== 0) {
 
 let prevHtml = '';
 
-function bindButtons() {
-  const buttons = document.querySelectorAll('[data-rid]');
-  buttons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = Number(btn.getAttribute('data-rid'));
-      if (!Number.isNaN(id)) {
-        dispatchClick(luaPtr, id);
-      }
-    });
-  });
-}
-
-setInterval(() => {
+function render() {
   tick(luaPtr);
   const html = pullHtml(luaPtr) || '';
   if (app && html !== prevHtml) {
@@ -83,7 +71,22 @@ setInterval(() => {
     prevHtml = html;
     bindButtons();
   }
-}, 16);
+}
+
+function bindButtons() {
+  const buttons = document.querySelectorAll('[data-rid]');
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.getAttribute('data-rid'));
+      if (!Number.isNaN(id)) {
+        dispatchClick(luaPtr, id);
+        render();
+      }
+    });
+  });
+}
+
+render();
 EOF
 
 tar -C "$tmp_dir" -czf "$out_file" index.html loader.js rover_web_wasm.js rover_web_wasm.wasm

@@ -1,5 +1,5 @@
-use flate2::Compression;
 use flate2::write::GzEncoder;
+use flate2::Compression;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -256,19 +256,7 @@ if (status !== 0) {
 
 let prevHtml = '';
 
-function bindButtons() {
-  const buttons = document.querySelectorAll('[data-rid]');
-  buttons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = Number(btn.getAttribute('data-rid'));
-      if (!Number.isNaN(id)) {
-        dispatchClick(luaPtr, id);
-      }
-    });
-  });
-}
-
-setInterval(() => {
+function render() {
   tick(luaPtr);
   const html = pullHtml(luaPtr) || '';
   if (app && html !== prevHtml) {
@@ -276,6 +264,21 @@ setInterval(() => {
     prevHtml = html;
     bindButtons();
   }
-}, 16);
+}
+
+function bindButtons() {
+  const buttons = document.querySelectorAll('[data-rid]');
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.getAttribute('data-rid'));
+      if (!Number.isNaN(id)) {
+        dispatchClick(luaPtr, id);
+        render();
+      }
+    });
+  });
+}
+
+render();
 "#
 }

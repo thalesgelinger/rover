@@ -1,6 +1,6 @@
 use mlua::{Function, Lua, RegistryKey, Table, Value};
 use std::collections::HashMap;
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{c_char, CStr, CString};
 
 const BOOTSTRAP: &str = r#"
 rover = rover or {}
@@ -68,6 +68,7 @@ impl Runtime {
 
     fn tick(&mut self) -> mlua::Result<()> {
         self.handlers.clear();
+        self.next_handler_id = 1;
 
         let globals = self.lua.globals();
         let render_fn: Option<Function> = globals
