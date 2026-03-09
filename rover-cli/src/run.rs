@@ -5,8 +5,11 @@ use rover_db::run_pending_migrations;
 use rover_tui::{TuiRenderer, TuiRunner};
 use rover_ui::app::App;
 use rover_ui::ui::StubRenderer;
+use rover_web::{WebServerOptions, serve_static};
+use std::fs;
 use std::io::BufRead;
 use std::io::{self, Write};
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::build::{BuildOptions, run_build};
@@ -24,6 +27,7 @@ pub fn run_file(
         None => rover_core::run(file.to_str().unwrap(), &args, false),
         Some(Platform::Stub) => run_with_stub(file, args),
         Some(Platform::Tui) => run_with_tui(file, args),
+        Some(Platform::Web) => run_with_web(file, args),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
@@ -71,6 +75,45 @@ fn run_with_tui(file: PathBuf, args: Vec<String>) -> Result<()> {
     runner
         .run()
         .map_err(|e| anyhow::anyhow!("TUI error: {}", e))?;
+    Ok(())
+}
+
+fn run_with_web(file: PathBuf, _args: Vec<String>) -> Result<()> {
+    let root = prepare_web_root(&file)?;
+
+    println!("Starting rover web on http://127.0.0.1:4242");
+    println!("Assets: {}", root.display());
+
+    serve_static(WebServerOptions {
+        root_dir: root,
+        host: "127.0.0.1".to_string(),
+        port: 4242,
+    })
+}
+
+fn prepare_web_root(lua_file: &Path) -> Result<PathBuf> {
+    let root = PathBuf::from(".rover/web");
+    if root.exists() {
+        fs::remove_dir_all(&root)?;
+    }
+    fs::create_dir_all(&root)?;
+
+    extract_embedded_assets(&root)?;
+
+    let lua_source = fs::read_to_string(lua_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read lua file {}: {}", lua_file.display(), e))?;
+    fs::write(root.join("app.lua"), lua_source)?;
+
+    Ok(root)
+}
+
+fn extract_embedded_assets(dest: &Path) -> Result<()> {
+    static WEB_ASSETS_TAR_GZ: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/rover_web_assets.tar.gz"));
+
+    let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(WEB_ASSETS_TAR_GZ));
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(dest)?;
     Ok(())
 }
 
