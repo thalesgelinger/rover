@@ -10,7 +10,9 @@ fn main() {
         .join("rover_web_wasm");
 
     println!("cargo:rustc-link-arg=-sEXPORTED_RUNTIME_METHODS=['cwrap','ccall']");
-    println!("cargo:rustc-link-arg=-sEXPORTED_FUNCTIONS=['_rover_web_init','_rover_web_load_lua','_rover_web_tick']");
+    println!(
+        "cargo:rustc-link-arg=-sEXPORTED_FUNCTIONS=['_rover_web_init','_rover_web_load_lua','_rover_web_tick','_rover_web_pull_html','_rover_web_dispatch_click']"
+    );
     println!("cargo:rustc-link-arg=-sEXPORT_ES6=1");
     println!("cargo:rustc-link-arg=--no-entry");
     println!(

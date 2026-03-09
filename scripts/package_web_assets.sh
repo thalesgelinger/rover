@@ -51,6 +51,8 @@ const module = await createModule({
 const init = module.cwrap('rover_web_init', 'number', []);
 const loadLua = module.cwrap('rover_web_load_lua', 'number', ['number', 'string']);
 const tick = module.cwrap('rover_web_tick', 'number', ['number']);
+const pullHtml = module.cwrap('rover_web_pull_html', 'string', ['number']);
+const dispatchClick = module.cwrap('rover_web_dispatch_click', 'number', ['number', 'number']);
 
 const luaPtr = init();
 const source = await fetch('./app.lua').then((r) => r.text());
@@ -59,7 +61,29 @@ if (status !== 0) {
   print(`lua load failed: ${status}`);
 }
 
-setInterval(() => tick(luaPtr), 16);
+let prevHtml = '';
+
+function bindButtons() {
+  const buttons = document.querySelectorAll('[data-rid]');
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.getAttribute('data-rid'));
+      if (!Number.isNaN(id)) {
+        dispatchClick(luaPtr, id);
+      }
+    });
+  });
+}
+
+setInterval(() => {
+  tick(luaPtr);
+  const html = pullHtml(luaPtr) || '';
+  if (app && html !== prevHtml) {
+    app.innerHTML = html;
+    prevHtml = html;
+    bindButtons();
+  }
+}, 16);
 EOF
 
 tar -C "$tmp_dir" -czf "$out_file" index.html loader.js rover_web_wasm.js rover_web_wasm.wasm
