@@ -185,6 +185,10 @@ impl Runtime {
     }
 
     fn run_script(&mut self, source: &str) -> Result<(), String> {
+        self.lua
+            .load("package.path = '/project/?.lua;/project/?/init.lua;' .. package.path")
+            .exec()
+            .map_err(|e| e.to_string())?;
         self.lua.load(source).exec().map_err(|e| e.to_string())
     }
 

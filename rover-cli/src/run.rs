@@ -5,14 +5,15 @@ use rover_db::run_pending_migrations;
 use rover_tui::{TuiRenderer, TuiRunner};
 use rover_ui::app::App;
 use rover_ui::ui::StubRenderer;
-use rover_web::{WebServerOptions, serve_static};
+use rover_web::{serve_static, WebServerOptions};
+use serde_json::json;
 use std::fs;
 use std::io::BufRead;
 use std::io::{self, Write};
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::build::{BuildOptions, run_build};
+use crate::build::{run_build, BuildOptions};
 use crate::cli::Platform;
 
 pub fn run_file(
@@ -79,19 +80,27 @@ fn run_with_tui(file: PathBuf, args: Vec<String>) -> Result<()> {
 }
 
 fn run_with_web(file: PathBuf, _args: Vec<String>) -> Result<()> {
-    let root = prepare_web_root(&file)?;
+    let web = prepare_web_root(&file)?;
 
     println!("Starting rover web on http://127.0.0.1:4242");
-    println!("Assets: {}", root.display());
+    println!("Assets: {}", web.root.display());
 
     serve_static(WebServerOptions {
-        root_dir: root,
+        root_dir: web.root,
+        source_root: web.source_root,
+        source_files: web.source_files,
         host: "127.0.0.1".to_string(),
         port: 4242,
     })
 }
 
-fn prepare_web_root(lua_file: &Path) -> Result<PathBuf> {
+struct PreparedWeb {
+    root: PathBuf,
+    source_root: PathBuf,
+    source_files: Vec<String>,
+}
+
+fn prepare_web_root(lua_file: &Path) -> Result<PreparedWeb> {
     let root = PathBuf::from(".rover/web");
     if root.exists() {
         fs::remove_dir_all(&root)?;
@@ -100,11 +109,73 @@ fn prepare_web_root(lua_file: &Path) -> Result<PathBuf> {
 
     extract_embedded_assets(&root)?;
 
-    let lua_source = fs::read_to_string(lua_file)
-        .map_err(|e| anyhow::anyhow!("Failed to read lua file {}: {}", lua_file.display(), e))?;
-    fs::write(root.join("app.lua"), lua_source)?;
+    let cwd = std::env::current_dir()?;
+    let entry_abs = if lua_file.is_absolute() {
+        lua_file.to_path_buf()
+    } else {
+        cwd.join(lua_file)
+    };
 
-    Ok(root)
+    let source_root = cwd;
+
+    let mut files = Vec::new();
+    collect_lua_files(&source_root, &source_root, &mut files)?;
+
+    let entry_rel = entry_abs
+        .strip_prefix(&source_root)
+        .map_err(|e| anyhow::anyhow!("Failed to compute entry relative path: {}", e))?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    if !files.iter().any(|f| f == &entry_rel) {
+        files.push(entry_rel.clone());
+    }
+
+    files.sort();
+    files.dedup();
+
+    let manifest = json!({
+        "entry": entry_rel,
+        "files": files,
+        "source_prefix": "/__rover_src",
+    });
+    fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
+
+    Ok(PreparedWeb {
+        root,
+        source_root,
+        source_files: files,
+    })
+}
+
+fn collect_lua_files(base: &Path, current: &Path, files: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if matches!(name, ".git" | "target" | ".rover" | "node_modules") {
+                    continue;
+                }
+            }
+            collect_lua_files(base, &path, files)?;
+            continue;
+        }
+
+        if path.extension().and_then(|e| e.to_str()) != Some("lua") {
+            continue;
+        }
+
+        let rel = path
+            .strip_prefix(base)
+            .map_err(|e| anyhow::anyhow!("Failed to compute relative path: {}", e))?;
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+        files.push(rel_str);
+    }
+
+    Ok(())
 }
 
 fn extract_embedded_assets(dest: &Path) -> Result<()> {
@@ -325,7 +396,11 @@ pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
 }
 
 fn confirm_or_yolo(yolo_mode: bool, msg: &str) -> Result<bool> {
-    if yolo_mode { Ok(true) } else { prompt_yn(msg) }
+    if yolo_mode {
+        Ok(true)
+    } else {
+        prompt_yn(msg)
+    }
 }
 
 /// Get set of table names that have at least one migration file

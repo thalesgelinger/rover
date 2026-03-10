@@ -247,6 +247,35 @@ const tick = module.cwrap('rover_web_tick', 'number', ['number']);
 const pullHtml = module.cwrap('rover_web_pull_html', 'string', ['number']);
 const dispatchClick = module.cwrap('rover_web_dispatch_click', 'number', ['number', 'number']);
 
+const manifest = await fetch('./manifest.json').then((r) => r.json());
+
+async function mountProjectFiles() {
+  if (!module.FS_createPath || !module.FS_createDataFile) {
+    return;
+  }
+
+  module.FS_createPath('/', 'project', true, true);
+  const sourcePrefix = manifest.source_prefix || '/__rover_src';
+
+  for (const relPath of manifest.files || []) {
+    const urlPath = relPath.split('/').map((p) => encodeURIComponent(p)).join('/');
+    const source = await fetch(`${sourcePrefix}/${urlPath}`).then((r) => r.text());
+    const parts = relPath.split('/').filter(Boolean);
+    let current = '/project';
+
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dir = parts[i];
+      module.FS_createPath(current, dir, true, true);
+      current = `${current}/${dir}`;
+    }
+
+    const fileName = parts[parts.length - 1];
+    module.FS_createDataFile(current, fileName, source, true, true, true);
+  }
+}
+
+await mountProjectFiles();
+
 let luaPtr = 0;
 try {
   luaPtr = init();
@@ -254,7 +283,9 @@ try {
   print(`[fatal] init failed: ${String(err)}`);
   throw err;
 }
-const source = await fetch('./app.lua').then((r) => r.text());
+const sourcePrefix = manifest.source_prefix || '/__rover_src';
+const entryUrl = (manifest.entry || '').split('/').map((p) => encodeURIComponent(p)).join('/');
+const source = await fetch(`${sourcePrefix}/${entryUrl}`).then((r) => r.text());
 let status = -1;
 try {
   status = loadLua(luaPtr, source);

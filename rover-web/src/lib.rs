@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 pub struct WebServerOptions {
     pub root_dir: PathBuf,
+    pub source_root: PathBuf,
+    pub source_files: Vec<String>,
     pub host: String,
     pub port: u16,
 }
@@ -15,6 +17,8 @@ impl Default for WebServerOptions {
     fn default() -> Self {
         Self {
             root_dir: PathBuf::from(".rover/web"),
+            source_root: PathBuf::from("."),
+            source_files: Vec::new(),
             host: "127.0.0.1".to_string(),
             port: 4242,
         }
@@ -23,7 +27,11 @@ impl Default for WebServerOptions {
 
 pub fn serve_static(options: WebServerOptions) -> Result<()> {
     let root = options.root_dir;
-    let files = collect_assets(&root)?;
+    let mut files = collect_assets(&root)?;
+    files.extend(collect_source_assets(
+        &options.source_root,
+        &options.source_files,
+    )?);
     let lua = Lua::new();
     let routes = build_routes(&lua, files)?;
 
@@ -103,6 +111,44 @@ fn collect_assets_recursive(root: &Path, current: &Path, assets: &mut Vec<Asset>
     }
 
     Ok(())
+}
+
+fn collect_source_assets(source_root: &Path, source_files: &[String]) -> Result<Vec<Asset>> {
+    let mut assets = Vec::new();
+
+    for rel in source_files {
+        if !is_safe_relative_path(rel) {
+            continue;
+        }
+
+        let source_path = source_root.join(rel);
+        if source_path.extension().and_then(|e| e.to_str()) != Some("lua") {
+            continue;
+        }
+        if !source_path.exists() {
+            continue;
+        }
+
+        let route = format!("/__rover_src/{}", rel.replace('\\', "/"));
+        let bytes = fs::read(&source_path)
+            .with_context(|| format!("failed reading source file {}", source_path.display()))?;
+        assets.push(Asset {
+            route_path: route,
+            body: Bytes::from(bytes),
+            content_type: "text/plain; charset=utf-8",
+        });
+    }
+
+    Ok(assets)
+}
+
+fn is_safe_relative_path(path: &str) -> bool {
+    if path.is_empty() || path.starts_with('/') {
+        return false;
+    }
+    !path
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
 fn guess_content_type(path: &Path) -> &'static str {

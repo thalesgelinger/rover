@@ -15,7 +15,14 @@ function rover.render()
 		rover.ui.button {
 			label = "+1",
 			on_click = function()
+                print("Clicando")
 				count.val = count.val + 1
+			end,
+		},
+		rover.ui.button {
+			label = "-1",
+			on_click = function()
+				count.val = count.val - 1
 			end,
 		},
 	}
