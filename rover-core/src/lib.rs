@@ -18,11 +18,11 @@ use io::create_io_module;
 use rover_auth::create_auth_module;
 use rover_db::create_db_module;
 use rover_ui::platform::{
-    UiRuntimeConfig, UiTarget, ViewportSignals, DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
+    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiRuntimeConfig, UiTarget, ViewportSignals,
 };
 use rover_ui::scheduler::{Scheduler, SharedScheduler};
 use rover_ui::signal::SignalValue;
-use rover_ui::{register_ui_module, ui::UiRegistry, SharedSignalRuntime, SignalRuntime};
+use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module, ui::UiRegistry};
 use server::{AppServer, Server};
 use std::cell::RefCell;
 
@@ -105,7 +105,7 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{validate_table, ValidationErrors};
+            use crate::guard::{ValidationErrors, validate_table};
 
             // Extract the table from data
             let data_table = match data {
@@ -310,7 +310,7 @@ pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{validate_table, ValidationErrors};
+            use crate::guard::{ValidationErrors, validate_table};
 
             // Extract the table from data
             let data_table = match data {
@@ -426,7 +426,7 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     guard_meta.set(
         "__call",
         lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{validate_table, ValidationErrors};
+            use crate::guard::{ValidationErrors, validate_table};
 
             let data_table = match data {
                 Value::Table(ref t) => t.clone(),
