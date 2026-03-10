@@ -11,6 +11,7 @@ use rover_ui::ui::lua_node::LuaNode;
 use rover_ui::ui::node::{NodeId, UiNode};
 use rover_ui::ui::registry::UiRegistry;
 use rover_ui::ui::renderer::Renderer;
+use rover_ui::ui::{NodeStyle, PositionType, StyleOp, StyleSize};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
 use std::rc::Rc;
@@ -45,50 +46,79 @@ impl WebRenderer {
         };
 
         match node {
-            UiNode::Text { content } => format!("<div>{}</div>", html_escape(content.value())),
+            UiNode::Text { content } => format!(
+                "<div{}>{}</div>",
+                style_attr(registry, node_id, &[]),
+                html_escape(content.value())
+            ),
             UiNode::Button { label, .. } => {
                 let rid = node_id.index() as u32;
                 format!(
-                    "<button data-rid=\"{}\">{}</button>",
+                    "<button data-rid=\"{}\"{}>{}</button>",
                     rid,
+                    style_attr(registry, node_id, &[]),
                     html_escape(label)
                 )
             }
             UiNode::Input { value, .. } => {
                 let rid = node_id.index() as u32;
                 format!(
-                    "<input data-rid=\"{}\" value=\"{}\" />",
+                    "<input data-rid=\"{}\" value=\"{}\"{} />",
                     rid,
-                    html_escape(value.value())
+                    html_escape(value.value()),
+                    style_attr(registry, node_id, &[])
                 )
             }
             UiNode::Checkbox { checked, .. } => {
                 let rid = node_id.index() as u32;
                 let checked_attr = if *checked { " checked" } else { "" };
                 format!(
-                    "<input type=\"checkbox\" data-rid=\"{}\"{} />",
-                    rid, checked_attr
+                    "<input type=\"checkbox\" data-rid=\"{}\"{}{} />",
+                    rid,
+                    checked_attr,
+                    style_attr(registry, node_id, &[])
                 )
             }
             UiNode::Column { children } => {
                 let body = self.render_children(registry, children);
                 format!(
-                    "<div style=\"display:flex;flex-direction:column;gap:8px;\">{}</div>",
+                    "<div{}>{}</div>",
+                    style_attr(
+                        registry,
+                        node_id,
+                        &["display:flex", "flex-direction:column", "gap:8px"]
+                    ),
                     body
                 )
             }
             UiNode::Row { children } => {
                 let body = self.render_children(registry, children);
                 format!(
-                    "<div style=\"display:flex;flex-direction:row;gap:8px;align-items:center;\">{}</div>",
+                    "<div{}>{}</div>",
+                    style_attr(
+                        registry,
+                        node_id,
+                        &[
+                            "display:flex",
+                            "flex-direction:row",
+                            "gap:8px",
+                            "align-items:center",
+                        ]
+                    ),
                     body
                 )
             }
-            UiNode::View { children }
-            | UiNode::Stack { children }
-            | UiNode::List { children, .. } => {
+            UiNode::View { children } | UiNode::List { children, .. } => {
                 let body = self.render_children(registry, children);
-                format!("<div>{}</div>", body)
+                format!("<div{}>{}</div>", style_attr(registry, node_id, &[]), body)
+            }
+            UiNode::Stack { children } => {
+                let body = self.render_children(registry, children);
+                format!(
+                    "<div{}>{}</div>",
+                    style_attr(registry, node_id, &["position:relative"]),
+                    body
+                )
             }
             UiNode::ScrollBox { child, .. }
             | UiNode::FullScreen { child, .. }
@@ -96,7 +126,11 @@ impl WebRenderer {
             | UiNode::Conditional { child, .. } => child
                 .map(|id| self.render_node(registry, id))
                 .unwrap_or_default(),
-            UiNode::Image { src } => format!("<img src=\"{}\" />", html_escape(src)),
+            UiNode::Image { src } => format!(
+                "<img src=\"{}\"{} />",
+                html_escape(src),
+                style_attr(registry, node_id, &[])
+            ),
         }
     }
 
@@ -106,6 +140,97 @@ impl WebRenderer {
             out.push_str(&self.render_node(registry, *child));
         }
         out
+    }
+}
+
+fn style_attr(registry: &UiRegistry, node_id: NodeId, defaults: &[&str]) -> String {
+    let mut css = defaults
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+
+    if let Some(style) = registry.get_node_style(node_id) {
+        push_style_css(&mut css, style);
+    }
+
+    if css.is_empty() {
+        return String::new();
+    }
+
+    format!(" style=\"{}\"", html_escape(&css.join(";")))
+}
+
+fn push_style_css(css: &mut Vec<String>, style: &NodeStyle) {
+    for op in &style.ops {
+        match op {
+            StyleOp::Padding(value) => css.push(format!("padding:{value}px")),
+            StyleOp::BgColor(value) => css.push(format!("background-color:{value}")),
+            StyleOp::BorderColor(value) => css.push(format!("border-color:{value}")),
+            StyleOp::BorderWidth(value) => {
+                css.push("border-style:solid".to_string());
+                css.push(format!("border-width:{value}px"));
+            }
+        }
+    }
+
+    if let Some(color) = &style.color {
+        css.push(format!("color:{color}"));
+    }
+
+    if let Some(width) = style.width {
+        css.push(format!("width:{}", css_size(width)));
+    }
+
+    if let Some(height) = style.height {
+        css.push(format!("height:{}", css_size(height)));
+    }
+
+    match style.position {
+        PositionType::Relative => {}
+        PositionType::Absolute => css.push("position:absolute".to_string()),
+        PositionType::Fixed => css.push("position:fixed".to_string()),
+    }
+
+    push_px(css, "top", style.top);
+    push_px(css, "left", style.left);
+    push_px(css, "right", style.right);
+    push_px(css, "bottom", style.bottom);
+
+    if let Some(grow) = style.grow {
+        css.push(format!("flex-grow:{grow}"));
+    }
+
+    if let Some(gap) = style.gap {
+        css.push(format!("gap:{gap}px"));
+    }
+
+    if let Some(value) = style.horizontal.as_deref() {
+        css.push(format!("justify-content:{}", css_alignment(value)));
+    }
+
+    if let Some(value) = style.vertical.as_deref() {
+        css.push(format!("align-items:{}", css_alignment(value)));
+    }
+}
+
+fn css_size(size: StyleSize) -> String {
+    match size {
+        StyleSize::Full => "100%".to_string(),
+        StyleSize::Px(value) => format!("{value}px"),
+    }
+}
+
+fn push_px(css: &mut Vec<String>, name: &str, value: Option<i32>) {
+    if let Some(value) = value {
+        css.push(format!("{name}:{value}px"));
+    }
+}
+
+fn css_alignment(value: &str) -> &str {
+    match value {
+        "start" => "flex-start",
+        "end" => "flex-end",
+        other => other,
     }
 }
 
@@ -458,4 +583,62 @@ pub unsafe extern "C" fn rover_web_last_error(runtime: *mut Runtime) -> *const c
 
     let runtime = unsafe { &*runtime };
     runtime.last_error_ptr()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rover_ui::ui::node::TextContent;
+
+    #[test]
+    fn renders_modifier_styles_on_nodes() {
+        let mut registry = UiRegistry::new();
+        let text = registry.create_node(UiNode::Text {
+            content: TextContent::Static("hello".to_string()),
+        });
+        let root = registry.create_node(UiNode::View {
+            children: vec![text],
+        });
+        registry.set_root(root);
+        registry.set_node_style(
+            root,
+            NodeStyle {
+                ops: vec![
+                    StyleOp::Padding(12),
+                    StyleOp::BgColor("#101010".to_string()),
+                ],
+                width: Some(StyleSize::Full),
+                ..NodeStyle::default()
+            },
+        );
+
+        let html = WebRenderer::new().render_node(&registry, root);
+        assert!(html.contains("padding:12px"));
+        assert!(html.contains("background-color:#101010"));
+        assert!(html.contains("width:100%"));
+    }
+
+    #[test]
+    fn row_mod_overrides_default_gap_and_alignment() {
+        let mut registry = UiRegistry::new();
+        let text = registry.create_node(UiNode::Text {
+            content: TextContent::Static("hello".to_string()),
+        });
+        let root = registry.create_node(UiNode::Row {
+            children: vec![text],
+        });
+        registry.set_root(root);
+        registry.set_node_style(
+            root,
+            NodeStyle {
+                gap: Some(24),
+                vertical: Some("start".to_string()),
+                ..NodeStyle::default()
+            },
+        );
+
+        let html = WebRenderer::new().render_node(&registry, root);
+        assert!(html.contains("gap:24px"));
+        assert!(html.contains("align-items:flex-start"));
+    }
 }

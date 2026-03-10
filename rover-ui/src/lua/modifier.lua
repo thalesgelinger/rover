@@ -77,6 +77,14 @@ end
 
 local core_methods = {}
 
+local function attach_core_methods(target, root)
+  target._root = root or target
+  for key, value in pairs(core_methods) do
+    target[key] = value
+  end
+  return target
+end
+
 function core_methods:_with_op(kind, value)
   local next = {
     _ops = copy_ops(self._ops or {}),
@@ -84,7 +92,7 @@ function core_methods:_with_op(kind, value)
     _theme = self._theme,
   }
   next._ops[#next._ops + 1] = { kind = kind, value = value }
-  return setmetatable(next, { __index = self._root })
+  return attach_core_methods(next, self._root)
 end
 
 function core_methods:_with_scalar(key, value)
@@ -94,7 +102,7 @@ function core_methods:_with_scalar(key, value)
     _theme = self._theme,
   }
   next._scalars[key] = value
-  return setmetatable(next, { __index = self._root })
+  return attach_core_methods(next, self._root)
 end
 
 function core_methods:padding(value)
@@ -241,18 +249,7 @@ local function create_mod(theme)
     _theme = theme or default_theme,
   }
 
-  mod._root = mod
-  setmetatable(mod, {
-    __index = function(tbl, key)
-      local direct = rawget(tbl, key)
-      if direct ~= nil then
-        return direct
-      end
-      return core_methods[key]
-    end,
-  })
-
-  return mod
+  return attach_core_methods(mod)
 end
 
 return {

@@ -136,15 +136,7 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
 
     let lua_ui = lua.create_userdata(LuaUi::new())?;
     let uv = lua.create_table()?;
-    #[cfg(target_arch = "wasm32")]
-    let (default_theme, mod_obj): (Table, Table) = {
-        let theme = lua.create_table()?;
-        let mod_obj = lua.create_table()?;
-        (theme, mod_obj)
-    };
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let (default_theme, mod_obj): (Table, Table) = {
+    let (default_theme, create_mod, mod_obj): (Table, Function, Table) = {
         let modifier_module: Table = lua
             .load(include_str!("modifier.lua"))
             .set_name("rover_ui_modifier.lua")
@@ -152,7 +144,7 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
         let default_theme: Table = modifier_module.get("default_theme")?;
         let create_mod: Function = modifier_module.get("create_mod")?;
         let mod_obj: Table = create_mod.call(default_theme.clone())?;
-        (default_theme, mod_obj)
+        (default_theme, create_mod, mod_obj)
     };
     let viewport = lua
         .app_data_ref::<ViewportSignals>()
@@ -167,10 +159,12 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
         lua.create_userdata(LuaSignal::new(viewport.height))?,
     )?;
 
-    uv.set("theme", default_theme)?;
+    uv.set("theme", default_theme.clone())?;
     uv.set("mod", mod_obj)?;
     uv.set("screen", screen)?;
     lua_ui.set_user_value(uv)?;
+    lua.globals().set("_rover_ui_theme", default_theme)?;
+    lua.globals().set("_rover_ui_create_mod", create_mod)?;
     rover_table.set("ui", lua_ui)?;
 
     if crate::lua::helpers::get_target(lua)? == UiTarget::Tui {

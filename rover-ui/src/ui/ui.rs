@@ -38,6 +38,17 @@ fn get_ui_user_value_table(lua: &mlua::Lua) -> mlua::Result<Table> {
     ui_ud.user_value()
 }
 
+fn get_ui_theme_table(lua: &mlua::Lua) -> mlua::Result<Table> {
+    lua.globals().get("_rover_ui_theme")
+}
+
+fn create_ui_mod(lua: &mlua::Lua) -> mlua::Result<Table> {
+    let globals = lua.globals();
+    let theme: Table = globals.get("_rover_ui_theme")?;
+    let create_mod: Function = globals.get("_rover_ui_create_mod")?;
+    create_mod.call(theme)
+}
+
 fn ensure_tui_target(lua: &mlua::Lua) -> mlua::Result<()> {
     let target = crate::lua::helpers::get_target(lua)?;
     if target == crate::platform::UiTarget::Tui {
@@ -753,15 +764,13 @@ impl UserData for LuaUi {
         );
 
         methods.add_function("set_theme", |lua, theme: Table| {
-            let uv: Table = get_ui_user_value_table(lua)?;
-            let current_theme: Table = uv.get("theme")?;
+            let current_theme: Table = get_ui_theme_table(lua)?;
             replace_table_recursive(&current_theme, &theme)?;
             Ok(())
         });
 
         methods.add_function("extend_theme", |lua, patch: Table| {
-            let uv: Table = get_ui_user_value_table(lua)?;
-            let current_theme: Table = uv.get("theme")?;
+            let current_theme: Table = get_ui_theme_table(lua)?;
             merge_tables_recursive(&current_theme, &patch)?;
             Ok(())
         });
@@ -773,6 +782,10 @@ impl UserData for LuaUi {
                 let uv: mlua::Table = ud.user_value()?;
                 if key == "render" {
                     uv.get::<Value>("render")
+                } else if key == "theme" {
+                    Ok(Value::Table(get_ui_theme_table(_lua)?))
+                } else if key == "mod" {
+                    Ok(Value::Table(create_ui_mod(_lua)?))
                 } else {
                     uv.get::<Value>(key)
                 }
@@ -786,10 +799,9 @@ impl UserData for LuaUi {
                     let uv: mlua::Table = ud.user_value()?;
                     uv.set("render", value)
                 } else if key == "theme" {
-                    let uv: mlua::Table = ud.user_value()?;
                     match value {
                         Value::Table(theme) => {
-                            let current_theme: Table = uv.get("theme")?;
+                            let current_theme: Table = get_ui_theme_table(_lua)?;
                             replace_table_recursive(&current_theme, &theme)
                         }
                         _ => Err(mlua::Error::RuntimeError(
