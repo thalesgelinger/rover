@@ -1,4 +1,5 @@
 use mlua::{Lua, Value};
+use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
 use rover_ui::events::{EventQueue, UiEvent};
 use rover_ui::lua::register_ui_module;
 use rover_ui::platform::{
@@ -13,6 +14,7 @@ use rover_ui::ui::renderer::Renderer;
 use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
 use std::rc::Rc;
+use std::time::Instant;
 
 struct WebRenderer {
     html: String,
@@ -136,6 +138,7 @@ pub struct Runtime {
     renderer: WebRenderer,
     running: bool,
     html: CString,
+    last_error: CString,
 }
 
 impl Runtime {
@@ -171,6 +174,7 @@ impl Runtime {
             renderer: WebRenderer::new(),
             running: false,
             html: CString::new("<div></div>").expect("static html has no nul"),
+            last_error: CString::new("").expect("empty string has no nul"),
         })
     }
 
@@ -182,6 +186,19 @@ impl Runtime {
     fn sync_html_from_renderer(&mut self) {
         let html = self.renderer.html().to_string();
         self.set_html(&html);
+    }
+
+    fn clear_error(&mut self) {
+        self.last_error = CString::new("").expect("empty string has no nul");
+    }
+
+    fn set_error(&mut self, err: impl AsRef<str>) {
+        let normalized = format_error(err.as_ref()).replace('\0', "");
+        self.last_error = CString::new(normalized).expect("nul bytes removed");
+    }
+
+    fn last_error_ptr(&self) -> *const c_char {
+        self.last_error.as_ptr()
     }
 
     fn run_script(&mut self, source: &str) -> Result<(), String> {
@@ -243,13 +260,44 @@ impl Runtime {
         Ok(())
     }
 
-    fn tick(&mut self) -> Result<(), String> {
+    fn run_ready_timers(&mut self) -> Result<(), String> {
+        let now = Instant::now();
+        let ready_ids = self.scheduler.borrow_mut().tick(now);
+
+        for id in ready_ids {
+            let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
+                continue;
+            };
+
+            match run_coroutine_with_delay(
+                &self.lua,
+                &self.signal_runtime,
+                &pending.thread,
+                Value::Nil,
+            )
+            .map_err(|e| e.to_string())?
+            {
+                CoroutineResult::Completed => {}
+                CoroutineResult::YieldedDelay { delay_ms } => {
+                    self.scheduler.borrow_mut().schedule_delay_with_id(
+                        id,
+                        pending.thread,
+                        delay_ms,
+                    );
+                }
+                CoroutineResult::YieldedOther => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn flush_runtime(&mut self) -> Result<(), String> {
         if !self.running {
             self.mount()?;
         }
 
-        // touch scheduler so it stays part of runtime contract
-        let _ = self.scheduler.borrow().has_pending();
+        self.run_ready_timers()?;
 
         self.process_events()?;
         self.signal_runtime
@@ -266,9 +314,19 @@ impl Runtime {
         Ok(())
     }
 
+    fn next_wake_ms(&self) -> i32 {
+        let now = Instant::now();
+        let Some(wake) = self.scheduler.borrow().next_wake_time() else {
+            return -1;
+        };
+        let duration = wake.saturating_duration_since(now);
+        let millis = duration.as_millis().min(i32::MAX as u128) as i32;
+        millis
+    }
+
     fn load_lua(&mut self, source: &str) -> Result<(), String> {
         self.run_script(source)?;
-        self.tick()
+        self.flush_runtime()
     }
 
     fn dispatch_click(&mut self, id: i32) -> Result<(), String> {
@@ -278,7 +336,7 @@ impl Runtime {
         self.events.push(UiEvent::Click {
             node_id: NodeId::from_u32(id as u32),
         });
-        self.tick()
+        self.flush_runtime()
     }
 }
 
@@ -289,6 +347,19 @@ fn html_escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn format_error(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "unknown runtime error".to_string();
+    }
+
+    let mut out = trimmed.replace("\r\n", "\n");
+    if !out.starts_with("Lua error:") && !out.starts_with("Runtime error:") {
+        out = format!("Lua error: {out}");
+    }
+    out
 }
 
 #[unsafe(no_mangle)]
@@ -309,13 +380,15 @@ pub unsafe extern "C" fn rover_web_load_lua(runtime: *mut Runtime, source: *cons
     }
 
     let runtime = unsafe { &mut *runtime };
+    runtime.clear_error();
     let source = unsafe { CStr::from_ptr(source) };
     let script = source.to_string_lossy();
 
     match runtime.load_lua(script.as_ref()) {
         Ok(_) => 0,
         Err(err) => {
-            eprintln!("{}", err);
+            runtime.set_error(err.as_str());
+            eprintln!("{}", runtime.last_error.to_string_lossy());
             2
         }
     }
@@ -328,13 +401,25 @@ pub unsafe extern "C" fn rover_web_tick(runtime: *mut Runtime) -> i32 {
     }
 
     let runtime = unsafe { &mut *runtime };
-    match runtime.tick() {
+    runtime.clear_error();
+    match runtime.flush_runtime() {
         Ok(_) => 0,
         Err(err) => {
-            eprintln!("{}", err);
+            runtime.set_error(err.as_str());
+            eprintln!("{}", runtime.last_error.to_string_lossy());
             2
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rover_web_next_wake_ms(runtime: *mut Runtime) -> i32 {
+    if runtime.is_null() {
+        return -1;
+    }
+
+    let runtime = unsafe { &*runtime };
+    runtime.next_wake_ms()
 }
 
 #[unsafe(no_mangle)]
@@ -354,11 +439,23 @@ pub unsafe extern "C" fn rover_web_dispatch_click(runtime: *mut Runtime, id: i32
     }
 
     let runtime = unsafe { &mut *runtime };
+    runtime.clear_error();
     match runtime.dispatch_click(id) {
         Ok(_) => 0,
         Err(err) => {
-            eprintln!("{}", err);
+            runtime.set_error(err.as_str());
+            eprintln!("{}", runtime.last_error.to_string_lossy());
             2
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rover_web_last_error(runtime: *mut Runtime) -> *const c_char {
+    if runtime.is_null() {
+        return std::ptr::null();
+    }
+
+    let runtime = unsafe { &*runtime };
+    runtime.last_error_ptr()
 }

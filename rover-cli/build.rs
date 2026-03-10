@@ -11,6 +11,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ROVER_WEB_ASSETS_TAR_GZ");
     println!("cargo:rerun-if-env-changed=ROVER_WEB_SKIP_AUTO_BUILD");
     println!("cargo:rerun-if-env-changed=ROVER_WEB_FORCE_FALLBACK");
+    println!("cargo:rerun-if-changed=../rover-web-wasm/src/lib.rs");
+    println!("cargo:rerun-if-changed=../rover-web-wasm/build.rs");
+    println!("cargo:rerun-if-changed=../rover-web-wasm/scripts/emcc-linker.sh");
     println!("cargo:warning=rover-cli build.rs: preparing embedded web assets");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
@@ -244,8 +247,19 @@ const module = await createModule({
 const init = module.cwrap('rover_web_init', 'number', []);
 const loadLua = module.cwrap('rover_web_load_lua', 'number', ['number', 'string']);
 const tick = module.cwrap('rover_web_tick', 'number', ['number']);
+const nextWakeMs = module.cwrap('rover_web_next_wake_ms', 'number', ['number']);
 const pullHtml = module.cwrap('rover_web_pull_html', 'string', ['number']);
 const dispatchClick = module.cwrap('rover_web_dispatch_click', 'number', ['number', 'number']);
+const lastError = module.cwrap('rover_web_last_error', 'string', ['number']);
+
+function describeStatus(status, phase) {
+  const detail = (lastError(luaPtr) || '').trim();
+  if (detail) {
+    print(`[${phase}] ${detail}`);
+    return;
+  }
+  print(`[${phase}] failed with status ${status}`);
+}
 
 const manifest = await fetch('./manifest.json').then((r) => r.json());
 
@@ -290,7 +304,7 @@ let status = -1;
 try {
   status = loadLua(luaPtr, source);
   if (status !== 0) {
-    print(`lua load failed: ${status}`);
+    describeStatus(status, 'loadLua');
   }
 } catch (err) {
   print(`[fatal] loadLua crashed: ${String(err)}`);
@@ -298,6 +312,7 @@ try {
 }
 
 let prevHtml = '';
+let wakeHandle = null;
 
 function syncDom() {
   const html = pullHtml(luaPtr) || '';
@@ -312,7 +327,7 @@ function tickAndSync() {
   try {
     const tickStatus = tick(luaPtr);
     if (tickStatus !== 0) {
-      print(`tick failed: ${tickStatus}`);
+      describeStatus(tickStatus, 'tick');
     }
   } catch (err) {
     print(`[fatal] tick crashed: ${String(err)}`);
@@ -321,19 +336,51 @@ function tickAndSync() {
   syncDom();
 }
 
+function scheduleNextFlush() {
+  if (wakeHandle !== null) {
+    clearTimeout(wakeHandle);
+    wakeHandle = null;
+  }
+
+  let delay = -1;
+  try {
+    delay = nextWakeMs(luaPtr);
+  } catch (err) {
+    print(`[fatal] nextWakeMs crashed: ${String(err)}`);
+    throw err;
+  }
+
+  if (delay < 0) {
+    return;
+  }
+
+  wakeHandle = setTimeout(() => {
+    wakeHandle = null;
+    tickAndSync();
+    scheduleNextFlush();
+  }, Math.max(0, delay));
+}
+
 function bindButtons() {
   const buttons = document.querySelectorAll('[data-rid]');
   buttons.forEach((btn) => {
+    if (btn.dataset.roverBound === '1') return;
+    btn.dataset.roverBound = '1';
     btn.addEventListener('click', () => {
       const id = Number(btn.getAttribute('data-rid'));
       if (!Number.isNaN(id)) {
-        dispatchClick(luaPtr, id);
+        const clickStatus = dispatchClick(luaPtr, id);
+        if (clickStatus !== 0) {
+          describeStatus(clickStatus, 'click');
+        }
         syncDom();
+        scheduleNextFlush();
       }
     });
   });
 }
 
 tickAndSync();
+scheduleNextFlush();
 "#
 }

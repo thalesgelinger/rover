@@ -9,4 +9,7 @@ for arg in "$@"; do
   args+=("$arg")
 done
 
+args+=("-sNO_DISABLE_EXCEPTION_CATCHING")
+args+=("-sASSERTIONS=1")
+
 exec emcc "${args[@]}"
