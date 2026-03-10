@@ -11,9 +11,9 @@ use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
-use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
-use rover_ui::scheduler::SharedScheduler;
 use rover_ui::SharedSignalRuntime;
+use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
+use rover_ui::scheduler::SharedScheduler;
 use slab::Slab;
 use tracing::{debug, info, warn};
 
@@ -21,7 +21,7 @@ use crate::buffer_pool::BufferPool;
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::{FastRouter, RouteMatch};
 use crate::http_task::{
-    execute_handler_coroutine, CoroutineResponse, RequestContextPool, ThreadPool,
+    CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
 };
 use crate::table_pool::LuaTablePool;
 use crate::ws_frame::{self, WsOpcode};

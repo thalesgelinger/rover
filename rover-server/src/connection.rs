@@ -1,5 +1,5 @@
-use crate::ws_frame;
 use crate::Bytes;
+use crate::ws_frame;
 use bytes::BytesMut;
 use mio::net::TcpStream;
 use mio::{Interest, Registry, Token};

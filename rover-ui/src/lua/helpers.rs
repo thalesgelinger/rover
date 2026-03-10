@@ -1,7 +1,7 @@
 use crate::platform::{UiRuntimeConfig, UiTarget, ViewportSignals};
 use crate::signal::{DerivedId, SignalId};
 use crate::ui::registry::UiRegistry;
-use crate::{scheduler::SharedScheduler, SharedSignalRuntime};
+use crate::{SharedSignalRuntime, scheduler::SharedScheduler};
 use mlua::{AppDataRef, Lua, Result, Value};
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -1,9 +1,9 @@
 use mlua::{Lua, Value};
-use rover_ui::coroutine::{run_coroutine_with_delay, CoroutineResult};
+use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use rover_ui::events::{EventQueue, UiEvent};
 use rover_ui::lua::register_ui_module;
 use rover_ui::platform::{
-    UiRuntimeConfig, UiTarget, ViewportSignals, DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
+    DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiRuntimeConfig, UiTarget, ViewportSignals,
 };
 use rover_ui::scheduler::{Scheduler, SharedScheduler};
 use rover_ui::signal::{SignalRuntime, SignalValue};
@@ -12,7 +12,7 @@ use rover_ui::ui::node::{NodeId, UiNode};
 use rover_ui::ui::registry::UiRegistry;
 use rover_ui::ui::renderer::Renderer;
 use std::cell::RefCell;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::rc::Rc;
 use std::time::Instant;
 

@@ -9,7 +9,9 @@ fn main() {
         .expect("missing parent 3")
         .join("rover_web_wasm");
 
-    println!("cargo:rustc-link-arg=-sEXPORTED_RUNTIME_METHODS=['cwrap','ccall','FS','FS_createPath','FS_createDataFile']");
+    println!(
+        "cargo:rustc-link-arg=-sEXPORTED_RUNTIME_METHODS=['cwrap','ccall','FS','FS_createPath','FS_createDataFile']"
+    );
     println!("cargo:rustc-link-arg=-sFORCE_FILESYSTEM=1");
     println!(
         "cargo:rustc-link-arg=-sEXPORTED_FUNCTIONS=['_rover_web_init','_rover_web_load_lua','_rover_web_tick','_rover_web_pull_html','_rover_web_dispatch_click','_rover_web_last_error','_rover_web_next_wake_ms']"

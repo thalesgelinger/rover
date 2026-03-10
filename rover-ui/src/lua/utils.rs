@@ -1,6 +1,6 @@
+use crate::SharedSignalRuntime;
 use crate::lua::derived::LuaDerived;
 use crate::lua::signal::LuaSignal;
-use crate::SharedSignalRuntime;
 use mlua::{Function, Lua, MultiValue, Result, Value};
 
 /// rover.any(...signals) - returns derived that is true if any signal is truthy

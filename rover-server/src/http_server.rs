@@ -3,7 +3,7 @@ use mlua::{Lua, RegistryKey};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::{event_loop::EventLoop, Route, ServerConfig, WsRoute};
+use crate::{Route, ServerConfig, WsRoute, event_loop::EventLoop};
 
 pub fn run_server(
     lua: Lua,

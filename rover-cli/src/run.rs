@@ -5,7 +5,7 @@ use rover_db::run_pending_migrations;
 use rover_tui::{TuiRenderer, TuiRunner};
 use rover_ui::app::App;
 use rover_ui::ui::StubRenderer;
-use rover_web::{serve_static, WebServerOptions};
+use rover_web::{WebServerOptions, serve_static};
 use serde_json::json;
 use std::fs;
 use std::io::BufRead;
@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::build::{run_build, BuildOptions};
+use crate::build::{BuildOptions, run_build};
 use crate::cli::Platform;
 
 pub fn run_file(
@@ -396,11 +396,7 @@ pub fn pre_run_db_analysis(file_path: &PathBuf, yolo_mode: bool) -> Result<()> {
 }
 
 fn confirm_or_yolo(yolo_mode: bool, msg: &str) -> Result<bool> {
-    if yolo_mode {
-        Ok(true)
-    } else {
-        prompt_yn(msg)
-    }
+    if yolo_mode { Ok(true) } else { prompt_yn(msg) }
 }
 
 /// Get set of table names that have at least one migration file
