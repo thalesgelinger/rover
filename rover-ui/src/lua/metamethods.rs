@@ -1,6 +1,6 @@
-use crate::SharedSignalRuntime;
 use crate::lua::derived::LuaDerived;
 use crate::lua::signal::LuaSignal;
+use crate::SharedSignalRuntime;
 use mlua::{Lua, MetaMethod, Result, UserData, UserDataMethods, Value};
 
 /// Trait for reactive types (Signal and Derived) that can have metamethods

@@ -2295,6 +2295,7 @@ name = "rover-web-wasm"
 version = "0.1.0"
 dependencies = [
  "mlua",
+ "rover_ui",
 ]
 
 [[package]]

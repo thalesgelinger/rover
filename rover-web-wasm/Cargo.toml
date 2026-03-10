@@ -8,3 +8,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 mlua = { version = "0.11.5", default-features = false, features = ["anyhow", "lua54", "vendored"] }
+rover_ui = { path = "../rover-ui", default-features = false, features = ["lua54"] }

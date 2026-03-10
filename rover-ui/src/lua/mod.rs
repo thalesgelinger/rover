@@ -136,13 +136,24 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
 
     let lua_ui = lua.create_userdata(LuaUi::new())?;
     let uv = lua.create_table()?;
-    let modifier_module: Table = lua
-        .load(include_str!("modifier.lua"))
-        .set_name("rover_ui_modifier.lua")
-        .eval()?;
-    let default_theme: Table = modifier_module.get("default_theme")?;
-    let create_mod: Function = modifier_module.get("create_mod")?;
-    let mod_obj: Table = create_mod.call(default_theme.clone())?;
+    #[cfg(target_arch = "wasm32")]
+    let (default_theme, mod_obj): (Table, Table) = {
+        let theme = lua.create_table()?;
+        let mod_obj = lua.create_table()?;
+        (theme, mod_obj)
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let (default_theme, mod_obj): (Table, Table) = {
+        let modifier_module: Table = lua
+            .load(include_str!("modifier.lua"))
+            .set_name("rover_ui_modifier.lua")
+            .eval()?;
+        let default_theme: Table = modifier_module.get("default_theme")?;
+        let create_mod: Function = modifier_module.get("create_mod")?;
+        let mod_obj: Table = create_mod.call(default_theme.clone())?;
+        (default_theme, mod_obj)
+    };
     let viewport = lua
         .app_data_ref::<ViewportSignals>()
         .ok_or_else(|| mlua::Error::RuntimeError("Viewport signals not initialized".into()))?;

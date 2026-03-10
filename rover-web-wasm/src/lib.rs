@@ -1,90 +1,177 @@
-use mlua::{Function, Lua, RegistryKey, Table, Value};
-use std::collections::HashMap;
+use mlua::{Lua, Value};
+use rover_ui::events::{EventQueue, UiEvent};
+use rover_ui::lua::register_ui_module;
+use rover_ui::platform::{
+    UiRuntimeConfig, UiTarget, ViewportSignals, DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH,
+};
+use rover_ui::scheduler::{Scheduler, SharedScheduler};
+use rover_ui::signal::{SignalRuntime, SignalValue};
+use rover_ui::ui::lua_node::LuaNode;
+use rover_ui::ui::node::{NodeId, UiNode};
+use rover_ui::ui::registry::UiRegistry;
+use rover_ui::ui::renderer::Renderer;
+use std::cell::RefCell;
 use std::ffi::{c_char, CStr, CString};
+use std::rc::Rc;
 
-const BOOTSTRAP: &str = r#"
-rover = rover or {}
-rover.ui = rover.ui or {}
-
-local signal_mt = {
-  __tostring = function(self)
-    return tostring(self.val)
-  end,
+struct WebRenderer {
+    html: String,
 }
 
-function rover.signal(initial)
-  return setmetatable({ val = initial }, signal_mt)
-end
-
-function rover.derive(fn)
-  return setmetatable({ __fn = fn }, {
-    __tostring = function(self)
-      return tostring(self.__fn())
-    end,
-  })
-end
-
-function rover.ui.text(value)
-  if type(value) == 'table' and value[1] ~= nil then
-    value = value[1]
-  end
-  return { __type = 'text', value = value }
-end
-
-function rover.ui.button(def)
-  return { __type = 'button', label = def[1] or def.label or 'button', on_click = def.on_click }
-end
-
-function rover.ui.column(children)
-  return { __type = 'column', children = children }
-end
-
-function rover.ui.row(children)
-  return { __type = 'row', children = children }
-end
-"#;
-
-struct Runtime {
-    lua: Lua,
-    html: CString,
-    handlers: HashMap<i32, RegistryKey>,
-    next_handler_id: i32,
-}
-
-impl Runtime {
+impl WebRenderer {
     fn new() -> Self {
         Self {
-            lua: Lua::new(),
-            html: CString::new("<div></div>").expect("static html has no nul"),
-            handlers: HashMap::new(),
-            next_handler_id: 1,
+            html: "<div></div>".to_string(),
         }
     }
 
-    fn load_lua(&mut self, source: &str) -> mlua::Result<()> {
-        self.lua.load(BOOTSTRAP).exec()?;
-        self.lua.load(source).exec()
+    fn html(&self) -> &str {
+        &self.html
     }
 
-    fn tick(&mut self) -> mlua::Result<()> {
-        self.handlers.clear();
-        self.next_handler_id = 1;
+    fn rebuild(&mut self, registry: &UiRegistry) {
+        self.html = if let Some(root) = registry.root() {
+            self.render_node(registry, root)
+        } else {
+            "<div></div>".to_string()
+        };
+    }
 
-        let globals = self.lua.globals();
-        let render_fn: Option<Function> = globals
-            .get("rover")
-            .ok()
-            .and_then(|rover: Table| rover.get("render").ok());
-
-        let Some(render_fn) = render_fn else {
-            self.set_html("<div>missing rover.render</div>");
-            return Ok(());
+    fn render_node(&self, registry: &UiRegistry, node_id: NodeId) -> String {
+        let Some(node) = registry.get_node(node_id) else {
+            return String::new();
         };
 
-        let tree: Value = render_fn.call(())?;
-        let body = self.render_node(tree)?;
-        self.set_html(&body);
-        Ok(())
+        match node {
+            UiNode::Text { content } => format!("<div>{}</div>", html_escape(content.value())),
+            UiNode::Button { label, .. } => {
+                let rid = node_id.index() as u32;
+                format!(
+                    "<button data-rid=\"{}\">{}</button>",
+                    rid,
+                    html_escape(label)
+                )
+            }
+            UiNode::Input { value, .. } => {
+                let rid = node_id.index() as u32;
+                format!(
+                    "<input data-rid=\"{}\" value=\"{}\" />",
+                    rid,
+                    html_escape(value.value())
+                )
+            }
+            UiNode::Checkbox { checked, .. } => {
+                let rid = node_id.index() as u32;
+                let checked_attr = if *checked { " checked" } else { "" };
+                format!(
+                    "<input type=\"checkbox\" data-rid=\"{}\"{} />",
+                    rid, checked_attr
+                )
+            }
+            UiNode::Column { children } => {
+                let body = self.render_children(registry, children);
+                format!(
+                    "<div style=\"display:flex;flex-direction:column;gap:8px;\">{}</div>",
+                    body
+                )
+            }
+            UiNode::Row { children } => {
+                let body = self.render_children(registry, children);
+                format!(
+                    "<div style=\"display:flex;flex-direction:row;gap:8px;align-items:center;\">{}</div>",
+                    body
+                )
+            }
+            UiNode::View { children }
+            | UiNode::Stack { children }
+            | UiNode::List { children, .. } => {
+                let body = self.render_children(registry, children);
+                format!("<div>{}</div>", body)
+            }
+            UiNode::ScrollBox { child, .. }
+            | UiNode::FullScreen { child, .. }
+            | UiNode::KeyArea { child, .. }
+            | UiNode::Conditional { child, .. } => child
+                .map(|id| self.render_node(registry, id))
+                .unwrap_or_default(),
+            UiNode::Image { src } => format!("<img src=\"{}\" />", html_escape(src)),
+        }
+    }
+
+    fn render_children(&self, registry: &UiRegistry, children: &[NodeId]) -> String {
+        let mut out = String::new();
+        for child in children {
+            out.push_str(&self.render_node(registry, *child));
+        }
+        out
+    }
+}
+
+impl Renderer for WebRenderer {
+    fn mount(&mut self, registry: &UiRegistry) {
+        self.rebuild(registry);
+    }
+
+    fn update(&mut self, registry: &UiRegistry, _dirty_nodes: &[NodeId]) {
+        self.rebuild(registry);
+    }
+
+    fn node_added(&mut self, registry: &UiRegistry, _node_id: NodeId) {
+        self.rebuild(registry);
+    }
+
+    fn node_removed(&mut self, _node_id: NodeId) {}
+
+    fn target(&self) -> UiTarget {
+        UiTarget::Web
+    }
+}
+
+pub struct Runtime {
+    lua: Lua,
+    signal_runtime: Rc<SignalRuntime>,
+    registry: Rc<RefCell<UiRegistry>>,
+    scheduler: SharedScheduler,
+    events: EventQueue,
+    renderer: WebRenderer,
+    running: bool,
+    html: CString,
+}
+
+impl Runtime {
+    fn new() -> Result<Self, String> {
+        let lua = Lua::new();
+        let signal_runtime = Rc::new(SignalRuntime::new());
+        let registry = Rc::new(RefCell::new(UiRegistry::new()));
+        let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
+        let runtime_config = UiRuntimeConfig::new(UiTarget::Web);
+        let viewport_signals = ViewportSignals {
+            width: signal_runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_WIDTH as i64)),
+            height: signal_runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_HEIGHT as i64)),
+        };
+
+        lua.set_app_data(signal_runtime.clone());
+        lua.set_app_data(registry.clone());
+        lua.set_app_data(scheduler.clone());
+        lua.set_app_data(runtime_config);
+        lua.set_app_data(viewport_signals);
+
+        let rover_table = lua.create_table().map_err(|e| e.to_string())?;
+        register_ui_module(&lua, &rover_table).map_err(|e| e.to_string())?;
+        lua.globals()
+            .set("rover", rover_table)
+            .map_err(|e| e.to_string())?;
+
+        Ok(Self {
+            lua,
+            signal_runtime,
+            registry,
+            scheduler,
+            events: EventQueue::new(),
+            renderer: WebRenderer::new(),
+            running: false,
+            html: CString::new("<div></div>").expect("static html has no nul"),
+        })
     }
 
     fn set_html(&mut self, html: &str) {
@@ -92,88 +179,102 @@ impl Runtime {
         self.html = CString::new(safe).expect("nul bytes removed");
     }
 
-    fn render_node(&mut self, value: Value) -> mlua::Result<String> {
-        let Value::Table(tbl) = value else {
-            return Ok(format!(
-                "<span>{}</span>",
-                html_escape(&value_to_text(&self.lua, value)?)
-            ));
-        };
-
-        let node_type: Option<String> = tbl.get("__type").ok();
-        match node_type.as_deref() {
-            Some("text") => {
-                let text = value_to_text(&self.lua, tbl.get::<Value>("value")?)?;
-                Ok(format!("<div>{}</div>", html_escape(&text)))
-            }
-            Some("button") => {
-                let label = value_to_text(&self.lua, tbl.get::<Value>("label")?)?;
-                let on_click: Option<Function> = tbl.get("on_click").ok();
-                let attr = if let Some(handler) = on_click {
-                    let id = self.next_handler_id;
-                    self.next_handler_id += 1;
-                    let key = self.lua.create_registry_value(handler)?;
-                    self.handlers.insert(id, key);
-                    format!(" data-rid=\"{}\"", id)
-                } else {
-                    String::new()
-                };
-                Ok(format!("<button{}>{}</button>", attr, html_escape(&label)))
-            }
-            Some("column") => {
-                let children = render_children(self, tbl.get("children")?)?;
-                Ok(format!(
-                    "<div style=\"display:flex;flex-direction:column;gap:8px;\">{}</div>",
-                    children
-                ))
-            }
-            Some("row") => {
-                let children = render_children(self, tbl.get("children")?)?;
-                Ok(format!(
-                    "<div style=\"display:flex;flex-direction:row;gap:8px;align-items:center;\">{}</div>",
-                    children
-                ))
-            }
-            _ => Ok("<div>unsupported node</div>".to_string()),
-        }
+    fn sync_html_from_renderer(&mut self) {
+        let html = self.renderer.html().to_string();
+        self.set_html(&html);
     }
 
-    fn dispatch_click(&self, id: i32) -> mlua::Result<()> {
-        let Some(key) = self.handlers.get(&id) else {
+    fn run_script(&mut self, source: &str) -> Result<(), String> {
+        self.lua.load(source).exec().map_err(|e| e.to_string())
+    }
+
+    fn mount(&mut self) -> Result<(), String> {
+        let rover_table: mlua::Table =
+            self.lua.globals().get("rover").map_err(|e| e.to_string())?;
+        let render_fn: Option<mlua::Function> =
+            rover_table.get("render").map_err(|e| e.to_string())?;
+
+        if let Some(render_fn) = render_fn {
+            let root_node: LuaNode = render_fn.call(()).map_err(|e| e.to_string())?;
+            self.registry.borrow_mut().set_root(root_node.id());
+        }
+
+        self.renderer.mount(&self.registry.borrow());
+        self.running = true;
+        Ok(())
+    }
+
+    fn process_events(&mut self) -> Result<(), String> {
+        let events: Vec<_> = self.events.drain().collect();
+        if events.is_empty() {
             return Ok(());
-        };
-        let func: Function = self.lua.registry_value(key)?;
-        func.call(())
-    }
-}
-
-fn render_children(runtime: &mut Runtime, children: Value) -> mlua::Result<String> {
-    let Value::Table(tbl) = children else {
-        return Ok(String::new());
-    };
-
-    let mut out = String::new();
-    for child in tbl.sequence_values::<Value>().flatten() {
-        out.push_str(&runtime.render_node(child)?);
-    }
-    Ok(out)
-}
-
-fn value_to_text(lua: &Lua, value: Value) -> mlua::Result<String> {
-    match value {
-        Value::Nil => Ok(String::new()),
-        Value::String(s) => Ok(s.to_string_lossy().to_string()),
-        Value::Integer(i) => Ok(i.to_string()),
-        Value::Number(n) => Ok(n.to_string()),
-        Value::Boolean(b) => Ok(b.to_string()),
-        Value::Table(tbl) => {
-            let tostring: Function = lua.globals().get("tostring")?;
-            tostring.call::<String>(tbl)
         }
-        other => {
-            let tostring: Function = lua.globals().get("tostring")?;
-            tostring.call::<String>(other)
+
+        self.signal_runtime.begin_batch();
+
+        for event in events {
+            match event {
+                UiEvent::Click { node_id } => {
+                    let on_click = {
+                        let reg = self.registry.borrow();
+                        match reg.get_node(node_id) {
+                            Some(UiNode::Button { on_click, .. }) => *on_click,
+                            _ => None,
+                        }
+                    };
+
+                    if let Some(effect_id) = on_click {
+                        self.signal_runtime
+                            .call_effect(&self.lua, effect_id, Value::Nil)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                _ => {}
+            }
         }
+
+        self.signal_runtime
+            .end_batch(&self.lua)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn tick(&mut self) -> Result<(), String> {
+        if !self.running {
+            self.mount()?;
+        }
+
+        // touch scheduler so it stays part of runtime contract
+        let _ = self.scheduler.borrow().has_pending();
+
+        self.process_events()?;
+        self.signal_runtime
+            .run_pending_effects(&self.lua)
+            .map_err(|e| e.to_string())?;
+
+        let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
+        if !dirty_set.is_empty() {
+            let dirty: Vec<_> = dirty_set.into_iter().collect();
+            self.renderer.update(&self.registry.borrow(), &dirty);
+        }
+
+        self.sync_html_from_renderer();
+        Ok(())
+    }
+
+    fn load_lua(&mut self, source: &str) -> Result<(), String> {
+        self.run_script(source)?;
+        self.tick()
+    }
+
+    fn dispatch_click(&mut self, id: i32) -> Result<(), String> {
+        if id < 0 {
+            return Ok(());
+        }
+        self.events.push(UiEvent::Click {
+            node_id: NodeId::from_u32(id as u32),
+        });
+        self.tick()
     }
 }
 
@@ -188,7 +289,13 @@ fn html_escape(input: &str) -> String {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rover_web_init() -> *mut Runtime {
-    Box::into_raw(Box::new(Runtime::new()))
+    match Runtime::new() {
+        Ok(runtime) => Box::into_raw(Box::new(runtime)),
+        Err(err) => {
+            eprintln!("{}", err);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -231,6 +338,7 @@ pub unsafe extern "C" fn rover_web_pull_html(runtime: *mut Runtime) -> *const c_
     if runtime.is_null() {
         return std::ptr::null();
     }
+
     let runtime = unsafe { &*runtime };
     runtime.html.as_ptr()
 }

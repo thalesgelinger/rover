@@ -54,23 +54,47 @@ const tick = module.cwrap('rover_web_tick', 'number', ['number']);
 const pullHtml = module.cwrap('rover_web_pull_html', 'string', ['number']);
 const dispatchClick = module.cwrap('rover_web_dispatch_click', 'number', ['number', 'number']);
 
-const luaPtr = init();
+let luaPtr = 0;
+try {
+  luaPtr = init();
+} catch (err) {
+  print(`[fatal] init failed: ${String(err)}`);
+  throw err;
+}
 const source = await fetch('./app.lua').then((r) => r.text());
-const status = loadLua(luaPtr, source);
-if (status !== 0) {
-  print(`lua load failed: ${status}`);
+let status = -1;
+try {
+  status = loadLua(luaPtr, source);
+  if (status !== 0) {
+    print(`lua load failed: ${status}`);
+  }
+} catch (err) {
+  print(`[fatal] loadLua crashed: ${String(err)}`);
+  throw err;
 }
 
 let prevHtml = '';
 
-function render() {
-  tick(luaPtr);
+function syncDom() {
   const html = pullHtml(luaPtr) || '';
   if (app && html !== prevHtml) {
     app.innerHTML = html;
     prevHtml = html;
     bindButtons();
   }
+}
+
+function tickAndSync() {
+  try {
+    const tickStatus = tick(luaPtr);
+    if (tickStatus !== 0) {
+      print(`tick failed: ${tickStatus}`);
+    }
+  } catch (err) {
+    print(`[fatal] tick crashed: ${String(err)}`);
+    throw err;
+  }
+  syncDom();
 }
 
 function bindButtons() {
@@ -80,13 +104,13 @@ function bindButtons() {
       const id = Number(btn.getAttribute('data-rid'));
       if (!Number.isNaN(id)) {
         dispatchClick(luaPtr, id);
-        render();
+        syncDom();
       }
     });
   });
 }
 
-render();
+tickAndSync();
 EOF
 
 tar -C "$tmp_dir" -czf "$out_file" index.html loader.js rover_web_wasm.js rover_web_wasm.wasm
