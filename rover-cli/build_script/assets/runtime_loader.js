@@ -18,6 +18,10 @@ const tick = module.cwrap('rover_web_tick', 'number', ['number']);
 const nextWakeMs = module.cwrap('rover_web_next_wake_ms', 'number', ['number']);
 const pullHtml = module.cwrap('rover_web_pull_html', 'string', ['number']);
 const dispatchClick = module.cwrap('rover_web_dispatch_click', 'number', ['number', 'number']);
+const dispatchInput = module.cwrap('rover_web_dispatch_input', 'number', ['number', 'number', 'string']);
+const dispatchSubmit = module.cwrap('rover_web_dispatch_submit', 'number', ['number', 'number', 'string']);
+const dispatchToggle = module.cwrap('rover_web_dispatch_toggle', 'number', ['number', 'number', 'number']);
+const setViewport = module.cwrap('rover_web_set_viewport', 'number', ['number', 'number', 'number']);
 const lastError = module.cwrap('rover_web_last_error', 'string', ['number']);
 
 function describeStatus(status, phase) {
@@ -87,7 +91,13 @@ function syncDom() {
   if (app && html !== prevHtml) {
     app.innerHTML = html;
     prevHtml = html;
-    bindButtons();
+    bindInteractiveNodes();
+  }
+}
+
+function runStatus(status, phase) {
+  if (status !== 0) {
+    describeStatus(status, phase);
   }
 }
 
@@ -130,23 +140,59 @@ function scheduleNextFlush() {
 }
 
 function bindButtons() {
-  const buttons = document.querySelectorAll('[data-rid]');
-  buttons.forEach((btn) => {
-    if (btn.dataset.roverBound === '1') return;
-    btn.dataset.roverBound = '1';
-    btn.addEventListener('click', () => {
-      const id = Number(btn.getAttribute('data-rid'));
-      if (!Number.isNaN(id)) {
-        const clickStatus = dispatchClick(luaPtr, id);
-        if (clickStatus !== 0) {
-          describeStatus(clickStatus, 'click');
-        }
+  const nodes = document.querySelectorAll('[data-rid]');
+  nodes.forEach((node) => {
+    if (node.dataset.roverBound === '1') return;
+    node.dataset.roverBound = '1';
+
+    const id = Number(node.getAttribute('data-rid'));
+    if (Number.isNaN(id)) return;
+
+    if (node.tagName === 'BUTTON') {
+      node.addEventListener('click', () => {
+        runStatus(dispatchClick(luaPtr, id), 'click');
         syncDom();
         scheduleNextFlush();
-      }
-    });
+      });
+      return;
+    }
+
+    if (node.tagName === 'INPUT' && node.type === 'checkbox') {
+      node.addEventListener('change', () => {
+        runStatus(dispatchToggle(luaPtr, id, node.checked ? 1 : 0), 'toggle');
+        syncDom();
+        scheduleNextFlush();
+      });
+      return;
+    }
+
+    if (node.tagName === 'INPUT') {
+      node.addEventListener('input', () => {
+        runStatus(dispatchInput(luaPtr, id, node.value), 'input');
+        syncDom();
+        scheduleNextFlush();
+      });
+      node.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        runStatus(dispatchSubmit(luaPtr, id, node.value), 'submit');
+        syncDom();
+        scheduleNextFlush();
+      });
+    }
   });
 }
 
+function bindInteractiveNodes() {
+  bindButtons();
+}
+
+function syncViewport() {
+  runStatus(setViewport(luaPtr, window.innerWidth || 1, window.innerHeight || 1), 'viewport');
+  syncDom();
+  scheduleNextFlush();
+}
+
 tickAndSync();
+syncViewport();
+window.addEventListener('resize', syncViewport);
 scheduleNextFlush();

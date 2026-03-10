@@ -82,7 +82,7 @@ fn run_with_tui(file: PathBuf, args: Vec<String>) -> Result<()> {
 fn run_with_web(file: PathBuf, _args: Vec<String>) -> Result<()> {
     let web = prepare_web_root(&file)?;
 
-    println!("Starting rover web on http://127.0.0.1:4242");
+    println!("Starting rover web UI runtime on http://127.0.0.1:4242");
     println!("Assets: {}", web.root.display());
 
     serve_static(WebServerOptions {

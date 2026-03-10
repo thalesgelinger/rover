@@ -32,12 +32,6 @@ fn get_registry_rc(lua: &mlua::Lua) -> mlua::Result<Rc<RefCell<UiRegistry>>> {
         .map(|r| r.clone())
 }
 
-fn get_ui_user_value_table(lua: &mlua::Lua) -> mlua::Result<Table> {
-    let rover: Table = lua.globals().get("rover")?;
-    let ui_ud: AnyUserData = rover.get("ui")?;
-    ui_ud.user_value()
-}
-
 fn get_ui_theme_table(lua: &mlua::Lua) -> mlua::Result<Table> {
     lua.globals().get("_rover_ui_theme")
 }

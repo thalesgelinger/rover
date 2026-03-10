@@ -19,7 +19,7 @@ cargo build --release
 
 `cargo build --release` at repo root now defaults to `rover-cli` package.
 
-Build from source with embedded web runtime (requires `emcc` in `PATH`):
+Build from source with embedded web UI runtime (requires `emcc` in `PATH`):
 
 ```bash
 cargo build --release

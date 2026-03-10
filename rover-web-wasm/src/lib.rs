@@ -8,7 +8,7 @@ use rover_ui::platform::{
 use rover_ui::scheduler::{Scheduler, SharedScheduler};
 use rover_ui::signal::{SignalRuntime, SignalValue};
 use rover_ui::ui::lua_node::LuaNode;
-use rover_ui::ui::node::{NodeId, UiNode};
+use rover_ui::ui::node::{NodeId, TextContent, UiNode};
 use rover_ui::ui::registry::UiRegistry;
 use rover_ui::ui::renderer::Renderer;
 use rover_ui::ui::{NodeStyle, PositionType, StyleOp, StyleSize};
@@ -259,6 +259,7 @@ pub struct Runtime {
     signal_runtime: Rc<SignalRuntime>,
     registry: Rc<RefCell<UiRegistry>>,
     scheduler: SharedScheduler,
+    viewport: ViewportSignals,
     events: EventQueue,
     renderer: WebRenderer,
     running: bool,
@@ -295,6 +296,7 @@ impl Runtime {
             signal_runtime,
             registry,
             scheduler,
+            viewport: viewport_signals,
             events: EventQueue::new(),
             renderer: WebRenderer::new(),
             running: false,
@@ -340,10 +342,15 @@ impl Runtime {
         let render_fn: Option<mlua::Function> =
             rover_table.get("render").map_err(|e| e.to_string())?;
 
-        if let Some(render_fn) = render_fn {
-            let root_node: LuaNode = render_fn.call(()).map_err(|e| e.to_string())?;
-            self.registry.borrow_mut().set_root(root_node.id());
-        }
+        let Some(render_fn) = render_fn else {
+            return Err(
+                "web target needs `function rover.render()`; server/runtime modules not mounted in wasm yet"
+                    .to_string(),
+            );
+        };
+
+        let root_node: LuaNode = render_fn.call(()).map_err(|e| e.to_string())?;
+        self.registry.borrow_mut().set_root(root_node.id());
 
         self.renderer.mount(&self.registry.borrow());
         self.running = true;
@@ -359,23 +366,57 @@ impl Runtime {
         self.signal_runtime.begin_batch();
 
         for event in events {
-            match event {
-                UiEvent::Click { node_id } => {
-                    let on_click = {
-                        let reg = self.registry.borrow();
-                        match reg.get_node(node_id) {
-                            Some(UiNode::Button { on_click, .. }) => *on_click,
-                            _ => None,
-                        }
-                    };
+            let node_id = event.node_id();
 
-                    if let Some(effect_id) = on_click {
-                        self.signal_runtime
-                            .call_effect(&self.lua, effect_id, Value::Nil)
-                            .map_err(|e| e.to_string())?;
+            if let UiEvent::Change { value, .. } = &event {
+                let signal_id = {
+                    let registry = self.registry.borrow();
+                    match registry.get_node(node_id) {
+                        Some(UiNode::Input {
+                            value: text_content,
+                            ..
+                        }) => text_content.signal_id(),
+                        _ => None,
                     }
+                };
+
+                if let Some(signal_id) = signal_id {
+                    self.signal_runtime.set_signal(
+                        &self.lua,
+                        signal_id,
+                        SignalValue::String(value.clone().into()),
+                    );
                 }
-                _ => {}
+            }
+
+            let effect_id = {
+                let registry = self.registry.borrow();
+                let Some(node) = registry.get_node(node_id) else {
+                    continue;
+                };
+
+                match (&event, node) {
+                    (UiEvent::Click { .. }, UiNode::Button { on_click, .. }) => *on_click,
+                    (UiEvent::Change { .. }, UiNode::Input { on_change, .. }) => *on_change,
+                    (UiEvent::Submit { .. }, UiNode::Input { on_submit, .. }) => *on_submit,
+                    (UiEvent::Toggle { .. }, UiNode::Checkbox { on_toggle, .. }) => *on_toggle,
+                    _ => None,
+                }
+            };
+
+            if let Some(effect_id) = effect_id {
+                let args = match &event {
+                    UiEvent::Click { .. } => Value::Nil,
+                    UiEvent::Change { value, .. } | UiEvent::Submit { value, .. } => {
+                        Value::String(self.lua.create_string(value).map_err(|e| e.to_string())?)
+                    }
+                    UiEvent::Toggle { checked, .. } => Value::Boolean(*checked),
+                    UiEvent::Key { .. } => Value::Nil,
+                };
+
+                self.signal_runtime
+                    .call_effect(&self.lua, effect_id, args)
+                    .map_err(|e| e.to_string())?;
             }
         }
 
@@ -461,6 +502,65 @@ impl Runtime {
         self.events.push(UiEvent::Click {
             node_id: NodeId::from_u32(id as u32),
         });
+        self.flush_runtime()
+    }
+
+    fn dispatch_input(&mut self, id: i32, value: &str) -> Result<(), String> {
+        if id < 0 {
+            return Ok(());
+        }
+
+        self.events.push(UiEvent::Change {
+            node_id: NodeId::from_u32(id as u32),
+            value: value.to_string(),
+        });
+        self.flush_runtime()
+    }
+
+    fn dispatch_submit(&mut self, id: i32, value: &str) -> Result<(), String> {
+        if id < 0 {
+            return Ok(());
+        }
+
+        self.events.push(UiEvent::Submit {
+            node_id: NodeId::from_u32(id as u32),
+            value: value.to_string(),
+        });
+        self.flush_runtime()
+    }
+
+    fn dispatch_toggle(&mut self, id: i32, checked: bool) -> Result<(), String> {
+        if id < 0 {
+            return Ok(());
+        }
+
+        {
+            let mut registry = self.registry.borrow_mut();
+            if let Some(UiNode::Checkbox {
+                checked: current_checked,
+                ..
+            }) = registry.get_node_mut(NodeId::from_u32(id as u32))
+            {
+                *current_checked = checked;
+                registry.mark_dirty(NodeId::from_u32(id as u32));
+            }
+        }
+
+        self.events.push(UiEvent::Toggle {
+            node_id: NodeId::from_u32(id as u32),
+            checked,
+        });
+        self.flush_runtime()
+    }
+
+    fn set_viewport(&mut self, width: i32, height: i32) -> Result<(), String> {
+        let width = width.max(1) as i64;
+        let height = height.max(1) as i64;
+
+        self.signal_runtime
+            .set_signal(&self.lua, self.viewport.width, SignalValue::Int(width));
+        self.signal_runtime
+            .set_signal(&self.lua, self.viewport.height, SignalValue::Int(height));
         self.flush_runtime()
     }
 }
@@ -576,6 +676,98 @@ pub unsafe extern "C" fn rover_web_dispatch_click(runtime: *mut Runtime, id: i32
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rover_web_dispatch_input(
+    runtime: *mut Runtime,
+    id: i32,
+    value: *const c_char,
+) -> i32 {
+    if runtime.is_null() || value.is_null() {
+        return 1;
+    }
+
+    let runtime = unsafe { &mut *runtime };
+    runtime.clear_error();
+    let value = unsafe { CStr::from_ptr(value) };
+    let value = value.to_string_lossy();
+    match runtime.dispatch_input(id, value.as_ref()) {
+        Ok(_) => 0,
+        Err(err) => {
+            runtime.set_error(err.as_str());
+            eprintln!("{}", runtime.last_error.to_string_lossy());
+            2
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rover_web_dispatch_submit(
+    runtime: *mut Runtime,
+    id: i32,
+    value: *const c_char,
+) -> i32 {
+    if runtime.is_null() || value.is_null() {
+        return 1;
+    }
+
+    let runtime = unsafe { &mut *runtime };
+    runtime.clear_error();
+    let value = unsafe { CStr::from_ptr(value) };
+    let value = value.to_string_lossy();
+    match runtime.dispatch_submit(id, value.as_ref()) {
+        Ok(_) => 0,
+        Err(err) => {
+            runtime.set_error(err.as_str());
+            eprintln!("{}", runtime.last_error.to_string_lossy());
+            2
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rover_web_dispatch_toggle(
+    runtime: *mut Runtime,
+    id: i32,
+    checked: i32,
+) -> i32 {
+    if runtime.is_null() {
+        return 1;
+    }
+
+    let runtime = unsafe { &mut *runtime };
+    runtime.clear_error();
+    match runtime.dispatch_toggle(id, checked != 0) {
+        Ok(_) => 0,
+        Err(err) => {
+            runtime.set_error(err.as_str());
+            eprintln!("{}", runtime.last_error.to_string_lossy());
+            2
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rover_web_set_viewport(
+    runtime: *mut Runtime,
+    width: i32,
+    height: i32,
+) -> i32 {
+    if runtime.is_null() {
+        return 1;
+    }
+
+    let runtime = unsafe { &mut *runtime };
+    runtime.clear_error();
+    match runtime.set_viewport(width, height) {
+        Ok(_) => 0,
+        Err(err) => {
+            runtime.set_error(err.as_str());
+            eprintln!("{}", runtime.last_error.to_string_lossy());
+            2
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rover_web_last_error(runtime: *mut Runtime) -> *const c_char {
     if runtime.is_null() {
         return std::ptr::null();
@@ -588,7 +780,6 @@ pub unsafe extern "C" fn rover_web_last_error(runtime: *mut Runtime) -> *const c
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rover_ui::ui::node::TextContent;
 
     #[test]
     fn renders_modifier_styles_on_nodes() {
