@@ -5,8 +5,12 @@ use rover_db::run_pending_migrations;
 use rover_tui::{TuiRenderer, TuiRunner};
 use rover_ui::app::App;
 use rover_ui::ui::StubRenderer;
+use rover_web::{WebServerOptions, serve_static};
+use serde_json::json;
+use std::fs;
 use std::io::BufRead;
 use std::io::{self, Write};
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::build::{BuildOptions, run_build};
@@ -24,6 +28,7 @@ pub fn run_file(
         None => rover_core::run(file.to_str().unwrap(), &args, false),
         Some(Platform::Stub) => run_with_stub(file, args),
         Some(Platform::Tui) => run_with_tui(file, args),
+        Some(Platform::Web) => run_with_web(file, args),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
@@ -71,6 +76,115 @@ fn run_with_tui(file: PathBuf, args: Vec<String>) -> Result<()> {
     runner
         .run()
         .map_err(|e| anyhow::anyhow!("TUI error: {}", e))?;
+    Ok(())
+}
+
+fn run_with_web(file: PathBuf, _args: Vec<String>) -> Result<()> {
+    let web = prepare_web_root(&file)?;
+
+    println!("Starting rover web UI runtime on http://127.0.0.1:4242");
+    println!("Assets: {}", web.root.display());
+
+    serve_static(WebServerOptions {
+        root_dir: web.root,
+        source_root: web.source_root,
+        source_files: web.source_files,
+        host: "127.0.0.1".to_string(),
+        port: 4242,
+    })
+}
+
+struct PreparedWeb {
+    root: PathBuf,
+    source_root: PathBuf,
+    source_files: Vec<String>,
+}
+
+fn prepare_web_root(lua_file: &Path) -> Result<PreparedWeb> {
+    let root = PathBuf::from(".rover/web");
+    if root.exists() {
+        fs::remove_dir_all(&root)?;
+    }
+    fs::create_dir_all(&root)?;
+
+    extract_embedded_assets(&root)?;
+
+    let cwd = std::env::current_dir()?;
+    let entry_abs = if lua_file.is_absolute() {
+        lua_file.to_path_buf()
+    } else {
+        cwd.join(lua_file)
+    };
+
+    let source_root = cwd;
+
+    let mut files = Vec::new();
+    collect_lua_files(&source_root, &source_root, &mut files)?;
+
+    let entry_rel = entry_abs
+        .strip_prefix(&source_root)
+        .map_err(|e| anyhow::anyhow!("Failed to compute entry relative path: {}", e))?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    if !files.iter().any(|f| f == &entry_rel) {
+        files.push(entry_rel.clone());
+    }
+
+    files.sort();
+    files.dedup();
+
+    let manifest = json!({
+        "entry": entry_rel,
+        "files": files,
+        "source_prefix": "/__rover_src",
+    });
+    fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
+
+    Ok(PreparedWeb {
+        root,
+        source_root,
+        source_files: files,
+    })
+}
+
+fn collect_lua_files(base: &Path, current: &Path, files: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if matches!(name, ".git" | "target" | ".rover" | "node_modules") {
+                    continue;
+                }
+            }
+            collect_lua_files(base, &path, files)?;
+            continue;
+        }
+
+        if path.extension().and_then(|e| e.to_str()) != Some("lua") {
+            continue;
+        }
+
+        let rel = path
+            .strip_prefix(base)
+            .map_err(|e| anyhow::anyhow!("Failed to compute relative path: {}", e))?;
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+        files.push(rel_str);
+    }
+
+    Ok(())
+}
+
+fn extract_embedded_assets(dest: &Path) -> Result<()> {
+    static WEB_ASSETS_TAR_GZ: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/rover_web_assets.tar.gz"));
+
+    let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(WEB_ASSETS_TAR_GZ));
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(dest)?;
     Ok(())
 }
 

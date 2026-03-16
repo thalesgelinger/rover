@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
 use crate::table_pool::LuaTablePool;
-use crate::{response::RoverResponse, to_json::ToJson, Bytes, MiddlewareChain};
+use crate::{Bytes, MiddlewareChain, response::RoverResponse, to_json::ToJson};
 use rover_ui::SharedSignalRuntime;
 
 pub struct RequestContext {

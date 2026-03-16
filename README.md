@@ -17,6 +17,15 @@ cargo build --release
 ./target/release/rover run path/to/app.lua
 ```
 
+`cargo build --release` at repo root now defaults to `rover-cli` package.
+
+Build from source with embedded web UI runtime (requires `emcc` in `PATH`):
+
+```bash
+cargo build --release
+./target/release/rover run path/to/app.lua -p web
+```
+
 ## Your First Rover App
 
 Create a simple API server:

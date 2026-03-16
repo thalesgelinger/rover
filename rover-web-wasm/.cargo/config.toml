@@ -1,0 +1,2 @@
+[target.wasm32-unknown-emscripten]
+linker = "scripts/emcc-linker.sh"
