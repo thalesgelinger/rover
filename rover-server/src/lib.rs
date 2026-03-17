@@ -168,8 +168,10 @@ pub struct ServerConfig {
     pub cors_headers: String,
     pub cors_credentials: bool,
     pub security_headers: bool,
+    pub https_redirect: bool,
     pub strict_mode: bool,
     pub allow_public_bind: bool,
+    pub allow_insecure_http: bool,
     pub allow_wildcard_cors_credentials: bool,
     pub allow_unbounded_body: bool,
     pub allow_insecure_security_header_overrides: bool,
@@ -216,6 +218,18 @@ impl ServerConfig {
                 "strict_mode blocks host '{}'. Use localhost/127.0.0.1, or set allow_public_bind = true",
                 self.host
             ));
+        }
+
+        if self.host != "localhost"
+            && self.host != "127.0.0.1"
+            && self.allow_public_bind
+            && !self.https_redirect
+            && !self.allow_insecure_http
+        {
+            errors.push(
+                "strict_mode requires https_redirect=true for public bind. Set https_redirect = true, or set allow_insecure_http = true"
+                    .to_string(),
+            );
         }
 
         if self.body_size_limit.is_none() && !self.allow_unbounded_body {
@@ -286,6 +300,12 @@ impl FromLua for ServerConfig {
                     _ => Err(anyhow!("allow_public_bind should be a boolean"))?,
                 };
 
+                let allow_insecure_http = match config.get::<Value>("allow_insecure_http")? {
+                    Value::Nil => false,
+                    Value::Boolean(b) => b,
+                    _ => Err(anyhow!("allow_insecure_http should be a boolean"))?,
+                };
+
                 let allow_wildcard_cors_credentials =
                     match config.get::<Value>("allow_wildcard_cors_credentials")? {
                         Value::Nil => false,
@@ -344,6 +364,12 @@ impl FromLua for ServerConfig {
                     _ => Err(anyhow!("security_headers should be a boolean"))?,
                 };
 
+                let https_redirect = match config.get::<Value>("https_redirect")? {
+                    Value::Nil => false,
+                    Value::Boolean(b) => b,
+                    _ => Err(anyhow!("https_redirect should be a boolean"))?,
+                };
+
                 let allow_insecure_security_header_overrides =
                     match config.get::<Value>("allow_insecure_security_header_overrides")? {
                         Value::Nil => false,
@@ -387,8 +413,10 @@ impl FromLua for ServerConfig {
                     cors_headers,
                     cors_credentials,
                     security_headers,
+                    https_redirect,
                     strict_mode,
                     allow_public_bind,
+                    allow_insecure_http,
                     allow_wildcard_cors_credentials,
                     allow_unbounded_body,
                     allow_insecure_security_header_overrides,
@@ -520,8 +548,10 @@ mod tests {
         assert_eq!(config.docs, false);
         assert_eq!(config.body_size_limit, Some(DEFAULT_BODY_SIZE_LIMIT));
         assert!(config.security_headers);
+        assert!(!config.https_redirect);
         assert_eq!(config.management_prefix, "/_rover");
         assert!(config.management_token.is_none());
+        assert!(!config.allow_insecure_http);
         assert!(!config.allow_unauthenticated_management);
     }
 
@@ -535,8 +565,29 @@ mod tests {
 
     #[test]
     fn should_allow_public_bind_with_explicit_opt_out() {
-        let config = config_from_lua("{ host = '0.0.0.0', allow_public_bind = true }");
+        let config = config_from_lua(
+            "{ host = '0.0.0.0', allow_public_bind = true, https_redirect = true }",
+        );
         assert_eq!(config.host, "0.0.0.0");
+    }
+
+    #[test]
+    fn should_reject_public_bind_without_https_redirect_in_strict_mode() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ host = '0.0.0.0', allow_public_bind = true }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(err.to_string().contains("https_redirect = true"));
+    }
+
+    #[test]
+    fn should_allow_public_bind_without_https_redirect_when_explicitly_opted_out() {
+        let config = config_from_lua(
+            "{ host = '0.0.0.0', allow_public_bind = true, allow_insecure_http = true }",
+        );
+        assert!(config.allow_insecure_http);
     }
 
     #[test]
@@ -614,8 +665,10 @@ mod tests {
             cors_headers: "Content-Type".to_string(),
             cors_credentials: true,
             security_headers: false,
+            https_redirect: false,
             strict_mode: true,
             allow_public_bind: false,
+            allow_insecure_http: false,
             allow_wildcard_cors_credentials: false,
             allow_unbounded_body: false,
             allow_insecure_security_header_overrides: false,

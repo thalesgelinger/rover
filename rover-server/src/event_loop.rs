@@ -91,8 +91,10 @@ mod tests {
             cors_headers: "Content-Type".to_string(),
             cors_credentials: false,
             security_headers: true,
+            https_redirect: false,
             strict_mode: true,
             allow_public_bind: false,
+            allow_insecure_http: false,
             allow_wildcard_cors_credentials: false,
             allow_unbounded_body: false,
             allow_insecure_security_header_overrides: false,
@@ -210,6 +212,37 @@ mod tests {
             &config, None, None
         ));
     }
+
+    #[test]
+    fn should_detect_https_from_x_forwarded_proto() {
+        assert!(EventLoop::is_https_request(None, Some("https")));
+        assert!(EventLoop::is_https_request(None, Some("https,http")));
+        assert!(!EventLoop::is_https_request(None, Some("http")));
+    }
+
+    #[test]
+    fn should_detect_https_from_forwarded_header() {
+        assert!(EventLoop::is_https_request(
+            Some("for=1.2.3.4;proto=https"),
+            None
+        ));
+        assert!(EventLoop::is_https_request(
+            Some("for=1.2.3.4;by=10.0.0.1;proto=\"https\""),
+            None
+        ));
+        assert!(!EventLoop::is_https_request(
+            Some("for=1.2.3.4;proto=http"),
+            None
+        ));
+    }
+
+    #[test]
+    fn should_build_https_redirect_location() {
+        let config = base_config();
+        let location =
+            EventLoop::https_redirect_location(Some("api.example.com"), "/v1/health", &config);
+        assert_eq!(location, "https://api.example.com/v1/health");
+    }
 }
 
 pub struct EventLoop {
@@ -315,6 +348,61 @@ impl EventLoop {
         }
 
         false
+    }
+
+    fn is_https_request(
+        forwarded_header: Option<&str>,
+        x_forwarded_proto_header: Option<&str>,
+    ) -> bool {
+        if let Some(value) = x_forwarded_proto_header {
+            if value
+                .split(',')
+                .next()
+                .map(str::trim)
+                .is_some_and(|v| v.eq_ignore_ascii_case("https"))
+            {
+                return true;
+            }
+        }
+
+        if let Some(value) = forwarded_header {
+            for entry in value.split(',') {
+                for field in entry.split(';') {
+                    let Some((name, raw_value)) = field.split_once('=') else {
+                        continue;
+                    };
+
+                    if !name.trim().eq_ignore_ascii_case("proto") {
+                        continue;
+                    }
+
+                    let proto = raw_value.trim().trim_matches('"');
+                    return proto.eq_ignore_ascii_case("https");
+                }
+            }
+        }
+
+        false
+    }
+
+    fn https_redirect_location(
+        host_header: Option<&str>,
+        full_path: &str,
+        config: &ServerConfig,
+    ) -> String {
+        let host = host_header
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if config.port == 443 {
+                    config.host.clone()
+                } else {
+                    format!("{}:{}", config.host, config.port)
+                }
+            });
+
+        format!("https://{}{}", host, full_path)
     }
 
     fn find_header_key_ci<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
@@ -710,6 +798,44 @@ impl EventLoop {
             let path_owned = path.to_string();
             drop(conns);
             return self.handle_ws_upgrade(conn_idx, &path_owned, keep_alive);
+        }
+
+        if self.config.https_redirect {
+            let forwarded = Self::get_header_value(buf_ref, &conn.header_offsets, "forwarded");
+            let x_forwarded_proto =
+                Self::get_header_value(buf_ref, &conn.header_offsets, "x-forwarded-proto");
+            let is_https =
+                Self::is_https_request(forwarded.as_deref(), x_forwarded_proto.as_deref());
+
+            if !is_https {
+                let host = Self::get_header_value(buf_ref, &conn.header_offsets, "host");
+                let location =
+                    Self::https_redirect_location(host.as_deref(), full_path, &self.config);
+
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+
+                let mut headers = HashMap::new();
+                headers.insert("Location".to_string(), location);
+                headers.insert(
+                    "Vary".to_string(),
+                    "Forwarded, X-Forwarded-Proto".to_string(),
+                );
+
+                let buf = self.buffer_pool.get_response_buf();
+                self.set_http_response(
+                    conn,
+                    308,
+                    Bytes::from_static(b"HTTPS required"),
+                    Some("text/plain"),
+                    headers,
+                    buf,
+                );
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
         }
 
         // ── Regular HTTP path ──
