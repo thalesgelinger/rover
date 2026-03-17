@@ -173,6 +173,51 @@ pub struct ServerConfig {
     pub allow_unbounded_body: bool,
 }
 
+impl ServerConfig {
+    fn startup_validation_errors(&self) -> Vec<String> {
+        if !self.strict_mode {
+            return Vec::new();
+        }
+
+        let mut errors = Vec::new();
+
+        if self.host != "localhost" && self.host != "127.0.0.1" && !self.allow_public_bind {
+            errors.push(format!(
+                "strict_mode blocks host '{}'. Use localhost/127.0.0.1, or set allow_public_bind = true",
+                self.host
+            ));
+        }
+
+        if self.body_size_limit.is_none() && !self.allow_unbounded_body {
+            errors.push(
+                "strict_mode requires body_size_limit. Set a positive limit, or set allow_unbounded_body = true"
+                    .to_string(),
+            );
+        }
+
+        if self.cors_credentials
+            && matches!(self.cors_origin.as_deref(), Some("*"))
+            && !self.allow_wildcard_cors_credentials
+        {
+            errors.push(
+                "strict_mode blocks cors_origin='*' with cors_credentials=true. Set a specific origin, or set allow_wildcard_cors_credentials = true"
+                    .to_string(),
+            );
+        }
+
+        errors
+    }
+
+    fn validate_startup(&self) -> anyhow::Result<()> {
+        let errors = self.startup_validation_errors();
+        if errors.is_empty() {
+            return Ok(());
+        }
+
+        Err(anyhow!(errors.join("\n")))
+    }
+}
+
 impl FromLua for ServerConfig {
     fn from_lua(value: Value, _lua: &Lua) -> mlua::Result<Self> {
         match value {
@@ -256,29 +301,7 @@ impl FromLua for ServerConfig {
                     _ => false,
                 };
 
-                if strict_mode {
-                    if host != "localhost" && host != "127.0.0.1" && !allow_public_bind {
-                        Err(anyhow!(
-                            "strict_mode blocks host '{}'. Use localhost/127.0.0.1, or set allow_public_bind = true",
-                            host
-                        ))?;
-                    }
-                    if body_size_limit.is_none() && !allow_unbounded_body {
-                        Err(anyhow!(
-                            "strict_mode requires body_size_limit. Set a positive limit, or set allow_unbounded_body = true"
-                        ))?;
-                    }
-                    if cors_credentials
-                        && matches!(cors_origin.as_deref(), Some("*"))
-                        && !allow_wildcard_cors_credentials
-                    {
-                        Err(anyhow!(
-                            "strict_mode blocks cors_origin='*' with cors_credentials=true. Set a specific origin, or set allow_wildcard_cors_credentials = true"
-                        ))?;
-                    }
-                }
-
-                Ok(ServerConfig {
+                let parsed = ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host,
                     log_level,
@@ -292,7 +315,10 @@ impl FromLua for ServerConfig {
                     allow_public_bind,
                     allow_wildcard_cors_credentials,
                     allow_unbounded_body,
-                })
+                };
+
+                parsed.validate_startup().map_err(mlua::Error::external)?;
+                Ok(parsed)
             }
             _ => Err(anyhow!("Server config must be a table"))?,
         }
@@ -305,6 +331,15 @@ pub fn run(
     config: ServerConfig,
     openapi_spec: Option<serde_json::Value>,
 ) {
+    if let Err(err) = config.validate_startup() {
+        eprintln!("\n❌ Invalid server startup config:");
+        for line in err.to_string().lines() {
+            eprintln!("   - {}", line);
+        }
+        eprintln!();
+        std::process::exit(1);
+    }
+
     let error_handler = routes.error_handler.clone();
     if config.log_level != "nope" {
         tracing_subscriber::fmt()
@@ -454,5 +489,30 @@ mod tests {
         );
         assert_eq!(config.cors_origin.as_deref(), Some("*"));
         assert!(config.cors_credentials);
+    }
+
+    #[test]
+    fn should_report_all_strict_mode_startup_violations() {
+        let config = ServerConfig {
+            port: 4242,
+            host: "0.0.0.0".to_string(),
+            log_level: "info".to_string(),
+            docs: false,
+            body_size_limit: None,
+            cors_origin: Some("*".to_string()),
+            cors_methods: "GET".to_string(),
+            cors_headers: "Content-Type".to_string(),
+            cors_credentials: true,
+            strict_mode: true,
+            allow_public_bind: false,
+            allow_wildcard_cors_credentials: false,
+            allow_unbounded_body: false,
+        };
+
+        let err = config.validate_startup().expect_err("must reject config");
+        let text = err.to_string();
+        assert!(text.contains("allow_public_bind = true"));
+        assert!(text.contains("allow_unbounded_body = true"));
+        assert!(text.contains("allow_wildcard_cors_credentials = true"));
     }
 }
