@@ -46,11 +46,15 @@ pub fn serve_static(options: WebServerOptions) -> Result<()> {
         host: options.host,
         log_level: "info".to_string(),
         docs: false,
-        body_size_limit: None,
+        body_size_limit: Some(1024 * 1024),
         cors_origin: None,
         cors_methods: "GET, HEAD".to_string(),
         cors_headers: "Content-Type".to_string(),
         cors_credentials: false,
+        strict_mode: true,
+        allow_public_bind: false,
+        allow_wildcard_cors_credentials: false,
+        allow_unbounded_body: false,
     };
 
     rover_server::run(lua, route_table, config, None);

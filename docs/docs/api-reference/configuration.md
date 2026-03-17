@@ -15,7 +15,11 @@ local api = rover.server {
     host = "127.0.0.1",       -- default: "localhost"
     port = 3000,              -- default: 4242
     log_level = "debug",     -- default: "debug" ("debug" | "info" | "warn" | "error" | "nope")
-    docs = true,              -- default: true (enable OpenAPI docs)
+    docs = false,             -- default: false (enable OpenAPI docs)
+    strict_mode = true,       -- default: true
+    allow_public_bind = false,
+    allow_wildcard_cors_credentials = false,
+    allow_unbounded_body = false,
     cors_origin = "*",       -- optional
     cors_methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
     cors_headers = "Content-Type, Authorization",
@@ -78,8 +82,32 @@ rover.server {
 ### `docs`
 
 - **Type**: `boolean`
-- **Default**: `true`
+- **Default**: `false`
 - **Description**: Enable OpenAPI docs at `/docs`
+
+### `strict_mode`
+
+- **Type**: `boolean`
+- **Default**: `true`
+- **Description**: Enforce strict secure startup checks
+
+### `allow_public_bind`
+
+- **Type**: `boolean`
+- **Default**: `false`
+- **Description**: Opt out of strict host binding checks and allow non-loopback host values
+
+### `allow_wildcard_cors_credentials`
+
+- **Type**: `boolean`
+- **Default**: `false`
+- **Description**: Opt out of strict CORS checks and allow `cors_origin = "*"` with `cors_credentials = true`
+
+### `allow_unbounded_body`
+
+- **Type**: `boolean`
+- **Default**: `false`
+- **Description**: Opt out of strict body-size checks and allow `body_size_limit = 0`
 
 Example:
 
@@ -120,6 +148,7 @@ local api = rover.server {
     host = "0.0.0.0",
     port = 8080,
     log_level = "info",
+    allow_public_bind = true,
     docs = true
 }
 
