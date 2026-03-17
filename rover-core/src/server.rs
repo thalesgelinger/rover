@@ -9,7 +9,6 @@ use rover_server::{
 use rover_types::ValidationErrors;
 use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::html::{get_rover_html, render_template_with_components};
@@ -402,9 +401,6 @@ impl Server for Table {
     }
 
     fn get_routes(&self, lua: &Lua) -> Result<RouteTable> {
-        // Collect global middlewares first
-        let global_middlewares = crate::middleware::collect_global_middlewares(lua, self)?;
-
         fn extract_recursive(
             lua: &Lua,
             table: &Table,
@@ -412,8 +408,14 @@ impl Server for Table {
             param_names: &mut Vec<String>,
             routes: &mut Vec<Route>,
             ws_routes: &mut Vec<WsRoute>,
-            global_middlewares: &crate::middleware::MiddlewareChain,
+            inherited_middlewares: &crate::middleware::MiddlewareChain,
         ) -> Result<()> {
+            let local_middlewares = crate::middleware::extract_middlewares(lua, table)?;
+            let scope_middlewares = crate::middleware::merge_middleware_chains(
+                inherited_middlewares,
+                &local_middlewares,
+            );
+
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
 
@@ -467,18 +469,11 @@ impl Server for Table {
                             )
                         })?;
 
-                        // Extract route-specific middlewares and merge with global
-                        let route_middlewares = crate::middleware::extract_middlewares(lua, table)?;
-                        let merged_middlewares = crate::middleware::merge_middleware_chains(
-                            global_middlewares,
-                            &route_middlewares,
-                        );
-
                         // Create wrapped handler that executes middleware chain
-                        let wrapped_handler = if merged_middlewares.is_empty() {
+                        let wrapped_handler = if scope_middlewares.is_empty() {
                             func.clone()
                         } else {
-                            create_middleware_wrapper(lua, &func, &merged_middlewares)?
+                            create_middleware_wrapper(lua, &func, &scope_middlewares)?
                         };
 
                         let route = Route {
@@ -531,7 +526,7 @@ impl Server for Table {
                             param_names,
                             routes,
                             ws_routes,
-                            global_middlewares,
+                            &scope_middlewares,
                         )?;
 
                         // Remove param name after recursion
@@ -679,6 +674,7 @@ impl Server for Table {
         let mut routes = Vec::new();
         let mut ws_routes = Vec::new();
         let mut param_names = Vec::new();
+        let root_middlewares = MiddlewareChain::default();
         extract_recursive(
             lua,
             self,
@@ -686,7 +682,7 @@ impl Server for Table {
             &mut param_names,
             &mut routes,
             &mut ws_routes,
-            &global_middlewares,
+            &root_middlewares,
         )?;
 
         // Sort routes: static routes first (for exact-match priority)
@@ -708,5 +704,129 @@ impl Server for Table {
             ws_routes,
             error_handler,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppServer, Server};
+    use mlua::{Lua, Table, Value};
+    use rover_server::{HttpMethod, RoverResponse};
+
+    fn create_ctx(lua: &Lua, headers: &[(&str, &str)]) -> mlua::Result<Table> {
+        let ctx = lua.create_table()?;
+        let state = lua.create_table()?;
+        let headers_table = lua.create_table()?;
+
+        for (k, v) in headers {
+            headers_table.set(*k, *v)?;
+        }
+
+        let headers_clone = headers_table.clone();
+        ctx.set(
+            "headers",
+            lua.create_function(move |_lua, _self: Table| Ok(headers_clone.clone()))?,
+        )?;
+
+        let state_set = state.clone();
+        ctx.set(
+            "set",
+            lua.create_function(move |_lua, (_self, key, value): (Table, String, Value)| {
+                state_set.set(key, value)?;
+                Ok(())
+            })?,
+        )?;
+
+        let state_get = state.clone();
+        ctx.set(
+            "get",
+            lua.create_function(move |_lua, (_self, key): (Table, String)| {
+                state_get.get::<Value>(key)
+            })?,
+        )?;
+
+        Ok(ctx)
+    }
+
+    fn parse_response(value: Value) -> (u16, String) {
+        let response_ud = value
+            .as_userdata()
+            .expect("middleware wrapper must return RoverResponse userdata");
+        let response = response_ud
+            .borrow::<RoverResponse>()
+            .expect("response userdata must be RoverResponse");
+        let body = std::str::from_utf8(&response.body)
+            .expect("response body must be utf-8")
+            .to_string();
+        (response.status, body)
+    }
+
+    #[test]
+    fn should_apply_group_middlewares_to_nested_routes() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            function api.before.global(ctx)
+              ctx:set("request_scope", "global")
+            end
+
+            function api.admin.before.authn(ctx)
+              if not ctx:headers().Authorization then
+                return api:error(401, "Unauthorized: missing Authorization header")
+              end
+              ctx:set("role", "admin")
+            end
+
+            function api.admin.users.get(ctx)
+              return api.json {
+                scope = ctx:get("request_scope"),
+                role = ctx:get("role"),
+              }
+            end
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/admin/users")
+            })
+            .expect("route /admin/users must exist");
+
+        let missing_auth_ctx = create_ctx(&lua, &[]).expect("create ctx without auth");
+        let deny = route
+            .handler
+            .call::<Value>(missing_auth_ctx)
+            .expect("call route without auth");
+        let (deny_status, deny_body) = parse_response(deny);
+        assert_eq!(deny_status, 401);
+        assert!(deny_body.contains("Unauthorized: missing Authorization header"));
+
+        let allowed_ctx =
+            create_ctx(&lua, &[("Authorization", "Bearer test")]).expect("create ctx with auth");
+        let ok = route
+            .handler
+            .call::<Value>(allowed_ctx)
+            .expect("call route with auth");
+        let (ok_status, ok_body) = parse_response(ok);
+        assert_eq!(ok_status, 200);
+        assert!(ok_body.contains("\"scope\":\"global\""));
+        assert!(ok_body.contains("\"role\":\"admin\""));
     }
 }

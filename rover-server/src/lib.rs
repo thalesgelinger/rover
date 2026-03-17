@@ -167,13 +167,43 @@ pub struct ServerConfig {
     pub cors_methods: String,
     pub cors_headers: String,
     pub cors_credentials: bool,
+    pub security_headers: bool,
     pub strict_mode: bool,
     pub allow_public_bind: bool,
     pub allow_wildcard_cors_credentials: bool,
     pub allow_unbounded_body: bool,
+    pub allow_insecure_security_header_overrides: bool,
+    pub management_prefix: String,
+    pub management_token: Option<String>,
+    pub allow_unauthenticated_management: bool,
 }
 
 impl ServerConfig {
+    pub fn management_docs_path(&self) -> String {
+        format!("{}/docs", self.management_prefix)
+    }
+
+    fn parse_management_prefix(config: &mlua::Table) -> mlua::Result<String> {
+        let value = config.get::<Value>("management_prefix")?;
+        let prefix = match value {
+            Value::Nil => "/_rover".to_string(),
+            Value::String(s) => s.to_str()?.trim().to_string(),
+            _ => Err(anyhow!("management_prefix should be a string"))?,
+        };
+
+        if !prefix.starts_with('/') {
+            return Err(anyhow!("management_prefix must start with '/'"))?;
+        }
+
+        if prefix == "/" {
+            return Err(anyhow!(
+                "management_prefix cannot be '/'; use an isolated namespace like '/_rover'"
+            ))?;
+        }
+
+        Ok(prefix.trim_end_matches('/').to_string())
+    }
+
     fn startup_validation_errors(&self) -> Vec<String> {
         if !self.strict_mode {
             return Vec::new();
@@ -201,6 +231,13 @@ impl ServerConfig {
         {
             errors.push(
                 "strict_mode blocks cors_origin='*' with cors_credentials=true. Set a specific origin, or set allow_wildcard_cors_credentials = true"
+                    .to_string(),
+            );
+        }
+
+        if !self.security_headers && !self.allow_insecure_security_header_overrides {
+            errors.push(
+                "strict_mode requires security_headers=true. Set security_headers = true, or set allow_insecure_security_header_overrides = true"
                     .to_string(),
             );
         }
@@ -301,6 +338,44 @@ impl FromLua for ServerConfig {
                     _ => false,
                 };
 
+                let security_headers = match config.get::<Value>("security_headers")? {
+                    Value::Nil => true,
+                    Value::Boolean(b) => b,
+                    _ => Err(anyhow!("security_headers should be a boolean"))?,
+                };
+
+                let allow_insecure_security_header_overrides =
+                    match config.get::<Value>("allow_insecure_security_header_overrides")? {
+                        Value::Nil => false,
+                        Value::Boolean(b) => b,
+                        _ => Err(anyhow!(
+                            "allow_insecure_security_header_overrides should be a boolean"
+                        ))?,
+                    };
+
+                let management_prefix = Self::parse_management_prefix(&config)?;
+
+                let management_token = match config.get::<Value>("management_token")? {
+                    Value::Nil => None,
+                    Value::String(s) => {
+                        let token = s.to_str()?.trim().to_string();
+                        if token.is_empty() {
+                            Err(anyhow!("management_token cannot be empty"))?
+                        }
+                        Some(token)
+                    }
+                    _ => Err(anyhow!("management_token should be a string"))?,
+                };
+
+                let allow_unauthenticated_management =
+                    match config.get::<Value>("allow_unauthenticated_management")? {
+                        Value::Nil => false,
+                        Value::Boolean(b) => b,
+                        _ => Err(anyhow!(
+                            "allow_unauthenticated_management should be a boolean"
+                        ))?,
+                    };
+
                 let parsed = ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host,
@@ -311,10 +386,15 @@ impl FromLua for ServerConfig {
                     cors_methods,
                     cors_headers,
                     cors_credentials,
+                    security_headers,
                     strict_mode,
                     allow_public_bind,
                     allow_wildcard_cors_credentials,
                     allow_unbounded_body,
+                    allow_insecure_security_header_overrides,
+                    management_prefix,
+                    management_token,
+                    allow_unauthenticated_management,
                 };
 
                 parsed.validate_startup().map_err(mlua::Error::external)?;
@@ -359,7 +439,11 @@ pub fn run(
     if config.log_level != "nope" {
         info!("🚀 Rover server running at http://{}", addr);
         if config.docs && openapi_spec.is_some() {
-            info!("📚 API docs available at http://{}/docs", addr);
+            info!(
+                "📚 API docs available at http://{}{}",
+                addr,
+                config.management_docs_path()
+            );
         }
         if config.log_level == "debug" {
             info!("🐛 Debug mode enabled");
@@ -435,6 +519,10 @@ mod tests {
         assert_eq!(config.strict_mode, true);
         assert_eq!(config.docs, false);
         assert_eq!(config.body_size_limit, Some(DEFAULT_BODY_SIZE_LIMIT));
+        assert!(config.security_headers);
+        assert_eq!(config.management_prefix, "/_rover");
+        assert!(config.management_token.is_none());
+        assert!(!config.allow_unauthenticated_management);
     }
 
     #[test]
@@ -466,6 +554,28 @@ mod tests {
     fn should_allow_unbounded_body_with_explicit_opt_out() {
         let config = config_from_lua("{ body_size_limit = 0, allow_unbounded_body = true }");
         assert_eq!(config.body_size_limit, None);
+    }
+
+    #[test]
+    fn should_reject_disabling_security_headers_in_strict_mode() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ security_headers = false }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(
+            err.to_string()
+                .contains("allow_insecure_security_header_overrides = true")
+        );
+    }
+
+    #[test]
+    fn should_allow_disabling_security_headers_with_explicit_opt_out() {
+        let config = config_from_lua(
+            "{ security_headers = false, allow_insecure_security_header_overrides = true }",
+        );
+        assert!(!config.security_headers);
     }
 
     #[test]
@@ -503,10 +613,15 @@ mod tests {
             cors_methods: "GET".to_string(),
             cors_headers: "Content-Type".to_string(),
             cors_credentials: true,
+            security_headers: false,
             strict_mode: true,
             allow_public_bind: false,
             allow_wildcard_cors_credentials: false,
             allow_unbounded_body: false,
+            allow_insecure_security_header_overrides: false,
+            management_prefix: "/_rover".to_string(),
+            management_token: None,
+            allow_unauthenticated_management: false,
         };
 
         let err = config.validate_startup().expect_err("must reject config");
@@ -514,5 +629,28 @@ mod tests {
         assert!(text.contains("allow_public_bind = true"));
         assert!(text.contains("allow_unbounded_body = true"));
         assert!(text.contains("allow_wildcard_cors_credentials = true"));
+        assert!(text.contains("allow_insecure_security_header_overrides = true"));
+    }
+
+    #[test]
+    fn should_parse_management_config() {
+        let config = config_from_lua(
+            "{ management_prefix = '/ops', management_token = 'abc123', allow_unauthenticated_management = true }",
+        );
+        assert_eq!(config.management_prefix, "/ops");
+        assert_eq!(config.management_docs_path(), "/ops/docs");
+        assert_eq!(config.management_token.as_deref(), Some("abc123"));
+        assert!(config.allow_unauthenticated_management);
+    }
+
+    #[test]
+    fn should_reject_non_isolated_management_prefix() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ management_prefix = '/' }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(err.to_string().contains("management_prefix cannot be '/'"));
     }
 }

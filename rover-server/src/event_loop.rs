@@ -32,6 +32,11 @@ use crate::{Bytes, HttpMethod, Route, ServerConfig, WsRoute};
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
+const DEFAULT_SECURITY_HEADERS: [(&str, &str); 3] = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+];
 
 struct PendingCoroutine {
     thread: Thread,
@@ -41,7 +46,9 @@ struct PendingCoroutine {
 
 #[cfg(test)]
 mod tests {
-    use super::EventLoop;
+    use std::collections::HashMap;
+
+    use super::{EventLoop, ServerConfig};
 
     #[test]
     fn should_accept_wildcard_accept_header() {
@@ -71,6 +78,138 @@ mod tests {
             "application/json"
         ));
     }
+
+    fn base_config() -> ServerConfig {
+        ServerConfig {
+            port: 4242,
+            host: "localhost".to_string(),
+            log_level: "nope".to_string(),
+            docs: false,
+            body_size_limit: Some(1024),
+            cors_origin: None,
+            cors_methods: "GET".to_string(),
+            cors_headers: "Content-Type".to_string(),
+            cors_credentials: false,
+            security_headers: true,
+            strict_mode: true,
+            allow_public_bind: false,
+            allow_wildcard_cors_credentials: false,
+            allow_unbounded_body: false,
+            allow_insecure_security_header_overrides: false,
+            management_prefix: "/_rover".to_string(),
+            management_token: None,
+            allow_unauthenticated_management: false,
+        }
+    }
+
+    #[test]
+    fn should_apply_security_header_defaults() {
+        let mut headers = HashMap::new();
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("X-Content-Type-Options").map(String::as_str),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers.get("X-Frame-Options").map(String::as_str),
+            Some("DENY")
+        );
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("strict-origin-when-cross-origin")
+        );
+    }
+
+    #[test]
+    fn should_keep_safe_security_header_overrides() {
+        let mut headers = HashMap::new();
+        headers.insert("x-frame-options".to_string(), "SAMEORIGIN".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("x-frame-options").map(String::as_str),
+            Some("SAMEORIGIN")
+        );
+    }
+
+    #[test]
+    fn should_replace_unsafe_security_header_overrides_by_default() {
+        let mut headers = HashMap::new();
+        headers.insert("Referrer-Policy".to_string(), "unsafe-url".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("strict-origin-when-cross-origin")
+        );
+    }
+
+    #[test]
+    fn should_allow_unsafe_security_header_overrides_with_explicit_opt_out() {
+        let mut headers = HashMap::new();
+        headers.insert("Referrer-Policy".to_string(), "unsafe-url".to_string());
+
+        let mut config = base_config();
+        config.allow_insecure_security_header_overrides = true;
+        EventLoop::apply_default_security_headers(&config, &mut headers);
+
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("unsafe-url")
+        );
+    }
+
+    #[test]
+    fn should_parse_bearer_management_token() {
+        let token = EventLoop::bearer_token("Bearer secret-token");
+        assert_eq!(token, Some("secret-token"));
+    }
+
+    #[test]
+    fn should_not_parse_invalid_bearer_management_token() {
+        assert!(EventLoop::bearer_token("Basic abc").is_none());
+        assert!(EventLoop::bearer_token("Bearer ").is_none());
+    }
+
+    #[test]
+    fn should_require_management_auth_by_default() {
+        let config = base_config();
+        assert!(!EventLoop::is_management_request_authorized(
+            &config,
+            None,
+            Some("anything")
+        ));
+    }
+
+    #[test]
+    fn should_authorize_management_with_configured_token() {
+        let mut config = base_config();
+        config.management_token = Some("secret-token".to_string());
+
+        assert!(EventLoop::is_management_request_authorized(
+            &config,
+            Some("Bearer secret-token"),
+            None
+        ));
+
+        assert!(EventLoop::is_management_request_authorized(
+            &config,
+            None,
+            Some("secret-token")
+        ));
+    }
+
+    #[test]
+    fn should_allow_unauthenticated_management_when_opted_out() {
+        let mut config = base_config();
+        config.allow_unauthenticated_management = true;
+        assert!(EventLoop::is_management_request_authorized(
+            &config, None, None
+        ));
+    }
 }
 
 pub struct EventLoop {
@@ -92,6 +231,44 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
+    fn bearer_token(value: &str) -> Option<&str> {
+        let (scheme, token) = value.trim().split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("bearer") {
+            return None;
+        }
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        Some(token)
+    }
+
+    fn is_management_request_authorized(
+        config: &ServerConfig,
+        authorization_header: Option<&str>,
+        management_token_header: Option<&str>,
+    ) -> bool {
+        if config.allow_unauthenticated_management {
+            return true;
+        }
+
+        let expected = match config.management_token.as_deref() {
+            Some(token) => token,
+            None => return false,
+        };
+
+        if management_token_header
+            .map(str::trim)
+            .is_some_and(|provided| provided == expected)
+        {
+            return true;
+        }
+
+        authorization_header
+            .and_then(Self::bearer_token)
+            .is_some_and(|provided| provided == expected)
+    }
+
     fn get_header_value(
         buf: &[u8],
         headers: &[(usize, usize, usize, usize)],
@@ -138,6 +315,75 @@ impl EventLoop {
         }
 
         false
+    }
+
+    fn find_header_key_ci<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+        headers
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(name))
+            .map(String::as_str)
+    }
+
+    fn is_safe_security_header_override(name: &str, value: &str) -> bool {
+        let value = value.trim().to_ascii_lowercase();
+        match name.to_ascii_lowercase().as_str() {
+            "x-content-type-options" => value == "nosniff",
+            "x-frame-options" => value == "deny" || value == "sameorigin",
+            "referrer-policy" => matches!(
+                value.as_str(),
+                "no-referrer" | "same-origin" | "strict-origin" | "strict-origin-when-cross-origin"
+            ),
+            _ => true,
+        }
+    }
+
+    fn apply_default_security_headers(
+        config: &ServerConfig,
+        headers: &mut HashMap<String, String>,
+    ) {
+        if !config.security_headers {
+            return;
+        }
+
+        for (name, default_value) in DEFAULT_SECURITY_HEADERS {
+            if let Some(existing_key) = Self::find_header_key_ci(headers, name).map(str::to_string)
+            {
+                let existing_value = headers
+                    .get(&existing_key)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+
+                if config.allow_insecure_security_header_overrides
+                    || Self::is_safe_security_header_override(name, existing_value)
+                {
+                    continue;
+                }
+
+                headers.insert(existing_key, default_value.to_string());
+                continue;
+            }
+
+            headers.insert(name.to_string(), default_value.to_string());
+        }
+    }
+
+    fn set_http_response(
+        &self,
+        conn: &mut Connection,
+        status: u16,
+        body: Bytes,
+        content_type: Option<&str>,
+        mut headers: HashMap<String, String>,
+        buf: Vec<u8>,
+    ) {
+        Self::apply_default_security_headers(&self.config, &mut headers);
+
+        if headers.is_empty() {
+            conn.set_response_bytes_with_buf(status, body, content_type, buf);
+            return;
+        }
+
+        conn.set_response_bytes_with_headers(status, body, content_type, Some(&headers), buf);
     }
     pub fn new(
         lua: Lua,
@@ -467,14 +713,54 @@ impl EventLoop {
         }
 
         // ── Regular HTTP path ──
-        if self.config.docs && path == "/docs" && self.openapi_spec.is_some() {
+        if self.config.docs
+            && path == self.config.management_docs_path()
+            && self.openapi_spec.is_some()
+        {
+            let authorization =
+                Self::get_header_value(buf_ref, &conn.header_offsets, "authorization");
+            let management_token =
+                Self::get_header_value(buf_ref, &conn.header_offsets, "x-rover-management-token");
+            let is_authorized = Self::is_management_request_authorized(
+                &self.config,
+                authorization.as_deref(),
+                management_token.as_deref(),
+            );
+
+            if !is_authorized {
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                let body =
+                    Bytes::from_static(b"{\"error\":\"Management endpoint requires auth token\"}");
+                self.set_http_response(
+                    conn,
+                    401,
+                    body,
+                    Some("application/json"),
+                    HashMap::new(),
+                    buf,
+                );
+                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
+
             let html = rover_openapi::scalar_html(self.openapi_spec.as_ref().unwrap());
             drop(conns);
             let mut conns = self.connections.borrow_mut();
             let conn = &mut conns[conn_idx];
             conn.keep_alive = keep_alive;
             let buf = self.buffer_pool.get_response_buf();
-            conn.set_response_with_buf(200, html.as_bytes(), Some("text/html"), buf);
+            self.set_http_response(
+                conn,
+                200,
+                Bytes::copy_from_slice(html.as_bytes()),
+                Some("text/html"),
+                HashMap::new(),
+                buf,
+            );
             let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             return Ok(());
         }
@@ -516,13 +802,7 @@ impl EventLoop {
                     );
                 }
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_bytes_with_headers(
-                    204,
-                    Bytes::new(),
-                    Some("text/plain"),
-                    Some(&headers),
-                    buf,
-                );
+                self.set_http_response(conn, 204, Bytes::new(), Some("text/plain"), headers, buf);
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
@@ -541,7 +821,14 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(400, error_msg.as_bytes(), Some("text/plain"), buf);
+                self.set_http_response(
+                    conn,
+                    400,
+                    Bytes::from(error_msg.into_bytes()),
+                    Some("text/plain"),
+                    HashMap::new(),
+                    buf,
+                );
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
@@ -570,11 +857,12 @@ impl EventLoop {
                             .join(", ");
                         headers.insert("Allow".to_string(), allow);
                         let buf = self.buffer_pool.get_response_buf();
-                        conn.set_response_bytes_with_headers(
+                        self.set_http_response(
+                            conn,
                             204,
                             Bytes::new(),
                             Some("text/plain"),
-                            Some(&headers),
+                            headers,
                             buf,
                         );
                         let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
@@ -593,11 +881,12 @@ impl EventLoop {
                         .join(", ");
                     headers.insert("Allow".to_string(), allow);
                     let buf = self.buffer_pool.get_response_buf();
-                    conn.set_response_bytes_with_headers(
+                    self.set_http_response(
+                        conn,
                         405,
                         Bytes::from_static(b"Method Not Allowed"),
                         Some("text/plain"),
-                        Some(&headers),
+                        headers,
                         buf,
                     );
                     let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
@@ -609,7 +898,14 @@ impl EventLoop {
                     let conn = &mut conns[conn_idx];
                     conn.keep_alive = keep_alive;
                     let buf = self.buffer_pool.get_response_buf();
-                    conn.set_response_with_buf(404, b"Route not found", Some("text/plain"), buf);
+                    self.set_http_response(
+                        conn,
+                        404,
+                        Bytes::from_static(b"Route not found"),
+                        Some("text/plain"),
+                        HashMap::new(),
+                        buf,
+                    );
                     let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
                     return Ok(());
                 }
@@ -760,10 +1056,12 @@ impl EventLoop {
                 if let (Some(accept), Some(ct)) = (accept_header.as_deref(), content_type) {
                     if status < 400 && !Self::accepts_content_type(accept, ct) {
                         let resp_buf = self.buffer_pool.get_response_buf();
-                        conn.set_response_with_buf(
+                        self.set_http_response(
+                            conn,
                             406,
-                            b"Not Acceptable",
+                            Bytes::from_static(b"Not Acceptable"),
                             Some("text/plain"),
+                            HashMap::new(),
                             resp_buf,
                         );
                         let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
@@ -790,18 +1088,7 @@ impl EventLoop {
                         );
                     }
                 }
-
-                if response_headers.is_empty() {
-                    conn.set_response_bytes_with_buf(status, body, content_type, buf);
-                } else {
-                    conn.set_response_bytes_with_headers(
-                        status,
-                        body,
-                        content_type,
-                        Some(&response_headers),
-                        buf,
-                    );
-                }
+                self.set_http_response(conn, status, body, content_type, response_headers, buf);
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
@@ -822,7 +1109,14 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(500, b"Internal server error", Some("text/plain"), buf);
+                self.set_http_response(
+                    conn,
+                    500,
+                    Bytes::from_static(b"Internal server error"),
+                    Some("text/plain"),
+                    HashMap::new(),
+                    buf,
+                );
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
             }
         }
@@ -841,10 +1135,12 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(
+                self.set_http_response(
+                    conn,
                     404,
-                    b"WebSocket route not found",
+                    Bytes::from_static(b"WebSocket route not found"),
                     Some("text/plain"),
+                    HashMap::new(),
                     buf,
                 );
                 let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
@@ -870,10 +1166,12 @@ impl EventLoop {
                     let conn = &mut conns[conn_idx];
                     conn.keep_alive = false;
                     let buf = self.buffer_pool.get_response_buf();
-                    conn.set_response_with_buf(
+                    self.set_http_response(
+                        conn,
                         e.status_code(),
-                        e.message().as_bytes(),
+                        Bytes::copy_from_slice(e.message().as_bytes()),
                         Some("text/plain"),
+                        HashMap::new(),
                         buf,
                     );
                     let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
@@ -1583,7 +1881,14 @@ impl EventLoop {
             conn.thread = None;
             conn.state = ConnectionState::Writing;
             let buf = self.buffer_pool.get_response_buf();
-            conn.set_response_with_buf(500, b"Coroutine timeout", Some("text/plain"), buf);
+            self.set_http_response(
+                conn,
+                500,
+                Bytes::from_static(b"Coroutine timeout"),
+                Some("text/plain"),
+                HashMap::new(),
+                buf,
+            );
             let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
         }
 

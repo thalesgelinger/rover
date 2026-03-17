@@ -51,10 +51,15 @@ pub fn serve_static(options: WebServerOptions) -> Result<()> {
         cors_methods: "GET, HEAD".to_string(),
         cors_headers: "Content-Type".to_string(),
         cors_credentials: false,
+        security_headers: true,
         strict_mode: true,
         allow_public_bind: false,
         allow_wildcard_cors_credentials: false,
         allow_unbounded_body: false,
+        allow_insecure_security_header_overrides: false,
+        management_prefix: "/_rover".to_string(),
+        management_token: None,
+        allow_unauthenticated_management: false,
     };
 
     rover_server::run(lua, route_table, config, None);
