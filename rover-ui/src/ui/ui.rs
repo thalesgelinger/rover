@@ -45,12 +45,13 @@ fn create_ui_mod(lua: &mlua::Lua) -> mlua::Result<Table> {
 
 fn ensure_tui_target(lua: &mlua::Lua) -> mlua::Result<()> {
     let target = crate::lua::helpers::get_target(lua)?;
-    if target == crate::platform::UiTarget::Tui {
+    if crate::lua::helpers::has_capability(lua, crate::platform::UiCapability::TuiNamespace)? {
         return Ok(());
     }
 
     Err(mlua::Error::RuntimeError(format!(
-        "TUI node constructor requires target=tui, got {}",
+        "TUI node constructor denied by capability policy (capability={}, target={})",
+        crate::platform::UiCapability::TuiNamespace.as_str(),
         target.as_str()
     )))
 }

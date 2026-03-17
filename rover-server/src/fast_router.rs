@@ -29,6 +29,32 @@ fn hash_path(path: &str) -> u64 {
     hasher.finish()
 }
 
+#[inline]
+fn is_valid_percent_encoding(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+
+        if i + 2 >= bytes.len() {
+            return false;
+        }
+
+        let hi = bytes[i + 1];
+        let lo = bytes[i + 2];
+        if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+            return false;
+        }
+
+        i += 3;
+    }
+
+    true
+}
+
 pub struct FastRouter {
     router: Router<SmallVec<[(HttpMethod, usize); 2]>>,
     handlers: Vec<Function>,
@@ -87,6 +113,64 @@ mod tests {
             }
             _ => panic!("expected 405 match"),
         }
+    }
+
+    #[test]
+    fn should_return_not_found_for_unknown_path() {
+        let lua = Lua::new();
+        let router = FastRouter::from_routes(vec![dummy_route(&lua, HttpMethod::Get, "/items")])
+            .expect("router");
+
+        match router.match_route(HttpMethod::Get, "/missing") {
+            RouteMatch::NotFound => {}
+            _ => panic!("expected 404 match"),
+        }
+    }
+
+    #[test]
+    fn should_auto_map_head_to_get_for_dynamic_routes() {
+        let lua = Lua::new();
+        let mut route = dummy_route(&lua, HttpMethod::Get, "/items/{id}");
+        route.is_static = false;
+        let router = FastRouter::from_routes(vec![route]).expect("router");
+
+        match router.match_route(HttpMethod::Head, "/items/123") {
+            RouteMatch::Found {
+                is_head, params, ..
+            } => {
+                assert!(is_head);
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].0, Bytes::from_static(b"id"));
+                assert_eq!(params[0].1, Bytes::from_static(b"123"));
+            }
+            _ => panic!("expected HEAD fallback for dynamic route"),
+        }
+    }
+
+    #[test]
+    fn should_return_not_found_for_invalid_percent_encoded_param() {
+        let lua = Lua::new();
+        let mut route = dummy_route(&lua, HttpMethod::Get, "/items/{id}");
+        route.is_static = false;
+        let router = FastRouter::from_routes(vec![route]).expect("router");
+
+        match router.match_route(HttpMethod::Get, "/items/%ZZ") {
+            RouteMatch::NotFound => {}
+            _ => panic!("expected invalid decode to resolve as not found"),
+        }
+    }
+
+    #[test]
+    fn should_reject_invalid_percent_encoded_ws_param() {
+        let lua = Lua::new();
+        let mut route = dummy_route(&lua, HttpMethod::Get, "/items");
+        route.is_static = true;
+        let mut router = FastRouter::from_routes(vec![route]).expect("router");
+        router
+            .add_ws_routes(vec![("/ws/{room}".to_string(), 7, false)])
+            .expect("ws routes");
+
+        assert!(router.match_ws_route("/ws/%ZZ").is_none());
     }
 }
 
@@ -177,6 +261,9 @@ impl FastRouter {
 
         let mut params = Vec::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
+            if !is_valid_percent_encoding(value) {
+                return None;
+            }
             let decoded = urlencoding::decode(value).ok()?.into_owned();
             if decoded.is_empty() {
                 return None;
@@ -286,6 +373,9 @@ impl FastRouter {
 
         let mut params = Vec::with_capacity(matched.params.len());
         for (name, value) in matched.params.iter() {
+            if !is_valid_percent_encoding(value) {
+                return RouteMatch::NotFound;
+            }
             let decoded = match urlencoding::decode(value) {
                 Ok(v) => v.into_owned(),
                 Err(_) => return RouteMatch::NotFound,

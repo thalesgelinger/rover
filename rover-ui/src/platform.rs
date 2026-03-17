@@ -1,4 +1,5 @@
 use crate::signal::SignalId;
+use std::collections::HashSet;
 
 /// Execution target for the active renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,19 +21,65 @@ impl UiTarget {
     }
 }
 
+/// Runtime capability gates checked at module/runtime boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UiCapability {
+    TuiNamespace,
+}
+
+impl UiCapability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UiCapability::TuiNamespace => "tui_namespace",
+        }
+    }
+
+    fn allowed_by_default(self, target: UiTarget) -> bool {
+        match self {
+            UiCapability::TuiNamespace => target == UiTarget::Tui,
+        }
+    }
+}
+
 /// Runtime config shared with Lua through app_data.
 #[derive(Clone)]
 pub struct UiRuntimeConfig {
     target: UiTarget,
+    allow: HashSet<UiCapability>,
+    deny: HashSet<UiCapability>,
 }
 
 impl UiRuntimeConfig {
     pub fn new(target: UiTarget) -> Self {
-        Self { target }
+        Self {
+            target,
+            allow: HashSet::new(),
+            deny: HashSet::new(),
+        }
     }
 
     pub fn target(&self) -> UiTarget {
         self.target
+    }
+
+    pub fn allow_capability(mut self, capability: UiCapability) -> Self {
+        self.allow.insert(capability);
+        self
+    }
+
+    pub fn deny_capability(mut self, capability: UiCapability) -> Self {
+        self.deny.insert(capability);
+        self
+    }
+
+    pub fn is_capability_allowed(&self, capability: UiCapability) -> bool {
+        if self.deny.contains(&capability) {
+            return false;
+        }
+        if self.allow.contains(&capability) {
+            return true;
+        }
+        capability.allowed_by_default(self.target)
     }
 }
 

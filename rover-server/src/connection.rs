@@ -12,6 +12,69 @@ use std::time::Instant;
 const READ_BUF_SIZE: usize = 4096;
 const MAX_HEADERS: usize = 32;
 
+fn trim_ows_bytes(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|b| !matches!(b, b' ' | b'\t'))
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t'))
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &value[start..end]
+}
+
+fn parse_content_length(value: &[u8]) -> Option<usize> {
+    let trimmed = trim_ows_bytes(value);
+    if trimmed.is_empty() || trimmed.iter().any(|b| !b.is_ascii_digit()) {
+        return None;
+    }
+
+    let mut parsed: usize = 0;
+    for digit in trimmed {
+        parsed = parsed.checked_mul(10)?;
+        parsed = parsed.checked_add((digit - b'0') as usize)?;
+    }
+    Some(parsed)
+}
+
+fn header_value_has_token(value: &[u8], token: &str) -> bool {
+    value.split(|b| *b == b',').any(|part| {
+        let trimmed = trim_ows_bytes(part);
+        trimmed.eq_ignore_ascii_case(token.as_bytes())
+    })
+}
+
+fn extract_content_length(headers: &[httparse::Header<'_>]) -> Option<usize> {
+    let mut content_length = None;
+    let mut has_transfer_encoding = false;
+
+    for header in headers {
+        if header.name.eq_ignore_ascii_case("transfer-encoding") {
+            has_transfer_encoding = true;
+            continue;
+        }
+
+        if header.name.eq_ignore_ascii_case("content-length") {
+            let parsed = parse_content_length(header.value)?;
+            if let Some(existing) = content_length {
+                if existing != parsed {
+                    return None;
+                }
+            } else {
+                content_length = Some(parsed);
+            }
+        }
+    }
+
+    if has_transfer_encoding {
+        return None;
+    }
+
+    Some(content_length.unwrap_or(0))
+}
+
 #[derive(Debug, PartialEq)]
 pub enum ConnectionState {
     Reading,
@@ -162,7 +225,13 @@ impl Connection {
             let parse_buf = &self.read_buf[..self.read_pos];
             match req.parse(parse_buf) {
                 Ok(httparse::Status::Complete(header_len)) => {
+                    let Some(content_length) = extract_content_length(req.headers) else {
+                        self.state = ConnectionState::Closed;
+                        return Ok(false);
+                    };
+
                     self.headers_complete = true;
+                    self.content_length = content_length;
 
                     let base_ptr = parse_buf.as_ptr();
                     let buf_len = parse_buf.len();
@@ -216,10 +285,9 @@ impl Connection {
                         let value_bytes = &self.read_buf[h_val_start..h_val_start + h_val_len];
                         let value_str = unsafe { std::str::from_utf8_unchecked(value_bytes) };
 
-                        if name_str.eq_ignore_ascii_case("content-length") {
-                            self.content_length = value_str.trim().parse().unwrap_or(0);
-                        } else if name_str.eq_ignore_ascii_case("connection") {
-                            self.keep_alive = !value_str.trim().eq_ignore_ascii_case("close");
+                        if name_str.eq_ignore_ascii_case("connection") {
+                            self.keep_alive =
+                                !header_value_has_token(value_str.as_bytes(), "close");
                         }
 
                         self.header_offsets.push((
@@ -419,7 +487,7 @@ impl Connection {
         status: u16,
         body: Bytes,
         content_type: Option<&str>,
-        mut buf: Vec<u8>,
+        buf: Vec<u8>,
     ) {
         self.set_response_bytes_with_headers(status, body, content_type, None, buf)
     }
@@ -610,5 +678,70 @@ impl Connection {
         }
 
         Ok(true) // queue fully drained
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_content_length, header_value_has_token, parse_content_length};
+
+    #[test]
+    fn should_parse_content_length_with_ows() {
+        assert_eq!(parse_content_length(b" \t123\t "), Some(123));
+    }
+
+    #[test]
+    fn should_reject_invalid_content_length() {
+        assert_eq!(parse_content_length(b"12a"), None);
+        assert_eq!(parse_content_length(b""), None);
+        assert_eq!(parse_content_length(b"1,2"), None);
+    }
+
+    #[test]
+    fn should_accept_identical_duplicate_content_length_headers() {
+        let headers = [
+            httparse::Header {
+                name: "Content-Length",
+                value: b"10",
+            },
+            httparse::Header {
+                name: "content-length",
+                value: b"10",
+            },
+        ];
+
+        assert_eq!(extract_content_length(&headers), Some(10));
+    }
+
+    #[test]
+    fn should_reject_mismatched_duplicate_content_length_headers() {
+        let headers = [
+            httparse::Header {
+                name: "Content-Length",
+                value: b"10",
+            },
+            httparse::Header {
+                name: "Content-Length",
+                value: b"11",
+            },
+        ];
+
+        assert_eq!(extract_content_length(&headers), None);
+    }
+
+    #[test]
+    fn should_reject_transfer_encoding_requests() {
+        let headers = [httparse::Header {
+            name: "Transfer-Encoding",
+            value: b"chunked",
+        }];
+
+        assert_eq!(extract_content_length(&headers), None);
+    }
+
+    #[test]
+    fn should_match_connection_close_token() {
+        assert!(header_value_has_token(b"keep-alive, close", "close"));
+        assert!(!header_value_has_token(b"keep-alive", "close"));
     }
 }
