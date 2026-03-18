@@ -370,4 +370,281 @@ return api
             &request_body["content"]["application/json"]["schema"]["properties"]["role"]["enum"];
         assert_eq!(role_enum.as_array().unwrap().len(), 2);
     }
+
+    #[test]
+    fn spec_includes_response_schemas() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.users.p_id.get(ctx)
+    return api.json { id = 1, name = "test", active = true }
+end
+
+function api.users.post(ctx)
+    local user = ctx:body():expect {
+        name = g:string():required(),
+        email = g:string():required(),
+    }
+    return api.json:status(201, { id = 1, name = user.name, email = user.email })
+end
+
+function api.users.p_id.delete(ctx)
+    return api.json:status(204, {})
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let get_response = &spec["paths"]["/users/{id}"]["get"]["responses"]["200"];
+        assert_eq!(
+            get_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+        assert!(
+            get_response["content"]["application/json"]["schema"]["properties"]["id"]["type"]
+                == "integer"
+        );
+        assert!(
+            get_response["content"]["application/json"]["schema"]["properties"]["name"]["type"]
+                == "string"
+        );
+        assert!(
+            get_response["content"]["application/json"]["schema"]["properties"]["active"]["type"]
+                == "boolean"
+        );
+
+        let post_response = &spec["paths"]["/users"]["post"]["responses"]["201"];
+        assert_eq!(
+            post_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+
+        let delete_response = &spec["paths"]["/users/{id}"]["delete"]["responses"]["204"];
+        assert_eq!(
+            delete_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn spec_includes_multiple_response_codes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.hello.get(ctx)
+    local token = ctx:headers().Authorization
+    
+    if not token then
+        return api.json:status(401, { message = "Unauthorized" })
+    end
+    
+    return api.json:status(200, { message = "Hello World" })
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let responses = &spec["paths"]["/hello"]["get"]["responses"];
+        assert!(responses["200"].is_object(), "Should have 200 response");
+        assert!(responses["401"].is_object(), "Should have 401 response");
+
+        let ok_response = &responses["200"];
+        assert_eq!(
+            ok_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+
+        let error_response = &responses["401"];
+        assert_eq!(
+            error_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn spec_includes_nested_object_body_schema() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.users.post(ctx)
+    local user = ctx:body():expect {
+        name = g:string():required(),
+        profile = g:object {
+            bio = g:string(),
+            age = g:integer(),
+        },
+    }
+    return api.json(user)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/users"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        assert_eq!(body_schema["type"], "object");
+        assert_eq!(body_schema["properties"]["profile"]["type"], "object");
+        assert_eq!(
+            body_schema["properties"]["profile"]["properties"]["bio"]["type"],
+            "string"
+        );
+        assert_eq!(
+            body_schema["properties"]["profile"]["properties"]["age"]["type"],
+            "integer"
+        );
+    }
+
+    #[test]
+    fn spec_includes_array_body_schema() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.tags.post(ctx)
+    local data = ctx:body():expect {
+        tags = g:array(g:string()),
+        scores = g:array(g:integer()),
+    }
+    return api.json(data)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema =
+            &spec["paths"]["/tags"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+        assert_eq!(body_schema["properties"]["tags"]["type"], "array");
+        assert_eq!(body_schema["properties"]["tags"]["items"]["type"], "string");
+        assert_eq!(body_schema["properties"]["scores"]["type"], "array");
+        assert_eq!(
+            body_schema["properties"]["scores"]["items"]["type"],
+            "integer"
+        );
+    }
+
+    #[test]
+    fn spec_includes_default_values() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.settings.post(ctx)
+    local data = ctx:body():expect {
+        theme = g:string():default("light"),
+        count = g:integer():default(10),
+    }
+    return api.json(data)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/settings"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        assert_eq!(body_schema["properties"]["theme"]["default"], "light");
+        assert_eq!(body_schema["properties"]["count"]["default"], 10);
+    }
+
+    #[test]
+    fn spec_includes_required_fields() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.users.post(ctx)
+    local user = ctx:body():expect {
+        name = g:string():required(),
+        email = g:string():required(),
+        age = g:integer(),
+    }
+    return api.json(user)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/users"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        let required = body_schema["required"].as_array().unwrap();
+        assert!(required.contains(&"name".into()), "name should be required");
+        assert!(
+            required.contains(&"email".into()),
+            "email should be required"
+        );
+        assert!(
+            !required.contains(&"age".into()),
+            "age should not be required"
+        );
+    }
+
+    #[test]
+    fn spec_includes_enum_values() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.status.post(ctx)
+    local data = ctx:body():expect {
+        status = g:string():enum({"active", "inactive", "pending"}):required(),
+    }
+    return api.json(data)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/status"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        let enum_values = body_schema["properties"]["status"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(enum_values.len(), 3);
+        assert!(enum_values.contains(&"active".into()));
+        assert!(enum_values.contains(&"inactive".into()));
+        assert!(enum_values.contains(&"pending".into()));
+    }
+
+    #[test]
+    fn spec_includes_response_examples() {
+        let code = r#"
+local api = rover.server {}
+
+function api.hello.get(ctx)
+    return api.json { message = "Hello World", count = 42 }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let response = &spec["paths"]["/hello"]["get"]["responses"]["200"];
+        let example = &response["content"]["application/json"]["example"];
+        assert_eq!(example["message"], "Hello World");
+        assert_eq!(example["count"], 42);
+    }
 }
