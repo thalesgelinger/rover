@@ -1222,4 +1222,403 @@ mod tests {
         assert!(!SessionState::Expired.is_valid());
         assert!(!SessionState::Invalidated.is_valid());
     }
+
+    // Session lifecycle transition tests
+
+    #[test]
+    fn should_transition_active_to_invalidated() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        assert_eq!(session.state(), SessionState::Active);
+        assert!(session.is_valid());
+
+        // Transition to Invalidated
+        session.invalidate().unwrap();
+
+        assert_eq!(session.state(), SessionState::Invalidated);
+        assert!(!session.is_valid());
+    }
+
+    #[test]
+    fn should_transition_active_to_expired_via_ttl() {
+        let config = SessionConfig {
+            ttl_secs: 1, // 1 second TTL
+            ..Default::default()
+        };
+        let store = SessionStore::new(config);
+
+        let session = store.create_session();
+        assert_eq!(session.state(), SessionState::Active);
+        assert!(!session.is_expired());
+        assert!(session.is_valid());
+
+        // Wait for TTL to expire
+        thread::sleep(Duration::from_secs(2));
+
+        // Session should now be expired (TTL-based)
+        assert!(session.is_expired());
+        assert!(!session.is_valid());
+    }
+
+    #[test]
+    fn should_persist_invalidated_state_after_save_and_retrieve() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Invalidate and save
+        session.invalidate().unwrap();
+
+        // Retrieve from store
+        let retrieved = store.get_session(&session_id).unwrap().unwrap();
+        assert_eq!(retrieved.state(), SessionState::Invalidated);
+        assert!(!retrieved.is_valid());
+    }
+
+    #[test]
+    fn should_not_allow_refresh_of_invalidated_session() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Invalidate the session
+        session.invalidate().unwrap();
+        assert!(!session.is_valid());
+
+        // Attempt refresh - should still work but session remains invalidated
+        session.refresh().unwrap();
+
+        // State should still be Invalidated, not Active
+        assert_eq!(session.state(), SessionState::Invalidated);
+        assert!(!session.is_valid());
+    }
+
+    #[test]
+    fn should_refresh_extend_expired_session_back_to_valid() {
+        let config = SessionConfig {
+            ttl_secs: 1, // 1 second TTL
+            ..Default::default()
+        };
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Wait for expiration
+        thread::sleep(Duration::from_secs(2));
+        assert!(session.is_expired());
+
+        // Refresh should extend TTL
+        session.refresh().unwrap();
+
+        // Should no longer be expired
+        assert!(!session.is_expired());
+        assert!(session.is_valid());
+
+        // Verify persisted state
+        let retrieved = store.get_session(&session_id).unwrap().unwrap();
+        assert!(!retrieved.is_expired());
+        assert!(retrieved.is_valid());
+    }
+
+    #[test]
+    fn should_destroy_remove_session_from_store() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+        session.set("key", "value");
+        session.save().unwrap();
+
+        assert!(store.session_exists(&session_id).unwrap());
+
+        // Destroy the session
+        session.destroy().unwrap();
+
+        assert!(!store.session_exists(&session_id).unwrap());
+        assert!(session.is_empty());
+    }
+
+    #[test]
+    fn should_regenerate_id_create_new_valid_session() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let old_id = session.id().to_string();
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Regenerate ID
+        let new_id = session.regenerate_id().unwrap();
+
+        assert_ne!(old_id, new_id);
+        assert_eq!(session.id(), new_id);
+        assert!(session.is_valid());
+
+        // Old session should be gone
+        assert!(!store.session_exists(&old_id).unwrap());
+
+        // New session should exist with data
+        let retrieved = store.get_session(&new_id).unwrap().unwrap();
+        assert!(retrieved.is_valid());
+        assert_eq!(retrieved.get_string("key"), Some("value"));
+    }
+
+    #[test]
+    fn should_maintain_data_through_state_transitions() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.set("user_id", "123");
+        session.set("role", "admin");
+        session.save().unwrap();
+
+        // Invalidate
+        session.invalidate().unwrap();
+        assert_eq!(session.get_string("user_id"), Some("123"));
+        assert_eq!(session.get_string("role"), Some("admin"));
+
+        // Save invalidated state
+        session.save().unwrap();
+
+        // Retrieve and verify data persisted
+        let retrieved = store.get_session(session.id()).unwrap().unwrap();
+        assert_eq!(retrieved.get_string("user_id"), Some("123"));
+        assert_eq!(retrieved.get_string("role"), Some("admin"));
+        assert_eq!(retrieved.state(), SessionState::Invalidated);
+    }
+
+    #[test]
+    fn should_allow_operations_on_invalidated_session() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.set("original", "data");
+        session.invalidate().unwrap();
+
+        // Should still allow modifications
+        session.set("new", "value");
+        session.remove("original");
+
+        assert_eq!(session.get_string("new"), Some("value"));
+        assert!(session.get("original").is_none());
+    }
+
+    #[test]
+    fn should_session_data_set_state_touch() {
+        let mut data = SessionData::new();
+        let first_accessed = data.last_accessed();
+
+        thread::sleep(Duration::from_millis(10));
+
+        data.set_state(SessionState::Invalidated);
+        assert!(data.last_accessed() >= first_accessed);
+    }
+
+    #[test]
+    fn should_handle_double_invalidate() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Invalidate twice
+        session.invalidate().unwrap();
+        assert_eq!(session.state(), SessionState::Invalidated);
+
+        session.invalidate().unwrap();
+        assert_eq!(session.state(), SessionState::Invalidated);
+
+        // Should still persist correctly
+        let retrieved = store.get_session(session.id()).unwrap().unwrap();
+        assert_eq!(retrieved.state(), SessionState::Invalidated);
+    }
+
+    #[test]
+    fn should_transition_from_expired_to_active_via_refresh() {
+        let config = SessionConfig {
+            ttl_secs: 1,
+            ..Default::default()
+        };
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.save().unwrap();
+
+        // Wait for expiration
+        thread::sleep(Duration::from_secs(2));
+        assert!(session.is_expired());
+
+        // Refresh brings it back
+        session.refresh().unwrap();
+        assert!(!session.is_expired());
+        assert!(session.is_valid());
+    }
+
+    #[test]
+    fn should_get_or_create_handle_invalidated_session() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        // Create and invalidate a session
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+        session.set("key", "value");
+        session.invalidate().unwrap();
+        session.save().unwrap();
+
+        // get_or_create should return the invalidated session (it exists)
+        let retrieved = store.get_or_create(Some(&session_id)).unwrap();
+        assert_eq!(retrieved.id(), session_id);
+        assert_eq!(retrieved.state(), SessionState::Invalidated);
+    }
+
+    #[test]
+    fn should_serialize_all_session_states() {
+        // Test Active state serialization
+        let mut active_data = SessionData::new();
+        active_data.set("key", "value");
+        let serialized = serialize_session(&active_data);
+        let deserialized = deserialize_session(&serialized).unwrap();
+        assert_eq!(deserialized.state(), SessionState::Active);
+
+        // Test Expired state (manual set)
+        let mut expired_data = SessionData::with_state(SessionState::Expired);
+        expired_data.set("key", "value");
+        let serialized = serialize_session(&expired_data);
+        let deserialized = deserialize_session(&serialized).unwrap();
+        assert_eq!(deserialized.state(), SessionState::Expired);
+
+        // Test Invalidated state
+        let mut invalidated_data = SessionData::with_state(SessionState::Invalidated);
+        invalidated_data.set("key", "value");
+        let serialized = serialize_session(&invalidated_data);
+        let deserialized = deserialize_session(&serialized).unwrap();
+        assert_eq!(deserialized.state(), SessionState::Invalidated);
+    }
+
+    #[test]
+    fn should_deserialize_unknown_state_as_active() {
+        // Create a serialized session with invalid state byte (255)
+        let mut data = SessionData::new();
+        data.set("key", "value");
+        let mut serialized = serialize_session(&data);
+
+        // Corrupt the state byte (at position 16, after created_at and last_accessed)
+        serialized[16] = 255;
+
+        let deserialized = deserialize_session(&serialized).unwrap();
+        assert_eq!(deserialized.state(), SessionState::Active);
+        assert_eq!(deserialized.get("key").unwrap().as_string(), Some("value"));
+    }
+
+    #[test]
+    fn should_session_data_touch_on_operations() {
+        let mut data = SessionData::new();
+        let _created_at = data.created_at();
+        let first_accessed = data.last_accessed();
+
+        // Small delay
+        thread::sleep(Duration::from_millis(10));
+
+        // set should touch
+        data.set("key", "value");
+        assert!(data.last_accessed() >= first_accessed);
+
+        let accessed_after_set = data.last_accessed();
+        thread::sleep(Duration::from_millis(10));
+
+        // remove should touch
+        data.remove("key");
+        assert!(data.last_accessed() >= accessed_after_set);
+    }
+
+    #[test]
+    fn should_is_expired_check_with_ttl() {
+        let data = SessionData::new();
+
+        // Not expired with long TTL
+        assert!(!data.is_expired(3600));
+
+        // With 0 TTL and no time elapsed, should NOT be expired
+        // (now > last_accessed + 0 is false when now == last_accessed)
+        assert!(!data.is_expired(0));
+    }
+
+    #[test]
+    fn should_session_valid_requires_both_state_and_not_expired() {
+        let config = SessionConfig {
+            ttl_secs: 1,
+            ..Default::default()
+        };
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.save().unwrap();
+
+        // Initially valid
+        assert!(session.is_valid());
+
+        // Wait for expiration
+        thread::sleep(Duration::from_secs(2));
+
+        // Expired (even though Active state)
+        assert!(!session.is_valid());
+
+        // Invalidate
+        session.invalidate().unwrap();
+
+        // Both invalid state AND expired
+        assert!(!session.is_valid());
+    }
+
+    #[test]
+    fn should_multiple_refresh_extend_lifetime() {
+        let config = SessionConfig {
+            ttl_secs: 2, // 2 second TTL
+            ..Default::default()
+        };
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+        session.save().unwrap();
+
+        // First refresh after 1 second
+        thread::sleep(Duration::from_secs(1));
+        session.refresh().unwrap();
+
+        // Second refresh after another 1 second
+        thread::sleep(Duration::from_secs(1));
+        session.refresh().unwrap();
+
+        // Third refresh after another 1 second
+        thread::sleep(Duration::from_secs(1));
+        session.refresh().unwrap();
+
+        // Total ~3 seconds elapsed, but should still be valid due to refreshes
+        assert!(!session.is_expired());
+        assert!(session.is_valid());
+
+        let _retrieved = store.get_session(&session_id).unwrap().unwrap();
+        assert!(!_retrieved.is_expired());
+    }
 }

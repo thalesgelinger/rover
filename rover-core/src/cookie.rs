@@ -466,4 +466,235 @@ mod tests {
 
         assert_eq!(cookies.get("data"), Some(&"hello%20world".to_string()));
     }
+
+    // Cookie parse/serialize edge cases
+
+    #[test]
+    fn should_handle_cookie_with_empty_value() {
+        let header = "session=; user=john";
+        let cookies = parse_cookies(header);
+
+        assert_eq!(cookies.get("session"), Some(&"".to_string()));
+        assert_eq!(cookies.get("user"), Some(&"john".to_string()));
+    }
+
+    #[test]
+    fn should_handle_cookie_with_no_value_no_equals() {
+        let header = "session";
+        let cookies = parse_cookies(header);
+
+        assert!(cookies.is_empty());
+    }
+
+    #[test]
+    fn should_handle_multiple_equals_in_value() {
+        let header = "data=a=b=c=d";
+        let cookies = parse_cookies(header);
+
+        assert_eq!(cookies.get("data"), Some(&"a=b=c=d".to_string()));
+    }
+
+    #[test]
+    fn should_handle_cookie_name_with_whitespace_only() {
+        let header = "   =value; user=john";
+        let cookies = parse_cookies(header);
+
+        assert!(cookies.get("").is_none());
+        assert_eq!(cookies.get("user"), Some(&"john".to_string()));
+    }
+
+    #[test]
+    fn should_handle_very_long_cookie_value() {
+        let long_value = "a".repeat(4096);
+        let header = format!("session={}", long_value);
+        let cookies = parse_cookies(&header);
+
+        assert_eq!(cookies.get("session"), Some(&long_value));
+    }
+
+    #[test]
+    fn should_handle_special_characters_in_cookie_value() {
+        let header = "data=hello%20world%2Btest; special=<>&\"'";
+        let cookies = parse_cookies(header);
+
+        assert_eq!(
+            cookies.get("data"),
+            Some(&"hello%20world%2Btest".to_string())
+        );
+        assert_eq!(cookies.get("special"), Some(&"<>&\"'".to_string()));
+    }
+
+    #[test]
+    fn should_handle_unicode_in_cookie_value() {
+        let header = "data=héllo wörld; emoji=🎉";
+        let cookies = parse_cookies(header);
+
+        assert_eq!(cookies.get("data"), Some(&"héllo wörld".to_string()));
+        assert_eq!(cookies.get("emoji"), Some(&"🎉".to_string()));
+    }
+
+    #[test]
+    fn should_handle_multiple_semicolons() {
+        let header = "a=1;;;b=2;;";
+        let cookies = parse_cookies(header);
+
+        assert_eq!(cookies.get("a"), Some(&"1".to_string()));
+        assert_eq!(cookies.get("b"), Some(&"2".to_string()));
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn should_handle_leading_trailing_semicolons() {
+        let header = "; session=abc; ; user=john; ";
+        let cookies = parse_cookies(header);
+
+        assert_eq!(cookies.get("session"), Some(&"abc".to_string()));
+        assert_eq!(cookies.get("user"), Some(&"john".to_string()));
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn should_handle_duplicate_cookie_names() {
+        let header = "session=first; session=second";
+        let cookies = parse_cookies(header);
+
+        // Last value wins
+        assert_eq!(cookies.get("session"), Some(&"second".to_string()));
+    }
+
+    #[test]
+    fn should_parse_set_cookie_with_expires() {
+        let header = "session=abc; Expires=Wed, 21 Oct 2025 07:28:00 GMT; Path=/";
+        let parsed = parse_set_cookie(header);
+
+        assert_eq!(parsed.get("name"), Some(&"session".to_string()));
+        assert_eq!(parsed.get("value"), Some(&"abc".to_string()));
+        assert_eq!(
+            parsed.get("expires"),
+            Some(&"Wed, 21 Oct 2025 07:28:00 GMT".to_string())
+        );
+    }
+
+    #[test]
+    fn should_parse_set_cookie_case_insensitive_attributes() {
+        let header = "session=abc; SECURE; HttpOnly; SAMesite=STrict; PATH=/api";
+        let parsed = parse_set_cookie(header);
+
+        assert_eq!(parsed.get("secure"), Some(&"true".to_string()));
+        assert_eq!(parsed.get("httponly"), Some(&"true".to_string()));
+        assert_eq!(parsed.get("samesite"), Some(&"STrict".to_string()));
+        assert_eq!(parsed.get("path"), Some(&"/api".to_string()));
+    }
+
+    #[test]
+    fn should_parse_set_cookie_with_domain() {
+        let header = "session=abc; Domain=.example.com; Path=/";
+        let parsed = parse_set_cookie(header);
+
+        assert_eq!(parsed.get("domain"), Some(&".example.com".to_string()));
+    }
+
+    #[test]
+    fn should_handle_empty_set_cookie() {
+        let parsed = parse_set_cookie("");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn should_handle_set_cookie_without_attributes() {
+        let header = "session=value";
+        let parsed = parse_set_cookie(header);
+
+        assert_eq!(parsed.get("name"), Some(&"session".to_string()));
+        assert_eq!(parsed.get("value"), Some(&"value".to_string()));
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn should_handle_set_cookie_with_only_boolean_attributes() {
+        let header = "session=abc; Secure; HttpOnly";
+        let parsed = parse_set_cookie(header);
+
+        assert_eq!(parsed.get("secure"), Some(&"true".to_string()));
+        assert_eq!(parsed.get("httponly"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn should_build_cookie_with_negative_max_age() {
+        let cookie = CookieBuilder::new("session", "abc").max_age(-1).build();
+        assert_eq!(cookie, "session=abc; Max-Age=-1");
+    }
+
+    #[test]
+    fn should_build_cookie_with_zero_max_age() {
+        let cookie = CookieBuilder::new("session", "abc").max_age(0).build();
+        assert_eq!(cookie, "session=abc; Max-Age=0");
+    }
+
+    #[test]
+    fn should_build_cookie_with_empty_value() {
+        let cookie = CookieBuilder::new("session", "").build();
+        assert_eq!(cookie, "session=");
+    }
+
+    #[test]
+    fn should_build_cookie_with_special_characters_in_value() {
+        let cookie = CookieBuilder::new("data", "hello world+test=foo").build();
+        assert_eq!(cookie, "data=hello world+test=foo");
+    }
+
+    #[test]
+    fn should_build_cookie_with_unicode_value() {
+        let cookie = CookieBuilder::new("data", "héllo").build();
+        assert_eq!(cookie, "data=héllo");
+    }
+
+    #[test]
+    fn should_build_cookie_with_root_path() {
+        let cookie = CookieBuilder::new("session", "abc").path("/").build();
+        assert_eq!(cookie, "session=abc; Path=/");
+    }
+
+    #[test]
+    fn should_build_cookie_with_subpath() {
+        let cookie = CookieBuilder::new("session", "abc").path("/api/v1").build();
+        assert_eq!(cookie, "session=abc; Path=/api/v1");
+    }
+
+    #[test]
+    fn should_build_cookie_with_subdomain() {
+        let cookie = CookieBuilder::new("session", "abc")
+            .domain("api.example.com")
+            .build();
+        assert_eq!(cookie, "session=abc; Domain=api.example.com");
+    }
+
+    #[test]
+    fn should_build_cookie_with_wildcard_domain() {
+        let cookie = CookieBuilder::new("session", "abc")
+            .domain(".example.com")
+            .build();
+        assert_eq!(cookie, "session=abc; Domain=.example.com");
+    }
+
+    #[test]
+    fn should_create_delete_cookie_without_path() {
+        let cookie = delete_cookie("session", None, None);
+        assert!(cookie.contains("session="));
+        assert!(cookie.contains("Max-Age=0"));
+        assert!(!cookie.contains("Path="));
+        assert!(!cookie.contains("Domain="));
+    }
+
+    #[test]
+    fn should_delete_cookie_parses_correctly() {
+        let cookie = delete_cookie("my_session", Some("/api"), Some("example.com"));
+        let parsed = parse_set_cookie(&cookie);
+
+        assert_eq!(parsed.get("name"), Some(&"my_session".to_string()));
+        assert_eq!(parsed.get("value"), Some(&"".to_string()));
+        assert_eq!(parsed.get("max-age"), Some(&"0".to_string()));
+        assert_eq!(parsed.get("path"), Some(&"/api".to_string()));
+        assert_eq!(parsed.get("domain"), Some(&"example.com".to_string()));
+    }
 }
