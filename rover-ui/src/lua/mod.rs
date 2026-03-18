@@ -4,6 +4,7 @@ pub mod helpers;
 pub mod metamethods;
 pub mod signal;
 pub mod utils;
+use crate::jobs;
 use crate::task;
 
 use crate::platform::{UiCapability, ViewportSignals};
@@ -91,13 +92,12 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     // Register task module (rover.task(fn), rover.task.cancel(), etc.)
     task::register_task_module(lua, rover_table)?;
 
-    // rover.spawn(fn) - create and start a background task immediately
-    let spawn_fn = lua.create_function(|lua, func: Function| {
-        let task_ud = task::create_task(lua, func)?;
-        task::start_task(lua, &task_ud)?;
-        Ok(task_ud)
-    })?;
-    rover_table.set("spawn", spawn_fn)?;
+    // Get scheduler for jobs module
+    let scheduler = crate::lua::helpers::get_scheduler(lua)?;
+
+    // Register jobs module with bounded concurrency support
+    // This provides: rover.jobs, rover.job, rover.spawn
+    jobs::register_jobs_module(lua, rover_table, scheduler.clone())?;
 
     // rover.interval(ms, fn) - run fn immediately, then every ms
     let interval_fn = lua.create_function(|lua, (delay_ms, callback): (u64, Function)| {
@@ -118,9 +118,19 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
             .eval()?;
 
         let interval_task_fn: Function = interval_factory.call((delay_ms, callback))?;
-        let task_ud = task::create_task(lua, interval_task_fn)?;
-        task::start_task(lua, &task_ud)?;
-        Ok(task_ud)
+
+        // Use the jobs system for bounded concurrency via the global rover table
+        let rover_table: Table = lua.globals().get("rover")?;
+        let job_ud = if let Ok(jobs_fn) = rover_table.get::<Function>("job") {
+            jobs_fn.call(interval_task_fn)?
+        } else {
+            // Fallback to old task system if jobs not available
+            let task_ud = task::create_task(lua, interval_task_fn)?;
+            task::start_task(lua, &task_ud)?;
+            task_ud
+        };
+
+        Ok(job_ud)
     })?;
     rover_table.set("interval", interval_fn)?;
 
