@@ -370,4 +370,451 @@ return api
             &request_body["content"]["application/json"]["schema"]["properties"]["role"]["enum"];
         assert_eq!(role_enum.as_array().unwrap().len(), 2);
     }
+
+    #[test]
+    fn spec_includes_response_schemas() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.users.p_id.get(ctx)
+    return api.json { id = 1, name = "test", active = true }
+end
+
+function api.users.post(ctx)
+    local user = ctx:body():expect {
+        name = g:string():required(),
+        email = g:string():required(),
+    }
+    return api.json:status(201, { id = 1, name = user.name, email = user.email })
+end
+
+function api.users.p_id.delete(ctx)
+    return api.json:status(204, {})
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let get_response = &spec["paths"]["/users/{id}"]["get"]["responses"]["200"];
+        assert_eq!(
+            get_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+        assert!(
+            get_response["content"]["application/json"]["schema"]["properties"]["id"]["type"]
+                == "integer"
+        );
+        assert!(
+            get_response["content"]["application/json"]["schema"]["properties"]["name"]["type"]
+                == "string"
+        );
+        assert!(
+            get_response["content"]["application/json"]["schema"]["properties"]["active"]["type"]
+                == "boolean"
+        );
+
+        let post_response = &spec["paths"]["/users"]["post"]["responses"]["201"];
+        assert_eq!(
+            post_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+
+        let delete_response = &spec["paths"]["/users/{id}"]["delete"]["responses"]["204"];
+        assert_eq!(
+            delete_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn spec_includes_multiple_response_codes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.hello.get(ctx)
+    local token = ctx:headers().Authorization
+    
+    if not token then
+        return api.json:status(401, { message = "Unauthorized" })
+    end
+    
+    return api.json:status(200, { message = "Hello World" })
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let responses = &spec["paths"]["/hello"]["get"]["responses"];
+        assert!(responses["200"].is_object(), "Should have 200 response");
+        assert!(responses["401"].is_object(), "Should have 401 response");
+
+        let ok_response = &responses["200"];
+        assert_eq!(
+            ok_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+
+        let error_response = &responses["401"];
+        assert_eq!(
+            error_response["content"]["application/json"]["schema"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn spec_includes_nested_object_body_schema() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.users.post(ctx)
+    local user = ctx:body():expect {
+        name = g:string():required(),
+        profile = g:object {
+            bio = g:string(),
+            age = g:integer(),
+        },
+    }
+    return api.json(user)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/users"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        assert_eq!(body_schema["type"], "object");
+        assert_eq!(body_schema["properties"]["profile"]["type"], "object");
+        assert_eq!(
+            body_schema["properties"]["profile"]["properties"]["bio"]["type"],
+            "string"
+        );
+        assert_eq!(
+            body_schema["properties"]["profile"]["properties"]["age"]["type"],
+            "integer"
+        );
+    }
+
+    #[test]
+    fn spec_includes_array_body_schema() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.tags.post(ctx)
+    local data = ctx:body():expect {
+        tags = g:array(g:string()),
+        scores = g:array(g:integer()),
+    }
+    return api.json(data)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema =
+            &spec["paths"]["/tags"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+        assert_eq!(body_schema["properties"]["tags"]["type"], "array");
+        assert_eq!(body_schema["properties"]["tags"]["items"]["type"], "string");
+        assert_eq!(body_schema["properties"]["scores"]["type"], "array");
+        assert_eq!(
+            body_schema["properties"]["scores"]["items"]["type"],
+            "integer"
+        );
+    }
+
+    #[test]
+    fn spec_includes_default_values() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.settings.post(ctx)
+    local data = ctx:body():expect {
+        theme = g:string():default("light"),
+        count = g:integer():default(10),
+    }
+    return api.json(data)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/settings"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        assert_eq!(body_schema["properties"]["theme"]["default"], "light");
+        assert_eq!(body_schema["properties"]["count"]["default"], 10);
+    }
+
+    #[test]
+    fn spec_includes_required_fields() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.users.post(ctx)
+    local user = ctx:body():expect {
+        name = g:string():required(),
+        email = g:string():required(),
+        age = g:integer(),
+    }
+    return api.json(user)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/users"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        let required = body_schema["required"].as_array().unwrap();
+        assert!(required.contains(&"name".into()), "name should be required");
+        assert!(
+            required.contains(&"email".into()),
+            "email should be required"
+        );
+        assert!(
+            !required.contains(&"age".into()),
+            "age should not be required"
+        );
+    }
+
+    #[test]
+    fn spec_includes_enum_values() {
+        let code = r#"
+local api = rover.server {}
+local g = rover.guard
+
+function api.status.post(ctx)
+    local data = ctx:body():expect {
+        status = g:string():enum({"active", "inactive", "pending"}):required(),
+    }
+    return api.json(data)
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let body_schema = &spec["paths"]["/status"]["post"]["requestBody"]["content"]
+            ["application/json"]["schema"];
+        let enum_values = body_schema["properties"]["status"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(enum_values.len(), 3);
+        assert!(enum_values.contains(&"active".into()));
+        assert!(enum_values.contains(&"inactive".into()));
+        assert!(enum_values.contains(&"pending".into()));
+    }
+
+    #[test]
+    fn spec_includes_response_examples() {
+        let code = r#"
+local api = rover.server {}
+
+function api.hello.get(ctx)
+    return api.json { message = "Hello World", count = 42 }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test", "1.0.0");
+
+        let response = &spec["paths"]["/hello"]["get"]["responses"]["200"];
+        let example = &response["content"]["application/json"]["example"];
+        assert_eq!(example["message"], "Hello World");
+        assert_eq!(example["count"], 42);
+    }
+
+    #[test]
+    fn spec_includes_versioned_routes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.v1.users.get(ctx)
+    return api.json { version = "v1", users = {} }
+end
+
+function api.v2.users.get(ctx)
+    return api.json { version = "v2", users = {}, meta = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test API", "2.0.0");
+
+        // Verify both versioned routes are present
+        assert!(
+            spec["paths"]["/v1/users"]["get"].is_object(),
+            "v1 route should exist"
+        );
+        assert!(
+            spec["paths"]["/v2/users"]["get"].is_object(),
+            "v2 route should exist"
+        );
+
+        // Verify spec version is correctly set
+        assert_eq!(spec["info"]["version"], "2.0.0");
+        assert_eq!(spec["info"]["title"], "Test API");
+    }
+
+    #[test]
+    fn spec_versioned_routes_with_params() {
+        let code = r#"
+local api = rover.server {}
+
+function api.v1.users.p_id.get(ctx)
+    local id = ctx:params().id
+    return api.json { version = "v1", id = id }
+end
+
+function api.v2.users.p_id.get(ctx)
+    local id = ctx:params().id
+    return api.json { version = "v2", id = id, expanded = true }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Versioned API", "1.0.0");
+
+        // Verify both versioned routes with path params
+        let v1_path = &spec["paths"]["/v1/users/{id}"]["get"];
+        let v2_path = &spec["paths"]["/v2/users/{id}"]["get"];
+
+        assert!(v1_path.is_object(), "v1 user route should exist");
+        assert!(v2_path.is_object(), "v2 user route should exist");
+
+        // Verify path parameters are captured
+        let v1_params = v1_path["parameters"].as_array().unwrap();
+        assert!(v1_params
+            .iter()
+            .any(|p| p["name"] == "id" && p["in"] == "path"));
+
+        let v2_params = v2_path["parameters"].as_array().unwrap();
+        assert!(v2_params
+            .iter()
+            .any(|p| p["name"] == "id" && p["in"] == "path"));
+    }
+
+    #[test]
+    fn spec_mixed_versioned_and_unversioned_routes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.health.get(ctx)
+    return api.json { status = "ok" }
+end
+
+function api.v1.api.users.get(ctx)
+    return api.json { version = "v1", users = {} }
+end
+
+function api.internal.metrics.get(ctx)
+    return api.json { metrics = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Mixed API", "1.0.0");
+
+        // Verify unversioned routes exist
+        assert!(
+            spec["paths"]["/health"]["get"].is_object(),
+            "health route should exist"
+        );
+        assert!(
+            spec["paths"]["/internal/metrics"]["get"].is_object(),
+            "metrics route should exist"
+        );
+
+        // Verify versioned route exists
+        assert!(
+            spec["paths"]["/v1/api/users"]["get"].is_object(),
+            "v1 api users route should exist"
+        );
+    }
+
+    #[test]
+    fn spec_version_info_reflects_api_metadata() {
+        let code = r#"
+local api = rover.server {}
+
+function api.users.get(ctx)
+    return api.json { users = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+
+        // Test different version strings
+        let spec_v1 = generate_spec(&model, "Users API", "1.0.0");
+        assert_eq!(spec_v1["info"]["version"], "1.0.0");
+        assert_eq!(spec_v1["info"]["title"], "Users API");
+
+        let spec_v2 = generate_spec(&model, "Users API", "2.0.0-beta");
+        assert_eq!(spec_v2["info"]["version"], "2.0.0-beta");
+
+        let spec_semver = generate_spec(&model, "Users API", "3.1.4-alpha+build.123");
+        assert_eq!(spec_semver["info"]["version"], "3.1.4-alpha+build.123");
+    }
+
+    #[test]
+    fn spec_deeply_nested_versioned_routes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.v1.admin.users.p_id.permissions.get(ctx)
+    return api.json { permissions = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Admin API", "1.0.0");
+
+        // Verify deeply nested versioned route
+        assert!(
+            spec["paths"]["/v1/admin/users/{id}/permissions"]["get"].is_object(),
+            "deeply nested versioned route should exist"
+        );
+
+        // Verify path parameter is captured
+        let params = spec["paths"]["/v1/admin/users/{id}/permissions"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(params
+            .iter()
+            .any(|p| p["name"] == "id" && p["in"] == "path"));
+    }
 }

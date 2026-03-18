@@ -4,12 +4,13 @@ use std::io;
 use std::mem;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use mlua::{Function, Lua, Thread, ThreadStatus, Value};
+use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
 use rover_ui::SharedSignalRuntime;
 use rover_ui::coroutine::{CoroutineResult, run_coroutine_with_delay};
 use rover_ui::scheduler::SharedScheduler;
@@ -17,25 +18,490 @@ use slab::Slab;
 use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
+use crate::compression::{CompressionAlgorithm, compress, negotiate_encoding};
 use crate::connection::{Connection, ConnectionState};
-use crate::fast_router::FastRouter;
+use crate::fast_router::{FastRouter, RouteMatch};
 use crate::http_task::{
     CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
+    extract_or_generate_request_id,
 };
+use crate::lifecycle::{LifecycleConfig, LifecycleEvent, LifecycleManager, LifecyclePhase};
 use crate::table_pool::LuaTablePool;
+use crate::to_json::ToJson;
 use crate::ws_frame::{self, WsOpcode};
 use crate::ws_handshake;
 use crate::ws_lua::{SharedConnections, SharedWsManager};
 use crate::ws_manager::WsManager;
-use crate::{Bytes, HttpMethod, Route, ServerConfig, WsRoute};
+use crate::{Bytes, HttpMethod, Route, ServerConfig, SseWriter, WsRoute, generate_sse_event_id};
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
+const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_SECURITY_HEADERS: [(&str, &str); 3] = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+];
+
+fn hash_bytes(data: &[u8]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownState {
+    Running,
+    Draining,
+    Shutdown,
+}
+
+struct PendingSseChunk {
+    chunk: Option<Bytes>,
+    should_end: bool,
+}
 
 struct PendingCoroutine {
     thread: Thread,
     started_at: Instant,
     ctx_idx: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use mlua::{Lua, Value};
+
+    use super::{EventLoop, ServerConfig};
+
+    #[test]
+    fn should_accept_wildcard_accept_header() {
+        assert!(EventLoop::accepts_content_type("*/*", "application/json"));
+    }
+
+    #[test]
+    fn should_accept_exact_content_type() {
+        assert!(EventLoop::accepts_content_type(
+            "application/json",
+            "application/json"
+        ));
+    }
+
+    #[test]
+    fn should_accept_major_wildcard() {
+        assert!(EventLoop::accepts_content_type(
+            "application/*",
+            "application/json"
+        ));
+    }
+
+    #[test]
+    fn should_reject_non_matching_accept() {
+        assert!(!EventLoop::accepts_content_type(
+            "text/plain",
+            "application/json"
+        ));
+    }
+
+    fn base_config() -> ServerConfig {
+        ServerConfig {
+            port: 4242,
+            host: "localhost".to_string(),
+            log_level: "nope".to_string(),
+            docs: false,
+            body_size_limit: Some(1024),
+            cors_origin: None,
+            cors_methods: "GET".to_string(),
+            cors_headers: "Content-Type".to_string(),
+            cors_credentials: false,
+            security_headers: true,
+            https_redirect: false,
+            strict_mode: true,
+            allow_public_bind: false,
+            allow_insecure_http: false,
+            allow_wildcard_cors_credentials: false,
+            allow_unbounded_body: false,
+            allow_insecure_security_header_overrides: false,
+            management_prefix: "/_rover".to_string(),
+            management_token: None,
+            allow_unauthenticated_management: false,
+            tls: None,
+            rate_limit: crate::RateLimitConfig::default(),
+            load_shed: crate::LoadShedConfig::default(),
+            drain_timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn should_apply_security_header_defaults() {
+        let mut headers = HashMap::new();
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("X-Content-Type-Options").map(String::as_str),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers.get("X-Frame-Options").map(String::as_str),
+            Some("DENY")
+        );
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("strict-origin-when-cross-origin")
+        );
+    }
+
+    #[test]
+    fn should_keep_safe_security_header_overrides() {
+        let mut headers = HashMap::new();
+        headers.insert("x-frame-options".to_string(), "SAMEORIGIN".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("x-frame-options").map(String::as_str),
+            Some("SAMEORIGIN")
+        );
+    }
+
+    #[test]
+    fn should_replace_unsafe_security_header_overrides_by_default() {
+        let mut headers = HashMap::new();
+        headers.insert("Referrer-Policy".to_string(), "unsafe-url".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("strict-origin-when-cross-origin")
+        );
+    }
+
+    #[test]
+    fn should_allow_unsafe_security_header_overrides_with_explicit_opt_out() {
+        let mut headers = HashMap::new();
+        headers.insert("Referrer-Policy".to_string(), "unsafe-url".to_string());
+
+        let mut config = base_config();
+        config.allow_insecure_security_header_overrides = true;
+        EventLoop::apply_default_security_headers(&config, &mut headers);
+
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("unsafe-url")
+        );
+    }
+
+    #[test]
+    fn should_parse_bearer_management_token() {
+        let token = EventLoop::bearer_token("Bearer secret-token");
+        assert_eq!(token, Some("secret-token"));
+    }
+
+    #[test]
+    fn should_not_parse_invalid_bearer_management_token() {
+        assert!(EventLoop::bearer_token("Basic abc").is_none());
+        assert!(EventLoop::bearer_token("Bearer ").is_none());
+    }
+
+    #[test]
+    fn should_require_management_auth_by_default() {
+        let config = base_config();
+        assert!(!EventLoop::is_management_request_authorized(
+            &config,
+            None,
+            Some("anything")
+        ));
+    }
+
+    #[test]
+    fn should_authorize_management_with_configured_token() {
+        let mut config = base_config();
+        config.management_token = Some("secret-token".to_string());
+
+        assert!(EventLoop::is_management_request_authorized(
+            &config,
+            Some("Bearer secret-token"),
+            None
+        ));
+
+        assert!(EventLoop::is_management_request_authorized(
+            &config,
+            None,
+            Some("secret-token")
+        ));
+    }
+
+    #[test]
+    fn should_allow_unauthenticated_management_when_opted_out() {
+        let mut config = base_config();
+        config.allow_unauthenticated_management = true;
+        assert!(EventLoop::is_management_request_authorized(
+            &config, None, None
+        ));
+    }
+
+    #[test]
+    fn should_add_vary_header_when_missing() {
+        let mut headers = HashMap::new();
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(headers.get("Vary"), Some(&"Accept-Encoding".to_string()));
+    }
+
+    #[test]
+    fn should_append_to_existing_vary_header() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Origin".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"Origin, Accept-Encoding".to_string())
+        );
+    }
+
+    #[test]
+    fn should_not_duplicate_vary_header_value() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Accept-Encoding, Origin".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"Accept-Encoding, Origin".to_string())
+        );
+    }
+
+    #[test]
+    fn should_detect_compressible_content_types() {
+        assert!(EventLoop::is_compressible(Some("text/html")));
+        assert!(EventLoop::is_compressible(Some("application/json")));
+        assert!(EventLoop::is_compressible(Some("application/javascript")));
+        assert!(EventLoop::is_compressible(Some("application/xml")));
+        assert!(EventLoop::is_compressible(Some("application/vnd.api+json")));
+        assert!(EventLoop::is_compressible(Some("application/atom+xml")));
+        assert!(!EventLoop::is_compressible(Some("image/png")));
+        assert!(!EventLoop::is_compressible(Some("video/mp4")));
+        assert!(!EventLoop::is_compressible(None));
+    }
+
+    #[test]
+    fn should_compose_vary_header_preserving_original_key() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Origin".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"Origin, Accept-Encoding".to_string())
+        );
+    }
+
+    #[test]
+    fn should_detect_different_content_type_with_charset() {
+        assert!(EventLoop::is_compressible(Some(
+            "application/json;charset=utf-8"
+        )));
+        assert!(EventLoop::is_compressible(Some("text/html; charset=UTF-8")));
+    }
+
+    #[test]
+    fn should_reject_image_content_types() {
+        assert!(!EventLoop::is_compressible(Some("image/png")));
+        assert!(!EventLoop::is_compressible(Some("image/jpeg")));
+        assert!(!EventLoop::is_compressible(Some("image/gif")));
+        assert!(!EventLoop::is_compressible(Some("image/webp")));
+    }
+
+    #[test]
+    fn should_reject_audio_video_content_types() {
+        assert!(!EventLoop::is_compressible(Some("audio/mp3")));
+        assert!(!EventLoop::is_compressible(Some("video/mp4")));
+        assert!(!EventLoop::is_compressible(Some("video/webm")));
+    }
+
+    #[test]
+    fn should_security_headers_preserve_values_case_insensitive() {
+        let mut headers = HashMap::new();
+        headers.insert("x-frame-options".to_string(), "SAMEORIGIN".to_string());
+        headers.insert("X-Content-Type-OPTIONS".to_string(), "nosniff".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("x-frame-options"),
+            Some(&"SAMEORIGIN".to_string())
+        );
+    }
+
+    #[test]
+    fn should_default_security_values_with_config_disabled() {
+        let mut config = base_config();
+        config.security_headers = false;
+        let mut headers = HashMap::new();
+
+        EventLoop::apply_default_security_headers(&config, &mut headers);
+
+        assert!(!headers.contains_key("X-Content-Type-Options"));
+        assert!(!headers.contains_key("X-Frame-Options"));
+    }
+
+    #[test]
+    fn should_vary_append_multiple_values() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Accept".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        EventLoop::add_vary_header(&mut headers, "Authorization");
+
+        let vary = headers.get("Vary").unwrap();
+        assert!(vary.contains("Accept"));
+        assert!(vary.contains("Accept-Encoding"));
+        assert!(vary.contains("Authorization"));
+    }
+
+    #[test]
+    fn should_parse_accept_encoding_from_header_buffer() {
+        use crate::compression::CompressionAlgorithm;
+
+        let buf = b"accept-encoding: gzip, deflate\r\nhost: example.com\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 15, 17, 13)];
+        let result = EventLoop::negotiate_encoding_from_headers(buf, &headers);
+        assert_eq!(result, Some(CompressionAlgorithm::Gzip));
+    }
+
+    #[test]
+    fn should_handle_encoding_negotiation_missing_header() {
+        let buf = b"host: example.com\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 4, 6, 11)];
+        let result = EventLoop::negotiate_encoding_from_headers(buf, &headers);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn should_accept_all_media_types() {
+        assert!(EventLoop::accepts_content_type("*/*", "anything/really"));
+        assert!(EventLoop::accepts_content_type("*/*", "application/json"));
+        assert!(EventLoop::accepts_content_type("*/*", "text/html"));
+    }
+
+    #[test]
+    fn should_accept_application_json_suffix() {
+        assert!(EventLoop::accepts_content_type(
+            "application/json",
+            "application/json"
+        ));
+        assert!(EventLoop::accepts_content_type(
+            "application/vnd.api+json",
+            "application/vnd.api+json"
+        ));
+        assert!(!EventLoop::accepts_content_type(
+            "text/plain",
+            "application/vnd.api+json"
+        ));
+    }
+
+    #[test]
+    fn should_encode_sse_table_payload() {
+        let lua = Lua::new();
+        let payload = lua
+            .load(
+                r#"
+                return {
+                  event = "token",
+                  id = "evt-42",
+                  retry = 2500,
+                  data = { ok = true, value = 7 },
+                }
+                "#,
+            )
+            .eval::<Value>()
+            .expect("create SSE payload");
+
+        let mut frame = Vec::new();
+        EventLoop::write_sse_payload(&mut frame, payload).expect("encode SSE frame");
+
+        let text = String::from_utf8(frame).expect("utf8 frame");
+        assert!(text.contains("retry:2500\n\n"));
+        assert!(text.contains("id:evt-42\n"));
+        assert!(text.contains("event:token\n"));
+        assert!(text.contains("data:{"));
+        assert!(text.contains("\"ok\":true"));
+        assert!(text.contains("\"value\":7"));
+        assert!(text.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn should_encode_sse_string_payload_with_generated_id() {
+        let lua = Lua::new();
+        let mut frame = Vec::new();
+        EventLoop::write_sse_payload(
+            &mut frame,
+            Value::String(lua.create_string("hello").expect("create string")),
+        )
+        .expect("encode string SSE frame");
+
+        let text = String::from_utf8(frame).expect("utf8 frame");
+        assert!(text.starts_with("id:"));
+        assert!(text.contains("\ndata:hello\n\n"));
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn should_shutdown_state_have_correct_ordering() {
+        assert!((ShutdownState::Running as u8) < ShutdownState::Draining as u8);
+        assert!((ShutdownState::Draining as u8) < ShutdownState::Shutdown as u8);
+    }
+
+    #[test]
+    fn should_shutdown_state_be_copy() {
+        let state = ShutdownState::Running;
+        let copy = state;
+        assert_eq!(state, copy);
+    }
+
+    #[test]
+    fn should_shutdown_state_be_eq() {
+        assert_eq!(ShutdownState::Running, ShutdownState::Running);
+        assert_ne!(ShutdownState::Running, ShutdownState::Draining);
+        assert_ne!(ShutdownState::Draining, ShutdownState::Shutdown);
+    }
+
+    #[test]
+    fn should_shutdown_state_debug_include_state_name() {
+        assert!(format!("{:?}", ShutdownState::Running).contains("Running"));
+        assert!(format!("{:?}", ShutdownState::Draining).contains("Draining"));
+        assert!(format!("{:?}", ShutdownState::Shutdown).contains("Shutdown"));
+    }
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+
+    #[test]
+    fn should_hash_bytes_deterministically() {
+        let data1 = b"hello world";
+        let data2 = b"hello world";
+        assert_eq!(hash_bytes(data1), hash_bytes(data2));
+    }
+
+    #[test]
+    fn should_hash_different_bytes_differently() {
+        let data1 = b"hello world";
+        let data2 = b"hello universe";
+        assert_ne!(hash_bytes(data1), hash_bytes(data2));
+    }
+
+    #[test]
+    fn should_hash_empty_bytes() {
+        let hash = hash_bytes(b"");
+        assert_ne!(hash, 0);
+    }
 }
 
 pub struct EventLoop {
@@ -52,9 +518,259 @@ pub struct EventLoop {
     table_pool: LuaTablePool,
     buffer_pool: BufferPool,
     ws_manager: SharedWsManager,
+    /// Optional error handler function for custom error formatting
+    error_handler: Option<Arc<RegistryKey>>,
+    /// Current shutdown state for graceful drain
+    shutdown_state: ShutdownState,
+    /// When draining started (for timeout)
+    drain_started: Option<Instant>,
+    /// Drain timeout duration
+    drain_timeout: Duration,
+    /// Lifecycle manager for server phases and hooks
+    lifecycle_manager: LifecycleManager,
 }
 
 impl EventLoop {
+    fn bearer_token(value: &str) -> Option<&str> {
+        let (scheme, token) = value.trim().split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("bearer") {
+            return None;
+        }
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        Some(token)
+    }
+
+    fn is_management_request_authorized(
+        config: &ServerConfig,
+        authorization_header: Option<&str>,
+        management_token_header: Option<&str>,
+    ) -> bool {
+        if config.allow_unauthenticated_management {
+            return true;
+        }
+
+        let expected = match config.management_token.as_deref() {
+            Some(token) => token,
+            None => return false,
+        };
+
+        if management_token_header
+            .map(str::trim)
+            .is_some_and(|provided| provided == expected)
+        {
+            return true;
+        }
+
+        authorization_header
+            .and_then(Self::bearer_token)
+            .is_some_and(|provided| provided == expected)
+    }
+
+    fn get_header_value(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+        name: &str,
+    ) -> Option<String> {
+        for &(name_off, name_len, val_off, val_len) in headers {
+            let key = unsafe { std::str::from_utf8_unchecked(&buf[name_off..name_off + name_len]) };
+            if key.eq_ignore_ascii_case(name) {
+                let value =
+                    unsafe { std::str::from_utf8_unchecked(&buf[val_off..val_off + val_len]) };
+                return Some(value.to_string());
+            }
+        }
+        None
+    }
+
+    fn negotiate_encoding_from_headers(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+    ) -> Option<CompressionAlgorithm> {
+        Self::get_header_value(buf, headers, "accept-encoding")
+            .and_then(|ae| negotiate_encoding(&ae))
+    }
+
+    fn accepts_content_type(accept: &str, content_type: &str) -> bool {
+        let ct = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+
+        for raw in accept.split(',') {
+            let media = raw
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+
+            if media.is_empty() || media == "*/*" {
+                return true;
+            }
+            if media == ct {
+                return true;
+            }
+            if let Some((major, _)) = media.split_once('/')
+                && media.ends_with("/*")
+                && ct.starts_with(&format!("{}/", major))
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn find_header_key_ci<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+        headers
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(name))
+            .map(String::as_str)
+    }
+
+    fn is_safe_security_header_override(name: &str, value: &str) -> bool {
+        let value = value.trim().to_ascii_lowercase();
+        match name.to_ascii_lowercase().as_str() {
+            "x-content-type-options" => value == "nosniff",
+            "x-frame-options" => value == "deny" || value == "sameorigin",
+            "referrer-policy" => matches!(
+                value.as_str(),
+                "no-referrer" | "same-origin" | "strict-origin" | "strict-origin-when-cross-origin"
+            ),
+            _ => true,
+        }
+    }
+
+    fn apply_default_security_headers(
+        config: &ServerConfig,
+        headers: &mut HashMap<String, String>,
+    ) {
+        if !config.security_headers {
+            return;
+        }
+
+        for (name, default_value) in DEFAULT_SECURITY_HEADERS {
+            if let Some(existing_key) = Self::find_header_key_ci(headers, name).map(str::to_string)
+            {
+                let existing_value = headers
+                    .get(&existing_key)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+
+                if config.allow_insecure_security_header_overrides
+                    || Self::is_safe_security_header_override(name, existing_value)
+                {
+                    continue;
+                }
+
+                headers.insert(existing_key, default_value.to_string());
+                continue;
+            }
+
+            headers.insert(name.to_string(), default_value.to_string());
+        }
+    }
+
+    fn set_http_response(
+        &self,
+        conn: &mut Connection,
+        status: u16,
+        body: Bytes,
+        content_type: Option<&str>,
+        mut headers: HashMap<String, String>,
+        buf: Vec<u8>,
+        compression: Option<CompressionAlgorithm>,
+    ) {
+        Self::apply_default_security_headers(&self.config, &mut headers);
+
+        let is_compressible_type = Self::is_compressible(content_type);
+
+        let (final_body, final_headers) = if let Some(algo) = compression {
+            const MIN_COMPRESS_SIZE: usize = 1024;
+            if body.len() >= MIN_COMPRESS_SIZE && is_compressible_type {
+                let compressed = compress(&body, algo);
+                if compressed.len() < body.len() {
+                    let mut h = headers;
+                    h.insert("Content-Encoding".to_string(), algo.to_string());
+                    Self::add_vary_header(&mut h, "Accept-Encoding");
+                    if let Some(etag) = h.get("ETag") {
+                        let encoding_suffix = format!("-{}", algo);
+                        let new_etag = if etag.starts_with('"') && etag.ends_with('"') {
+                            format!("\"{}{}\"", &etag[1..etag.len() - 1], encoding_suffix)
+                        } else {
+                            format!("\"{}{}\"", etag, encoding_suffix)
+                        };
+                        h.insert("ETag".to_string(), new_etag);
+                    } else {
+                        let computed_etag = format!("\"{}\"", hash_bytes(&compressed));
+                        h.insert("ETag".to_string(), computed_etag);
+                    }
+                    (Bytes::from(compressed), h)
+                } else {
+                    let mut h = headers;
+                    if is_compressible_type {
+                        Self::add_vary_header(&mut h, "Accept-Encoding");
+                    }
+                    (body, h)
+                }
+            } else {
+                (body, headers)
+            }
+        } else {
+            let mut h = headers;
+            if is_compressible_type {
+                Self::add_vary_header(&mut h, "Accept-Encoding");
+            }
+            (body, h)
+        };
+
+        if final_headers.is_empty() {
+            conn.set_response_bytes_with_buf(status, final_body, content_type, buf);
+            return;
+        }
+
+        conn.set_response_bytes_with_headers(
+            status,
+            final_body,
+            content_type,
+            Some(&final_headers),
+            buf,
+        );
+    }
+
+    fn is_compressible(content_type: Option<&str>) -> bool {
+        let ct = match content_type {
+            Some(t) => t,
+            None => return false,
+        };
+        let lower = ct.to_ascii_lowercase();
+        lower.starts_with("text/")
+            || lower.starts_with("application/json")
+            || lower.starts_with("application/javascript")
+            || lower.starts_with("application/xml")
+            || lower.starts_with("application/atom+xml")
+            || lower.starts_with("application/rss+xml")
+            || lower.ends_with("+json")
+            || lower.ends_with("+xml")
+    }
+
+    fn add_vary_header(headers: &mut HashMap<String, String>, value: &str) {
+        if let Some(existing) = headers.get_mut("Vary") {
+            let values: std::collections::HashSet<&str> =
+                existing.split(',').map(|s| s.trim()).collect();
+            if !values.contains(value) {
+                *existing = format!("{}, {}", existing, value);
+            }
+        } else {
+            headers.insert("Vary".to_string(), value.to_string());
+        }
+    }
+
     pub fn new(
         lua: Lua,
         routes: Vec<Route>,
@@ -62,6 +778,7 @@ impl EventLoop {
         config: ServerConfig,
         openapi_spec: Option<serde_json::Value>,
         addr: SocketAddr,
+        error_handler: Option<Arc<RegistryKey>>,
     ) -> Result<Self> {
         let poll = Poll::new()?;
         let mut listener = TcpListener::bind(addr)?;
@@ -107,6 +824,20 @@ impl EventLoop {
         let table_pool = LuaTablePool::new(1024);
         let buffer_pool = BufferPool::new();
 
+        let drain_timeout = config
+            .drain_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(DEFAULT_DRAIN_TIMEOUT_SECS));
+
+        let lifecycle_config = LifecycleConfig {
+            enabled: true,
+            hook_timeout_secs: 30,
+            graceful_shutdown: true,
+            drain_timeout_secs: drain_timeout.as_secs(),
+            reload_on_signal: false,
+        };
+        let lifecycle_manager = LifecycleManager::with_config(lifecycle_config);
+
         Ok(Self {
             poll,
             listener,
@@ -121,21 +852,197 @@ impl EventLoop {
             table_pool,
             buffer_pool,
             ws_manager,
+            error_handler,
+            shutdown_state: ShutdownState::Running,
+            drain_started: None,
+            drain_timeout,
+            lifecycle_manager,
         })
+    }
+
+    fn setup_signal_handler(_poll: &Poll) -> Result<crossbeam_channel::Receiver<()>> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+
+        #[cfg(unix)]
+        {
+            use signal_hook::consts::signal;
+            use signal_hook::iterator::Signals;
+
+            let mut signals = Signals::new([signal::SIGTERM, signal::SIGINT])?;
+            let tx_clone = tx.clone();
+
+            std::thread::spawn(move || {
+                for sig in signals.forever() {
+                    if sig == signal::SIGTERM || sig == signal::SIGINT {
+                        let _ = tx_clone.try_send(());
+                    }
+                }
+            });
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = tx;
+        }
+
+        Ok(rx)
+    }
+
+    fn handle_signal(&mut self) -> Result<bool> {
+        match self.shutdown_state {
+            ShutdownState::Running => {
+                if self.config.log_level != "nope" {
+                    info!("Received shutdown signal, draining connections...");
+                }
+                self.lifecycle_manager.request_shutdown();
+                self.lifecycle_manager
+                    .execute_hooks(&self.lua, LifecycleEvent::ShutdownRequested)?;
+                self.lifecycle_manager
+                    .transition_to(LifecyclePhase::Draining);
+                self.lifecycle_manager
+                    .execute_hooks(&self.lua, LifecycleEvent::Draining)?;
+                self.shutdown_state = ShutdownState::Draining;
+                self.drain_started = Some(Instant::now());
+                let _ = self.poll.registry().deregister(&mut self.listener);
+                self.prepare_connections_for_shutdown();
+                Ok(false)
+            }
+            ShutdownState::Draining => Ok(false),
+            ShutdownState::Shutdown => Ok(true),
+        }
+    }
+
+    fn prepare_connections_for_shutdown(&mut self) {
+        let mut close_now = Vec::new();
+        let mut flush_pending = Vec::new();
+
+        {
+            let mut conns = self.connections.borrow_mut();
+            for (idx, conn) in conns.iter_mut() {
+                let should_flush = matches!(
+                    conn.state,
+                    ConnectionState::Writing
+                        | ConnectionState::StreamingHeaders
+                        | ConnectionState::StreamingBody
+                );
+
+                if conn.prepare_for_shutdown() {
+                    close_now.push(idx);
+                } else if should_flush {
+                    flush_pending.push(idx);
+                }
+            }
+        }
+
+        for idx in flush_pending {
+            let mut conns = self.connections.borrow_mut();
+            if let Some(conn) = conns.get_mut(idx) {
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+        }
+
+        for idx in close_now {
+            self.close_connection(idx);
+        }
+    }
+
+    fn close_connection(&mut self, conn_idx: usize) {
+        self.recycle_write_buf(conn_idx);
+
+        let mut conns = self.connections.borrow_mut();
+        if !conns.contains(conn_idx) {
+            return;
+        }
+
+        let mut conn = conns.remove(conn_idx);
+        let _ = self.poll.registry().deregister(&mut conn.socket);
+    }
+
+    fn is_drain_complete(&self) -> bool {
+        let conns = self.connections.borrow();
+        conns.is_empty() && self.yielded_coroutines.is_empty()
     }
 
     pub fn run(&mut self) -> Result<()> {
         let mut events = Events::with_capacity(1024);
 
+        // Execute startup hooks
+        self.lifecycle_manager
+            .execute_hooks(&self.lua, LifecycleEvent::Startup)?;
+        self.lifecycle_manager
+            .transition_to(LifecyclePhase::Running);
+        self.lifecycle_manager
+            .execute_hooks(&self.lua, LifecycleEvent::Ready)?;
+
+        let signal_rx = Self::setup_signal_handler(&self.poll)?;
+
         loop {
-            let poll_timeout = self.next_poll_timeout().or(Some(Duration::from_millis(50)));
+            let poll_timeout = match self.shutdown_state {
+                ShutdownState::Running => {
+                    self.next_poll_timeout().or(Some(Duration::from_millis(50)))
+                }
+                ShutdownState::Draining => {
+                    if self.is_drain_complete() {
+                        if self.config.log_level != "nope" {
+                            info!("All connections drained, shutting down");
+                        }
+                        self.shutdown_state = ShutdownState::Shutdown;
+                        self.lifecycle_manager
+                            .transition_to(LifecyclePhase::ShuttingDown);
+                    } else if let Some(started) = self.drain_started
+                        && started.elapsed() >= self.drain_timeout
+                    {
+                        if self.config.log_level != "nope" {
+                            let conns = self.connections.borrow();
+                            let active_count = conns.len();
+                            let yielded_count = self.yielded_coroutines.len();
+                            info!(
+                                "Drain timeout reached ({} connections, {} yielded coroutines remaining)",
+                                active_count, yielded_count
+                            );
+                        }
+                        self.shutdown_state = ShutdownState::Shutdown;
+                        self.lifecycle_manager
+                            .transition_to(LifecyclePhase::ShuttingDown);
+                    }
+                    Some(Duration::from_millis(50))
+                }
+                ShutdownState::Shutdown => {
+                    if self.config.log_level != "nope" {
+                        info!("Server shutdown complete");
+                    }
+                    // Execute shutdown hooks before returning
+                    self.lifecycle_manager
+                        .execute_hooks(&self.lua, LifecycleEvent::ShutdownComplete)?;
+                    self.lifecycle_manager
+                        .transition_to(LifecyclePhase::Shutdown);
+                    return Ok(());
+                }
+            };
+
             self.poll.poll(&mut events, poll_timeout)?;
 
             for event in events.iter() {
                 match event.token() {
-                    LISTENER => self.accept_connections()?,
+                    LISTENER => {
+                        if self.shutdown_state == ShutdownState::Running
+                            && self
+                                .lifecycle_manager
+                                .current_phase()
+                                .can_accept_connections()
+                        {
+                            self.accept_connections()?;
+                        }
+                    }
                     token => self.handle_connection(token, event)?,
                 }
+            }
+
+            if self.shutdown_state == ShutdownState::Running
+                && signal_rx.try_recv().is_ok()
+                && self.handle_signal()?
+            {
+                return Ok(());
             }
 
             self.tick_lua_scheduler();
@@ -162,6 +1069,113 @@ impl EventLoop {
         } else {
             Some(next_wake.duration_since(now))
         }
+    }
+
+    fn sse_value_to_string(value: Value) -> mlua::Result<String> {
+        match value {
+            Value::Nil => Ok(String::new()),
+            Value::String(s) => Ok(s.to_str()?.to_string()),
+            Value::Integer(i) => Ok(i.to_string()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Boolean(b) => Ok(b.to_string()),
+            Value::Table(table) => table.to_json_string(),
+            other => Err(mlua::Error::RuntimeError(format!(
+                "unsupported SSE data value: {:?}",
+                other
+            ))),
+        }
+    }
+
+    fn write_sse_payload(frame: &mut Vec<u8>, value: Value) -> mlua::Result<()> {
+        match value {
+            Value::String(s) => {
+                let id = generate_sse_event_id();
+                let data = s.to_str()?;
+                SseWriter::format_event(frame, None, &data, Some(&id));
+                Ok(())
+            }
+            Value::Table(table) => {
+                let event = match table.get::<Value>("event")? {
+                    Value::Nil => None,
+                    Value::String(name) => Some(name.to_str()?.to_string()),
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "SSE event name must be string, got {:?}",
+                            other
+                        )));
+                    }
+                };
+
+                let id = match table.get::<Value>("id")? {
+                    Value::Nil => Some(generate_sse_event_id()),
+                    Value::String(id) => Some(id.to_str()?.to_string()),
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "SSE id must be string, got {:?}",
+                            other
+                        )));
+                    }
+                };
+
+                if let Some(retry_ms) = table.get::<Option<u32>>("retry")? {
+                    SseWriter::format_retry(frame, retry_ms);
+                }
+
+                if let Some(comment) = table.get::<Option<String>>("comment")? {
+                    SseWriter::format_comment(frame, &comment);
+                }
+
+                let data = Self::sse_value_to_string(table.get::<Value>("data")?)?;
+                SseWriter::format_event(frame, event.as_deref(), &data, id.as_deref());
+                Ok(())
+            }
+            other => Err(mlua::Error::RuntimeError(format!(
+                "SSE producer must return string, table, or nil, got {:?}",
+                other
+            ))),
+        }
+    }
+
+    fn poll_sse_chunk(&self, conn_idx: usize) -> Result<Option<PendingSseChunk>> {
+        let (event_producer, retry_pending, retry_ms) = {
+            let conns = self.connections.borrow();
+            let Some(conn) = conns.get(conn_idx) else {
+                return Ok(None);
+            };
+
+            if conn.sse_data.is_none() || !matches!(conn.state, ConnectionState::StreamingBody) {
+                return Ok(None);
+            }
+
+            if !conn.stream_chunks.is_empty() || conn.stream_final_sent {
+                return Ok(None);
+            }
+
+            let sse = conn.sse_data.as_ref().unwrap();
+            (
+                Arc::clone(&sse.event_producer),
+                sse.retry_pending,
+                sse.retry_ms,
+            )
+        };
+
+        let mut frame = Vec::with_capacity(256);
+        if retry_pending && retry_ms > 0 {
+            SseWriter::format_retry(&mut frame, retry_ms);
+        }
+
+        let producer: Function = self.lua.registry_value(&event_producer)?;
+        let value = producer.call::<Value>(())?;
+        let should_end = matches!(value, Value::Nil);
+
+        if !should_end {
+            Self::write_sse_payload(&mut frame, value)?;
+        }
+
+        Ok(Some(PendingSseChunk {
+            chunk: (!frame.is_empty()).then(|| Bytes::from(frame)),
+            should_end,
+        }))
     }
 
     fn tick_lua_scheduler(&mut self) {
@@ -246,11 +1260,11 @@ impl EventLoop {
         // Check if this is a WebSocket connection
         {
             let conns = self.connections.borrow();
-            if let Some(conn) = conns.get(conn_idx) {
-                if conn.is_websocket() {
-                    drop(conns);
-                    return self.handle_ws_event(conn_idx, event);
-                }
+            if let Some(conn) = conns.get(conn_idx)
+                && conn.is_websocket()
+            {
+                drop(conns);
+                return self.handle_ws_event(conn_idx, event);
             }
         }
 
@@ -285,9 +1299,154 @@ impl EventLoop {
                         (false, true, false, false)
                     }
                 },
+                ConnectionState::StreamingHeaders if event.is_writable() => {
+                    match conn.try_write_stream() {
+                        Ok(true) => {
+                            // Headers written, transition to streaming body
+                            // The stream will call the producer to get chunks
+                            (false, false, false, false)
+                        }
+                        Ok(false) => (false, false, false, false),
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            (false, true, false, false)
+                        }
+                    }
+                }
+                ConnectionState::StreamingBody if event.is_writable() => {
+                    match conn.try_write_stream() {
+                        Ok(true) => {
+                            // Streaming complete
+                            if conn.keep_alive {
+                                conn.reset();
+                                (false, false, true, false)
+                            } else {
+                                conn.state = ConnectionState::Closed;
+                                (false, true, false, false)
+                            }
+                        }
+                        Ok(false) => (false, false, false, false),
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            (false, true, false, false)
+                        }
+                    }
+                }
                 _ => (false, false, false, false),
             }
         };
+
+        // Handle streaming - produce chunks after headers are written
+        let streaming_conn_idx = {
+            let conns = self.connections.borrow();
+            if matches!(
+                conns.get(conn_idx).map(|c| &c.state),
+                Some(ConnectionState::StreamingBody)
+            ) {
+                Some(conn_idx)
+            } else {
+                None
+            }
+        };
+
+        if let Some(idx) = streaming_conn_idx {
+            // Call the chunk producer to get more chunks
+            let chunks_to_write = {
+                let conns = self.connections.borrow();
+                let conn = &conns[idx];
+                if let Some(ref producer_key) = conn.stream_producer {
+                    let producer: mlua::Function = self.lua.registry_value(producer_key)?;
+                    let mut chunks = Vec::new();
+
+                    // Call producer in a loop until it returns nil or we hit a limit
+                    // This produces chunks with backpressure-safe handling
+                    loop {
+                        let result = producer.call::<mlua::Value>(())?;
+                        match result {
+                            mlua::Value::String(s) => {
+                                let bytes = s.as_bytes();
+                                chunks.push(Bytes::copy_from_slice(&bytes));
+                            }
+                            mlua::Value::Nil => {
+                                // End of stream
+                                break;
+                            }
+                            _ => {
+                                // Invalid return, treat as end
+                                break;
+                            }
+                        }
+                    }
+                    Some(chunks)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(chunks) = chunks_to_write {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[idx];
+                for chunk in chunks {
+                    conn.queue_stream_chunk(chunk);
+                }
+            }
+
+            // Queue final chunk if producer finished
+            {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[idx];
+                conn.queue_stream_end();
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+        }
+
+        let sse_conn_idx = {
+            let conns = self.connections.borrow();
+            if matches!(
+                conns.get(conn_idx).map(|c| &c.state),
+                Some(ConnectionState::StreamingBody)
+            ) && conns
+                .get(conn_idx)
+                .and_then(|c| c.sse_data.as_ref())
+                .is_some()
+            {
+                Some(conn_idx)
+            } else {
+                None
+            }
+        };
+
+        if let Some(idx) = sse_conn_idx {
+            match self.poll_sse_chunk(idx) {
+                Ok(Some(pending)) => {
+                    let mut conns = self.connections.borrow_mut();
+                    if let Some(conn) = conns.get_mut(idx) {
+                        if let Some(ref mut sse) = conn.sse_data {
+                            sse.retry_pending = false;
+                            sse.last_write = Some(Instant::now());
+                        }
+                        if let Some(chunk) = pending.chunk {
+                            conn.queue_stream_chunk(chunk);
+                        }
+                        if pending.should_end {
+                            conn.queue_stream_end();
+                            conn.sse_data = None;
+                        }
+                        let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("SSE producer error for connection {}: {}", idx, e);
+                    let mut conns = self.connections.borrow_mut();
+                    if let Some(conn) = conns.get_mut(idx) {
+                        conn.queue_stream_end();
+                        conn.sse_data = None;
+                        let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    }
+                }
+            }
+        }
 
         // Handle WS upgrade completion (101 fully written)
         if is_ws_upgrade_complete {
@@ -303,10 +1462,7 @@ impl EventLoop {
         };
 
         if should_close || is_closed_state {
-            self.recycle_write_buf(conn_idx);
-            let mut conns = self.connections.borrow_mut();
-            let mut conn = conns.remove(conn_idx);
-            let _ = self.poll.registry().deregister(&mut conn.socket);
+            self.close_connection(conn_idx);
             return Ok(());
         }
 
@@ -315,7 +1471,7 @@ impl EventLoop {
             let mut conns = self.connections.borrow_mut();
             if let Some(conn) = conns.get_mut(conn_idx) {
                 conn.reset();
-                let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+                let _ = conn.reregister(self.poll.registry(), Interest::READABLE);
             }
         }
 
@@ -381,15 +1537,108 @@ impl EventLoop {
         }
 
         // ── Regular HTTP path ──
-        if self.config.docs && path == "/docs" && self.openapi_spec.is_some() {
+        if self.config.docs
+            && path == self.config.management_docs_path()
+            && self.openapi_spec.is_some()
+        {
+            let authorization =
+                Self::get_header_value(buf_ref, &conn.header_offsets, "authorization");
+            let management_token =
+                Self::get_header_value(buf_ref, &conn.header_offsets, "x-rover-management-token");
+            let is_authorized = Self::is_management_request_authorized(
+                &self.config,
+                authorization.as_deref(),
+                management_token.as_deref(),
+            );
+
+            if !is_authorized {
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                let body =
+                    Bytes::from_static(b"{\"error\":\"Management endpoint requires auth token\"}");
+                self.set_http_response(
+                    conn,
+                    401,
+                    body,
+                    Some("application/json"),
+                    HashMap::new(),
+                    buf,
+                    None,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
+
             let html = rover_openapi::scalar_html(self.openapi_spec.as_ref().unwrap());
             drop(conns);
             let mut conns = self.connections.borrow_mut();
             let conn = &mut conns[conn_idx];
             conn.keep_alive = keep_alive;
             let buf = self.buffer_pool.get_response_buf();
-            conn.set_response_with_buf(200, html.as_bytes(), Some("text/html"), buf);
-            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            self.set_http_response(
+                conn,
+                200,
+                Bytes::copy_from_slice(html.as_bytes()),
+                Some("text/html"),
+                HashMap::new(),
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            return Ok(());
+        }
+
+        // CORS preflight handling before method parsing (OPTIONS may be auto-handled)
+        if method.eq_ignore_ascii_case("options")
+            && let (Some(cors_origin), Some(origin), Some(_acr_method)) = (
+                self.config.cors_origin.as_ref(),
+                Self::get_header_value(buf_ref, &conn.header_offsets, "origin"),
+                Self::get_header_value(
+                    buf_ref,
+                    &conn.header_offsets,
+                    "access-control-request-method",
+                ),
+            )
+        {
+            drop(conns);
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.keep_alive = keep_alive;
+            let mut headers = HashMap::new();
+            let allow_origin = if cors_origin == "*" {
+                "*".to_string()
+            } else {
+                origin
+            };
+            headers.insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+            headers.insert(
+                "Access-Control-Allow-Methods".to_string(),
+                self.config.cors_methods.clone(),
+            );
+            headers.insert(
+                "Access-Control-Allow-Headers".to_string(),
+                self.config.cors_headers.clone(),
+            );
+            if self.config.cors_credentials {
+                headers.insert(
+                    "Access-Control-Allow-Credentials".to_string(),
+                    "true".to_string(),
+                );
+            }
+            let buf = self.buffer_pool.get_response_buf();
+            self.set_http_response(
+                conn,
+                204,
+                Bytes::new(),
+                Some("text/plain"),
+                headers,
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
             return Ok(());
         }
 
@@ -406,26 +1655,99 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(400, error_msg.as_bytes(), Some("text/plain"), buf);
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                self.set_http_response(
+                    conn,
+                    400,
+                    Bytes::from(error_msg.into_bytes()),
+                    Some("text/plain"),
+                    HashMap::new(),
+                    buf,
+                    None,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
         };
 
         let path_owned = path.to_string();
-        let (handler, params) = match self.router.match_route(http_method, &path_owned) {
-            Some((h, p)) => (h.clone(), p),
-            None => {
-                drop(conns);
-                let mut conns = self.connections.borrow_mut();
-                let conn = &mut conns[conn_idx];
-                conn.keep_alive = keep_alive;
-                let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(404, b"Route not found", Some("text/plain"), buf);
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
-                return Ok(());
-            }
-        };
+        let (handler, params, is_head_request) =
+            match self.router.match_route(http_method, &path_owned) {
+                RouteMatch::Found {
+                    handler,
+                    params,
+                    is_head,
+                } => (handler, params, is_head),
+                RouteMatch::MethodNotAllowed { allowed } => {
+                    // OPTIONS auto-response when path exists
+                    if http_method == HttpMethod::Options {
+                        drop(conns);
+                        let mut conns = self.connections.borrow_mut();
+                        let conn = &mut conns[conn_idx];
+                        conn.keep_alive = keep_alive;
+                        let mut headers = HashMap::new();
+                        let allow = allowed
+                            .iter()
+                            .map(|m| m.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        headers.insert("Allow".to_string(), allow);
+                        let buf = self.buffer_pool.get_response_buf();
+                        self.set_http_response(
+                            conn,
+                            204,
+                            Bytes::new(),
+                            Some("text/plain"),
+                            headers,
+                            buf,
+                            None,
+                        );
+                        let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                        return Ok(());
+                    }
+
+                    drop(conns);
+                    let mut conns = self.connections.borrow_mut();
+                    let conn = &mut conns[conn_idx];
+                    conn.keep_alive = keep_alive;
+                    let mut headers = HashMap::new();
+                    let allow = allowed
+                        .iter()
+                        .map(|m| m.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    headers.insert("Allow".to_string(), allow);
+                    let buf = self.buffer_pool.get_response_buf();
+                    self.set_http_response(
+                        conn,
+                        405,
+                        Bytes::from_static(b"Method Not Allowed"),
+                        Some("text/plain"),
+                        headers,
+                        buf,
+                        None,
+                    );
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    return Ok(());
+                }
+                RouteMatch::NotFound => {
+                    drop(conns);
+                    let mut conns = self.connections.borrow_mut();
+                    let conn = &mut conns[conn_idx];
+                    conn.keep_alive = keep_alive;
+                    let buf = self.buffer_pool.get_response_buf();
+                    self.set_http_response(
+                        conn,
+                        404,
+                        Bytes::from_static(b"Route not found"),
+                        Some("text/plain"),
+                        HashMap::new(),
+                        buf,
+                        None,
+                    );
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    return Ok(());
+                }
+            };
 
         let buf = if !conn.parsed_buf.is_empty() {
             conn.parsed_buf.clone()
@@ -504,12 +1826,37 @@ impl EventLoop {
             ));
         }
 
+        let accept_header = Self::get_header_value(buf_ref, &conn.header_offsets, "accept");
+        let accept_encoding = Self::negotiate_encoding_from_headers(buf_ref, &conn.header_offsets);
+
+        // Generate or extract request ID for correlation
+        let request_id = extract_or_generate_request_id(buf_ref, &conn.header_offsets);
+
         let (body_off, body_len) = conn
             .body
             .map(|(off, len)| (off as u32, len as u32))
             .unwrap_or((0, 0));
 
+        // Check body size limit if configured
+        if let Some(max_size) = self.config.body_size_limit
+            && (body_len as usize) > max_size
+        {
+            drop(conns);
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.keep_alive = keep_alive;
+            let buf = self.buffer_pool.get_response_buf();
+            let error_body = format!(
+                "{{\"error\":\"Request body too large: {} bytes exceeds limit of {} bytes\"}}",
+                body_len, max_size
+            );
+            conn.set_response_with_buf(413, error_body.as_bytes(), Some("application/json"), buf);
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            return Ok(());
+        }
+
         // Drop the borrow before calling into Lua
+        let origin_header = Self::get_header_value(buf_ref, &conn.header_offsets, "origin");
         drop(conns);
 
         match execute_handler_coroutine(
@@ -525,23 +1872,163 @@ impl EventLoop {
             header_offsets,
             query_offsets,
             &params,
+            request_id,
             started_at,
             &mut self.thread_pool,
             &mut self.request_pool,
             &self.table_pool,
             &mut self.buffer_pool,
+            self.error_handler.as_ref(),
         ) {
             Ok(CoroutineResponse::Ready {
                 status,
                 body,
                 content_type,
+                headers,
             }) => {
                 let mut conns = self.connections.borrow_mut();
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
+                let body = if is_head_request { Bytes::new() } else { body };
+
+                if let (Some(accept), Some(ct)) = (accept_header.as_deref(), content_type)
+                    && status < 400
+                    && !Self::accepts_content_type(accept, ct)
+                {
+                    let resp_buf = self.buffer_pool.get_response_buf();
+                    self.set_http_response(
+                        conn,
+                        406,
+                        Bytes::from_static(b"Not Acceptable"),
+                        Some("text/plain"),
+                        HashMap::new(),
+                        resp_buf,
+                        None,
+                    );
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    return Ok(());
+                }
+
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_bytes_with_buf(status, body, content_type, buf);
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                let mut response_headers = headers.unwrap_or_default();
+                if let (Some(cors_origin), Some(origin)) =
+                    (self.config.cors_origin.as_ref(), origin_header.as_ref())
+                {
+                    let allow_origin = if cors_origin == "*" {
+                        "*".to_string()
+                    } else {
+                        origin.clone()
+                    };
+                    response_headers
+                        .insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+                    if self.config.cors_credentials {
+                        response_headers.insert(
+                            "Access-Control-Allow-Credentials".to_string(),
+                            "true".to_string(),
+                        );
+                    }
+                }
+                self.set_http_response(
+                    conn,
+                    status,
+                    body,
+                    content_type,
+                    response_headers,
+                    buf,
+                    accept_encoding,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+            Ok(CoroutineResponse::Streaming {
+                status,
+                content_type,
+                headers,
+                chunk_producer,
+            }) => {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+
+                let mut response_headers = headers.unwrap_or_default();
+
+                // CORS headers for streaming
+                if let (Some(cors_origin), Some(origin)) =
+                    (self.config.cors_origin.as_ref(), origin_header.as_ref())
+                {
+                    let allow_origin = if cors_origin == "*" {
+                        "*".to_string()
+                    } else {
+                        origin.clone()
+                    };
+                    response_headers
+                        .insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+                    if self.config.cors_credentials {
+                        response_headers.insert(
+                            "Access-Control-Allow-Credentials".to_string(),
+                            "true".to_string(),
+                        );
+                    }
+                }
+
+                // Set up streaming response with chunked transfer encoding headers
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_streaming_headers(status, &content_type, Some(&response_headers), buf);
+                conn.stream_producer = Some(Arc::clone(&chunk_producer));
+
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+            Ok(CoroutineResponse::Sse {
+                status,
+                headers,
+                event_producer,
+                retry_ms,
+            }) => {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+
+                let mut response_headers = headers.unwrap_or_default();
+                response_headers
+                    .entry("Cache-Control".to_string())
+                    .or_insert_with(|| "no-cache".to_string());
+                response_headers
+                    .entry("X-Accel-Buffering".to_string())
+                    .or_insert_with(|| "no".to_string());
+
+                if let (Some(cors_origin), Some(origin)) =
+                    (self.config.cors_origin.as_ref(), origin_header.as_ref())
+                {
+                    let allow_origin = if cors_origin == "*" {
+                        "*".to_string()
+                    } else {
+                        origin.clone()
+                    };
+                    response_headers
+                        .insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+                    if self.config.cors_credentials {
+                        response_headers.insert(
+                            "Access-Control-Allow-Credentials".to_string(),
+                            "true".to_string(),
+                        );
+                    }
+                }
+
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_streaming_headers(
+                    status,
+                    "text/event-stream",
+                    Some(&response_headers),
+                    buf,
+                );
+                conn.sse_data = Some(Box::new(crate::connection::SseConnectionData {
+                    event_producer,
+                    retry_ms: retry_ms.unwrap_or(0),
+                    retry_pending: retry_ms.unwrap_or(0) > 0,
+                    keepalive_ms: 0,
+                    last_write: None,
+                }));
+
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
                 let mut conns = self.connections.borrow_mut();
@@ -561,15 +2048,21 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(500, b"Internal server error", Some("text/plain"), buf);
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                self.set_http_response(
+                    conn,
+                    500,
+                    Bytes::from_static(b"Internal server error"),
+                    Some("text/plain"),
+                    HashMap::new(),
+                    buf,
+                    None,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
             }
         }
 
         Ok(())
     }
-
-    // ── WebSocket upgrade handling ──
 
     fn handle_ws_upgrade(&mut self, conn_idx: usize, path: &str, keep_alive: bool) -> Result<()> {
         // Match against WS router
@@ -580,13 +2073,16 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(
+                self.set_http_response(
+                    conn,
                     404,
-                    b"WebSocket route not found",
+                    Bytes::from_static(b"WebSocket route not found"),
                     Some("text/plain"),
+                    HashMap::new(),
                     buf,
+                    None,
                 );
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
         };
@@ -609,13 +2105,16 @@ impl EventLoop {
                     let conn = &mut conns[conn_idx];
                     conn.keep_alive = false;
                     let buf = self.buffer_pool.get_response_buf();
-                    conn.set_response_with_buf(
+                    self.set_http_response(
+                        conn,
                         e.status_code(),
-                        e.message().as_bytes(),
+                        Bytes::copy_from_slice(e.message().as_bytes()),
                         Some("text/plain"),
+                        HashMap::new(),
                         buf,
+                        None,
                     );
-                    let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                     return Ok(());
                 }
             }
@@ -635,7 +2134,7 @@ impl EventLoop {
             conn.body_pos = 0;
             conn.state = ConnectionState::Writing;
             conn.pending_ws_upgrade = Some(endpoint_idx);
-            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
         }
 
         info!(
@@ -659,6 +2158,7 @@ impl EventLoop {
         let (
             buf,
             header_offsets,
+            header_offsets_raw,
             query_offsets,
             params,
             path_off,
@@ -678,13 +2178,75 @@ impl EventLoop {
                 .iter()
                 .map(|&(no, nl, vo, vl)| (no as u16, nl as u8, vo as u16, vl as u16))
                 .collect();
+            let header_offsets_raw = conn.header_offsets.clone();
             let (po, pl) = conn.path_offset.unwrap_or((0, 0));
             let (mo, ml) = conn.method_offset.unwrap_or((0, 0));
-            // For now, pass empty query/params (upgrade request already parsed)
+            let query_offsets = {
+                let search_start = po;
+                let search_end = (po + pl).min(buf.len());
+                if let Some(q_pos) = buf[search_start..search_end]
+                    .iter()
+                    .position(|&b| b == b'?')
+                {
+                    let qs_start_abs = po + q_pos + 1;
+                    let qs_len = search_end.saturating_sub(qs_start_abs);
+                    let mut offsets = Vec::new();
+                    let mut pos = 0usize;
+
+                    while pos < qs_len {
+                        let key_start = pos as u16;
+
+                        while pos < qs_len
+                            && buf[qs_start_abs + pos] != b'='
+                            && buf[qs_start_abs + pos] != b'&'
+                        {
+                            pos += 1;
+                        }
+
+                        let key_len_raw = (pos - key_start as usize) as u8;
+
+                        if pos >= qs_len || buf[qs_start_abs + pos] == b'&' {
+                            if key_len_raw > 0 {
+                                offsets.push((
+                                    (qs_start_abs + key_start as usize) as u16,
+                                    key_len_raw,
+                                    (qs_start_abs + key_start as usize) as u16,
+                                    key_len_raw as u16,
+                                ));
+                            }
+                            pos += 1;
+                            continue;
+                        }
+
+                        pos += 1;
+                        let val_start = pos as u16;
+
+                        while pos < qs_len && buf[qs_start_abs + pos] != b'&' {
+                            pos += 1;
+                        }
+
+                        let val_len_raw = (pos - val_start as usize) as u16;
+                        offsets.push((
+                            (qs_start_abs + key_start as usize) as u16,
+                            key_len_raw,
+                            (qs_start_abs + val_start as usize) as u16,
+                            val_len_raw,
+                        ));
+
+                        pos += 1;
+                    }
+
+                    offsets
+                } else {
+                    Vec::new()
+                }
+            };
+
             (
                 buf,
                 header_offsets,
-                Vec::new(),
+                header_offsets_raw,
+                query_offsets,
                 Vec::new(),
                 po as u16,
                 pl as u16,
@@ -693,12 +2255,15 @@ impl EventLoop {
             )
         };
 
+        // Generate request ID for WebSocket connection
+        let ws_request_id = extract_or_generate_request_id(&buf, &header_offsets_raw);
+
         // Upgrade the connection
         {
             let mut conns = self.connections.borrow_mut();
             let conn = &mut conns[conn_idx];
             conn.upgrade_to_ws(endpoint_idx);
-            let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+            let _ = conn.reregister(self.poll.registry(), Interest::READABLE);
         }
 
         // Track the connection
@@ -726,6 +2291,7 @@ impl EventLoop {
                 header_offsets,
                 query_offsets,
                 &params,
+                ws_request_id.clone(),
             )?;
 
             drop(mgr);
@@ -743,10 +2309,10 @@ impl EventLoop {
                     if !matches!(state_value, Value::Nil) {
                         let state_key = self.lua.create_registry_value(state_value)?;
                         let mut conns = self.connections.borrow_mut();
-                        if let Some(conn) = conns.get_mut(conn_idx) {
-                            if let Some(ref mut ws) = conn.ws_data {
-                                ws.state_key = Some(state_key);
-                            }
+                        if let Some(conn) = conns.get_mut(conn_idx)
+                            && let Some(ref mut ws) = conn.ws_data
+                        {
+                            ws.state_key = Some(state_key);
                         }
                     }
                     self.thread_pool.release(thread);
@@ -862,27 +2428,27 @@ impl EventLoop {
                     } else {
                         // Start of fragmented message
                         let mut conns = self.connections.borrow_mut();
-                        if let Some(conn) = conns.get_mut(conn_idx) {
-                            if let Some(ref mut ws) = conn.ws_data {
-                                ws.fragment_opcode = Some(opcode);
-                                ws.fragment_buf = Some(payload);
-                            }
+                        if let Some(conn) = conns.get_mut(conn_idx)
+                            && let Some(ref mut ws) = conn.ws_data
+                        {
+                            ws.fragment_opcode = Some(opcode);
+                            ws.fragment_buf = Some(payload);
                         }
                     }
                 }
                 WsOpcode::Continuation => {
                     let mut conns = self.connections.borrow_mut();
-                    if let Some(conn) = conns.get_mut(conn_idx) {
-                        if let Some(ref mut ws) = conn.ws_data {
-                            if let Some(ref mut frag) = ws.fragment_buf {
-                                frag.extend_from_slice(&payload);
-                            }
-                            if fin {
-                                let assembled = ws.fragment_buf.take().unwrap_or_default();
-                                ws.fragment_opcode = None;
-                                drop(conns);
-                                self.dispatch_ws_message(conn_idx, &assembled)?;
-                            }
+                    if let Some(conn) = conns.get_mut(conn_idx)
+                        && let Some(ref mut ws) = conn.ws_data
+                    {
+                        if let Some(ref mut frag) = ws.fragment_buf {
+                            frag.extend_from_slice(&payload);
+                        }
+                        if fin {
+                            let assembled = ws.fragment_buf.take().unwrap_or_default();
+                            ws.fragment_opcode = None;
+                            drop(conns);
+                            self.dispatch_ws_message(conn_idx, &assembled)?;
                         }
                     }
                 }
@@ -896,7 +2462,7 @@ impl EventLoop {
                     if let Some(conn) = conns.get_mut(conn_idx) {
                         conn.queue_ws_frame(frame);
                         let _ = conn.reregister(
-                            &self.poll.registry(),
+                            self.poll.registry(),
                             Interest::READABLE | Interest::WRITABLE,
                         );
                     }
@@ -933,7 +2499,7 @@ impl EventLoop {
                             }
                             conn.queue_ws_frame(frame);
                             conn.state = ConnectionState::WsClosed;
-                            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                         }
                     }
 
@@ -946,18 +2512,17 @@ impl EventLoop {
         // If there are frames queued for writing, register for WRITABLE too
         {
             let conns = self.connections.borrow();
-            if let Some(conn) = conns.get(conn_idx) {
-                if let Some(ref ws) = conn.ws_data {
-                    if !ws.write_queue.is_empty() {
-                        drop(conns);
-                        let mut conns = self.connections.borrow_mut();
-                        if let Some(conn) = conns.get_mut(conn_idx) {
-                            let _ = conn.reregister(
-                                &self.poll.registry(),
-                                Interest::READABLE | Interest::WRITABLE,
-                            );
-                        }
-                    }
+            if let Some(conn) = conns.get(conn_idx)
+                && let Some(ref ws) = conn.ws_data
+                && !ws.write_queue.is_empty()
+            {
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                if let Some(conn) = conns.get_mut(conn_idx) {
+                    let _ = conn.reregister(
+                        self.poll.registry(),
+                        Interest::READABLE | Interest::WRITABLE,
+                    );
                 }
             }
         }
@@ -995,7 +2560,7 @@ impl EventLoop {
                 // Queue empty, only listen for reads
                 let mut conns = self.connections.borrow_mut();
                 if let Some(conn) = conns.get_mut(conn_idx) {
-                    let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+                    let _ = conn.reregister(self.poll.registry(), Interest::READABLE);
                 }
             }
         }
@@ -1114,14 +2679,14 @@ impl EventLoop {
                 if !matches!(new_state, Value::Nil) {
                     let state_key = self.lua.create_registry_value(new_state)?;
                     let mut conns = self.connections.borrow_mut();
-                    if let Some(conn) = conns.get_mut(conn_idx) {
-                        if let Some(ref mut ws) = conn.ws_data {
-                            // Remove old state key
-                            if let Some(old_key) = ws.state_key.take() {
-                                self.lua.remove_registry_value(old_key)?;
-                            }
-                            ws.state_key = Some(state_key);
+                    if let Some(conn) = conns.get_mut(conn_idx)
+                        && let Some(ref mut ws) = conn.ws_data
+                    {
+                        // Remove old state key
+                        if let Some(old_key) = ws.state_key.take() {
+                            self.lua.remove_registry_value(old_key)?;
                         }
+                        ws.state_key = Some(state_key);
                     }
                 }
                 self.thread_pool.release(thread);
@@ -1205,12 +2770,11 @@ impl EventLoop {
         // Remove state from Lua registry
         {
             let mut conns = self.connections.borrow_mut();
-            if let Some(conn) = conns.get_mut(conn_idx) {
-                if let Some(ref mut ws) = conn.ws_data {
-                    if let Some(state_key) = ws.state_key.take() {
-                        let _ = self.lua.remove_registry_value(state_key);
-                    }
-                }
+            if let Some(conn) = conns.get_mut(conn_idx)
+                && let Some(ref mut ws) = conn.ws_data
+                && let Some(state_key) = ws.state_key.take()
+            {
+                let _ = self.lua.remove_registry_value(state_key);
             }
         }
 
@@ -1262,8 +2826,16 @@ impl EventLoop {
             conn.thread = None;
             conn.state = ConnectionState::Writing;
             let buf = self.buffer_pool.get_response_buf();
-            conn.set_response_with_buf(500, b"Coroutine timeout", Some("text/plain"), buf);
-            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            self.set_http_response(
+                conn,
+                500,
+                Bytes::from_static(b"Coroutine timeout"),
+                Some("text/plain"),
+                HashMap::new(),
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
         }
 
         Ok(())
@@ -1291,7 +2863,7 @@ impl EventLoop {
         for idx in pending {
             if let Some(conn) = conns.get_mut(idx) {
                 let _ = conn.reregister(
-                    &self.poll.registry(),
+                    self.poll.registry(),
                     Interest::READABLE | Interest::WRITABLE,
                 );
             }
@@ -1307,11 +2879,8 @@ impl EventLoop {
                 continue;
             }
 
-            match pending.thread.status() {
-                ThreadStatus::Resumable => {
-                    to_resume.push(conn_idx);
-                }
-                _ => {}
+            if pending.thread.status() == ThreadStatus::Resumable {
+                to_resume.push(conn_idx);
             }
         }
 

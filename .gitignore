@@ -1,4 +1,5 @@
 /target
+.rover/
 
 # Docusaurus
 docs/node_modules/
@@ -8,3 +9,5 @@ docs/.cache-loader/
 docs/.env
 
 *.sqlite
+# CocoIndex Code (ccc)
+/.cocoindex_code/

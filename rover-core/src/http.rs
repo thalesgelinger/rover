@@ -2,6 +2,7 @@ use curl::easy::Easy;
 use mlua::prelude::*;
 use serde_json::Value as JsonValue;
 use std::cell::RefCell;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
 
 thread_local! {
@@ -200,11 +201,10 @@ fn make_request(
     config: Option<LuaTable>,
 ) -> LuaResult<LuaTable> {
     let full_url = client.build_url(&url);
+    let mut request_url = full_url.clone();
 
     // Get handle from connection pool (zero-allocation reuse!)
     let mut easy = get_curl_handle();
-
-    easy.url(&full_url).map_err(|e| LuaError::external(e))?;
 
     if let Some(timeout) = client.timeout {
         easy.timeout(timeout).map_err(|e| LuaError::external(e))?;
@@ -247,15 +247,17 @@ fn make_request(
                 }
             }
             if !query_parts.is_empty() {
-                let new_url = if full_url.contains('?') {
+                request_url = if full_url.contains('?') {
                     format!("{}&{}", full_url, query_parts.join("&"))
                 } else {
                     format!("{}?{}", full_url, query_parts.join("&"))
                 };
-                easy.url(&new_url).map_err(|e| LuaError::external(e))?;
             }
         }
     }
+
+    validate_outbound_url(&request_url)?;
+    easy.url(&request_url).map_err(|e| LuaError::external(e))?;
 
     match method {
         "GET" => easy.get(true).map_err(|e| LuaError::external(e))?,
@@ -351,6 +353,99 @@ fn make_request(
     return_curl_handle(easy);
 
     Ok(result)
+}
+
+fn validate_outbound_url(url: &str) -> LuaResult<()> {
+    let parsed = url::Url::parse(url)
+        .map_err(|e| LuaError::RuntimeError(format!("Invalid outbound URL: {e}")))?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => {
+            return Err(LuaError::RuntimeError(format!(
+                "Blocked outbound URL scheme '{scheme}'. Only http/https allowed"
+            )));
+        }
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| LuaError::RuntimeError("Outbound URL must include a host".to_string()))?;
+
+    if host.eq_ignore_ascii_case("localhost") {
+        return Err(LuaError::RuntimeError(
+            "Blocked outbound URL host 'localhost'".to_string(),
+        ));
+    }
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return validate_public_ip(ip);
+    }
+
+    let port = parsed.port_or_known_default().ok_or_else(|| {
+        LuaError::RuntimeError("Could not determine outbound URL port".to_string())
+    })?;
+
+    let resolved = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| LuaError::RuntimeError(format!("Failed to resolve host '{host}': {e}")))?;
+
+    let mut saw_addr = false;
+    for addr in resolved {
+        saw_addr = true;
+        validate_public_ip(addr.ip())?;
+    }
+
+    if !saw_addr {
+        return Err(LuaError::RuntimeError(format!(
+            "Failed to resolve host '{host}'"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_public_ip(ip: IpAddr) -> LuaResult<()> {
+    match ip {
+        IpAddr::V4(v4) if is_blocked_ipv4(v4) => Err(LuaError::RuntimeError(format!(
+            "Blocked outbound IP address '{v4}'"
+        ))),
+        IpAddr::V6(v6) if is_blocked_ipv6(v6) => Err(LuaError::RuntimeError(format!(
+            "Blocked outbound IP address '{v6}'"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || is_cgnat_ipv4(ip)
+}
+
+fn is_cgnat_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || is_documentation_ipv6(ip)
+        || ip.to_ipv4_mapped().is_some_and(is_blocked_ipv4)
+}
+
+fn is_documentation_ipv6(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x2001 && segments[1] == 0x0db8
 }
 
 fn lua_value_to_json(_lua: &Lua, value: &LuaValue) -> LuaResult<String> {
@@ -558,4 +653,45 @@ pub fn create_http_module(lua: &Lua) -> LuaResult<LuaTable> {
     )?;
 
     Ok(http)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_allow_public_https_url() {
+        let result = validate_outbound_url("https://1.1.1.1/path");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn should_block_non_http_scheme() {
+        let result = validate_outbound_url("file:///etc/passwd");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_localhost() {
+        let result = validate_outbound_url("http://localhost:8080");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_private_ipv4() {
+        let result = validate_outbound_url("http://10.1.2.3");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_loopback_ipv6() {
+        let result = validate_outbound_url("http://[::1]");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_ipv4_mapped_loopback_ipv6() {
+        let result = validate_outbound_url("http://[::ffff:127.0.0.1]");
+        assert!(result.is_err());
+    }
 }

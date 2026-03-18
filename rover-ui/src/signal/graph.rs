@@ -203,4 +203,129 @@ mod tests {
         let subs = graph.get_subscribers(signal);
         assert_eq!(subs.len(), 0);
     }
+
+    #[test]
+    fn test_subscribe_derived_signal() {
+        let mut graph = SubscriberGraph::new();
+        let derived = DerivedId(0);
+        let effect = SubscriberId::Effect(EffectId(0));
+
+        graph.subscribe_derived(derived, effect);
+
+        let subs = graph.get_derived_subscribers(derived);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0], effect);
+    }
+
+    #[test]
+    fn test_subscribe_derived_idempotent() {
+        let mut graph = SubscriberGraph::new();
+        let derived = DerivedId(0);
+        let effect = SubscriberId::Effect(EffectId(0));
+
+        graph.subscribe_derived(derived, effect);
+        graph.subscribe_derived(derived, effect);
+        graph.subscribe_derived(derived, effect);
+
+        let subs = graph.get_derived_subscribers(derived);
+        assert_eq!(subs.len(), 1);
+    }
+
+    #[test]
+    fn test_subscribe_derived_multiple_subscribers() {
+        let mut graph = SubscriberGraph::new();
+        let derived = DerivedId(0);
+        let effect1 = SubscriberId::Effect(EffectId(0));
+        let effect2 = SubscriberId::Effect(EffectId(1));
+        let derived2 = SubscriberId::Derived(DerivedId(1));
+
+        graph.subscribe_derived(derived, effect1);
+        graph.subscribe_derived(derived, effect2);
+        graph.subscribe_derived(derived, derived2);
+
+        let subs = graph.get_derived_subscribers(derived);
+        assert_eq!(subs.len(), 3);
+    }
+
+    #[test]
+    fn test_clear_for_removes_from_derived_subscriptions() {
+        let mut graph = SubscriberGraph::new();
+        let derived1 = DerivedId(0);
+        let derived2 = DerivedId(1);
+        let effect = SubscriberId::Effect(EffectId(0));
+
+        graph.subscribe_derived(derived1, effect);
+        graph.subscribe_derived(derived2, effect);
+
+        assert_eq!(graph.get_derived_subscribers(derived1).len(), 1);
+        assert_eq!(graph.get_derived_subscribers(derived2).len(), 1);
+
+        graph.clear_for(effect);
+
+        assert_eq!(graph.get_derived_subscribers(derived1).len(), 0);
+        assert_eq!(graph.get_derived_subscribers(derived2).len(), 0);
+    }
+
+    #[test]
+    fn test_ensure_capacity_for_signals() {
+        let mut graph = SubscriberGraph::new();
+
+        graph.ensure_capacity(100);
+
+        assert!(graph.subscribers.len() >= 100);
+    }
+
+    #[test]
+    fn test_subscribe_to_high_signal_id_auto_expands() {
+        let mut graph = SubscriberGraph::new();
+        let signal = SignalId(50);
+        let derived = SubscriberId::Derived(DerivedId(0));
+
+        graph.subscribe(signal, derived);
+
+        assert!(graph.subscribers.len() > 50);
+        let subs = graph.get_subscribers(signal);
+        assert_eq!(subs.len(), 1);
+    }
+
+    #[test]
+    fn test_mixed_subscriber_types_per_signal() {
+        let mut graph = SubscriberGraph::new();
+        let signal = SignalId(0);
+        let derived1 = SubscriberId::Derived(DerivedId(0));
+        let derived2 = SubscriberId::Derived(DerivedId(1));
+        let effect1 = SubscriberId::Effect(EffectId(0));
+        let effect2 = SubscriberId::Effect(EffectId(1));
+
+        graph.subscribe(signal, derived1);
+        graph.subscribe(signal, effect1);
+        graph.subscribe(signal, derived2);
+        graph.subscribe(signal, effect2);
+
+        let subs = graph.get_subscribers(signal);
+        assert_eq!(subs.len(), 4);
+
+        graph.unsubscribe(signal, effect1);
+
+        let subs = graph.get_subscribers(signal);
+        assert_eq!(subs.len(), 3);
+    }
+
+    #[test]
+    fn test_unsubscribe_nonexistent_subscriber_no_panic() {
+        let mut graph = SubscriberGraph::new();
+        let signal = SignalId(0);
+        let effect = SubscriberId::Effect(EffectId(0));
+
+        graph.unsubscribe(signal, effect);
+        let subs = graph.get_subscribers(signal);
+        assert_eq!(subs.len(), 0);
+    }
+
+    #[test]
+    fn test_default_creates_empty_graph() {
+        let graph = SubscriberGraph::default();
+        let subs = graph.get_subscribers(SignalId(0));
+        assert_eq!(subs.len(), 0);
+    }
 }

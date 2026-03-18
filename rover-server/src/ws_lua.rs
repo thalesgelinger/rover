@@ -73,12 +73,11 @@ pub fn create_ws_table(lua: &Lua) -> mlua::Result<Table> {
                 .app_data_ref::<SharedConnections>()
                 .ok_or_else(|| mlua::Error::RuntimeError("Connections not available".into()))?;
             let mut conns = conns.borrow_mut();
-            if let Some(conn) = conns.get_mut(conn_idx) {
-                if let Some(ref mut ws) = conn.ws_data {
-                    if !ws.subscriptions.contains(&topic_idx) {
-                        ws.subscriptions.push(topic_idx);
-                    }
-                }
+            if let Some(conn) = conns.get_mut(conn_idx)
+                && let Some(ref mut ws) = conn.ws_data
+                && !ws.subscriptions.contains(&topic_idx)
+            {
+                ws.subscriptions.push(topic_idx);
             }
 
             Ok(())
@@ -340,10 +339,10 @@ fn broadcast_all(
         if except == Some(target_idx) {
             continue;
         }
-        if let Some(conn) = conns.get_mut(target_idx) {
-            if conn.is_websocket() {
-                conn.queue_ws_frame(frame.clone());
-            }
+        if let Some(conn) = conns.get_mut(target_idx)
+            && conn.is_websocket()
+        {
+            conn.queue_ws_frame(frame.clone());
         }
     }
 
@@ -379,12 +378,598 @@ fn broadcast_to_topic(lua: &Lua, event_name: &str, topic: &str, data: &Table) ->
         .ok_or_else(|| mlua::Error::RuntimeError("Connections not available".into()))?;
     let mut conns = conns.borrow_mut();
     for &member_idx in &members {
-        if let Some(conn) = conns.get_mut(member_idx) {
-            if conn.is_websocket() {
-                conn.queue_ws_frame(frame.clone());
-            }
+        if let Some(conn) = conns.get_mut(member_idx)
+            && conn.is_websocket()
+        {
+            conn.queue_ws_frame(frame.clone());
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlua::{Lua, ObjectLike};
+
+    fn make_data_table(lua: &Lua, fields: &[(&str, &str)]) -> Table {
+        let tbl = lua.create_table().unwrap();
+        for (k, v) in fields {
+            tbl.raw_set(*k, *v).unwrap();
+        }
+        tbl
+    }
+
+    #[test]
+    fn test_serialize_event_json_injects_type() {
+        let lua = Lua::new();
+        let data = make_data_table(&lua, &[("message", "hello"), ("user", "alice")]);
+        let mut buf = Vec::new();
+        serialize_event_json("chat", &data, &mut buf).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(json["type"], "chat");
+        assert_eq!(json["message"], "hello");
+        assert_eq!(json["user"], "alice");
+    }
+
+    #[test]
+    fn test_serialize_event_json_empty_object() {
+        let lua = Lua::new();
+        let data = lua.create_table().unwrap();
+        let mut buf = Vec::new();
+        serialize_event_json("ping", &data, &mut buf).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(json["type"], "ping");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_serialize_event_json_escapes_event_name() {
+        let lua = Lua::new();
+        let data = make_data_table(&lua, &[("msg", "test")]);
+        let mut buf = Vec::new();
+        serialize_event_json("event\"with\"quotes", &data, &mut buf).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(json["type"], "event\"with\"quotes");
+    }
+
+    #[test]
+    fn test_serialize_event_json_escapes_backslash_in_event() {
+        let lua = Lua::new();
+        let data = make_data_table(&lua, &[("msg", "test")]);
+        let mut buf = Vec::new();
+        serialize_event_json("event\\with\\backslash", &data, &mut buf).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(json["type"], "event\\with\\backslash");
+    }
+
+    #[test]
+    fn test_serialize_event_json_preserves_nested_object() {
+        let lua = Lua::new();
+        let inner = lua.create_table().unwrap();
+        inner.raw_set("x", 1).unwrap();
+        inner.raw_set("y", 2).unwrap();
+        let data = lua.create_table().unwrap();
+        data.raw_set("coords", inner).unwrap();
+
+        let mut buf = Vec::new();
+        serialize_event_json("position", &data, &mut buf).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(json["type"], "position");
+        assert_eq!(json["coords"]["x"], 1);
+        assert_eq!(json["coords"]["y"], 2);
+    }
+
+    #[test]
+    fn test_serialize_event_json_array_wrapped() {
+        let lua = Lua::new();
+        let data = lua.create_table().unwrap();
+        data.raw_set(1, "a").unwrap();
+        data.raw_set(2, "b").unwrap();
+        data.raw_set(3, "c").unwrap();
+
+        let mut buf = Vec::new();
+        serialize_event_json("list", &data, &mut buf).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(json["type"], "list");
+        assert_eq!(json["data"], serde_json::json!(["a", "b", "c"]));
+    }
+
+    #[test]
+    fn test_create_ws_table_has_listen_subtable() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        assert!(ws.raw_get::<Table>("listen").is_ok());
+    }
+
+    #[test]
+    fn test_create_ws_table_has_send_subtable() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        assert!(ws.raw_get::<Table>("send").is_ok());
+    }
+
+    #[test]
+    fn test_create_ws_table_has_error_fn() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        assert!(ws.raw_get::<Function>("error").is_ok());
+    }
+
+    #[test]
+    fn test_ws_table_captures_join_handler() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+
+        let join_fn = lua.create_function(|_, ()| Ok(())).unwrap();
+        ws.set("join", join_fn).unwrap();
+
+        let captured: Function = ws.raw_get("__ws_join").unwrap();
+        assert!(captured.call::<()>(()).is_ok());
+    }
+
+    #[test]
+    fn test_ws_table_captures_leave_handler() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+
+        let leave_fn = lua.create_function(|_, ()| Ok(())).unwrap();
+        ws.set("leave", leave_fn).unwrap();
+
+        let captured: Function = ws.raw_get("__ws_leave").unwrap();
+        assert!(captured.call::<()>(()).is_ok());
+    }
+
+    #[test]
+    fn test_ws_table_listen_captures_event_handler() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let handler = lua.create_function(|_, ()| Ok(())).unwrap();
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+        assert!(captured.call::<()>(()).is_ok());
+    }
+
+    #[test]
+    fn test_ws_table_listen_captures_message_fallback() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let handler = lua.create_function(|_, ()| Ok(())).unwrap();
+        listen.set("message", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("message").unwrap();
+        assert!(captured.call::<()>(()).is_ok());
+    }
+
+    #[test]
+    fn test_ws_error_sets_error_code_and_msg() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+
+        let error_fn: Function = ws.raw_get("error").unwrap();
+        error_fn
+            .call::<()>((ws.clone(), 4003u16, "Invalid token"))
+            .unwrap();
+
+        let code: u16 = ws.raw_get("__ws_error_code").unwrap();
+        let msg: String = ws.raw_get("__ws_error_msg").unwrap();
+        assert_eq!(code, 4003);
+        assert_eq!(msg, "Invalid token");
+    }
+
+    #[test]
+    fn test_send_event_builder_returns_target_selector_on_nil() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let send: Table = ws.raw_get("send").unwrap();
+
+        let builder: Table = send.get("chat").unwrap();
+        let selector: Table = builder.call(()).unwrap();
+
+        assert!(selector.raw_get::<Function>("all").is_ok());
+        assert!(selector.raw_get::<Function>("except").is_ok());
+        assert!(selector.raw_get::<Function>("to").is_ok());
+    }
+
+    #[test]
+    fn test_target_selector_has_all_except_to_methods() {
+        let lua = Lua::new();
+        let selector = create_target_selector(&lua, "test".to_string()).unwrap();
+
+        assert!(selector.raw_get::<Function>("all").is_ok());
+        assert!(selector.raw_get::<Function>("except").is_ok());
+        assert!(selector.raw_get::<Function>("to").is_ok());
+    }
+
+    #[test]
+    fn test_target_selector_to_returns_function() {
+        let lua = Lua::new();
+        let selector = create_target_selector(&lua, "test".to_string()).unwrap();
+
+        let to_fn: Function = selector.raw_get("to").unwrap();
+        let result: mlua::Value = to_fn.call((selector.clone(), "room:lobby")).unwrap();
+        assert!(matches!(result, mlua::Value::Function(_)));
+    }
+
+    #[test]
+    fn test_event_dispatch_routing_typed_handler() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let chat_called = Rc::new(RefCell::new(false));
+        let chat_called_clone = chat_called.clone();
+        let handler = lua
+            .create_function(move |_, ()| {
+                *chat_called_clone.borrow_mut() = true;
+                Ok(())
+            })
+            .unwrap();
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+        captured.call::<()>(()).unwrap();
+
+        assert!(*chat_called.borrow());
+    }
+
+    #[test]
+    fn test_event_dispatch_routing_fallback_handler() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let message_called = Rc::new(RefCell::new(false));
+        let message_called_clone = message_called.clone();
+        let handler = lua
+            .create_function(move |_, ()| {
+                *message_called_clone.borrow_mut() = true;
+                Ok(())
+            })
+            .unwrap();
+        listen.set("message", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("message").unwrap();
+        captured.call::<()>(()).unwrap();
+
+        assert!(*message_called.borrow());
+    }
+
+    #[test]
+    fn test_handler_receives_msg_ctx_state_arguments() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let received_msg = Rc::new(RefCell::new(None::<String>));
+        let received_ctx_has_conn = Rc::new(RefCell::new(false));
+        let received_state = Rc::new(RefCell::new(None::<i64>));
+
+        let msg_clone = received_msg.clone();
+        let ctx_clone = received_ctx_has_conn.clone();
+        let state_clone = received_state.clone();
+
+        let handler = lua
+            .create_function(move |_, (msg, ctx, state): (Table, Table, Value)| {
+                if let Ok(text) = msg.raw_get::<String>("text") {
+                    *msg_clone.borrow_mut() = Some(text);
+                }
+
+                if ctx.raw_get::<Value>("conn").is_ok() {
+                    *ctx_clone.borrow_mut() = true;
+                }
+
+                if let Value::Integer(n) = state {
+                    *state_clone.borrow_mut() = Some(n);
+                }
+
+                Ok(Value::Integer(42))
+            })
+            .unwrap();
+
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+
+        let msg = lua.create_table().unwrap();
+        msg.raw_set("text", "hello").unwrap();
+
+        let ctx = lua.create_table().unwrap();
+        ctx.raw_set("conn", 1).unwrap();
+
+        let state = Value::Integer(10);
+
+        let result = captured.call::<Value>((msg, ctx, state)).unwrap();
+
+        assert_eq!(*received_msg.borrow(), Some("hello".to_string()));
+        assert!(*received_ctx_has_conn.borrow());
+        assert_eq!(*received_state.borrow(), Some(10));
+        assert!(matches!(result, Value::Integer(42)));
+    }
+
+    #[test]
+    fn test_handler_return_value_updates_state() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let empty_table = lua.create_table().unwrap();
+        let handler = lua
+            .create_function(move |lua, ()| {
+                let tbl = lua.create_table().unwrap();
+                Ok(Value::Table(tbl))
+            })
+            .unwrap();
+
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+
+        let result = captured.call::<Value>(()).unwrap();
+
+        assert!(matches!(result, Value::Table(_)));
+
+        let new_state = lua.create_table().unwrap();
+        new_state.raw_set("count", 5).unwrap();
+
+        let handler2 = lua
+            .create_function(move |_, ()| Ok(Value::Table(new_state.clone())))
+            .unwrap();
+
+        listen.set("update", handler2).unwrap();
+
+        let handlers2: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured2: Function = handlers2.raw_get("update").unwrap();
+
+        let result2 = captured2.call::<Value>(()).unwrap();
+        if let Value::Table(tbl) = result2 {
+            assert_eq!(tbl.raw_get::<i64>("count").unwrap(), 5);
+        } else {
+            panic!("Expected table return value");
+        }
+    }
+
+    #[test]
+    fn test_handler_can_return_nil_to_keep_state_unchanged() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let handler = lua.create_function(|_, ()| Ok(Value::Nil)).unwrap();
+
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+
+        let result = captured.call::<Value>(()).unwrap();
+        assert!(matches!(result, Value::Nil));
+    }
+
+    #[test]
+    fn test_event_routing_by_type_field() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let chat_called = Rc::new(RefCell::new(false));
+        let ping_called = Rc::new(RefCell::new(false));
+
+        let chat_clone = chat_called.clone();
+        let ping_clone = ping_called.clone();
+
+        let chat_handler = lua
+            .create_function(move |_, ()| {
+                *chat_clone.borrow_mut() = true;
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        let ping_handler = lua
+            .create_function(move |_, ()| {
+                *ping_clone.borrow_mut() = true;
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        listen.set("chat", chat_handler).unwrap();
+        listen.set("ping", ping_handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+
+        let chat_fn: Function = handlers.raw_get("chat").unwrap();
+        chat_fn.call::<()>(()).unwrap();
+        assert!(*chat_called.borrow());
+        assert!(!*ping_called.borrow());
+
+        let ping_fn: Function = handlers.raw_get("ping").unwrap();
+        ping_fn.call::<()>(()).unwrap();
+        assert!(*ping_called.borrow());
+    }
+
+    #[test]
+    fn test_fallback_handler_for_messages_without_type() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let message_called = Rc::new(RefCell::new(false));
+        let message_clone = message_called.clone();
+
+        let message_handler = lua
+            .create_function(move |_, ()| {
+                *message_clone.borrow_mut() = true;
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        listen.set("message", message_handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+
+        let message_fn: Function = handlers.raw_get("message").unwrap();
+        message_fn.call::<()>(()).unwrap();
+        assert!(*message_called.borrow());
+    }
+
+    #[test]
+    fn test_typed_handler_takes_precedence_over_fallback() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let chat_called = Rc::new(RefCell::new(false));
+        let message_called = Rc::new(RefCell::new(false));
+
+        let chat_clone = chat_called.clone();
+        let message_clone = message_called.clone();
+
+        let chat_handler = lua
+            .create_function(move |_, ()| {
+                *chat_clone.borrow_mut() = true;
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        let message_handler = lua
+            .create_function(move |_, ()| {
+                *message_clone.borrow_mut() = true;
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        listen.set("chat", chat_handler).unwrap();
+        listen.set("message", message_handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+
+        let chat_fn: Function = handlers.raw_get("chat").unwrap();
+        chat_fn.call::<()>(()).unwrap();
+
+        assert!(*chat_called.borrow());
+        assert!(!*message_called.borrow());
+    }
+
+    #[test]
+    fn test_handler_can_access_message_fields() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let received_fields = Rc::new(RefCell::new(Vec::new()));
+        let fields_clone = received_fields.clone();
+
+        let handler = lua
+            .create_function(move |_, (msg, _ctx, _state): (Table, Table, Value)| {
+                if let Ok(text) = msg.raw_get::<String>("text") {
+                    fields_clone.borrow_mut().push(format!("text={}", text));
+                }
+                if let Ok(count) = msg.raw_get::<i64>("count") {
+                    fields_clone.borrow_mut().push(format!("count={}", count));
+                }
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+
+        let msg = lua.create_table().unwrap();
+        msg.raw_set("text", "hello").unwrap();
+        msg.raw_set("count", 42).unwrap();
+
+        let ctx = lua.create_table().unwrap();
+        let state = Value::Nil;
+
+        captured.call::<()>((msg, ctx, state)).unwrap();
+
+        let fields = received_fields.borrow();
+        assert!(fields.contains(&"text=hello".to_string()));
+        assert!(fields.contains(&"count=42".to_string()));
+    }
+
+    #[test]
+    fn test_handler_can_access_context_fields() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let received_conn = Rc::new(RefCell::new(None::<i64>));
+        let conn_clone = received_conn.clone();
+
+        let handler = lua
+            .create_function(move |_, (_msg, ctx, _state): (Table, Table, Value)| {
+                if let Ok(conn) = ctx.raw_get::<i64>("conn") {
+                    *conn_clone.borrow_mut() = Some(conn);
+                }
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+
+        let msg = lua.create_table().unwrap();
+        let ctx = lua.create_table().unwrap();
+        ctx.raw_set("conn", 123).unwrap();
+        let state = Value::Nil;
+
+        captured.call::<()>((msg, ctx, state)).unwrap();
+
+        assert_eq!(*received_conn.borrow(), Some(123));
+    }
+
+    #[test]
+    fn test_handler_can_access_current_state() {
+        let lua = Lua::new();
+        let ws = create_ws_table(&lua).unwrap();
+        let listen: Table = ws.raw_get("listen").unwrap();
+
+        let received_state = Rc::new(RefCell::new(None::<i64>));
+        let state_clone = received_state.clone();
+
+        let handler = lua
+            .create_function(move |_, (_msg, _ctx, state): (Table, Table, Value)| {
+                if let Value::Integer(n) = state {
+                    *state_clone.borrow_mut() = Some(n);
+                }
+                Ok(Value::Nil)
+            })
+            .unwrap();
+
+        listen.set("chat", handler).unwrap();
+
+        let handlers: Table = listen.raw_get("__ws_handlers").unwrap();
+        let captured: Function = handlers.raw_get("chat").unwrap();
+
+        let msg = lua.create_table().unwrap();
+        let ctx = lua.create_table().unwrap();
+        let state = Value::Integer(99);
+
+        captured.call::<()>((msg, ctx, state)).unwrap();
+
+        assert_eq!(*received_state.borrow(), Some(99));
+    }
 }

@@ -1,4 +1,4 @@
-use crate::platform::{UiRuntimeConfig, UiTarget, ViewportSignals};
+use crate::platform::{UiCapability, UiRuntimeConfig, UiTarget, ViewportSignals};
 use crate::signal::{DerivedId, SignalId};
 use crate::ui::registry::UiRegistry;
 use crate::{SharedSignalRuntime, scheduler::SharedScheduler};
@@ -53,6 +53,10 @@ pub fn get_runtime_config(lua: &Lua) -> Result<AppDataRef<'_, UiRuntimeConfig>> 
 /// Get active renderer target.
 pub fn get_target(lua: &Lua) -> Result<UiTarget> {
     Ok(get_runtime_config(lua)?.target())
+}
+
+pub fn has_capability(lua: &Lua, capability: UiCapability) -> Result<bool> {
+    Ok(get_runtime_config(lua)?.is_capability_allowed(capability))
 }
 
 /// Get viewport signal IDs from Lua app_data.

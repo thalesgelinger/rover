@@ -3,10 +3,14 @@ use mlua::{Lua, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
 use rover_server::to_json::ToJson;
-use rover_server::{Bytes, HttpMethod, Route, RouteTable, RoverResponse, ServerConfig, WsRoute};
+use rover_server::{
+    Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig,
+    SseResponse, WsRoute,
+};
 use rover_types::ValidationErrors;
 use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
+use std::sync::Arc;
 
 use crate::html::{get_rover_html, render_template_with_components};
 use crate::{app_type::AppType, auto_table::AutoTable};
@@ -23,32 +27,33 @@ impl AppServer for Lua {
 
         let json_helper = self.create_table()?;
 
-        let json_call = self.create_function(|_lua, (_self, data): (Table, Value)| match data {
-            Value::String(s) => {
-                let json_str = s.to_str()?;
-                Ok(RoverResponse::json(
-                    200,
-                    Bytes::copy_from_slice(json_str.as_bytes()),
-                    None,
-                ))
-            }
-            Value::Table(table) => {
-                let json = table.to_json_string().map_err(|e| {
-                    mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
-                })?;
-                Ok(RoverResponse::json(200, Bytes::from(json), None))
-            }
-            _ => Err(mlua::Error::RuntimeError(
-                "api.json() requires a table or string".to_string(),
-            )),
-        })?;
+        let json_call = self.create_function(|lua, (_self, data): (Table, Value)| {
+            // Helper to extract headers from table
+            let extract_headers = |table: &Table| -> mlua::Result<
+                Option<std::collections::HashMap<String, String>>,
+            > {
+                let headers_val: Value = table.get("headers")?;
+                match headers_val {
+                    Value::Nil => Ok(None),
+                    Value::Table(headers_table) => {
+                        let mut headers = std::collections::HashMap::new();
+                        for pair in headers_table.pairs::<String, String>() {
+                            let (key, value) = pair?;
+                            headers.insert(key, value);
+                        }
+                        Ok(Some(headers))
+                    }
+                    _ => Err(mlua::Error::RuntimeError(
+                        "headers must be a table".to_string(),
+                    )),
+                }
+            };
 
-        let json_status_fn = self.create_function(
-            |_lua, (_self, status_code, data): (Table, u16, Value)| match data {
+            match data {
                 Value::String(s) => {
                     let json_str = s.to_str()?;
                     Ok(RoverResponse::json(
-                        status_code,
+                        200,
                         Bytes::copy_from_slice(json_str.as_bytes()),
                         None,
                     ))
@@ -57,13 +62,59 @@ impl AppServer for Lua {
                     let json = table.to_json_string().map_err(|e| {
                         mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
                     })?;
-                    Ok(RoverResponse::json(status_code, Bytes::from(json), None))
+                    let headers = extract_headers(&table)?;
+                    Ok(RoverResponse::json(200, Bytes::from(json), headers))
                 }
                 _ => Err(mlua::Error::RuntimeError(
-                    "api.json.status() requires a table or string".to_string(),
+                    "api.json() requires a table or string".to_string(),
                 )),
-            },
-        )?;
+            }
+        })?;
+
+        let json_status_fn =
+            self.create_function(|lua, (_self, status_code, data): (Table, u16, Value)| {
+                // Helper to extract headers from table
+                let extract_headers = |table: &Table| -> mlua::Result<
+                    Option<std::collections::HashMap<String, String>>,
+                > {
+                    let headers_val: Value = table.get("headers")?;
+                    match headers_val {
+                        Value::Nil => Ok(None),
+                        Value::Table(headers_table) => {
+                            let mut headers = std::collections::HashMap::new();
+                            for pair in headers_table.pairs::<String, String>() {
+                                let (key, value) = pair?;
+                                headers.insert(key, value);
+                            }
+                            Ok(Some(headers))
+                        }
+                        _ => Err(mlua::Error::RuntimeError(
+                            "headers must be a table".to_string(),
+                        )),
+                    }
+                };
+
+                match data {
+                    Value::String(s) => {
+                        let json_str = s.to_str()?;
+                        Ok(RoverResponse::json(
+                            status_code,
+                            Bytes::copy_from_slice(json_str.as_bytes()),
+                            None,
+                        ))
+                    }
+                    Value::Table(table) => {
+                        let json = table.to_json_string().map_err(|e| {
+                            mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+                        })?;
+                        let headers = extract_headers(&table)?;
+                        Ok(RoverResponse::json(status_code, Bytes::from(json), headers))
+                    }
+                    _ => Err(mlua::Error::RuntimeError(
+                        "api.json.status() requires a table or string".to_string(),
+                    )),
+                }
+            })?;
         json_helper.set("status", json_status_fn)?;
 
         let meta = self.create_table()?;
@@ -313,6 +364,125 @@ impl AppServer for Lua {
         let _ = raw_helper.set_metatable(Some(raw_meta));
         server.set("raw", raw_helper)?;
 
+        // Streaming response API
+        // api.stream(status, content_type, chunk_producer) -> StreamingResponse
+        // chunk_producer is a function that returns strings (chunks) or nil (end of stream)
+        let stream_fn = self.create_function(
+            |lua,
+             (_self, status_code, content_type, chunk_producer): (
+                Table,
+                u16,
+                String,
+                mlua::Function,
+            )| {
+                use rover_server::StreamingResponse;
+                use std::sync::Arc;
+
+                let producer_key = lua.create_registry_value(chunk_producer)?;
+                Ok(StreamingResponse::new(
+                    status_code,
+                    content_type,
+                    None,
+                    Arc::new(producer_key),
+                ))
+            },
+        )?;
+        server.set("stream", stream_fn)?;
+
+        // Stream with headers: api.stream_with_headers(status, content_type, headers, chunk_producer)
+        let stream_with_headers_fn = self.create_function(
+            |lua,
+             (_self, status_code, content_type, headers, chunk_producer): (
+                Table,
+                u16,
+                String,
+                Table,
+                mlua::Function,
+            )| {
+                use rover_server::StreamingResponse;
+                use std::sync::Arc;
+
+                let mut response_headers = std::collections::HashMap::new();
+                for pair in headers.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    response_headers.insert(key, value);
+                }
+
+                let producer_key = lua.create_registry_value(chunk_producer)?;
+                Ok(StreamingResponse::new(
+                    status_code,
+                    content_type,
+                    Some(response_headers),
+                    Arc::new(producer_key),
+                ))
+            },
+        )?;
+        server.set("stream_with_headers", stream_with_headers_fn)?;
+
+        let sse_helper = self.create_table()?;
+
+        let sse_call = self.create_function(
+            |lua, (_self, event_producer, retry_ms): (Table, mlua::Function, Option<u32>)| {
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    200,
+                    None,
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+
+        let sse_status_fn = self.create_function(
+            |lua,
+             (_self, status_code, event_producer, retry_ms): (
+                Table,
+                u16,
+                mlua::Function,
+                Option<u32>,
+            )| {
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    status_code,
+                    None,
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+        sse_helper.set("status", sse_status_fn)?;
+
+        let sse_with_headers_fn = self.create_function(
+            |lua,
+             (_self, status_code, headers, event_producer, retry_ms): (
+                Table,
+                u16,
+                Table,
+                mlua::Function,
+                Option<u32>,
+            )| {
+                let mut response_headers = std::collections::HashMap::new();
+                for pair in headers.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    response_headers.insert(key, value);
+                }
+
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    status_code,
+                    Some(response_headers),
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+        sse_helper.set("with_headers", sse_with_headers_fn)?;
+
+        let sse_meta = self.create_table()?;
+        sse_meta.set("__call", sse_call)?;
+        let _ = sse_helper.set_metatable(Some(sse_meta));
+        server.set("sse", sse_helper)?;
+
         Ok(server)
     }
 }
@@ -358,13 +528,23 @@ impl Server for Table {
             param_names: &mut Vec<String>,
             routes: &mut Vec<Route>,
             ws_routes: &mut Vec<WsRoute>,
+            inherited_middlewares: &crate::middleware::MiddlewareChain,
         ) -> Result<()> {
+            let local_middlewares = crate::middleware::extract_middlewares(lua, table)?;
+            let scope_middlewares = crate::middleware::merge_middleware_chains(
+                inherited_middlewares,
+                &local_middlewares,
+            );
+
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
 
-                // Skip internal rover fields and API helpers
+                // Skip internal rover fields and API helpers at root level
+                // Note: "before", "after", and "on_error" are only skipped at root level
+                // At nested levels, they're route-specific and should be processed
                 if let Value::String(ref key_str) = key {
                     let key_str_val = key_str.to_str()?;
+                    let is_root = current_path.is_empty();
                     if key_str_val.starts_with("__rover_")
                         || key_str_val == "config"
                         || key_str_val == "json"
@@ -374,6 +554,13 @@ impl Server for Table {
                         || key_str_val == "error"
                         || key_str_val == "no_content"
                         || key_str_val == "raw"
+                        || key_str_val == "stream"
+                        || key_str_val == "stream_with_headers"
+                        || key_str_val == "sse"
+                        || (is_root
+                            && (key_str_val == "before"
+                                || key_str_val == "after"
+                                || key_str_val == "on_error"))
                     {
                         continue;
                     }
@@ -405,17 +592,30 @@ impl Server for Table {
                             )
                         })?;
 
+                        // Create wrapped handler that executes middleware chain
+                        let wrapped_handler = if scope_middlewares.is_empty() {
+                            func.clone()
+                        } else {
+                            create_middleware_wrapper(lua, &func, &scope_middlewares)?
+                        };
+
                         let route = Route {
                             method,
                             pattern: Bytes::from(path.to_string()),
                             param_names: param_names.clone(),
-                            handler: func,
+                            handler: wrapped_handler,
                             is_static: param_names.is_empty(),
+                            middlewares: MiddlewareChain::default(), // Chain is now in the wrapper
                         };
                         routes.push(route);
                     }
                     (Value::String(key_str), Value::Table(nested_table)) => {
                         let key_string = key_str.to_str()?.to_string();
+
+                        // Skip middleware tables (before/after) - they're extracted separately
+                        if key_string == "before" || key_string == "after" {
+                            continue;
+                        }
 
                         // Check if this is a parameter segment - convert to matchit format immediately
                         let (segment, param_name) = if key_string.starts_with("p_") {
@@ -449,6 +649,7 @@ impl Server for Table {
                             param_names,
                             routes,
                             ws_routes,
+                            &scope_middlewares,
                         )?;
 
                         // Remove param name after recursion
@@ -471,6 +672,62 @@ impl Server for Table {
                 }
             }
             Ok(())
+        }
+
+        /// Create a wrapper function that executes middleware chain before/after the handler
+        fn create_middleware_wrapper(
+            lua: &Lua,
+            handler: &mlua::Function,
+            middlewares: &MiddlewareChain,
+        ) -> Result<mlua::Function> {
+            let before_handlers: Vec<_> = middlewares
+                .before
+                .iter()
+                .map(|mw| lua.registry_value::<mlua::Function>(&mw.handler))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Failed to get before middleware: {}", e))?;
+
+            let after_handlers: Vec<_> = middlewares
+                .after
+                .iter()
+                .map(|mw| lua.registry_value::<mlua::Function>(&mw.handler))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| anyhow!("Failed to get after middleware: {}", e))?;
+
+            let handler = handler.clone();
+
+            // Create wrapper function
+            let wrapper = lua.create_function(move |lua, ctx: mlua::Value| {
+                // Execute before middlewares
+                for (i, mw) in before_handlers.iter().enumerate() {
+                    let result: mlua::Value = mw.call(ctx.clone())?;
+
+                    // Check if middleware returned a response (short-circuit)
+                    // If it's not nil and not the context, treat it as a response
+                    if !matches!(result, mlua::Value::Nil) {
+                        // If the middleware wants to short-circuit, return its result
+                        // We check if it's a RoverResponse by trying to borrow it
+                        if let Some(ud) = result.as_userdata() {
+                            if ud.borrow::<rover_server::RoverResponse>().is_ok() {
+                                return Ok(result);
+                            }
+                        }
+                    }
+                }
+
+                // Execute the actual handler
+                let result: mlua::Value = handler.call(ctx.clone())?;
+
+                // Execute after middlewares (in reverse order)
+                for mw in after_handlers.iter().rev() {
+                    let _after_result: mlua::Value = mw.call(ctx.clone())?;
+                    // After middlewares typically don't modify the response
+                }
+
+                Ok(result)
+            })?;
+
+            Ok(wrapper)
         }
 
         /// Extract a WebSocket endpoint from its setup function.
@@ -540,7 +797,16 @@ impl Server for Table {
         let mut routes = Vec::new();
         let mut ws_routes = Vec::new();
         let mut param_names = Vec::new();
-        extract_recursive(lua, self, "", &mut param_names, &mut routes, &mut ws_routes)?;
+        let root_middlewares = MiddlewareChain::default();
+        extract_recursive(
+            lua,
+            self,
+            "",
+            &mut param_names,
+            &mut routes,
+            &mut ws_routes,
+            &root_middlewares,
+        )?;
 
         // Sort routes: static routes first (for exact-match priority)
         routes.sort_by(|a, b| match (a.is_static, b.is_static) {
@@ -549,6 +815,192 @@ impl Server for Table {
             _ => std::cmp::Ordering::Equal,
         });
 
-        Ok(RouteTable { routes, ws_routes })
+        // Extract optional error handler (api.on_error)
+        let error_handler = if let Ok(Value::Function(handler)) = self.get("on_error") {
+            Some(Arc::new(lua.create_registry_value(handler)?))
+        } else {
+            None
+        };
+
+        Ok(RouteTable {
+            routes,
+            ws_routes,
+            error_handler,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppServer, Server};
+    use mlua::{Lua, Table, Value};
+    use rover_server::{HttpMethod, RoverResponse, SseResponse};
+
+    fn create_ctx(lua: &Lua, headers: &[(&str, &str)]) -> mlua::Result<Table> {
+        let ctx = lua.create_table()?;
+        let state = lua.create_table()?;
+        let headers_table = lua.create_table()?;
+
+        for (k, v) in headers {
+            headers_table.set(*k, *v)?;
+        }
+
+        let headers_clone = headers_table.clone();
+        ctx.set(
+            "headers",
+            lua.create_function(move |_lua, _self: Table| Ok(headers_clone.clone()))?,
+        )?;
+
+        let state_set = state.clone();
+        ctx.set(
+            "set",
+            lua.create_function(move |_lua, (_self, key, value): (Table, String, Value)| {
+                state_set.set(key, value)?;
+                Ok(())
+            })?,
+        )?;
+
+        let state_get = state.clone();
+        ctx.set(
+            "get",
+            lua.create_function(move |_lua, (_self, key): (Table, String)| {
+                state_get.get::<Value>(key)
+            })?,
+        )?;
+
+        Ok(ctx)
+    }
+
+    fn parse_response(value: Value) -> (u16, String) {
+        let response_ud = value
+            .as_userdata()
+            .expect("middleware wrapper must return RoverResponse userdata");
+        let response = response_ud
+            .borrow::<RoverResponse>()
+            .expect("response userdata must be RoverResponse");
+        let body = std::str::from_utf8(&response.body)
+            .expect("response body must be utf-8")
+            .to_string();
+        (response.status, body)
+    }
+
+    #[test]
+    fn should_apply_group_middlewares_to_nested_routes() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            function api.before.global(ctx)
+              ctx:set("request_scope", "global")
+            end
+
+            function api.admin.before.authn(ctx)
+              if not ctx:headers().Authorization then
+                return api:error(401, "Unauthorized: missing Authorization header")
+              end
+              ctx:set("role", "admin")
+            end
+
+            function api.admin.users.get(ctx)
+              return api.json {
+                scope = ctx:get("request_scope"),
+                role = ctx:get("role"),
+              }
+            end
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/admin/users")
+            })
+            .expect("route /admin/users must exist");
+
+        let missing_auth_ctx = create_ctx(&lua, &[]).expect("create ctx without auth");
+        let deny = route
+            .handler
+            .call::<Value>(missing_auth_ctx)
+            .expect("call route without auth");
+        let (deny_status, deny_body) = parse_response(deny);
+        assert_eq!(deny_status, 401);
+        assert!(deny_body.contains("Unauthorized: missing Authorization header"));
+
+        let allowed_ctx =
+            create_ctx(&lua, &[("Authorization", "Bearer test")]).expect("create ctx with auth");
+        let ok = route
+            .handler
+            .call::<Value>(allowed_ctx)
+            .expect("call route with auth");
+        let (ok_status, ok_body) = parse_response(ok);
+        assert_eq!(ok_status, 200);
+        assert!(ok_body.contains("\"scope\":\"global\""));
+        assert!(ok_body.contains("\"role\":\"admin\""));
+    }
+
+    #[test]
+    fn should_build_sse_response_from_helper() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            function api.events.get(ctx)
+              return api.sse(function()
+                return {
+                  event = "tick",
+                  data = { ok = true },
+                }
+              end, 1500)
+            end
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/events")
+            })
+            .expect("route /events must exist");
+
+        let ctx = create_ctx(&lua, &[]).expect("create ctx");
+        let value = route.handler.call::<Value>(ctx).expect("call SSE route");
+        let sse = value
+            .as_userdata()
+            .expect("SSE helper must return userdata")
+            .borrow::<SseResponse>()
+            .expect("userdata must be SseResponse");
+
+        assert_eq!(sse.status, 200);
+        assert_eq!(sse.retry_ms, Some(1500));
     }
 }

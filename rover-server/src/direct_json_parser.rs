@@ -120,8 +120,13 @@ impl<'de, 'a> Visitor<'de> for LuaValueVisitor<'a> {
 pub fn json_bytes_ref_to_lua_streaming(lua: &Lua, bytes: &Bytes) -> mlua::Result<Value> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes.as_ref());
     let seed = LuaDeserializeSeed { lua };
-    seed.deserialize(&mut deserializer)
-        .map_err(|e| mlua::Error::RuntimeError(format!("JSON parsing failed: {}", e)))
+    let value = seed
+        .deserialize(&mut deserializer)
+        .map_err(|e| mlua::Error::RuntimeError(format!("JSON parsing failed: {}", e)))?;
+    deserializer
+        .end()
+        .map_err(|e| mlua::Error::RuntimeError(format!("JSON parsing failed: {}", e)))?;
+    Ok(value)
 }
 
 pub fn json_bytes_to_lua_direct(lua: &Lua, bytes: Vec<u8>) -> mlua::Result<Value> {
