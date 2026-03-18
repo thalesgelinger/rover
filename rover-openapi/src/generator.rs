@@ -647,4 +647,174 @@ return api
         assert_eq!(example["message"], "Hello World");
         assert_eq!(example["count"], 42);
     }
+
+    #[test]
+    fn spec_includes_versioned_routes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.v1.users.get(ctx)
+    return api.json { version = "v1", users = {} }
+end
+
+function api.v2.users.get(ctx)
+    return api.json { version = "v2", users = {}, meta = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Test API", "2.0.0");
+
+        // Verify both versioned routes are present
+        assert!(
+            spec["paths"]["/v1/users"]["get"].is_object(),
+            "v1 route should exist"
+        );
+        assert!(
+            spec["paths"]["/v2/users"]["get"].is_object(),
+            "v2 route should exist"
+        );
+
+        // Verify spec version is correctly set
+        assert_eq!(spec["info"]["version"], "2.0.0");
+        assert_eq!(spec["info"]["title"], "Test API");
+    }
+
+    #[test]
+    fn spec_versioned_routes_with_params() {
+        let code = r#"
+local api = rover.server {}
+
+function api.v1.users.p_id.get(ctx)
+    local id = ctx:params().id
+    return api.json { version = "v1", id = id }
+end
+
+function api.v2.users.p_id.get(ctx)
+    local id = ctx:params().id
+    return api.json { version = "v2", id = id, expanded = true }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Versioned API", "1.0.0");
+
+        // Verify both versioned routes with path params
+        let v1_path = &spec["paths"]["/v1/users/{id}"]["get"];
+        let v2_path = &spec["paths"]["/v2/users/{id}"]["get"];
+
+        assert!(v1_path.is_object(), "v1 user route should exist");
+        assert!(v2_path.is_object(), "v2 user route should exist");
+
+        // Verify path parameters are captured
+        let v1_params = v1_path["parameters"].as_array().unwrap();
+        assert!(v1_params
+            .iter()
+            .any(|p| p["name"] == "id" && p["in"] == "path"));
+
+        let v2_params = v2_path["parameters"].as_array().unwrap();
+        assert!(v2_params
+            .iter()
+            .any(|p| p["name"] == "id" && p["in"] == "path"));
+    }
+
+    #[test]
+    fn spec_mixed_versioned_and_unversioned_routes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.health.get(ctx)
+    return api.json { status = "ok" }
+end
+
+function api.v1.api.users.get(ctx)
+    return api.json { version = "v1", users = {} }
+end
+
+function api.internal.metrics.get(ctx)
+    return api.json { metrics = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Mixed API", "1.0.0");
+
+        // Verify unversioned routes exist
+        assert!(
+            spec["paths"]["/health"]["get"].is_object(),
+            "health route should exist"
+        );
+        assert!(
+            spec["paths"]["/internal/metrics"]["get"].is_object(),
+            "metrics route should exist"
+        );
+
+        // Verify versioned route exists
+        assert!(
+            spec["paths"]["/v1/api/users"]["get"].is_object(),
+            "v1 api users route should exist"
+        );
+    }
+
+    #[test]
+    fn spec_version_info_reflects_api_metadata() {
+        let code = r#"
+local api = rover.server {}
+
+function api.users.get(ctx)
+    return api.json { users = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+
+        // Test different version strings
+        let spec_v1 = generate_spec(&model, "Users API", "1.0.0");
+        assert_eq!(spec_v1["info"]["version"], "1.0.0");
+        assert_eq!(spec_v1["info"]["title"], "Users API");
+
+        let spec_v2 = generate_spec(&model, "Users API", "2.0.0-beta");
+        assert_eq!(spec_v2["info"]["version"], "2.0.0-beta");
+
+        let spec_semver = generate_spec(&model, "Users API", "3.1.4-alpha+build.123");
+        assert_eq!(spec_semver["info"]["version"], "3.1.4-alpha+build.123");
+    }
+
+    #[test]
+    fn spec_deeply_nested_versioned_routes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.v1.admin.users.p_id.permissions.get(ctx)
+    return api.json { permissions = {} }
+end
+
+return api
+"#;
+
+        let model = rover_parser::analyze(code);
+        let spec = generate_spec(&model, "Admin API", "1.0.0");
+
+        // Verify deeply nested versioned route
+        assert!(
+            spec["paths"]["/v1/admin/users/{id}/permissions"]["get"].is_object(),
+            "deeply nested versioned route should exist"
+        );
+
+        // Verify path parameter is captured
+        let params = spec["paths"]["/v1/admin/users/{id}/permissions"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(params
+            .iter()
+            .any(|p| p["name"] == "id" && p["in"] == "path"));
+    }
 }

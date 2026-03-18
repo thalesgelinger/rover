@@ -235,3 +235,238 @@ pub fn update_schema_file(
 
     fs::write(path, lines.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rover_parser::db_intent::{FieldSource, FieldType, InferredField, InferredTable};
+    use std::collections::HashMap;
+
+    fn create_test_field(name: &str, field_type: FieldType) -> InferredField {
+        InferredField {
+            name: name.to_string(),
+            field_type,
+            source: FieldSource::Access,
+        }
+    }
+
+    fn create_test_table(name: &str, fields: Vec<InferredField>) -> InferredTable {
+        let mut field_map = HashMap::new();
+        for field in fields {
+            field_map.insert(field.name.clone(), field);
+        }
+        InferredTable {
+            name: name.to_string(),
+            fields: field_map,
+        }
+    }
+
+    #[test]
+    fn test_generate_schema_content_basic() {
+        let fields = vec![
+            create_test_field("id", FieldType::Integer),
+            create_test_field("name", FieldType::String),
+            create_test_field("email", FieldType::String),
+        ];
+        let table = create_test_table("users", fields);
+        let content = generate_schema_content(&table);
+
+        assert!(content.contains("rover.db.schema.users"));
+        assert!(content.contains("id = rover.db.guard:integer():primary():auto()"));
+        assert!(content.contains("email = rover.db.guard:string(),"));
+        assert!(content.contains("name = rover.db.guard:string(),"));
+    }
+
+    #[test]
+    fn test_generate_schema_content_id_first() {
+        // Test that id field is sorted first regardless of input order
+        let fields = vec![
+            create_test_field("name", FieldType::String),
+            create_test_field("id", FieldType::Integer),
+            create_test_field("age", FieldType::Integer),
+        ];
+        let table = create_test_table("people", fields);
+        let content = generate_schema_content(&table);
+
+        // id should appear before other fields alphabetically
+        let id_pos = content.find("id = rover").unwrap();
+        let name_pos = content.find("name = rover").unwrap();
+        let age_pos = content.find("age = rover").unwrap();
+
+        assert!(id_pos < name_pos, "id should come before name");
+        assert!(id_pos < age_pos, "id should come before age");
+    }
+
+    #[test]
+    fn test_generate_schema_content_all_types() {
+        let fields = vec![
+            create_test_field("id", FieldType::Integer),
+            create_test_field("name", FieldType::String),
+            create_test_field("age", FieldType::Integer),
+            create_test_field("score", FieldType::Number),
+            create_test_field("active", FieldType::Boolean),
+            create_test_field("data", FieldType::Unknown),
+        ];
+        let table = create_test_table("test_table", fields);
+        let content = generate_schema_content(&table);
+
+        assert!(content.contains("integer"), "Should contain integer type");
+        assert!(content.contains("string"), "Should contain string type");
+        assert!(content.contains("number"), "Should contain number type");
+        assert!(content.contains("boolean"), "Should contain boolean type");
+        assert!(content.contains("id = rover.db.guard:integer():primary():auto()"));
+    }
+
+    #[test]
+    fn test_generate_schema_content_empty_table() {
+        let table = create_test_table("empty", vec![]);
+        let content = generate_schema_content(&table);
+
+        assert!(content.contains("rover.db.schema.empty"));
+        assert!(content.contains("}"));
+        assert!(!content.contains("rover.db.guard"));
+    }
+
+    #[test]
+    fn test_generate_schema_content_single_field() {
+        let fields = vec![create_test_field("id", FieldType::Integer)];
+        let table = create_test_table("single", fields);
+        let content = generate_schema_content(&table);
+
+        assert!(content.contains("rover.db.schema.single"));
+        assert!(content.contains("id = rover.db.guard:integer():primary():auto()"));
+    }
+
+    #[test]
+    fn test_generate_migration_content_create() {
+        let fields = vec![
+            create_test_field("id", FieldType::Integer),
+            create_test_field("title", FieldType::String),
+            create_test_field("count", FieldType::Integer),
+        ];
+
+        let content = generate_migration_content("posts", &fields, true);
+
+        assert!(content.contains("-- Create posts table"));
+        assert!(content.contains("function change()"));
+        assert!(content.contains("migration.posts:create"));
+        assert!(content.contains("id = rover.db.guard:integer():primary():auto()"));
+        assert!(content.contains("title = rover.db.guard:string(),"));
+        assert!(content.contains("count = rover.db.guard:integer(),"));
+        assert!(content.contains("end"));
+    }
+
+    #[test]
+    fn test_generate_migration_content_alter() {
+        let fields = vec![
+            create_test_field("description", FieldType::String),
+            create_test_field("rating", FieldType::Number),
+        ];
+
+        let content = generate_migration_content("products", &fields, false);
+
+        assert!(content.contains("-- Add fields to products"));
+        assert!(content.contains("function change()"));
+        assert!(content.contains("migration.products:alter_table()"));
+        assert!(content.contains(":add_column(\"description\", rover.db.guard:string())"));
+        assert!(content.contains(":add_column(\"rating\", rover.db.guard:number())"));
+        assert!(content.contains("end"));
+    }
+
+    #[test]
+    fn test_compare_intent_with_schemas_new_table() {
+        let mut intent_tables = HashMap::new();
+        let fields = vec![create_test_field("id", FieldType::Integer)];
+        intent_tables.insert(
+            "new_table".to_string(),
+            create_test_table("new_table", fields),
+        );
+
+        let intent = DbIntent {
+            tables: intent_tables,
+            ..DbIntent::new()
+        };
+        let schemas = HashMap::new();
+
+        let comparison = compare_intent_with_schemas(&intent, &schemas);
+
+        assert_eq!(comparison.diffs.len(), 1);
+        assert_eq!(comparison.diffs[0].table_name, "new_table");
+        assert!(matches!(comparison.diffs[0].status, TableStatus::New));
+    }
+
+    #[test]
+    fn test_compare_intent_with_schemas_existing_unchanged() {
+        let mut intent_tables = HashMap::new();
+        let fields = vec![create_test_field("id", FieldType::Integer)];
+        intent_tables.insert("users".to_string(), create_test_table("users", fields));
+
+        let intent = DbIntent {
+            tables: intent_tables,
+            ..DbIntent::new()
+        };
+
+        let mut schemas = HashMap::new();
+        let existing_def = TableDefinition {
+            fields: vec![crate::schema_analyzer::FieldDefinition {
+                name: "id".to_string(),
+                field_type: crate::schema_analyzer::FieldType::Integer,
+                nullable: false,
+                primary_key: true,
+                auto_increment: true,
+                unique: false,
+                references: None,
+                indexed: false,
+            }],
+        };
+        schemas.insert("users".to_string(), existing_def);
+
+        let comparison = compare_intent_with_schemas(&intent, &schemas);
+
+        assert_eq!(comparison.diffs.len(), 1);
+        assert_eq!(comparison.diffs[0].table_name, "users");
+        assert!(matches!(comparison.diffs[0].status, TableStatus::Exists));
+        assert!(comparison.diffs[0].new_fields.is_empty());
+    }
+
+    #[test]
+    fn test_compare_intent_with_schemas_needs_update() {
+        let mut intent_tables = HashMap::new();
+        let fields = vec![
+            create_test_field("id", FieldType::Integer),
+            create_test_field("email", FieldType::String),
+        ];
+        intent_tables.insert("users".to_string(), create_test_table("users", fields));
+
+        let intent = DbIntent {
+            tables: intent_tables,
+            ..DbIntent::new()
+        };
+
+        let mut schemas = HashMap::new();
+        let existing_def = TableDefinition {
+            fields: vec![crate::schema_analyzer::FieldDefinition {
+                name: "id".to_string(),
+                field_type: crate::schema_analyzer::FieldType::Integer,
+                nullable: false,
+                primary_key: true,
+                auto_increment: false,
+                unique: false,
+                references: None,
+                indexed: false,
+            }],
+        };
+        schemas.insert("users".to_string(), existing_def);
+
+        let comparison = compare_intent_with_schemas(&intent, &schemas);
+
+        assert_eq!(comparison.diffs.len(), 1);
+        assert_eq!(comparison.diffs[0].table_name, "users");
+        assert!(matches!(
+            comparison.diffs[0].status,
+            TableStatus::NeedsUpdate
+        ));
+        assert_eq!(comparison.diffs[0].new_fields.len(), 1);
+        assert_eq!(comparison.diffs[0].new_fields[0].name, "email");
+    }
+}
