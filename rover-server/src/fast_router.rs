@@ -172,9 +172,77 @@ mod tests {
 
         assert!(router.match_ws_route("/ws/%ZZ").is_none());
     }
+
+    #[test]
+    fn should_match_dynamic_route_when_static_path_exists_for_other_method() {
+        let lua = Lua::new();
+        let static_route = dummy_route(&lua, HttpMethod::Get, "/users/me");
+        let dynamic_route = Route {
+            method: HttpMethod::Post,
+            pattern: Bytes::from_static(b"/users/{id}"),
+            param_names: vec!["id".to_string()],
+            handler: lua.create_function(|_, ()| Ok(())).unwrap(),
+            is_static: false,
+            middlewares: Default::default(),
+        };
+
+        let router = FastRouter::from_routes(vec![static_route, dynamic_route]).expect("router");
+
+        match router.match_route(HttpMethod::Post, "/users/me") {
+            RouteMatch::Found { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].0, Bytes::from_static(b"id"));
+                assert_eq!(params[0].1, Bytes::from_static(b"me"));
+            }
+            _ => panic!("expected dynamic route to match"),
+        }
+    }
+
+    #[test]
+    fn should_include_static_and_dynamic_methods_in_405_allow_header() {
+        let lua = Lua::new();
+        let static_route = dummy_route(&lua, HttpMethod::Get, "/users/me");
+        let dynamic_route = Route {
+            method: HttpMethod::Post,
+            pattern: Bytes::from_static(b"/users/{id}"),
+            param_names: vec!["id".to_string()],
+            handler: lua.create_function(|_, ()| Ok(())).unwrap(),
+            is_static: false,
+            middlewares: Default::default(),
+        };
+
+        let router = FastRouter::from_routes(vec![static_route, dynamic_route]).expect("router");
+
+        match router.match_route(HttpMethod::Put, "/users/me") {
+            RouteMatch::MethodNotAllowed { allowed } => {
+                assert!(allowed.contains(&HttpMethod::Get));
+                assert!(allowed.contains(&HttpMethod::Head));
+                assert!(allowed.contains(&HttpMethod::Post));
+                assert!(allowed.contains(&HttpMethod::Options));
+            }
+            _ => panic!("expected 405 with merged methods"),
+        }
+    }
 }
 
 impl FastRouter {
+    fn collect_allowed_methods(
+        static_methods: Option<&[HttpMethod]>,
+        dynamic_methods: Option<&[(HttpMethod, usize)]>,
+    ) -> Vec<HttpMethod> {
+        let mut methods = SmallVec::<[HttpMethod; 8]>::new();
+
+        if let Some(static_methods) = static_methods {
+            methods.extend_from_slice(static_methods);
+        }
+
+        if let Some(dynamic_methods) = dynamic_methods {
+            methods.extend(dynamic_methods.iter().map(|(m, _)| *m));
+        }
+
+        Self::normalize_allowed_methods(&methods)
+    }
+
     pub fn from_routes(routes: Vec<Route>) -> Result<Self> {
         let mut router = Router::new();
         let mut handlers = Vec::new();
@@ -195,6 +263,7 @@ impl FastRouter {
                     .entry(path_hash)
                     .or_insert_with(SmallVec::new)
                     .push(route.method);
+                continue;
             }
 
             let methods = pattern_map
@@ -338,61 +407,66 @@ impl FastRouter {
             }
         }
 
-        // Path exists but method not allowed (static)
-        if let Some(methods) = self.static_path_methods.get(&path_hash) {
+        // Slow path: dynamic routes with parameters
+        let static_methods = self.static_path_methods.get(&path_hash);
+        let matched = self.router.at(path).ok();
+
+        if let Some(matched) = matched {
+            let handler_idx = if let Some((_, idx)) =
+                matched.value.iter().find(|(m, _)| *m == method)
+            {
+                *idx
+            } else if method == HttpMethod::Head {
+                if let Some((_, idx)) = matched.value.iter().find(|(m, _)| *m == HttpMethod::Get) {
+                    *idx
+                } else {
+                    return RouteMatch::MethodNotAllowed {
+                        allowed: Self::collect_allowed_methods(
+                            static_methods.map(|m| m.as_slice()),
+                            Some(matched.value.as_slice()),
+                        ),
+                    };
+                }
+            } else {
+                return RouteMatch::MethodNotAllowed {
+                    allowed: Self::collect_allowed_methods(
+                        static_methods.map(|m| m.as_slice()),
+                        Some(matched.value.as_slice()),
+                    ),
+                };
+            };
+
+            let mut params = Vec::with_capacity(matched.params.len());
+            for (name, value) in matched.params.iter() {
+                if !is_valid_percent_encoding(value) {
+                    return RouteMatch::NotFound;
+                }
+                let decoded = match urlencoding::decode(value) {
+                    Ok(v) => v.into_owned(),
+                    Err(_) => return RouteMatch::NotFound,
+                };
+                if decoded.is_empty() {
+                    return RouteMatch::NotFound;
+                }
+                params.push((
+                    Bytes::copy_from_slice(name.as_bytes()),
+                    Bytes::copy_from_slice(decoded.as_bytes()),
+                ));
+            }
+
+            return RouteMatch::Found {
+                handler: self.handlers[handler_idx].clone(),
+                params,
+                is_head: method == HttpMethod::Head,
+            };
+        }
+
+        if let Some(methods) = static_methods {
             return RouteMatch::MethodNotAllowed {
                 allowed: Self::normalize_allowed_methods(methods),
             };
         }
 
-        // Slow path: dynamic routes with parameters
-        let matched = match self.router.at(path) {
-            Ok(m) => m,
-            Err(_) => return RouteMatch::NotFound,
-        };
-
-        let handler_idx = if let Some((_, idx)) = matched.value.iter().find(|(m, _)| *m == method) {
-            *idx
-        } else if method == HttpMethod::Head {
-            if let Some((_, idx)) = matched.value.iter().find(|(m, _)| *m == HttpMethod::Get) {
-                *idx
-            } else {
-                return RouteMatch::MethodNotAllowed {
-                    allowed: Self::normalize_allowed_methods(
-                        &matched.value.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
-                    ),
-                };
-            }
-        } else {
-            return RouteMatch::MethodNotAllowed {
-                allowed: Self::normalize_allowed_methods(
-                    &matched.value.iter().map(|(m, _)| *m).collect::<Vec<_>>(),
-                ),
-            };
-        };
-
-        let mut params = Vec::with_capacity(matched.params.len());
-        for (name, value) in matched.params.iter() {
-            if !is_valid_percent_encoding(value) {
-                return RouteMatch::NotFound;
-            }
-            let decoded = match urlencoding::decode(value) {
-                Ok(v) => v.into_owned(),
-                Err(_) => return RouteMatch::NotFound,
-            };
-            if decoded.is_empty() {
-                return RouteMatch::NotFound;
-            }
-            params.push((
-                Bytes::copy_from_slice(name.as_bytes()),
-                Bytes::copy_from_slice(decoded.as_bytes()),
-            ));
-        }
-
-        RouteMatch::Found {
-            handler: self.handlers[handler_idx].clone(),
-            params,
-            is_head: method == HttpMethod::Head,
-        }
+        RouteMatch::NotFound
     }
 }
