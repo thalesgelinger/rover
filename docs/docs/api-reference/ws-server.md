@@ -355,9 +355,10 @@ The following behavior contracts are verified by tests:
 
 | Contract | Test |
 |----------|------|
-| `ws.join` called on connect, receives `ctx` | `test_websocket_join_hook` (integration) |
-| `ws.join` return value becomes initial state | `test_websocket_state_management` (integration) |
-| `ws.leave` called on disconnect, receives `state` | `test_websocket_leave_hook` (integration) |
+| `ws.join` called on connect, receives `ctx` | `test_websocket_join_hook`, `test_websocket_connect_flow_ctx_methods` (integration) |
+| `ws.join` return value becomes initial state | `test_websocket_state_management`, `test_websocket_message_flow_state_propagation` (integration) |
+| `ws.leave` called on disconnect, receives `state` | `test_websocket_leave_hook`, `test_websocket_close_flow_state_cleanup` (integration) |
+| Complete connect/message/close flow | `test_websocket_complete_lifecycle` (integration) |
 
 ### Event Dispatch
 
@@ -365,8 +366,8 @@ The following behavior contracts are verified by tests:
 |----------|------|
 | Typed handler `ws.listen.<event>` matches `type` field | `test_websocket_echo_server` (integration) |
 | Fallback `ws.listen.message` for untyped messages | `test_websocket_fallback_handler` (integration) |
-| Handler receives `(msg, ctx, state)` | `test_handler_receives_msg_ctx_state_arguments` (unit) |
-| Handler return updates state | `test_websocket_state_management` (integration) |
+| Handler receives `(msg, ctx, state)` | `test_handler_receives_msg_ctx_state_arguments` (unit), `test_websocket_message_flow_state_propagation` (integration) |
+| Handler return updates state | `test_websocket_state_management`, `test_websocket_state_update_chain` (integration) |
 
 ### Send Operations
 
