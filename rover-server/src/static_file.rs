@@ -84,8 +84,11 @@ fn sanitize_path(base_path: &Path, requested_path: &str) -> Result<PathBuf, Stri
         return Err("Invalid path".to_string());
     }
 
+    // Normalize URL-style leading slashes to a relative path within base_path
+    let normalized_path = requested_path.trim_start_matches('/');
+
     // Parse the requested path components
-    let requested = Path::new(requested_path);
+    let requested = Path::new(normalized_path);
 
     // Start with the base path
     let mut full_path = base_path.to_path_buf();
@@ -272,8 +275,20 @@ mod tests {
     #[test]
     fn should_detect_directory_traversal_with_absolute_path() {
         let temp_dir = TempDir::new().unwrap();
-        let response = serve_static_file(temp_dir.path(), "/etc/passwd", None);
+        let response = serve_static_file(temp_dir.path(), "/../etc/passwd", None);
         assert_eq!(response.status, 403);
+    }
+
+    #[test]
+    fn should_serve_file_with_leading_slash_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Hello, World!").unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "/test.txt", None);
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Bytes::from_static(b"Hello, World!"));
     }
 
     #[test]
