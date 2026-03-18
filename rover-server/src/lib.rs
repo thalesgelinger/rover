@@ -1,4 +1,5 @@
 mod buffer_pool;
+pub mod compression;
 mod connection;
 pub mod direct_json_parser;
 mod event_loop;

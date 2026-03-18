@@ -260,8 +260,24 @@ fn forbidden_response(message: &str) -> RoverResponse {
     }
 }
 
-/// Check if resourceis not modified based on conditional headers
-fn is_not_modified(
+/// Strip encoding suffix from ETag (e.g., `"abc-gzip"` -> `"abc"`)
+pub fn strip_etag_encoding_suffix(etag: &str) -> &str {
+    let trimmed = etag.trim();
+    if !trimmed.starts_with('"') || !trimmed.ends_with('"') {
+        return trimmed;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let encodings = ["-gzip", "-deflate", "-br", "-xz"];
+    for enc in encodings {
+        if let Some(base) = inner.strip_suffix(enc) {
+            return base;
+        }
+    }
+    inner
+}
+
+/// Check if resource is not modified based on conditional headers
+pub fn is_not_modified(
     response_headers: &HashMap<String, String>,
     request_headers: &HashMap<String, String>,
 ) -> bool {
@@ -272,9 +288,17 @@ fn is_not_modified(
             if if_none_match == "*" {
                 return true;
             }
+            // Get base ETag without encoding suffix
+            let base_etag = strip_etag_encoding_suffix(etag);
             // Handle quoted ETag values (may have multiple ETags separated by commas)
             for client_etag in if_none_match.split(',').map(|s| s.trim()) {
                 if client_etag == etag {
+                    return true;
+                }
+                // Also check if client's ETag matches after stripping encoding suffix
+                // This handles cached compressed versions when content hasn't changed
+                let client_base = strip_etag_encoding_suffix(client_etag);
+                if client_base == base_etag {
                     return true;
                 }
             }
@@ -639,5 +663,61 @@ mod tests {
 
         let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
         assert_eq!(response.status, 304);
+    }
+
+    #[test]
+    fn should_return_304_when_etag_matches_with_gzip_suffix() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        let first_response = serve_static_file(temp_dir.path(), "test.txt", None, None);
+        let base_etag = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("ETag")
+            .cloned()
+            .unwrap();
+
+        // Client has cached gzip version with encoding-suffixed ETag
+        let gzip_etag = format!("{}-gzip\"", &base_etag[..base_etag.len() - 1]);
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), gzip_etag.clone());
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 304);
+    }
+
+    #[test]
+    fn should_return_304_when_etag_matches_with_deflate_suffix() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        let first_response = serve_static_file(temp_dir.path(), "test.txt", None, None);
+        let base_etag = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("ETag")
+            .cloned()
+            .unwrap();
+
+        // Client has cached deflate version with encoding-suffixed ETag
+        let deflate_etag = format!("{}-deflate\"", &base_etag[..base_etag.len() - 1]);
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), deflate_etag);
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 304);
+    }
+
+    #[test]
+    fn should_strip_etag_encoding_suffix_correctly() {
+        assert_eq!(strip_etag_encoding_suffix("\"abc-gzip\""), "abc");
+        assert_eq!(strip_etag_encoding_suffix("\"abc-deflate\""), "abc");
+        assert_eq!(strip_etag_encoding_suffix("\"abc-br\""), "abc");
+        assert_eq!(strip_etag_encoding_suffix("\"abc\""), "abc");
+        assert_eq!(strip_etag_encoding_suffix("abc"), "abc");
+        assert_eq!(strip_etag_encoding_suffix("\"abc-xz\""), "abc");
     }
 }
