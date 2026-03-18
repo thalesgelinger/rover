@@ -1,5 +1,6 @@
 mod app_type;
 mod auto_table;
+pub mod cookie;
 mod env;
 mod error_reporter;
 pub mod guard;
@@ -152,6 +153,10 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
 
+    // Add rover.cookie module
+    let cookie_module = cookie::create_cookie_module(&lua)?;
+    rover.set("cookie", cookie_module)?;
+
     // Add rover.auth JWT module
     let auth_module = create_auth_module(&lua)?;
     rover.set("auth", auth_module)?;
@@ -260,8 +265,12 @@ pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     rover.set("env", env_module)?;
 
     // Add rover.config module for loading config files
-    let config_module = create_config_module(lua)?;
+    let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
+
+    // Add rover.cookie module
+    let cookie_module = cookie::create_cookie_module(&lua)?;
+    rover.set("cookie", cookie_module)?;
 
     // Add rover.auth JWT module
     let auth_module = create_auth_module(lua)?;
@@ -468,6 +477,10 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     // Add rover.config module for loading config files
     let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
+
+    // Add rover.cookie module
+    let cookie_module = cookie::create_cookie_module(&lua)?;
+    rover.set("cookie", cookie_module)?;
 
     // Add rover.auth JWT module
     let auth_module = create_auth_module(&lua)?;
