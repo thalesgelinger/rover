@@ -408,4 +408,148 @@ mod tests {
         manager.transition_to(LifecyclePhase::Running);
         assert!(!manager.is_drain_timeout_exceeded());
     }
+
+    #[test]
+    fn should_detect_drain_timeout_exceeded() {
+        let config = LifecycleConfig {
+            enabled: true,
+            hook_timeout_secs: 30,
+            graceful_shutdown: true,
+            drain_timeout_secs: 1,
+            reload_on_signal: false,
+        };
+        let mut manager = LifecycleManager::with_config(config);
+
+        // Not draining yet
+        manager.transition_to(LifecyclePhase::Running);
+        assert!(!manager.is_drain_timeout_exceeded());
+
+        // Now draining, but not timed out yet
+        manager.transition_to(LifecyclePhase::Draining);
+        assert!(!manager.is_drain_timeout_exceeded());
+
+        // Wait for timeout
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(manager.is_drain_timeout_exceeded());
+    }
+
+    #[test]
+    fn should_handle_zero_drain_timeout() {
+        let config = LifecycleConfig {
+            enabled: true,
+            hook_timeout_secs: 30,
+            graceful_shutdown: true,
+            drain_timeout_secs: 0,
+            reload_on_signal: false,
+        };
+        let mut manager = LifecycleManager::with_config(config);
+
+        manager.transition_to(LifecyclePhase::Draining);
+        // With zero timeout, should immediately be exceeded
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(manager.is_drain_timeout_exceeded());
+    }
+
+    #[test]
+    fn should_handle_phase_reload_transitions() {
+        let mut manager = LifecycleManager::new();
+
+        // Start at Starting
+        assert_eq!(manager.current_phase(), LifecyclePhase::Starting);
+
+        // To Running
+        manager.transition_to(LifecyclePhase::Running);
+        assert_eq!(manager.current_phase(), LifecyclePhase::Running);
+
+        // To Reloading
+        manager.transition_to(LifecyclePhase::Reloading);
+        assert_eq!(manager.current_phase(), LifecyclePhase::Reloading);
+        assert!(!manager.current_phase().can_accept_connections());
+        assert!(!manager.current_phase().can_process_requests());
+
+        // Back to Running
+        manager.transition_to(LifecyclePhase::Running);
+        assert_eq!(manager.current_phase(), LifecyclePhase::Running);
+        assert!(manager.current_phase().can_accept_connections());
+    }
+
+    #[test]
+    fn should_handle_all_phase_transitions() {
+        let mut manager = LifecycleManager::new();
+        let phases = vec![
+            LifecyclePhase::Starting,
+            LifecyclePhase::Running,
+            LifecyclePhase::Draining,
+            LifecyclePhase::ShuttingDown,
+            LifecyclePhase::Shutdown,
+        ];
+
+        for phase in phases {
+            manager.transition_to(phase);
+            assert_eq!(manager.current_phase(), phase);
+        }
+    }
+
+    #[test]
+    fn should_handle_repeated_same_phase_transition() {
+        let mut manager = LifecycleManager::new();
+        manager.transition_to(LifecyclePhase::Running);
+        manager.transition_to(LifecyclePhase::Running);
+        manager.transition_to(LifecyclePhase::Running);
+        assert_eq!(manager.current_phase(), LifecyclePhase::Running);
+    }
+
+    #[test]
+    fn should_register_and_execute_hooks() {
+        let lua = Lua::new();
+        let mut manager = LifecycleManager::new();
+
+        // Create a simple hook function
+        let hook_fn = lua.create_function(|_, ()| Ok(())).unwrap();
+        let key = lua.create_registry_value(hook_fn).unwrap();
+        manager.register_hook(
+            LifecycleEvent::Startup,
+            "test_hook".to_string(),
+            Arc::new(key),
+        );
+
+        // Execute hooks - should not error
+        let result = manager.execute_hooks(&lua, LifecycleEvent::Startup);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn should_not_execute_hooks_when_disabled() {
+        let lua = Lua::new();
+        let config = LifecycleConfig {
+            enabled: false,
+            hook_timeout_secs: 30,
+            graceful_shutdown: true,
+            drain_timeout_secs: 30,
+            reload_on_signal: false,
+        };
+        let mut manager = LifecycleManager::with_config(config);
+
+        let hook_fn = lua.create_function(|_, ()| Ok(())).unwrap();
+        let key = lua.create_registry_value(hook_fn).unwrap();
+        manager.register_hook(
+            LifecycleEvent::Startup,
+            "test_hook".to_string(),
+            Arc::new(key),
+        );
+
+        // Execute hooks - should return Ok immediately without running hooks
+        let result = manager.execute_hooks(&lua, LifecycleEvent::Startup);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn should_handle_hook_execution_with_no_hooks() {
+        let lua = Lua::new();
+        let manager = LifecycleManager::new();
+
+        // Execute hooks for an event with no registered hooks
+        let result = manager.execute_hooks(&lua, LifecycleEvent::Ready);
+        assert!(result.is_ok());
+    }
 }

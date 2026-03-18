@@ -291,4 +291,213 @@ mod tests {
         // Note: process_queue is called but jobs are just marked, not actually started
         // in this simplified test
     }
+
+    #[test]
+    fn test_zero_concurrent_limit() {
+        let lua = Lua::new();
+        let (pool, _) = create_test_pool(0);
+
+        let scheduler = Rc::new(RefCell::new(Scheduler::new()));
+
+        // All jobs should be queued when limit is 0
+        let task = crate::task::Task::new(
+            lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                .unwrap(),
+            scheduler.clone(),
+            1,
+        );
+        let task_ud = lua.create_userdata(task).unwrap();
+        assert!(!pool.try_start_job(task_ud, 1));
+        assert_eq!(pool.queued_count(), 1);
+        assert_eq!(pool.running_count(), 0);
+    }
+
+    #[test]
+    fn test_large_concurrent_limit() {
+        let lua = Lua::new();
+        let (pool, _) = create_test_pool(1000);
+
+        let scheduler = Rc::new(RefCell::new(Scheduler::new()));
+
+        // Should be able to start many jobs
+        for i in 1..=100 {
+            let task = crate::task::Task::new(
+                lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                    .unwrap(),
+                scheduler.clone(),
+                i,
+            );
+            let task_ud = lua.create_userdata(task).unwrap();
+            assert!(pool.try_start_job(task_ud, i));
+        }
+
+        assert_eq!(pool.running_count(), 100);
+        assert_eq!(pool.queued_count(), 0);
+    }
+
+    #[test]
+    fn test_decrease_max_concurrent() {
+        let lua = Lua::new();
+        let (pool, _) = create_test_pool(5);
+
+        let scheduler = Rc::new(RefCell::new(Scheduler::new()));
+
+        // Start 3 jobs
+        for i in 1..=3 {
+            let task = crate::task::Task::new(
+                lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                    .unwrap(),
+                scheduler.clone(),
+                i,
+            );
+            let task_ud = lua.create_userdata(task).unwrap();
+            assert!(pool.try_start_job(task_ud, i));
+        }
+
+        assert_eq!(pool.running_count(), 3);
+
+        // Decrease limit - running jobs should not be affected
+        pool.set_max_concurrent(2);
+        assert_eq!(pool.max_concurrent(), 2);
+        assert_eq!(pool.running_count(), 3); // Still 3 running
+
+        // New jobs should be queued
+        let task4 = crate::task::Task::new(
+            lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                .unwrap(),
+            scheduler.clone(),
+            4,
+        );
+        let task_ud4 = lua.create_userdata(task4).unwrap();
+        assert!(!pool.try_start_job(task_ud4, 4));
+        assert_eq!(pool.queued_count(), 1);
+    }
+
+    #[test]
+    fn test_multiple_queued_jobs() {
+        let lua = Lua::new();
+        let (pool, _) = create_test_pool(2);
+
+        let scheduler = Rc::new(RefCell::new(Scheduler::new()));
+
+        // Start 2 jobs (at limit)
+        for i in 1..=2 {
+            let task = crate::task::Task::new(
+                lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                    .unwrap(),
+                scheduler.clone(),
+                i,
+            );
+            let task_ud = lua.create_userdata(task).unwrap();
+            assert!(pool.try_start_job(task_ud, i));
+        }
+
+        // Queue 3 more
+        for i in 3..=5 {
+            let task = crate::task::Task::new(
+                lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                    .unwrap(),
+                scheduler.clone(),
+                i,
+            );
+            let task_ud = lua.create_userdata(task).unwrap();
+            assert!(!pool.try_start_job(task_ud, i));
+        }
+
+        assert_eq!(pool.running_count(), 2);
+        assert_eq!(pool.queued_count(), 3);
+
+        // Complete one job
+        pool.job_completed();
+        assert_eq!(pool.running_count(), 2); // Still 2 (one from queue started)
+        assert_eq!(pool.queued_count(), 2);
+
+        // Complete another
+        pool.job_completed();
+        assert_eq!(pool.running_count(), 2);
+        assert_eq!(pool.queued_count(), 1);
+    }
+
+    #[test]
+    fn test_cancel_job_not_in_queue() {
+        let _lua = Lua::new();
+        let (pool, _scheduler) = create_test_pool(2);
+
+        // Cancel a job that's not in queue or running
+        // This should call scheduler.cancel_task but return false
+        assert!(!pool.cancel_job(999));
+    }
+
+    #[test]
+    fn test_complete_all_jobs() {
+        let lua = Lua::new();
+        let (pool, _) = create_test_pool(3);
+
+        let scheduler = Rc::new(RefCell::new(Scheduler::new()));
+
+        // Start 3 jobs
+        for i in 1..=3 {
+            let task = crate::task::Task::new(
+                lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                    .unwrap(),
+                scheduler.clone(),
+                i,
+            );
+            let task_ud = lua.create_userdata(task).unwrap();
+            assert!(pool.try_start_job(task_ud, i));
+        }
+
+        // Complete all
+        for _ in 0..3 {
+            pool.job_completed();
+        }
+
+        assert_eq!(pool.running_count(), 0);
+        assert_eq!(pool.queued_count(), 0);
+    }
+
+    #[test]
+    fn test_queued_jobs_fifo_order() {
+        let lua = Lua::new();
+        let (pool, _) = create_test_pool(1);
+
+        let scheduler = Rc::new(RefCell::new(Scheduler::new()));
+
+        // Start first job
+        let task1 = crate::task::Task::new(
+            lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                .unwrap(),
+            scheduler.clone(),
+            1,
+        );
+        let task_ud1 = lua.create_userdata(task1).unwrap();
+        assert!(pool.try_start_job(task_ud1, 1));
+
+        // Queue jobs in order
+        for i in 2..=4 {
+            let task = crate::task::Task::new(
+                lua.create_thread(lua.create_function(|_, ()| Ok(())).unwrap())
+                    .unwrap(),
+                scheduler.clone(),
+                i,
+            );
+            let task_ud = lua.create_userdata(task).unwrap();
+            assert!(!pool.try_start_job(task_ud, i));
+        }
+
+        assert_eq!(pool.queued_count(), 3);
+
+        // Cancel middle job
+        assert!(pool.cancel_job(3));
+        assert_eq!(pool.queued_count(), 2);
+
+        // Cancel first job in queue
+        assert!(pool.cancel_job(2));
+        assert_eq!(pool.queued_count(), 1);
+
+        // Complete running job, queued job should start
+        pool.job_completed();
+        assert_eq!(pool.running_count(), 1);
+        assert_eq!(pool.queued_count(), 0);
+    }
 }
