@@ -16,7 +16,7 @@
   --secondary: oklch(0.2 0.005 285);
   --secondary-foreground: oklch(0.85 0 0);
   --muted: oklch(0.2 0.005 285);
-  --muted-foreground: oklch(0.6 0 0);
+  --muted-foreground: oklch(0.68 0 0);
   --accent: oklch(0.62 0.22 20);
   --accent-foreground: oklch(0.98 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -107,6 +107,7 @@
   overflow: hidden;
   display: flex;
   justify-content: center;
+  padding-inline: 0.25rem;
 }
 
 .ascii-hero {
@@ -116,6 +117,106 @@
   text-align: left;
   font-size: 0.195rem;
   line-height: 1.02;
+  overflow: hidden;
+}
+
+.landing-command {
+  background: color-mix(in oklch, var(--card) 96%, var(--background));
+  border-color: color-mix(in oklch, var(--border) 78%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in oklch, var(--foreground) 4%, transparent);
+}
+
+.landing-command:hover {
+  background: color-mix(in oklch, var(--card) 98%, var(--background));
+  border-color: color-mix(in oklch, var(--border) 88%, transparent);
+}
+
+.landing-command #install-command {
+  color: color-mix(in oklch, var(--foreground) 84%, black 16%);
+}
+
+.landing-command #copy-install-command {
+  color: color-mix(in oklch, var(--foreground) 72%, black 28%);
+}
+
+.landing-command #copy-install-command:hover {
+  color: color-mix(in oklch, var(--foreground) 92%, black 8%);
+}
+
+.landing-feature-card {
+  background: color-mix(in oklch, var(--background) 88%, var(--card));
+  border-color: color-mix(in oklch, var(--border) 78%, transparent);
+}
+
+.landing-feature-card:hover {
+  background: color-mix(in oklch, var(--background) 84%, var(--card));
+}
+
+.landing-feature-icon {
+  background: color-mix(in oklch, var(--card) 86%, var(--background));
+}
+
+.landing-status-available {
+  background: color-mix(in oklch, var(--primary) 14%, var(--background));
+  color: var(--primary);
+}
+
+.landing-status-coming {
+  background: color-mix(in oklch, var(--muted) 78%, black 22%);
+  color: color-mix(in oklch, var(--foreground) 58%, black 42%);
+}
+
+.landing-feature-tag {
+  border-color: color-mix(in oklch, var(--border) 82%, transparent);
+  color: color-mix(in oklch, var(--foreground) 72%, black 28%);
+}
+
+.landing-cta-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  text-decoration: none;
+}
+
+.landing-cta-primary:hover {
+  color: var(--primary-foreground);
+  text-decoration: none;
+}
+
+.landing-cta-secondary {
+  border-color: color-mix(in oklch, var(--border) 82%, transparent);
+  color: color-mix(in oklch, var(--foreground) 74%, black 26%);
+  text-decoration: none;
+}
+
+.landing-cta-secondary:hover {
+  border-color: color-mix(in oklch, var(--foreground) 26%, transparent);
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.landing-footer-link,
+.landing-footer-icon-link {
+  color: color-mix(in oklch, var(--foreground) 70%, black 30%);
+  text-decoration: none;
+}
+
+.landing-footer-link:hover,
+.landing-footer-icon-link:hover {
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.landing-code-pre {
+  min-width: max-content;
+}
+
+.landing-scroll-x {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.landing-scroll-x::-webkit-scrollbar {
+  display: none;
 }
 
 @media (min-width: 430px) {

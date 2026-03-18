@@ -220,6 +220,18 @@ kbd,
   color: var(--foreground);
 }
 
+.landing-footer-link,
+.landing-footer-icon-link {
+  color: var(--muted-foreground);
+  text-decoration: none;
+}
+
+.landing-footer-link:hover,
+.landing-footer-icon-link:hover {
+  color: var(--foreground);
+  text-decoration: none;
+}
+
 .site-github-button {
   display: inline-flex;
   align-items: center;
