@@ -14,13 +14,15 @@ const DEFAULT_CACHE_CONTROL: &str = "public, max-age=86400";
 /// # Arguments
 /// * `base_path` - The base directory to serve files from
 /// * `requested_path` - The path requested by the client (e.g., "/css/style.css")
+/// * `request_headers` - Optional request headers for conditional requests (If-None-Match, If-Modified-Since)
 /// * `custom_headers` - Optional additional headers to include
 ///
 /// # Returns
-/// A `RoverResponse` with the file content or a 404/403 error
+/// A `RoverResponse` with the file content or a 404/403/304 error
 pub fn serve_static_file(
     base_path: &Path,
     requested_path: &str,
+    request_headers: Option<&HashMap<String, String>>,
     custom_headers: Option<HashMap<String, String>>,
 ) -> RoverResponse {
     // Validate and sanitize the requested path
@@ -47,6 +49,13 @@ pub fn serve_static_file(
 
             // Add cache headers
             add_cache_headers(&mut headers, &sanitized, &content);
+
+            // Check conditional request headers for 304 response
+            if let Some(req_headers) = request_headers {
+                if is_not_modified(&headers, req_headers) {
+                    return not_modified_response(headers);
+                }
+            }
 
             RoverResponse {
                 status: 200,
@@ -224,6 +233,15 @@ fn format_http_date(unix_timestamp: u64) -> String {
     )
 }
 
+fn not_modified_response(headers: HashMap<String, String>) -> RoverResponse {
+    RoverResponse {
+        status: 304,
+        body: Bytes::new(),
+        content_type: "text/plain",
+        headers: Some(headers),
+    }
+}
+
 fn not_found_response() -> RoverResponse {
     RoverResponse {
         status: 404,
@@ -242,6 +260,42 @@ fn forbidden_response(message: &str) -> RoverResponse {
     }
 }
 
+/// Check if resourceis not modified based on conditional headers
+fn is_not_modified(
+    response_headers: &HashMap<String, String>,
+    request_headers: &HashMap<String, String>,
+) -> bool {
+    // Check If-None-Match header (ETag comparison)
+    if let Some(if_none_match) = request_headers.get("If-None-Match") {
+        if let Some(etag) = response_headers.get("ETag") {
+            // Support both exact match and * wildcard
+            if if_none_match == "*" {
+                return true;
+            }
+            // Handle quoted ETag values (may have multiple ETags separated by commas)
+            for client_etag in if_none_match.split(',').map(|s| s.trim()) {
+                if client_etag == etag {
+                    return true;
+                }
+            }
+        }
+        // If If-None-Match is present but doesn't match, don't check Last-Modified
+        return false;
+    }
+
+    // Check If-Modified-Since header (Last-Modified comparison)
+    if let Some(if_modified_since) = request_headers.get("If-Modified-Since") {
+        if let Some(last_modified) = response_headers.get("Last-Modified") {
+            // Parse both dates and compare
+            // For simplicity, we do string comparison (dates should be in same format)
+            // In production, you'd parse and compare timestamps
+            return if_modified_since == last_modified;
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,7 +307,7 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "Hello, World!").unwrap();
 
-        let response = serve_static_file(temp_dir.path(), "test.txt", None);
+        let response = serve_static_file(temp_dir.path(), "test.txt", None, None);
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, Bytes::from_static(b"Hello, World!"));
@@ -268,14 +322,14 @@ mod tests {
     #[test]
     fn should_detect_directory_traversal_with_dotdot() {
         let temp_dir = TempDir::new().unwrap();
-        let response = serve_static_file(temp_dir.path(), "../etc/passwd", None);
+        let response = serve_static_file(temp_dir.path(), "../etc/passwd", None, None);
         assert_eq!(response.status, 403);
     }
 
     #[test]
     fn should_detect_directory_traversal_with_absolute_path() {
         let temp_dir = TempDir::new().unwrap();
-        let response = serve_static_file(temp_dir.path(), "/../etc/passwd", None);
+        let response = serve_static_file(temp_dir.path(), "/../etc/passwd", None, None);
         assert_eq!(response.status, 403);
     }
 
@@ -285,7 +339,7 @@ mod tests {
         let file_path = temp_dir.path().join("test.txt");
         std::fs::write(&file_path, "Hello, World!").unwrap();
 
-        let response = serve_static_file(temp_dir.path(), "/test.txt", None);
+        let response = serve_static_file(temp_dir.path(), "/test.txt", None, None);
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, Bytes::from_static(b"Hello, World!"));
@@ -294,7 +348,7 @@ mod tests {
     #[test]
     fn should_reject_path_with_null_bytes() {
         let temp_dir = TempDir::new().unwrap();
-        let response = serve_static_file(temp_dir.path(), "test\0.txt", None);
+        let response = serve_static_file(temp_dir.path(), "test\0.txt", None, None);
         assert_eq!(response.status, 403);
     }
 
@@ -302,7 +356,7 @@ mod tests {
     fn should_reject_very_long_paths() {
         let temp_dir = TempDir::new().unwrap();
         let long_path = "a".repeat(MAX_PATH_LENGTH + 1);
-        let response = serve_static_file(temp_dir.path(), &long_path, None);
+        let response = serve_static_file(temp_dir.path(), &long_path, None, None);
         assert_eq!(response.status, 403);
     }
 
@@ -311,14 +365,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         std::fs::create_dir(temp_dir.path().join("subdir")).unwrap();
 
-        let response = serve_static_file(temp_dir.path(), "subdir", None);
+        let response = serve_static_file(temp_dir.path(), "subdir", None, None);
         assert_eq!(response.status, 403);
     }
 
     #[test]
     fn should_return_404_for_missing_file() {
         let temp_dir = TempDir::new().unwrap();
-        let response = serve_static_file(temp_dir.path(), "nonexistent.txt", None);
+        let response = serve_static_file(temp_dir.path(), "nonexistent.txt", None, None);
         assert_eq!(response.status, 404);
     }
 
@@ -327,7 +381,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         std::fs::write(temp_dir.path().join("page.html"), "<html></html>").unwrap();
 
-        let response = serve_static_file(temp_dir.path(), "page.html", None);
+        let response = serve_static_file(temp_dir.path(), "page.html", None, None);
         assert_eq!(response.content_type, "text/html");
     }
 
@@ -336,7 +390,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         std::fs::write(temp_dir.path().join("style.css"), "body {}").unwrap();
 
-        let response = serve_static_file(temp_dir.path(), "style.css", None);
+        let response = serve_static_file(temp_dir.path(), "style.css", None, None);
         assert_eq!(response.content_type, "text/css");
     }
 
@@ -345,7 +399,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         std::fs::write(temp_dir.path().join("app.js"), "console.log('hi')").unwrap();
 
-        let response = serve_static_file(temp_dir.path(), "app.js", None);
+        let response = serve_static_file(temp_dir.path(), "app.js", None, None);
         assert_eq!(response.content_type, "application/javascript");
     }
 
@@ -357,7 +411,7 @@ mod tests {
         let mut custom_headers = HashMap::new();
         custom_headers.insert("X-Custom".to_string(), "value".to_string());
 
-        let response = serve_static_file(temp_dir.path(), "test.txt", Some(custom_headers));
+        let response = serve_static_file(temp_dir.path(), "test.txt", None, Some(custom_headers));
 
         assert_eq!(response.status, 200);
         let headers = response.headers.unwrap();
@@ -369,7 +423,7 @@ mod tests {
     fn should_prevent_traversal_with_encoded_paths() {
         let temp_dir = TempDir::new().unwrap();
         // This tests the canonicalization check
-        let response = serve_static_file(temp_dir.path(), "subdir/../../../etc/passwd", None);
+        let response = serve_static_file(temp_dir.path(), "subdir/../../../etc/passwd", None, None);
         assert_eq!(response.status, 403);
     }
 
@@ -379,7 +433,7 @@ mod tests {
         std::fs::create_dir_all(temp_dir.path().join("css")).unwrap();
         std::fs::write(temp_dir.path().join("css/style.css"), "body {}").unwrap();
 
-        let response = serve_static_file(temp_dir.path(), "css/style.css", None);
+        let response = serve_static_file(temp_dir.path(), "css/style.css", None, None);
         assert_eq!(response.status, 200);
         assert_eq!(response.content_type, "text/css");
     }
@@ -398,7 +452,7 @@ mod tests {
             )
             .unwrap();
 
-            let response = serve_static_file(temp_dir.path(), "link.txt", None);
+            let response = serve_static_file(temp_dir.path(), "link.txt", None, None);
             assert_eq!(response.status, 200);
             assert_eq!(response.body, Bytes::from_static(b"target content"));
         }
@@ -419,7 +473,7 @@ mod tests {
             )
             .unwrap();
 
-            let response = serve_static_file(temp_dir.path(), "escape.txt", None);
+            let response = serve_static_file(temp_dir.path(), "escape.txt", None, None);
             assert_eq!(response.status, 403);
         }
     }
@@ -430,7 +484,160 @@ mod tests {
         std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
 
         // ./test.txt should be allowed
-        let response = serve_static_file(temp_dir.path(), "./test.txt", None);
+        let response = serve_static_file(temp_dir.path(), "./test.txt", None, None);
         assert_eq!(response.status, 200);
+    }
+
+    #[test]
+    fn should_return_304_when_etag_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        // First request to get ETag
+        let first_response = serve_static_file(temp_dir.path(), "test.txt", None, None);
+        assert_eq!(first_response.status, 200);
+        let etag = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("ETag")
+            .cloned()
+            .unwrap();
+
+        // Second request with If-None-Match
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), etag);
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 304);
+        assert!(response.body.is_empty());
+    }
+
+    #[test]
+    fn should_return_200_when_etag_does_not_match() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), "\"wrong-etag\"".to_string());
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 200);
+        assert!(!response.body.is_empty());
+    }
+
+    #[test]
+    fn should_return_304_when_wildcard_etag() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), "*".to_string());
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 304);
+    }
+
+    #[test]
+    fn should_return_200_when_file_modified_since_last_modified() {
+        use std::thread;
+        use std::time::{Duration, SystemTime};
+
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        // Wait a bit to ensure modification time differs
+        thread::sleep(Duration::from_millis(100));
+
+        // Get file's last modified time
+        let metadata = std::fs::metadata(temp_dir.path().join("test.txt")).unwrap();
+        let modified = metadata
+            .modified()
+            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+
+        // Request with an older date
+        let older_date = format_http_date(modified.as_secs() - 3600); // 1 hour before
+        let mut headers = HashMap::new();
+        headers.insert("If-Modified-Since".to_string(), older_date);
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 200);
+    }
+
+    #[test]
+    fn should_prioritize_if_none_match_over_if_modified_since() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        // Request with both headers, but wrong ETag
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), "\"wrong-etag\"".to_string());
+        headers.insert("If-Modified-Since".to_string(), format_http_date(0)); // Very old date
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 200); // ETag mismatch overrides If-Modified-Since
+    }
+
+    #[test]
+    fn should_return_304_headers_in_response() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        // Get ETag and Last-Modified from initial request
+        let first_response = serve_static_file(temp_dir.path(), "test.txt", None, None);
+        let etag = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("ETag")
+            .cloned()
+            .unwrap();
+        let last_modified = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("Last-Modified")
+            .cloned()
+            .unwrap();
+
+        // Conditional request
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), etag.clone());
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 304);
+
+        // 304 response should still include cache headers
+        let response_headers = response.headers.unwrap();
+        assert!(response_headers.contains_key("ETag"));
+        assert!(response_headers.contains_key("Last-Modified"));
+        assert!(response_headers.contains_key("Cache-Control"));
+    }
+
+    #[test]
+    fn should_allow_multiple_etags_in_if_none_match() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        let first_response = serve_static_file(temp_dir.path(), "test.txt", None, None);
+        let etag = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("ETag")
+            .cloned()
+            .unwrap();
+
+        // Multiple ETags, one matches
+        let mut headers = HashMap::new();
+        headers.insert(
+            "If-None-Match".to_string(),
+            format!("\"etag1\", {}, \"etag2\"", etag),
+        );
+
+        let response = serve_static_file(temp_dir.path(), "test.txt", Some(&headers), None);
+        assert_eq!(response.status, 304);
     }
 }
