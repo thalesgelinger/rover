@@ -25,7 +25,7 @@ pub mod ws_manager;
 
 pub use http_task::{CoroutineResponse, HttpResponse};
 pub use lifecycle::{LifecycleConfig, LifecycleEvent, LifecycleManager, LifecyclePhase};
-pub use load_shedder::{LoadShedConfig, LoadShedder};
+pub use load_shedder::{LoadShedConfig, LoadShedder, RequestGuard};
 pub use rate_limiter::{RateLimitConfig, RateLimitPolicy, ScopedRateLimit};
 pub use response::{
     RoverResponse, SseResponse, SseWriter, StreamingResponse, generate_sse_event_id,
