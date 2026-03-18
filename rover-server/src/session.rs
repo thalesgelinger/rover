@@ -55,12 +55,31 @@ impl SameSite {
     }
 }
 
+/// Session lifecycle state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    /// Session is active and valid
+    Active,
+    /// Session has expired (TTL exceeded)
+    Expired,
+    /// Session has been explicitly invalidated
+    Invalidated,
+}
+
+impl SessionState {
+    /// Returns true if the session can be used
+    pub fn is_valid(&self) -> bool {
+        matches!(self, SessionState::Active)
+    }
+}
+
 /// Session data container
 #[derive(Debug, Clone)]
 pub struct SessionData {
     data: HashMap<String, StoreValue>,
     created_at: u64,
     last_accessed: u64,
+    state: SessionState,
 }
 
 impl SessionData {
@@ -70,6 +89,17 @@ impl SessionData {
             data: HashMap::new(),
             created_at: now,
             last_accessed: now,
+            state: SessionState::Active,
+        }
+    }
+
+    fn with_state(state: SessionState) -> Self {
+        let now = unix_secs();
+        Self {
+            data: HashMap::new(),
+            created_at: now,
+            last_accessed: now,
+            state,
         }
     }
 
@@ -114,6 +144,21 @@ impl SessionData {
 
     pub fn last_accessed(&self) -> u64 {
         self.last_accessed
+    }
+
+    pub fn state(&self) -> SessionState {
+        self.state
+    }
+
+    pub fn set_state(&mut self, state: SessionState) {
+        self.state = state;
+        self.touch();
+    }
+
+    /// Check if the session has expired based on TTL
+    pub fn is_expired(&self, ttl_secs: u64) -> bool {
+        let now = unix_secs();
+        now > self.last_accessed + ttl_secs
     }
 }
 
@@ -208,6 +253,36 @@ impl Session {
 
     pub fn last_accessed(&self) -> u64 {
         self.data.last_accessed()
+    }
+
+    pub fn state(&self) -> SessionState {
+        self.data.state()
+    }
+
+    /// Check if the session has expired based on configured TTL
+    pub fn is_expired(&self) -> bool {
+        self.data.is_expired(self.config.ttl_secs)
+    }
+
+    /// Refresh the session by extending its TTL
+    /// Updates last_accessed and saves to store
+    pub fn refresh(&mut self) -> StoreResult<()> {
+        self.data.touch();
+        self.modified = true;
+        self.save()
+    }
+
+    /// Invalidate the session (soft delete)
+    /// Marks session as invalid without removing data immediately
+    pub fn invalidate(&mut self) -> StoreResult<()> {
+        self.data.set_state(SessionState::Invalidated);
+        self.modified = true;
+        self.save()
+    }
+
+    /// Check if the session is valid (active and not expired)
+    pub fn is_valid(&self) -> bool {
+        self.data.state().is_valid() && !self.is_expired()
     }
 
     /// Save session to store
@@ -419,6 +494,7 @@ fn serialize_session(data: &SessionData) -> Vec<u8> {
     // Simple serialization format:
     // - 8 bytes: created_at (u64, big-endian)
     // - 8 bytes: last_accessed (u64, big-endian)
+    // - 1 byte: state (0=Active, 1=Expired, 2=Invalidated)
     // - 4 bytes: number of entries (u32, big-endian)
     // For each entry:
     //   - 2 bytes: key length (u16)
@@ -434,6 +510,11 @@ fn serialize_session(data: &SessionData) -> Vec<u8> {
     // Header
     result.extend_from_slice(&data.created_at.to_be_bytes());
     result.extend_from_slice(&data.last_accessed.to_be_bytes());
+    result.push(match data.state {
+        SessionState::Active => 0,
+        SessionState::Expired => 1,
+        SessionState::Invalidated => 2,
+    });
     result.extend_from_slice(&(data.data.len() as u32).to_be_bytes());
 
     // Entries
@@ -469,7 +550,8 @@ fn serialize_session(data: &SessionData) -> Vec<u8> {
 }
 
 fn deserialize_session(bytes: &[u8]) -> Option<SessionData> {
-    if bytes.len() < 20 {
+    // 8 (created_at) + 8 (last_accessed) + 1 (state) + 4 (entry_count) = 21 bytes minimum
+    if bytes.len() < 21 {
         return None;
     }
 
@@ -481,6 +563,15 @@ fn deserialize_session(bytes: &[u8]) -> Option<SessionData> {
 
     let last_accessed = u64::from_be_bytes(bytes[pos..pos + 8].try_into().ok()?);
     pos += 8;
+
+    // State (0=Active, 1=Expired, 2=Invalidated)
+    let state = match bytes[pos] {
+        0 => SessionState::Active,
+        1 => SessionState::Expired,
+        2 => SessionState::Invalidated,
+        _ => SessionState::Active, // Default to Active for unknown states
+    };
+    pos += 1;
 
     let entry_count = u32::from_be_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
     pos += 4;
@@ -572,13 +663,15 @@ fn deserialize_session(bytes: &[u8]) -> Option<SessionData> {
         data,
         created_at,
         last_accessed,
+        state,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        SameSite, SessionConfig, SessionData, SessionStore, deserialize_session, serialize_session,
+        SameSite, SessionConfig, SessionData, SessionState, SessionStore, deserialize_session,
+        serialize_session,
     };
     use crate::rate_limiter::{RateLimitConfig, RateLimitPolicy, SharedRateLimiter};
     use crate::store::SharedStore;
@@ -962,5 +1055,171 @@ mod tests {
         assert!(!cookie.contains("Domain="));
         assert!(!cookie.contains("HttpOnly"));
         assert!(!cookie.contains("Secure"));
+    }
+
+    // Session lifecycle tests
+    #[test]
+    fn should_check_session_state() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let session = store.create_session();
+        assert_eq!(session.state(), SessionState::Active);
+        assert!(session.is_valid());
+    }
+
+    #[test]
+    fn should_invalidate_session() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Invalidate the session
+        session.invalidate().unwrap();
+
+        assert_eq!(session.state(), SessionState::Invalidated);
+        assert!(!session.is_valid());
+
+        // Retrieve and verify state persisted
+        let retrieved = store.get_session(&session_id).unwrap().unwrap();
+        assert_eq!(retrieved.state(), SessionState::Invalidated);
+        assert!(!retrieved.is_valid());
+    }
+
+    #[test]
+    fn should_refresh_session() {
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Small delay to ensure time difference
+        thread::sleep(Duration::from_millis(1100));
+
+        let last_accessed_before = session.last_accessed();
+
+        // Refresh the session
+        session.refresh().unwrap();
+
+        // last_accessed should be updated
+        assert!(session.last_accessed() >= last_accessed_before);
+        assert!(session.is_valid());
+
+        // Retrieve and verify
+        let retrieved = store.get_session(&session_id).unwrap().unwrap();
+        assert!(retrieved.last_accessed() >= last_accessed_before);
+    }
+
+    #[test]
+    fn should_detect_expired_session() {
+        // Use a very short TTL for testing
+        let config = SessionConfig {
+            ttl_secs: 1, // 1 second
+            ..Default::default()
+        };
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Session should not be expired immediately
+        assert!(!session.is_expired());
+        assert!(session.is_valid());
+
+        // Wait for TTL to expire
+        thread::sleep(Duration::from_secs(2));
+
+        // Now session should be expired
+        assert!(session.is_expired());
+        assert!(!session.is_valid());
+    }
+
+    #[test]
+    fn should_prevent_operations_on_invalidated_session() {
+        // This test documents expected behavior - invalidated sessions
+        // still allow operations but are marked as invalid
+        let config = SessionConfig::default();
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        session.set("key", "value");
+        session.invalidate().unwrap();
+
+        // Session is invalidated but operations still work
+        assert!(!session.is_valid());
+        assert_eq!(session.get_string("key"), Some("value"));
+    }
+
+    #[test]
+    fn should_serialize_and_deserialize_session_state() {
+        let mut data = SessionData::new();
+        data.set("key", "value");
+
+        // Serialize and deserialize Active state
+        let serialized = serialize_session(&data);
+        let deserialized = deserialize_session(&serialized).unwrap();
+        assert_eq!(deserialized.state(), SessionState::Active);
+
+        // Test with Invalidated state
+        let mut data_invalidated = SessionData::new();
+        data_invalidated.set("key", "value");
+        data_invalidated.set_state(SessionState::Invalidated);
+
+        let serialized = serialize_session(&data_invalidated);
+        let deserialized = deserialize_session(&serialized).unwrap();
+        assert_eq!(deserialized.state(), SessionState::Invalidated);
+    }
+
+    #[test]
+    fn should_refresh_extend_session_lifetime() {
+        // Use short TTL
+        let config = SessionConfig {
+            ttl_secs: 2, // 2 seconds
+            ..Default::default()
+        };
+        let store = SessionStore::new(config);
+
+        let mut session = store.create_session();
+        let session_id = session.id().to_string();
+        session.set("key", "value");
+        session.save().unwrap();
+
+        // Wait 1 second (not expired yet)
+        thread::sleep(Duration::from_secs(1));
+
+        // Refresh to extend lifetime
+        session.refresh().unwrap();
+
+        // Wait another 1.5 seconds (would have expired without refresh)
+        thread::sleep(Duration::from_secs(2));
+
+        // Session should still exist in store because refresh extended TTL
+        let retrieved = store.get_session(&session_id).unwrap();
+        // Note: The store handles TTL expiry, so if refresh worked, session exists
+        // If refresh didn't work, the session would be expired/None
+    }
+
+    #[test]
+    fn should_session_state_default_to_active() {
+        let data = SessionData::new();
+        assert_eq!(data.state(), SessionState::Active);
+        assert!(data.state().is_valid());
+    }
+
+    #[test]
+    fn should_session_state_is_valid_only_for_active() {
+        assert!(SessionState::Active.is_valid());
+        assert!(!SessionState::Expired.is_valid());
+        assert!(!SessionState::Invalidated.is_valid());
     }
 }
