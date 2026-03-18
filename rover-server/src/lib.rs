@@ -6,6 +6,7 @@ mod event_loop;
 mod fast_router;
 mod http_server;
 pub mod http_task;
+pub mod lifecycle;
 pub mod load_shedder;
 pub mod multipart;
 pub mod rate_limiter;
@@ -14,7 +15,8 @@ pub mod session;
 pub mod static_file;
 pub mod store;
 pub mod table_pool;
-mod tls_reload;
+pub mod tls_reload;
+pub use tls_reload::TlsCertReloader;
 pub mod to_json;
 pub mod ws_frame;
 pub mod ws_handshake;
@@ -22,9 +24,13 @@ pub mod ws_lua;
 pub mod ws_manager;
 
 pub use http_task::{CoroutineResponse, HttpResponse};
+pub use lifecycle::{LifecycleConfig, LifecycleEvent, LifecycleManager, LifecyclePhase};
 pub use load_shedder::{LoadShedConfig, LoadShedder};
 pub use rate_limiter::{RateLimitConfig, RateLimitPolicy, ScopedRateLimit};
-pub use response::RoverResponse;
+pub use response::{
+    RoverResponse, SseResponse, SseWriter, StreamingResponse, generate_sse_event_id,
+    write_chunk_header, write_final_chunk,
+};
 pub use static_file::serve_static_file;
 use std::net::SocketAddr;
 
@@ -714,20 +720,20 @@ pub fn run(
     ) {
         Ok(_) => {}
         Err(e) => {
-            if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                if io_err.kind() == std::io::ErrorKind::AddrInUse {
-                    eprintln!("\n❌ Error: Unable to start server");
-                    eprintln!(
-                        "   Port {} is already in use on {}",
-                        sock_addr.port(),
-                        sock_addr.ip()
-                    );
-                    eprintln!(
-                        "   Please choose a different port or stop the process using port {}\n",
-                        sock_addr.port()
-                    );
-                    std::process::exit(1);
-                }
+            if let Some(io_err) = e.downcast_ref::<std::io::Error>()
+                && io_err.kind() == std::io::ErrorKind::AddrInUse
+            {
+                eprintln!("\n❌ Error: Unable to start server");
+                eprintln!(
+                    "   Port {} is already in use on {}",
+                    sock_addr.port(),
+                    sock_addr.ip()
+                );
+                eprintln!(
+                    "   Please choose a different port or stop the process using port {}\n",
+                    sock_addr.port()
+                );
+                std::process::exit(1);
             }
             eprintln!("\n❌ Error starting server: {}\n", e);
             std::process::exit(1);

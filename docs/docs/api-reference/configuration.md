@@ -20,6 +20,8 @@ local api = rover.server {
     allow_public_bind = false,
     allow_wildcard_cors_credentials = false,
     allow_unbounded_body = false,
+    security_headers = true,
+    allow_insecure_security_header_overrides = false,
     cors_origin = "*",       -- optional
     cors_methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
     cors_headers = "Content-Type, Authorization",
@@ -31,6 +33,52 @@ function api.hello.get(ctx)
 end
 
 return api
+```
+
+## TLS Configuration
+
+Enable HTTPS with TLS certificate configuration:
+
+```lua
+local api = rover.server {
+    tls = {
+        cert_file = "/path/to/cert.pem",
+        key_file = "/path/to/key.pem",
+        reload_interval_secs = 3600  -- Optional: auto-reload interval
+    }
+}
+```
+
+### `tls.cert_file`
+
+- **Type**: `string`
+- **Required**: Yes (when TLS is enabled)
+- **Description**: Path to TLS certificate file (PEM format)
+
+### `tls.key_file`
+
+- **Type**: `string`
+- **Required**: Yes (when TLS is enabled)
+- **Description**: Path to TLS private key file (PEM format)
+
+### `tls.reload_interval_secs`
+
+- **Type**: `number`
+- **Default**: `1` (1 second)
+- **Description**: Interval in seconds to check for certificate file changes. Set to enable hot reload of TLS certificates without server restart.
+
+**Important**: Hot reload is **only supported for TLS certificates**. Changes to routes, middleware, server configuration, or Lua code require a server restart.
+
+Example with 1-hour reload interval:
+
+```lua
+local api = rover.server {
+    tls = {
+        cert_file = "/etc/ssl/certs/server.crt",
+        key_file = "/etc/ssl/private/server.key",
+        reload_interval_secs = 3600  -- Check every hour
+    }
+}
 ```
 
 ## Configuration Reference
@@ -108,6 +156,18 @@ rover.server {
 - **Type**: `boolean`
 - **Default**: `false`
 - **Description**: Opt out of strict body-size checks and allow `body_size_limit = 0`
+
+### `security_headers`
+
+- **Type**: `boolean`
+- **Default**: `true`
+- **Description**: Apply secure default response headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`)
+
+### `allow_insecure_security_header_overrides`
+
+- **Type**: `boolean`
+- **Default**: `false`
+- **Description**: Opt out of strict header override checks and allow unsafe values for protected security headers
 
 Example:
 
