@@ -619,4 +619,206 @@ mod tests {
         assert_eq!(name, "John");
         assert_eq!(age, 30);
     }
+
+    #[test]
+    fn test_default_takes_precedence_over_required() {
+        let lua = Lua::new();
+        let schema = lua.create_table().unwrap();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "string").unwrap();
+        field_schema.set("required", true).unwrap();
+        field_schema.set("default", "default_value").unwrap();
+        schema.set("field", &field_schema).unwrap();
+
+        let data = lua.create_table().unwrap();
+        let result = validate_table(&lua, &data, &schema, "").unwrap();
+
+        match result {
+            Value::Table(table) => {
+                let field: String = table.get("field").unwrap();
+                assert_eq!(field, "default_value");
+            }
+            _ => panic!("Expected table"),
+        }
+    }
+
+    #[test]
+    fn test_required_error_without_default() {
+        let lua = Lua::new();
+        let schema = lua.create_table().unwrap();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "string").unwrap();
+        field_schema.set("required", true).unwrap();
+        schema.set("field", &field_schema).unwrap();
+
+        let data = lua.create_table().unwrap();
+        let result = validate_table(&lua, &data, &schema, "");
+
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].path, "field");
+        assert_eq!(errors[0].error_type, "required");
+    }
+
+    #[test]
+    fn test_type_validation_after_default() {
+        let lua = Lua::new();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "integer").unwrap();
+        field_schema.set("default", "not_an_int").unwrap();
+
+        let result = validate_field(&lua, "field", Value::Nil, &field_schema);
+
+        assert!(result.is_ok());
+        let value = result.unwrap();
+        match value {
+            Value::String(s) => assert_eq!(s.to_str().unwrap(), "not_an_int"),
+            _ => panic!("Expected string from default"),
+        }
+    }
+
+    #[test]
+    fn test_enum_validation_after_type_check() {
+        let lua = Lua::new();
+        let schema = lua.create_table().unwrap();
+        let field_schema = lua.create_table().unwrap();
+        let enum_table = lua.create_table().unwrap();
+        enum_table.set(1, "option_a").unwrap();
+        enum_table.set(2, "option_b").unwrap();
+        field_schema.set("type", "string").unwrap();
+        field_schema.set("enum", enum_table).unwrap();
+        schema.set("field", &field_schema).unwrap();
+
+        let data = lua.create_table().unwrap();
+        data.set("field", "option_c").unwrap();
+        let result = validate_table(&lua, &data, &schema, "");
+
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].error_type, "enum");
+    }
+
+    #[test]
+    fn test_nil_allowed_when_not_required() {
+        let lua = Lua::new();
+        let schema = lua.create_table().unwrap();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "string").unwrap();
+        field_schema.set("required", false).unwrap();
+        schema.set("field", &field_schema).unwrap();
+
+        let data = lua.create_table().unwrap();
+        let result = validate_table(&lua, &data, &schema, "");
+
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Value::Table(table) => {
+                assert!(matches!(table.get::<Value>("field"), Ok(Value::Nil)));
+            }
+            _ => panic!("Expected table"),
+        }
+    }
+
+    #[test]
+    fn test_custom_required_message() {
+        let lua = Lua::new();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "string").unwrap();
+        field_schema.set("required", true).unwrap();
+        field_schema
+            .set("required_msg", "Custom required message")
+            .unwrap();
+
+        let result = validate_field(&lua, "field", Value::Nil, &field_schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors[0].message.contains("Custom required message"));
+    }
+
+    #[test]
+    fn test_number_coerces_integer() {
+        let lua = Lua::new();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "number").unwrap();
+
+        let result = validate_field(&lua, "field", Value::Integer(42), &field_schema);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            Value::Number(n) => assert_eq!(n, 42.0),
+            _ => panic!("Expected number"),
+        }
+    }
+
+    #[test]
+    fn test_integer_rejects_float() {
+        let lua = Lua::new();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "integer").unwrap();
+
+        let result = validate_field(&lua, "field", Value::Number(42.5), &field_schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(errors[0].error_type, "type");
+    }
+
+    #[test]
+    fn test_integer_accepts_integer() {
+        let lua = Lua::new();
+        let field_schema = lua.create_table().unwrap();
+        field_schema.set("type", "integer").unwrap();
+
+        let result = validate_field(&lua, "field", Value::Integer(42), &field_schema);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_object_nested_validation() {
+        let lua = Lua::new();
+        let inner_schema = lua.create_table().unwrap();
+        let inner_field = lua.create_table().unwrap();
+        inner_field.set("type", "string").unwrap();
+        inner_field.set("required", true).unwrap();
+        inner_schema.set("name", &inner_field).unwrap();
+
+        let schema = lua.create_table().unwrap();
+        let outer_field = lua.create_table().unwrap();
+        outer_field.set("type", "object").unwrap();
+        outer_field.set("schema", &inner_schema).unwrap();
+        schema.set("user", &outer_field).unwrap();
+
+        let data = lua.create_table().unwrap();
+        let user_data = lua.create_table().unwrap();
+        user_data.set("name", "John").unwrap();
+        data.set("user", user_data).unwrap();
+
+        let result = validate_table(&lua, &data, &schema, "");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_object_nested_missing_field() {
+        let lua = Lua::new();
+        let inner_schema = lua.create_table().unwrap();
+        let inner_field = lua.create_table().unwrap();
+        inner_field.set("type", "string").unwrap();
+        inner_field.set("required", true).unwrap();
+        inner_schema.set("name", &inner_field).unwrap();
+
+        let schema = lua.create_table().unwrap();
+        let outer_field = lua.create_table().unwrap();
+        outer_field.set("type", "object").unwrap();
+        outer_field.set("schema", &inner_schema).unwrap();
+        schema.set("user", &outer_field).unwrap();
+
+        let data = lua.create_table().unwrap();
+        let user_data = lua.create_table().unwrap();
+        data.set("user", user_data).unwrap();
+
+        let result = validate_table(&lua, &data, &schema, "");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(errors[0].path, "user.name");
+    }
 }

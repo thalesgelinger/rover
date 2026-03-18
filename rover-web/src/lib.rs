@@ -62,6 +62,7 @@ pub fn serve_static(options: WebServerOptions) -> Result<()> {
         management_prefix: "/_rover".to_string(),
         management_token: None,
         allow_unauthenticated_management: false,
+        tls: None,
     };
 
     rover_server::run(lua, route_table, config, None);

@@ -9,6 +9,7 @@ pub mod http;
 pub mod io;
 pub mod middleware;
 pub mod server;
+pub mod session;
 pub mod template;
 pub mod ws_client;
 
@@ -160,6 +161,10 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     // Add rover.auth JWT module
     let auth_module = create_auth_module(&lua)?;
     rover.set("auth", auth_module)?;
+
+    // Add rover.session module
+    let session_module = session::create_session_module(&lua)?;
+    rover.set("session", session_module)?;
 
     // Override global io module with async version
     let io_module = io::create_io_module(&lua)?;
@@ -486,8 +491,12 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     let auth_module = create_auth_module(&lua)?;
     rover.set("auth", auth_module)?;
 
-    // Override global io module
-    let io_module = io::create_io_module(&lua)?;
+    // Add rover.session module
+    let session_module = session::create_session_module(&lua)?;
+    rover.set("session", session_module)?;
+
+    // Override global io module with async version
+    let io_module = create_io_module(&lua)?;
     lua.globals().set("io", io_module)?;
 
     // Load debug module

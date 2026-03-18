@@ -678,4 +678,297 @@ mod tests {
         let val = ns.decrement("counter", 3).unwrap();
         assert_eq!(val, 7);
     }
+
+    #[test]
+    fn should_adapter_trait_allow_polymorphic_usage() {
+        fn use_backend(backend: &dyn StoreBackend) -> StoreResult<Option<StoreValue>> {
+            backend.set("key", "value".into(), None)?;
+            backend.get("key")
+        }
+
+        let store = MemoryStore::new();
+        let result = use_backend(&store).unwrap();
+        assert_eq!(result, Some(StoreValue::String("value".to_string())));
+    }
+
+    #[test]
+    fn should_adapter_work_with_arc_dyn() {
+        let backend: Arc<dyn StoreBackend> = Arc::new(MemoryStore::new());
+        let ns = NamespacedStore::new(backend, "test", false);
+
+        ns.set("key", "value".into(), None).unwrap();
+        let result = ns.get("key").unwrap();
+        assert_eq!(result, Some(StoreValue::String("value".to_string())));
+    }
+
+    #[test]
+    fn should_adapter_trait_maintain_consistency() {
+        let store = MemoryStore::new();
+
+        // Set and verify
+        store.set("key1", "value1".into(), None).unwrap();
+        assert_eq!(
+            store.get("key1").unwrap(),
+            Some(StoreValue::String("value1".to_string()))
+        );
+
+        // Update same key
+        store.set("key1", "value2".into(), None).unwrap();
+        assert_eq!(
+            store.get("key1").unwrap(),
+            Some(StoreValue::String("value2".to_string()))
+        );
+
+        // Delete and verify
+        assert!(store.delete("key1").unwrap());
+        assert_eq!(store.get("key1").unwrap(), None);
+
+        // Delete non-existent
+        assert!(!store.delete("key1").unwrap());
+    }
+
+    #[test]
+    fn should_adapter_trait_handle_all_operations() {
+        let store = MemoryStore::new();
+
+        // get
+        assert_eq!(store.get("missing").unwrap(), None);
+
+        // set
+        store.set("key", "value".into(), None).unwrap();
+
+        // exists
+        assert!(store.exists("key").unwrap());
+        assert!(!store.exists("missing").unwrap());
+
+        // increment
+        assert_eq!(store.increment("counter", 5).unwrap(), 5);
+        assert_eq!(store.increment("counter", 3).unwrap(), 8);
+
+        // decrement
+        assert_eq!(store.decrement("counter", 2).unwrap(), 6);
+
+        // delete
+        assert!(store.delete("key").unwrap());
+        assert!(!store.exists("key").unwrap());
+
+        // flush
+        store.set("k1", "v1".into(), None).unwrap();
+        store.set("k2", "v2".into(), None).unwrap();
+        store.flush().unwrap();
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn should_adapter_trait_provide_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MemoryStore>();
+        assert_send_sync::<NamespacedStore>();
+        assert_send_sync::<SharedStore>();
+    }
+
+    #[test]
+    fn should_ttl_expire_with_zero_duration() {
+        let store = MemoryStore::new();
+
+        // Set with zero TTL should expire immediately or very quickly
+        store
+            .set("key1", "value".into(), Some(Duration::from_nanos(1)))
+            .unwrap();
+
+        // Small sleep to ensure expiry
+        sleep(Duration::from_millis(1));
+
+        assert!(!store.exists("key1").unwrap());
+        assert_eq!(store.get("key1").unwrap(), None);
+    }
+
+    #[test]
+    fn should_ttl_preserve_non_expired_keys() {
+        let store = MemoryStore::new();
+
+        // Set multiple keys with different TTLs (use longer durations for reliability)
+        store
+            .set("short", "s".into(), Some(Duration::from_millis(100)))
+            .unwrap();
+        store
+            .set("medium", "m".into(), Some(Duration::from_millis(500)))
+            .unwrap();
+        store
+            .set("long", "l".into(), Some(Duration::from_secs(10)))
+            .unwrap();
+        store.set("forever", "f".into(), None).unwrap();
+
+        // Wait for short to expire
+        sleep(Duration::from_millis(200));
+
+        assert!(!store.exists("short").unwrap());
+        assert!(store.exists("medium").unwrap());
+        assert!(store.exists("long").unwrap());
+        assert!(store.exists("forever").unwrap());
+
+        // Wait for medium to expire
+        sleep(Duration::from_millis(400));
+
+        assert!(!store.exists("medium").unwrap());
+        assert!(store.exists("long").unwrap());
+        assert!(store.exists("forever").unwrap());
+    }
+
+    #[test]
+    fn should_ttl_extend_on_update() {
+        let store = MemoryStore::new();
+
+        // Set with short TTL
+        store
+            .set("key", "value1".into(), Some(Duration::from_millis(200)))
+            .unwrap();
+
+        // Wait but not long enough to expire
+        sleep(Duration::from_millis(100));
+
+        // Update with longer TTL
+        store
+            .set("key", "value2".into(), Some(Duration::from_millis(500)))
+            .unwrap();
+
+        // Wait past original TTL
+        sleep(Duration::from_millis(150));
+
+        // Should still exist because TTL was extended
+        assert!(store.exists("key").unwrap());
+        assert_eq!(
+            store.get("key").unwrap(),
+            Some(StoreValue::String("value2".to_string()))
+        );
+    }
+
+    #[test]
+    fn should_namespace_isolate_operations() {
+        let backend = Arc::new(MemoryStore::new());
+        let ns1 = NamespacedStore::new(backend.clone(), "ns1", false);
+        let ns2 = NamespacedStore::new(backend.clone(), "ns2", false);
+        let ns3 = NamespacedStore::new(backend.clone(), "ns3", false);
+
+        // Perform different operations in different namespaces
+        ns1.set("shared_key", "ns1_value".into(), None).unwrap();
+        ns2.set("shared_key", "ns2_value".into(), None).unwrap();
+        ns3.set("other_key", "ns3_value".into(), None).unwrap();
+
+        // Verify isolation
+        assert_eq!(
+            ns1.get("shared_key").unwrap(),
+            Some(StoreValue::String("ns1_value".to_string()))
+        );
+        assert_eq!(
+            ns2.get("shared_key").unwrap(),
+            Some(StoreValue::String("ns2_value".to_string()))
+        );
+        assert_eq!(
+            ns3.get("other_key").unwrap(),
+            Some(StoreValue::String("ns3_value".to_string()))
+        );
+
+        // Verify cross-namespace inaccessibility
+        assert_eq!(ns1.get("other_key").unwrap(), None);
+        assert_eq!(ns2.get("other_key").unwrap(), None);
+        assert_eq!(ns3.get("shared_key").unwrap(), None);
+
+        // Verify counters are isolated
+        ns1.increment("counter", 5).unwrap();
+        ns2.increment("counter", 10).unwrap();
+
+        assert_eq!(ns1.get("counter").unwrap().unwrap().as_integer(), Some(5));
+        assert_eq!(ns2.get("counter").unwrap().unwrap().as_integer(), Some(10));
+    }
+
+    #[test]
+    fn should_namespace_delete_isolated() {
+        let backend = Arc::new(MemoryStore::new());
+        let ns1 = NamespacedStore::new(backend.clone(), "ns1", false);
+        let ns2 = NamespacedStore::new(backend.clone(), "ns2", false);
+
+        ns1.set("key", "value1".into(), None).unwrap();
+        ns2.set("key", "value2".into(), None).unwrap();
+
+        // Delete from ns1 only
+        assert!(ns1.delete("key").unwrap());
+
+        // ns2 should still have the key
+        assert_eq!(
+            ns2.get("key").unwrap(),
+            Some(StoreValue::String("value2".to_string()))
+        );
+
+        // ns1 should not
+        assert_eq!(ns1.get("key").unwrap(), None);
+    }
+
+    #[test]
+    fn should_namespace_ttl_isolated() {
+        let backend = Arc::new(MemoryStore::new());
+        let ns1 = NamespacedStore::new(backend.clone(), "ns1", false);
+        let ns2 = NamespacedStore::new(backend.clone(), "ns2", false);
+
+        // Same key, different TTLs
+        ns1.set("key", "value1".into(), Some(Duration::from_millis(50)))
+            .unwrap();
+        ns2.set("key", "value2".into(), Some(Duration::from_secs(10)))
+            .unwrap();
+
+        // Wait for ns1's TTL to expire
+        sleep(Duration::from_millis(100));
+
+        // ns1's key should be expired
+        assert!(!ns1.exists("key").unwrap());
+
+        // ns2's key should still exist
+        assert!(ns2.exists("key").unwrap());
+    }
+
+    #[test]
+    fn should_namespaced_store_handle_errors_with_fallback() {
+        let backend = Arc::new(MemoryStore::new());
+        // Create with fallback enabled
+        let ns_fallback = NamespacedStore::new(backend.clone(), "test", true);
+        // Create with fallback disabled
+        let ns_strict = NamespacedStore::new(backend, "test", false);
+
+        // Both should work normally for successful operations
+        ns_fallback.set("key", "value".into(), None).unwrap();
+        ns_strict.set("key2", "value2".into(), None).unwrap();
+
+        assert!(ns_fallback.exists("key").unwrap());
+        assert!(ns_strict.exists("key2").unwrap());
+    }
+
+    #[test]
+    fn should_shared_store_adapter_implement_all_operations() {
+        let shared = SharedStore::memory();
+
+        // Test all StoreBackend operations through SharedStore
+        shared.set("string", "hello".into(), None).unwrap();
+        shared.set("int", 42i64.into(), None).unwrap();
+        shared.set("bool", true.into(), None).unwrap();
+        shared.set("bytes", vec![1u8, 2, 3].into(), None).unwrap();
+
+        assert_eq!(
+            shared.get("string").unwrap(),
+            Some(StoreValue::String("hello".to_string()))
+        );
+        assert_eq!(shared.get("int").unwrap(), Some(StoreValue::Integer(42)));
+        assert_eq!(shared.get("bool").unwrap(), Some(StoreValue::Boolean(true)));
+        assert_eq!(
+            shared.get("bytes").unwrap(),
+            Some(StoreValue::Bytes(vec![1, 2, 3]))
+        );
+
+        assert!(shared.exists("string").unwrap());
+
+        assert_eq!(shared.increment("counter", 5).unwrap(), 5);
+        assert_eq!(shared.decrement("counter", 2).unwrap(), 3);
+
+        assert!(shared.delete("string").unwrap());
+        assert!(!shared.exists("string").unwrap());
+    }
 }

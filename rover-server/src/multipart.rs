@@ -341,16 +341,15 @@ fn parse_part(
     let is_file = filename.is_some();
 
     // Validate content type for files
-    if is_file {
-        if let Some(ref ct) = content_type {
-            if !limits.is_content_type_allowed(ct) {
-                return Err(MultipartError::InvalidContentType {
-                    field_name: name.clone(),
-                    allowed: limits.allowed_content_types.clone(),
-                    found: ct.clone(),
-                });
-            }
-        }
+    if is_file
+        && let Some(ref ct) = content_type
+        && !limits.is_content_type_allowed(ct)
+    {
+        return Err(MultipartError::InvalidContentType {
+            field_name: name.clone(),
+            allowed: limits.allowed_content_types.clone(),
+            found: ct.clone(),
+        });
     }
 
     // Check file size limit

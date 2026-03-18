@@ -143,12 +143,11 @@ impl StoreRateLimiter {
 
     fn get_or_create_bucket(&self, key: &str) -> StoreResult<TokenBucketState> {
         // Try to get existing bucket
-        if let Some(value) = self.store.get(key)? {
-            if let Some(bytes) = value.as_bytes() {
-                if let Some(bucket) = deserialize_bucket(bytes) {
-                    return Ok(bucket);
-                }
-            }
+        if let Some(value) = self.store.get(key)?
+            && let Some(bytes) = value.as_bytes()
+            && let Some(bucket) = deserialize_bucket(bytes)
+        {
+            return Ok(bucket);
         }
 
         // Create new bucket

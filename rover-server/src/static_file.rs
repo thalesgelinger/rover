@@ -51,10 +51,10 @@ pub fn serve_static_file(
             add_cache_headers(&mut headers, &sanitized, &content);
 
             // Check conditional request headers for 304 response
-            if let Some(req_headers) = request_headers {
-                if is_not_modified(&headers, req_headers) {
-                    return not_modified_response(headers);
-                }
+            if let Some(req_headers) = request_headers
+                && is_not_modified(&headers, req_headers)
+            {
+                return not_modified_response(headers);
             }
 
             RoverResponse {
@@ -308,13 +308,13 @@ pub fn is_not_modified(
     }
 
     // Check If-Modified-Since header (Last-Modified comparison)
-    if let Some(if_modified_since) = request_headers.get("If-Modified-Since") {
-        if let Some(last_modified) = response_headers.get("Last-Modified") {
-            // Parse both dates and compare
-            // For simplicity, we do string comparison (dates should be in same format)
-            // In production, you'd parse and compare timestamps
-            return if_modified_since == last_modified;
-        }
+    if let Some(if_modified_since) = request_headers.get("If-Modified-Since")
+        && let Some(last_modified) = response_headers.get("Last-Modified")
+    {
+        // Parse both dates and compare
+        // For simplicity, we do string comparison (dates should be in same format)
+        // In production, you'd parse and compare timestamps
+        return if_modified_since == last_modified;
     }
 
     false

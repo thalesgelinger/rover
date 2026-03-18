@@ -4,7 +4,8 @@ use rover_openapi::generate_spec;
 use rover_parser::analyze;
 use rover_server::to_json::ToJson;
 use rover_server::{
-    Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig, WsRoute,
+    Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig,
+    SseResponse, WsRoute,
 };
 use rover_types::ValidationErrors;
 use rover_ui::SharedSignalRuntime;
@@ -363,6 +364,125 @@ impl AppServer for Lua {
         let _ = raw_helper.set_metatable(Some(raw_meta));
         server.set("raw", raw_helper)?;
 
+        // Streaming response API
+        // api.stream(status, content_type, chunk_producer) -> StreamingResponse
+        // chunk_producer is a function that returns strings (chunks) or nil (end of stream)
+        let stream_fn = self.create_function(
+            |lua,
+             (_self, status_code, content_type, chunk_producer): (
+                Table,
+                u16,
+                String,
+                mlua::Function,
+            )| {
+                use rover_server::StreamingResponse;
+                use std::sync::Arc;
+
+                let producer_key = lua.create_registry_value(chunk_producer)?;
+                Ok(StreamingResponse::new(
+                    status_code,
+                    content_type,
+                    None,
+                    Arc::new(producer_key),
+                ))
+            },
+        )?;
+        server.set("stream", stream_fn)?;
+
+        // Stream with headers: api.stream_with_headers(status, content_type, headers, chunk_producer)
+        let stream_with_headers_fn = self.create_function(
+            |lua,
+             (_self, status_code, content_type, headers, chunk_producer): (
+                Table,
+                u16,
+                String,
+                Table,
+                mlua::Function,
+            )| {
+                use rover_server::StreamingResponse;
+                use std::sync::Arc;
+
+                let mut response_headers = std::collections::HashMap::new();
+                for pair in headers.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    response_headers.insert(key, value);
+                }
+
+                let producer_key = lua.create_registry_value(chunk_producer)?;
+                Ok(StreamingResponse::new(
+                    status_code,
+                    content_type,
+                    Some(response_headers),
+                    Arc::new(producer_key),
+                ))
+            },
+        )?;
+        server.set("stream_with_headers", stream_with_headers_fn)?;
+
+        let sse_helper = self.create_table()?;
+
+        let sse_call = self.create_function(
+            |lua, (_self, event_producer, retry_ms): (Table, mlua::Function, Option<u32>)| {
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    200,
+                    None,
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+
+        let sse_status_fn = self.create_function(
+            |lua,
+             (_self, status_code, event_producer, retry_ms): (
+                Table,
+                u16,
+                mlua::Function,
+                Option<u32>,
+            )| {
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    status_code,
+                    None,
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+        sse_helper.set("status", sse_status_fn)?;
+
+        let sse_with_headers_fn = self.create_function(
+            |lua,
+             (_self, status_code, headers, event_producer, retry_ms): (
+                Table,
+                u16,
+                Table,
+                mlua::Function,
+                Option<u32>,
+            )| {
+                let mut response_headers = std::collections::HashMap::new();
+                for pair in headers.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    response_headers.insert(key, value);
+                }
+
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    status_code,
+                    Some(response_headers),
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+        sse_helper.set("with_headers", sse_with_headers_fn)?;
+
+        let sse_meta = self.create_table()?;
+        sse_meta.set("__call", sse_call)?;
+        let _ = sse_helper.set_metatable(Some(sse_meta));
+        server.set("sse", sse_helper)?;
+
         Ok(server)
     }
 }
@@ -434,6 +554,9 @@ impl Server for Table {
                         || key_str_val == "error"
                         || key_str_val == "no_content"
                         || key_str_val == "raw"
+                        || key_str_val == "stream"
+                        || key_str_val == "stream_with_headers"
+                        || key_str_val == "sse"
                         || (is_root
                             && (key_str_val == "before"
                                 || key_str_val == "after"
@@ -711,7 +834,7 @@ impl Server for Table {
 mod tests {
     use super::{AppServer, Server};
     use mlua::{Lua, Table, Value};
-    use rover_server::{HttpMethod, RoverResponse};
+    use rover_server::{HttpMethod, RoverResponse, SseResponse};
 
     fn create_ctx(lua: &Lua, headers: &[(&str, &str)]) -> mlua::Result<Table> {
         let ctx = lua.create_table()?;
@@ -828,5 +951,56 @@ mod tests {
         assert_eq!(ok_status, 200);
         assert!(ok_body.contains("\"scope\":\"global\""));
         assert!(ok_body.contains("\"role\":\"admin\""));
+    }
+
+    #[test]
+    fn should_build_sse_response_from_helper() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            function api.events.get(ctx)
+              return api.sse(function()
+                return {
+                  event = "tick",
+                  data = { ok = true },
+                }
+              end, 1500)
+            end
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/events")
+            })
+            .expect("route /events must exist");
+
+        let ctx = create_ctx(&lua, &[]).expect("create ctx");
+        let value = route.handler.call::<Value>(ctx).expect("call SSE route");
+        let sse = value
+            .as_userdata()
+            .expect("SSE helper must return userdata")
+            .borrow::<SseResponse>()
+            .expect("userdata must be SseResponse");
+
+        assert_eq!(sse.status, 200);
+        assert_eq!(sse.retry_ms, Some(1500));
     }
 }

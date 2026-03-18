@@ -261,22 +261,20 @@ impl FastRouter {
                 static_routes.insert((path_hash, route.method), handler_idx);
                 static_path_methods
                     .entry(path_hash)
-                    .or_insert_with(SmallVec::new)
+                    .or_default()
                     .push(route.method);
                 continue;
             }
 
-            let methods = pattern_map
-                .entry(route.pattern.to_vec())
-                .or_insert_with(SmallVec::new);
-            if methods.iter().any(|(m, _)| *m == route.method) {
-                if let Ok(pattern_str) = std::str::from_utf8(&route.pattern) {
-                    tracing::warn!(
-                        "Duplicate route method '{}' for path '{}'; last one wins",
-                        route.method,
-                        pattern_str
-                    );
-                }
+            let methods = pattern_map.entry(route.pattern.to_vec()).or_default();
+            if methods.iter().any(|(m, _)| *m == route.method)
+                && let Ok(pattern_str) = std::str::from_utf8(&route.pattern)
+            {
+                tracing::warn!(
+                    "Duplicate route method '{}' for path '{}'; last one wins",
+                    route.method,
+                    pattern_str
+                );
             }
             methods.push((route.method, handler_idx));
         }
@@ -397,14 +395,14 @@ impl FastRouter {
         }
 
         // Auto-HEAD -> GET for static routes
-        if method == HttpMethod::Head {
-            if let Some(&handler_idx) = self.static_routes.get(&(path_hash, HttpMethod::Get)) {
-                return RouteMatch::Found {
-                    handler: self.handlers[handler_idx].clone(),
-                    params: Vec::new(),
-                    is_head: true,
-                };
-            }
+        if method == HttpMethod::Head
+            && let Some(&handler_idx) = self.static_routes.get(&(path_hash, HttpMethod::Get))
+        {
+            return RouteMatch::Found {
+                handler: self.handlers[handler_idx].clone(),
+                params: Vec::new(),
+                is_head: true,
+            };
         }
 
         // Slow path: dynamic routes with parameters

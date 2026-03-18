@@ -386,17 +386,16 @@ impl SessionStore {
 
     /// Get an existing session by ID
     pub fn get_session(&self, session_id: &str) -> StoreResult<Option<Session>> {
-        if let Some(value) = self.store.get(session_id)? {
-            if let Some(bytes) = value.as_bytes() {
-                if let Some(data) = deserialize_session(bytes) {
-                    return Ok(Some(Session::new(
-                        session_id.to_string(),
-                        data,
-                        self.store.clone(),
-                        self.config.clone(),
-                    )));
-                }
-            }
+        if let Some(value) = self.store.get(session_id)?
+            && let Some(bytes) = value.as_bytes()
+            && let Some(data) = deserialize_session(bytes)
+        {
+            return Ok(Some(Session::new(
+                session_id.to_string(),
+                data,
+                self.store.clone(),
+                self.config.clone(),
+            )));
         }
 
         Ok(None)
@@ -404,10 +403,10 @@ impl SessionStore {
 
     /// Get or create a session
     pub fn get_or_create(&self, session_id: Option<&str>) -> StoreResult<Session> {
-        if let Some(id) = session_id {
-            if let Some(session) = self.get_session(id)? {
-                return Ok(session);
-            }
+        if let Some(id) = session_id
+            && let Some(session) = self.get_session(id)?
+        {
+            return Ok(session);
         }
 
         Ok(self.create_session())
@@ -457,7 +456,7 @@ fn generate_session_id() -> String {
 fn base64_encode(bytes: &[u8]) -> String {
     const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-    let mut result = String::with_capacity((bytes.len() * 4 + 2) / 3);
+    let mut result = String::with_capacity((bytes.len() * 4).div_ceil(3));
 
     for chunk in bytes.chunks(3) {
         let b = match chunk.len() {

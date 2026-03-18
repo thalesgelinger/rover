@@ -246,6 +246,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_medium_frame() {
+        let payload = vec![0x42; 300];
+        let mut frame = vec![0x82, 126];
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.extend_from_slice(&payload);
+
+        let header = try_parse_frame(&frame).unwrap();
+        assert!(header.fin);
+        assert_eq!(header.opcode, WsOpcode::Binary);
+        assert_eq!(header.payload_offset, 4);
+        assert_eq!(header.payload_len, 300);
+        assert_eq!(header.total_frame_len, 304);
+    }
+
+    #[test]
     fn test_write_close_frame() {
         let mut buf = Vec::new();
         write_close_frame(&mut buf, 1000, "bye");
@@ -356,6 +371,21 @@ mod tests {
         ]) as usize;
         assert_eq!(len, 70000);
         assert_eq!(buf.len(), 10 + 70000);
+    }
+
+    #[test]
+    fn test_parse_large_frame() {
+        let payload = vec![0x24; 70000];
+        let mut frame = vec![0x82, 127];
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        frame.extend_from_slice(&payload);
+
+        let header = try_parse_frame(&frame).unwrap();
+        assert!(header.fin);
+        assert_eq!(header.opcode, WsOpcode::Binary);
+        assert_eq!(header.payload_offset, 10);
+        assert_eq!(header.payload_len, 70000);
+        assert_eq!(header.total_frame_len, 70010);
     }
 
     #[test]

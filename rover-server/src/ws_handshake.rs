@@ -66,10 +66,8 @@ pub fn validate_upgrade_headers<'a>(
             }
         } else if name.eq_ignore_ascii_case("sec-websocket-key") {
             ws_key = Some(val.trim());
-        } else if name.eq_ignore_ascii_case("sec-websocket-version") {
-            if val.trim() == "13" {
-                version_ok = true;
-            }
+        } else if name.eq_ignore_ascii_case("sec-websocket-version") && val.trim() == "13" {
+            version_ok = true;
         }
     }
 
