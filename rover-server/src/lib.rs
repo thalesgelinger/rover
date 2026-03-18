@@ -5,8 +5,13 @@ mod event_loop;
 mod fast_router;
 mod http_server;
 pub mod http_task;
+pub mod load_shedder;
+pub mod rate_limiter;
 mod response;
+pub mod session;
+pub mod store;
 pub mod table_pool;
+mod tls_reload;
 pub mod to_json;
 pub mod ws_frame;
 pub mod ws_handshake;
@@ -14,6 +19,8 @@ pub mod ws_lua;
 pub mod ws_manager;
 
 pub use http_task::{CoroutineResponse, HttpResponse};
+pub use load_shedder::{LoadShedConfig, LoadShedder};
+pub use rate_limiter::{RateLimitConfig, RateLimitPolicy, ScopedRateLimit};
 pub use response::RoverResponse;
 use std::net::SocketAddr;
 
@@ -28,6 +35,13 @@ use tracing::info;
 
 pub type Bytes = bytes::Bytes;
 const DEFAULT_BODY_SIZE_LIMIT: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsConfig {
+    pub cert_file: String,
+    pub key_file: String,
+    pub reload_interval_secs: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -178,6 +192,11 @@ pub struct ServerConfig {
     pub management_prefix: String,
     pub management_token: Option<String>,
     pub allow_unauthenticated_management: bool,
+    pub tls: Option<TlsConfig>,
+    pub rate_limit: RateLimitConfig,
+    pub load_shed: LoadShedConfig,
+    /// Graceful shutdown drain timeout in seconds
+    pub drain_timeout_secs: Option<u64>,
 }
 
 impl ServerConfig {
@@ -204,6 +223,180 @@ impl ServerConfig {
         }
 
         Ok(prefix.trim_end_matches('/').to_string())
+    }
+
+    fn parse_tls_config(config: &mlua::Table) -> mlua::Result<Option<TlsConfig>> {
+        let tls_value = config.get::<Value>("tls")?;
+        let tls_table = match tls_value {
+            Value::Nil => return Ok(None),
+            Value::Table(table) => table,
+            _ => Err(anyhow!("tls should be a table"))?,
+        };
+
+        let cert_file = match tls_table.get::<Value>("cert_file")? {
+            Value::String(s) => s.to_str()?.trim().to_string(),
+            Value::Nil => Err(anyhow!("tls.cert_file is required when tls is set"))?,
+            _ => Err(anyhow!("tls.cert_file should be a string"))?,
+        };
+
+        let key_file = match tls_table.get::<Value>("key_file")? {
+            Value::String(s) => s.to_str()?.trim().to_string(),
+            Value::Nil => Err(anyhow!("tls.key_file is required when tls is set"))?,
+            _ => Err(anyhow!("tls.key_file should be a string"))?,
+        };
+
+        if cert_file.is_empty() {
+            Err(anyhow!("tls.cert_file cannot be empty"))?;
+        }
+
+        if key_file.is_empty() {
+            Err(anyhow!("tls.key_file cannot be empty"))?;
+        }
+
+        let reload_interval_secs = match tls_table.get::<Value>("reload_interval_secs")? {
+            Value::Nil => 1,
+            Value::Integer(n) if n > 0 => n as u64,
+            Value::Number(n) if n > 0.0 => n as u64,
+            Value::Integer(_) | Value::Number(_) => {
+                Err(anyhow!("tls.reload_interval_secs should be > 0"))?
+            }
+            _ => Err(anyhow!("tls.reload_interval_secs should be a number"))?,
+        };
+
+        Ok(Some(TlsConfig {
+            cert_file,
+            key_file,
+            reload_interval_secs,
+        }))
+    }
+
+    fn parse_rate_limit_policy(table: &mlua::Table) -> mlua::Result<RateLimitPolicy> {
+        let requests_per_window = match table.get::<Value>("requests_per_window")? {
+            Value::Nil => 1000,
+            Value::Integer(n) if n > 0 => n as u32,
+            Value::Number(n) if n > 0.0 => n as u32,
+            _ => Err(anyhow!(
+                "rate_limit.requests_per_window should be a positive number"
+            ))?,
+        };
+
+        let window_secs = match table.get::<Value>("window_secs")? {
+            Value::Nil => 60,
+            Value::Integer(n) if n > 0 => n as u64,
+            Value::Number(n) if n > 0.0 => n as u64,
+            _ => Err(anyhow!(
+                "rate_limit.window_secs should be a positive number"
+            ))?,
+        };
+
+        let key_header = match table.get::<Value>("key_header")? {
+            Value::Nil => None,
+            Value::String(s) => Some(s.to_str()?.trim().to_string()),
+            _ => Err(anyhow!("rate_limit.key_header should be a string"))?,
+        };
+
+        Ok(RateLimitPolicy {
+            requests_per_window,
+            window_secs,
+            key_header,
+        })
+    }
+
+    fn parse_rate_limit_config(config: &mlua::Table) -> mlua::Result<RateLimitConfig> {
+        let rate_limit_value = config.get::<Value>("rate_limit")?;
+        match rate_limit_value {
+            Value::Nil => Ok(RateLimitConfig::default()),
+            Value::Boolean(enabled) => Ok(RateLimitConfig {
+                enabled,
+                global: None,
+                scoped: vec![],
+            }),
+            Value::Table(table) => {
+                let enabled = match table.get::<Value>("enabled")? {
+                    Value::Nil => true,
+                    Value::Boolean(b) => b,
+                    _ => Err(anyhow!("rate_limit.enabled should be a boolean"))?,
+                };
+
+                let global = match table.get::<Value>("global")? {
+                    Value::Nil => None,
+                    Value::Table(t) => Some(Self::parse_rate_limit_policy(&t)?),
+                    _ => Err(anyhow!("rate_limit.global should be a table"))?,
+                };
+
+                let scoped = match table.get::<Value>("scoped")? {
+                    Value::Nil => vec![],
+                    Value::Table(scoped_table) => {
+                        let mut scoped = Vec::new();
+                        for pair in scoped_table.pairs::<i64, mlua::Table>() {
+                            let (_, entry) = pair?;
+                            let path_pattern = match entry.get::<Value>("path_pattern")? {
+                                Value::String(s) => s.to_str()?.trim().to_string(),
+                                _ => Err(anyhow!("rate_limit.scoped[].path_pattern is required"))?,
+                            };
+                            let policy = Self::parse_rate_limit_policy(&entry)?;
+                            scoped.push(ScopedRateLimit {
+                                path_pattern,
+                                policy,
+                            });
+                        }
+                        scoped
+                    }
+                    _ => Err(anyhow!("rate_limit.scoped should be an array"))?,
+                };
+
+                Ok(RateLimitConfig {
+                    enabled,
+                    global,
+                    scoped,
+                })
+            }
+            _ => Err(anyhow!("rate_limit should be a boolean or table"))?,
+        }
+    }
+
+    fn parse_load_shed_config(config: &mlua::Table) -> mlua::Result<LoadShedConfig> {
+        let load_shed_value = config.get::<Value>("load_shed")?;
+        match load_shed_value {
+            Value::Nil => Ok(LoadShedConfig::default()),
+            Value::Boolean(enabled) => {
+                if enabled {
+                    Ok(LoadShedConfig::default())
+                } else {
+                    Ok(LoadShedConfig {
+                        max_inflight: None,
+                        max_queue: None,
+                    })
+                }
+            }
+            Value::Table(table) => {
+                let max_inflight = match table.get::<Value>("max_inflight")? {
+                    Value::Nil => Some(10000),
+                    Value::Integer(n) if n > 0 => Some(n as u64),
+                    Value::Number(n) if n > 0.0 => Some(n as u64),
+                    Value::Integer(_) | Value::Number(_) => {
+                        Err(anyhow!("load_shed.max_inflight should be > 0"))?
+                    }
+                    _ => Err(anyhow!("load_shed.max_inflight should be a number"))?,
+                };
+
+                let max_queue = match table.get::<Value>("max_queue")? {
+                    Value::Nil => Some(1000),
+                    Value::Integer(n) if n > 0 => Some(n as u64),
+                    Value::Number(n) if n > 0.0 => Some(n as u64),
+                    Value::Integer(_) | Value::Number(_) => {
+                        Err(anyhow!("load_shed.max_queue should be > 0"))?
+                    }
+                    _ => Err(anyhow!("load_shed.max_queue should be a number"))?,
+                };
+
+                Ok(LoadShedConfig {
+                    max_inflight,
+                    max_queue,
+                })
+            }
+            _ => Err(anyhow!("load_shed should be a boolean or table"))?,
+        }
     }
 
     fn startup_validation_errors(&self) -> Vec<String> {
@@ -402,6 +595,16 @@ impl FromLua for ServerConfig {
                         ))?,
                     };
 
+                let drain_timeout_secs = match config.get::<Value>("drain_timeout_secs")? {
+                    Value::Nil => None,
+                    Value::Integer(n) if n > 0 => Some(n as u64),
+                    Value::Number(n) if n > 0.0 => Some(n as u64),
+                    Value::Integer(_) | Value::Number(_) => {
+                        Err(anyhow!("drain_timeout_secs should be > 0"))?
+                    }
+                    _ => Err(anyhow!("drain_timeout_secs should be a number"))?,
+                };
+
                 let parsed = ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host,
@@ -423,6 +626,10 @@ impl FromLua for ServerConfig {
                     management_prefix,
                     management_token,
                     allow_unauthenticated_management,
+                    tls: Self::parse_tls_config(&config)?,
+                    rate_limit: Self::parse_rate_limit_config(&config)?,
+                    load_shed: Self::parse_load_shed_config(&config)?,
+                    drain_timeout_secs,
                 };
 
                 parsed.validate_startup().map_err(mlua::Error::external)?;
@@ -526,7 +733,7 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_BODY_SIZE_LIMIT, ServerConfig};
+    use super::{DEFAULT_BODY_SIZE_LIMIT, LoadShedConfig, RateLimitConfig, ServerConfig};
     use mlua::{FromLua, Lua, Value};
 
     fn config_from_lua(lua_src: &str) -> ServerConfig {
@@ -553,6 +760,29 @@ mod tests {
         assert!(config.management_token.is_none());
         assert!(!config.allow_insecure_http);
         assert!(!config.allow_unauthenticated_management);
+        assert!(config.tls.is_none());
+    }
+
+    #[test]
+    fn should_parse_tls_config() {
+        let config = config_from_lua(
+            "{ tls = { cert_file = '/tmp/cert.pem', key_file = '/tmp/key.pem', reload_interval_secs = 5 } }",
+        );
+        let tls = config.tls.expect("tls config");
+        assert_eq!(tls.cert_file, "/tmp/cert.pem");
+        assert_eq!(tls.key_file, "/tmp/key.pem");
+        assert_eq!(tls.reload_interval_secs, 5);
+    }
+
+    #[test]
+    fn should_reject_incomplete_tls_config() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ tls = { cert_file = '/tmp/cert.pem' } }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(err.to_string().contains("tls.key_file is required"));
     }
 
     #[test]
@@ -675,6 +905,10 @@ mod tests {
             management_prefix: "/_rover".to_string(),
             management_token: None,
             allow_unauthenticated_management: false,
+            tls: None,
+            rate_limit: RateLimitConfig::default(),
+            load_shed: LoadShedConfig::default(),
+            drain_timeout_secs: None,
         };
 
         let err = config.validate_startup().expect_err("must reject config");
@@ -705,5 +939,111 @@ mod tests {
             .expect("lua eval");
         let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
         assert!(err.to_string().contains("management_prefix cannot be '/'"));
+    }
+
+    #[test]
+    fn should_parse_global_rate_limit() {
+        let config = config_from_lua(
+            "{ rate_limit = { enabled = true, global = { requests_per_window = 100, window_secs = 60 } } }",
+        );
+        assert!(config.rate_limit.enabled);
+        let global = config.rate_limit.global.expect("global policy");
+        assert_eq!(global.requests_per_window, 100);
+        assert_eq!(global.window_secs, 60);
+        assert!(global.key_header.is_none());
+    }
+
+    #[test]
+    fn should_parse_rate_limit_with_key_header() {
+        let config = config_from_lua(
+            "{ rate_limit = { global = { requests_per_window = 50, window_secs = 30, key_header = 'X-API-Key' } } }",
+        );
+        let global = config.rate_limit.global.expect("global policy");
+        assert_eq!(global.requests_per_window, 50);
+        assert_eq!(global.window_secs, 30);
+        assert_eq!(global.key_header, Some("X-API-Key".to_string()));
+    }
+
+    #[test]
+    fn should_parse_scoped_rate_limits() {
+        let config = config_from_lua(
+            "{ rate_limit = { enabled = true, scoped = { { path_pattern = '/api/*', requests_per_window = 10, window_secs = 1 } } } }",
+        );
+        assert!(config.rate_limit.enabled);
+        assert_eq!(config.rate_limit.scoped.len(), 1);
+        let scoped = &config.rate_limit.scoped[0];
+        assert_eq!(scoped.path_pattern, "/api/*");
+        assert_eq!(scoped.policy.requests_per_window, 10);
+        assert_eq!(scoped.policy.window_secs, 1);
+    }
+
+    #[test]
+    fn should_disable_rate_limit_by_default() {
+        let config = config_from_lua("{}");
+        assert!(!config.rate_limit.enabled);
+        assert!(config.rate_limit.global.is_none());
+        assert!(config.rate_limit.scoped.is_empty());
+    }
+
+    #[test]
+    fn should_parse_rate_limit_enabled_flag() {
+        let config = config_from_lua("{ rate_limit = true }");
+        assert!(config.rate_limit.enabled);
+
+        let config = config_from_lua("{ rate_limit = false }");
+        assert!(!config.rate_limit.enabled);
+    }
+
+    #[test]
+    fn should_use_default_load_shed_config() {
+        let config = config_from_lua("{}");
+        assert!(config.load_shed.max_inflight.is_some());
+        assert!(config.load_shed.max_queue.is_some());
+        assert_eq!(config.load_shed.max_inflight.unwrap(), 10000);
+        assert_eq!(config.load_shed.max_queue.unwrap(), 1000);
+    }
+
+    #[test]
+    fn should_parse_load_shed_config() {
+        let config = config_from_lua("{ load_shed = { max_inflight = 500, max_queue = 100 } }");
+        assert_eq!(config.load_shed.max_inflight, Some(500));
+        assert_eq!(config.load_shed.max_queue, Some(100));
+    }
+
+    #[test]
+    fn should_disable_load_shed_when_false() {
+        let config = config_from_lua("{ load_shed = false }");
+        assert!(config.load_shed.max_inflight.is_none());
+        assert!(config.load_shed.max_queue.is_none());
+    }
+
+    #[test]
+    fn should_enable_load_shed_when_true() {
+        let config = config_from_lua("{ load_shed = true }");
+        assert!(config.load_shed.max_inflight.is_some());
+        assert!(config.load_shed.max_queue.is_some());
+    }
+
+    #[test]
+    fn should_parse_drain_timeout_secs() {
+        let config = config_from_lua("{ drain_timeout_secs = 60 }");
+        assert_eq!(config.drain_timeout_secs, Some(60));
+    }
+
+    #[test]
+    fn should_default_drain_timeout_to_none() {
+        let config = config_from_lua("{}");
+        assert!(config.drain_timeout_secs.is_none());
+    }
+
+    #[test]
+    fn should_reject_zero_drain_timeout() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ drain_timeout_secs = 0 }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject zero drain_timeout");
+        assert!(err.to_string().contains("drain_timeout_secs should be > 0"));
     }
 }

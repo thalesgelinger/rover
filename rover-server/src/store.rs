@@ -258,10 +258,20 @@ impl StoreBackend for MemoryStore {
 }
 
 /// Store with namespace support and fallback semantics
+#[derive(Clone)]
 pub struct NamespacedStore {
     backend: Arc<dyn StoreBackend>,
     namespace: String,
     fallback_on_error: bool,
+}
+
+impl std::fmt::Debug for NamespacedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NamespacedStore")
+            .field("namespace", &self.namespace)
+            .field("fallback_on_error", &self.fallback_on_error)
+            .finish_non_exhaustive()
+    }
 }
 
 impl NamespacedStore {
