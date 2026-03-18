@@ -1,0 +1,1582 @@
+import { createRequire as topLevelCreateRequire } from 'module';
+const require = topLevelCreateRequire("/");
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
+// <define:SST_ASSET_MANIFEST>
+var define_SST_ASSET_MANIFEST_default = { "vendor/lucide.min.js": "8dbd1199140ebb4d00b634f0facb0c18bc38bd6bce0afc7c17344ec20f20929b", "scss/main.min.517c9f2b7878aa568a15596b136ff4db84f2008c129fce0579eb03a9bd4fb733.css": "517c9f2b7878aa568a15596b136ff4db84f2008c129fce0579eb03a9bd4fb733", "scss/main.css": "8fcc08022e55eccd686e422b565d565a87d7cf0b08e5f2af7f6b0058de819819", "js/tabpane-persist.js": "e2f795809ab3250d04bf68d27d91c2d4d62c08d7aa3fd73300574d04cb861bc1", "js/site-header.js": "5dc32cbe4dd6a25cb6d45b7be339a632962331faa24f920a6c187f64f1cdf59d", "js/prism.js": "1a3d9aa675c7fa71d43340f94c445d0f602c15b1af23c2b1709bb9e686bb4578", "js/main.min.5cb2e40fc5b23b4c005e6b05b34f3ba94802aefac09b278d70ffa39950d77a4f.js": "5cb2e40fc5b23b4c005e6b05b34f3ba94802aefac09b278d70ffa39950d77a4f", "js/main.js": "2d05dc9c591a75e0d5c4ec125699f0f48618e530a06a27e854fed18468a9a0c9", "js/landing.js": "1b7cb42faf2547918f44b0d82817bbcb4529069a6fb78bc6f487312feff24410", "js/deflate.js": "8a8641e8bad615b404296cbfce8c2eb9156a2bd842c2e7b079ec859c45d05e91", "js/click-to-copy.min.24576ff9fe9f85bb1948ecae52ce227cafce53757a3ad52301f2a79260f6b97d.js": "24576ff9fe9f85bb1948ecae52ce227cafce53757a3ad52301f2a79260f6b97d", "js/click-to-copy.js": "8dfb05ac8a113fde58665ffce3d0b62e213f50070049e19d47d8caf44bcfd45d", "css/site-theme.css": "f01e3ef7e7eb44fe0b364d3ce7512c77be116a72af558f51ca529b0733eedba4", "css/prism.css": "2614cb234c8d8f03c4bd863f78314ffb7a8e535efaa166a240a08b88d0a7109f", "css/landing.css": "d54b84ed1ad07aa70f04b8bbdcdee2836df006b1ed6e000edc27b1dee45344d4", "sitemap.xml": "e73a9c979c7ebed6c82b57865dd71799ac5ba8340b4aba852df0a45fbe170f43", "index.xml": "66e1a6e273226b5e6b7572e3a73d598480a9823e50c6591d9a1fc9bb80590248", "index.html": "3252fcaa0e42ec7c0c644c346881938954faa0df6d00bf8807185e1275ec740f", "404.html": "f2869ef5b1f16430638fc8c638ba864d0e7df46e26ab03d44c3287c5757255a5", "webfonts/fa-v4compatibility.woff2": "9167f4a0ed4af4c46c0c3b81d606e230d4cd4613db1676522dc7ce317cfb59bf", "webfonts/fa-v4compatibility.ttf": "a0e91af78e0b228524f77715c5a0e2673cae930687512bdc76efc27da9339c06", "webfonts/fa-solid-900.woff2": "1e68c40d74f2ccfc57726e1ab985c7efa18b46bd2322ad3e4e3903dac8e46a87", "webfonts/fa-solid-900.ttf": "edbbe60d02b5480b8feafb94efab3f632fdbdb6357ec6afc16ea984adb4d1a99", "webfonts/fa-regular-400.woff2": "d6c21f4e354c60f974edc4fb0dc9dc8c384b77a94dc7499abc34db63d3b6dfcc", "webfonts/fa-regular-400.ttf": "d7d89ae196c1c32a87ed261923969a35122e6f75fbdbedf36d8cc8998e31158c", "webfonts/fa-brands-400.woff2": "6ffb4f29266e2045afbee796d9b57cfba688edde6c0705dc7bfbdc6fa306cd8a", "webfonts/fa-brands-400.ttf": "7eec81b00d678e738f743b748fb5900d68e27a245555ba24392e53e41c80d9a7", "tags/index.xml": "a550d55245d404e9311cad0b5924ed53f2215e43d11c20cea6a4c63a8deb9e5f", "tags/index.html": "74f353b59a14728b16b83e3519bce41303800146a6c2e85cb379a17d10b931c5", "scss/main.css.map": "3bf7caef2a9f012df20434f6c4c22fdb67aaca9e172a5800652a8cc1e2ee15ea", "img/rover-icon.svg": "efa345af69d11c625f779928953e127b67cf9b28cfd2fceffc46d5cad6de148d", "favicons/tile70x70.png": "61526be6378443a6990e883626ad4fe77c74af6126636ac69b9a04c41becd34b", "favicons/tile310x310.png": "77f79c4d73ea3b64e382ba7310cbd07ff42475adb232decfc030a9c9b6d71092", "favicons/tile310x150.png": "f59fade4f1569144193ac3bc9869fc98eae01457844b8af1524db9ce0b40ed36", "favicons/tile150x150.png": "52e84dea2cb42d5a06976b636f1d73d94d13955d0e5a7dc49147774a48882ffe", "favicons/pwa-512x512.png": "677e12a487a6387a8f58877d49ec2a517ec699dea774bf030f2ee0081e2a927f", "favicons/pwa-192x192.png": "7f05dc82d4bbbc05dafd2d803425aa45a82e72e2d5919a87762f1b904fe700fc", "favicons/favicon.ico": "25a4979f062ae328f09eb5ead058e6bb3dfea3c55b1c06ae5ca96dee5a771544", "favicons/favicon-32x32.png": "fa2b7c4138d0ba90d1a13540824f74c06f0ae72267e01d7eaac6cd4691b12b98", "favicons/favicon-256.png": "ec30778f1a4796db3e7abf938658bd93b5f116e24a94b2f7ef1158d03ab463e7", "favicons/favicon-16x16.png": "61df2491f106cade6ee67b431537ffbc09fb23c5fbd2ff74e1152e69ebb8a6ec", "favicons/favicon-1024.png": "7823b13473c0f4fc34cbd3b3d3115d61cb5fc9a23e4bd77767b9fbc79ba24dfd", "favicons/apple-touch-icon-180x180.png": "020400e61654d6b819b107fdb4a4c9a0bf1aa37ecb5e1512ce760f0070d7e512", "favicons/android-96x96.png": "df108c730d4d7f51997606409ea3a33971169ab2c1079e7361ab8bb257420b41", "favicons/android-72x72.png": "eede6ddff8f61d2b85a3195fb949fbb5afc74102d2ece2767770a953a9afa307", "favicons/android-48x48.png": "5ead416cc61342224988360460b75dac2810d16c2db2c448aa309828ab0e5f26", "favicons/android-36x36.png": "9b6f4c91cab35c097bf984d5a87652dd9d9e6f6ccba7de755c751d385bdc07d0", "favicons/android-192x192.png": "7f05dc82d4bbbc05dafd2d803425aa45a82e72e2d5919a87762f1b904fe700fc", "favicons/android-144x144.png": "3462ff61cde88a4c0a6cecc6cdb986c6c3d6609ce54d83ec35af76c882da4080", "docs/index.xml": "f762b9e91568f6b1ed983399a8b03749849ad66b264bdf5921862c6fbd587e42", "docs/index.html": "03be1099d5172ebb94813c62b8de74f1dece573290d792ce7c83e1094e27fdf4", "docs/performance/index.html": "4bd1b0bc0b0a17dec993168d7ac4637dc1079ce15d98fbe81d0683253023de83", "docs/intro/index.html": "456d5fe4758a1dc02eeac7a76326a6f856d3172d7dc65deaa1c6209846cfc359", "docs/guides/index.xml": "7d6a6622b5cada466820db1b2435c8e2c359a1c76fd14f9ec5d233bbf540c9a0", "docs/guides/index.html": "0874f5988c4e754b883f750fd9b24c6f8604903f2ab438fb067eb86e394b5493", "docs/guides/ui-runtime/index.html": "e2f3d56c245de77e71118440be16158f074ec659a760fd6c76d44ce3a888416c", "docs/guides/tui-runtime/index.html": "66e61e9d2a5e3dd6454496555b5e7015b3af794ea2b512f3d01508c91199e53b", "docs/guides/signals/index.html": "24ee58326717790db626641574be5b75fe846bef1c10bc3516e2d474d53824e0", "docs/guides/response-builders/index.html": "be7c984535698c2a8b95d27b38e560fa312d3a217e1e72c379cf3587cc09f584", "docs/guides/migrations/index.html": "cf96aaa6ca450ca5c3ef67e439e541bcd22b7f8542c10b68bdc94994cbfd1470", "docs/guides/html-templates/index.html": "57532d72fedd41161fcec99381ea755e55c8aa5c82607202d9be99dd310a5c71", "docs/guides/database/index.html": "38802e15035907d3794d7cc7d8a0dfb03bdb53fe999ec779f2527a71188aa120", "docs/guides/context-api/index.html": "8e8ae2e571cbb2845dc90ccce682c41b1ff307fbefc60a5ebec603d54b60cd74", "docs/guides/cli/index.html": "52f0ab6634ef668b892013fe2567e56d642972a1204f3ef7bc39e2b07b284cd4", "docs/guides/backend-server/index.html": "54f00457a49cb82c169a99695f9d38565adcc1e302ef89e6f2e3c8c5c38526a7", "docs/getting-started/index.xml": "22a12d2926e73a0a35011d9ea68f36e1b4e1926ba15eba9676ba00f7691d99cb", "docs/getting-started/index.html": "e4a3ce8a8328d9d33a0878e9eaaee627ed1fc37ef3d97bc250ed4d2ad47d146c", "docs/getting-started/installation/index.html": "264d12ebb4f06fa2cc8d29cdf3d01b541aff7088f41ee07e4d7bc2a694800bd7", "docs/api-reference/index.xml": "b73f8a16776676096bfc8641e1d02f9d5e69e84a1a0cf230d9d13cb61611b43a", "docs/api-reference/index.html": "3058e9875e72a905c6354a2a967a8d80792d03321309df21eb6a4355df132ca9", "docs/api-reference/ws-client/index.html": "b8749cebb401f000bdee84a59deeb68524e7888f724325f3c735ff3054ffb7a7", "docs/api-reference/signals/index.html": "61dce76f1f1e27982609bee867e28f1a5422943a52f3dd59be13d2417ff29755", "docs/api-reference/server-extras/index.html": "43a48b77250361aedfe2549d0c55ba8baaf10b05685c03afe0dce7a4d9ba0573", "docs/api-reference/route-patterns/index.html": "eb8ac3443a97858132eb180031958cf111fa64d7535c9e1320be9cb042bab6fd", "docs/api-reference/io/index.html": "24e515ae8a57ce8ffb920a647f08e1de78643747e8eb104c681a77b14ef7359d", "docs/api-reference/http-client/index.html": "30003673818b88b6a6329194ced26a090289db76fe9b751de85e1f61df6e2779", "docs/api-reference/guard/index.html": "94910ab908d5e307625066ce60de5268ae436f77899dca27c2805f1974f7dd14", "docs/api-reference/debug/index.html": "86b2529861881864c0195a8dd72cfef060fb4ba9bb23288e2ccbf2bd2665bb89", "docs/api-reference/db-query-dsl/index.html": "24e938b2561d8d25ebeaa1671ab62c5761fbb8eb040fe8e11d17df57d6104ac3", "docs/api-reference/configuration/index.html": "6544740c5220e2bcaa41a664cf3385d4382febb8ae65370bce2706fe3cb32009", "categories/index.xml": "d644cfe92738b66b0580e6037d50d140c2ae298d60f2692b46a9ed8a36fc4eb5", "categories/index.html": "8170b53035132fdc13a92ec5cf58a2637146996ff8939289604b846478ce00c2" };
+
+// .sst/platform/node_modules/unenv-sst/runtime/polyfill/node-global.mjs
+if (!("global" in globalThis)) {
+  globalThis.global = globalThis;
+}
+
+// .sst/platform/node_modules/unenv-sst/runtime/_internal/utils.mjs
+function createNotImplementedError(name) {
+  return new Error(`[unenv] ${name} is not implemented yet!`);
+}
+__name(createNotImplementedError, "createNotImplementedError");
+function notImplemented(name) {
+  const fn2 = /* @__PURE__ */ __name(() => {
+    throw createNotImplementedError(name);
+  }, "fn");
+  return Object.assign(fn2, { __unenv__: true });
+}
+__name(notImplemented, "notImplemented");
+function notImplementedAsync(name) {
+  const fn2 = notImplemented(name);
+  fn2.__promisify__ = () => notImplemented(name + ".__promisify__");
+  fn2.native = fn2;
+  return fn2;
+}
+__name(notImplementedAsync, "notImplementedAsync");
+function notImplementedClass(name) {
+  return class {
+    __unenv__ = true;
+    constructor() {
+      throw new Error(`[unenv] ${name} is not implemented yet!`);
+    }
+  };
+}
+__name(notImplementedClass, "notImplementedClass");
+
+// .sst/platform/node_modules/unenv-sst/runtime/mock/proxy.mjs
+var fn = /* @__PURE__ */ __name(function() {
+}, "fn");
+function createMock(name, overrides = {}) {
+  fn.prototype.name = name;
+  const props = {};
+  return new Proxy(fn, {
+    get(_target, prop) {
+      if (prop === "caller") {
+        return null;
+      }
+      if (prop === "__createMock__") {
+        return createMock;
+      }
+      if (prop === "__unenv__") {
+        return true;
+      }
+      if (prop in overrides) {
+        return overrides[prop];
+      }
+      return props[prop] = props[prop] || createMock(`${name}.${prop.toString()}`);
+    },
+    apply(_target, _this, _args) {
+      return createMock(`${name}()`);
+    },
+    construct(_target, _args, _newT) {
+      return createMock(`[${name}]`);
+    },
+    // @ts-ignore (ES6-only - removed in ES7)
+    // https://github.com/tc39/ecma262/issues/161
+    enumerate() {
+      return [];
+    }
+  });
+}
+__name(createMock, "createMock");
+var proxy_default = createMock("mock");
+
+// .sst/platform/node_modules/unenv-sst/runtime/web/performance/_entry.mjs
+var _supportedEntryTypes = [
+  "event",
+  // PerformanceEntry
+  "mark",
+  // PerformanceMark
+  "measure",
+  // PerformanceMeasure
+  "resource"
+  // PerformanceResourceTiming
+];
+var _PerformanceEntry = class {
+  static {
+    __name(this, "_PerformanceEntry");
+  }
+  __unenv__ = true;
+  detail;
+  entryType = "event";
+  name;
+  startTime;
+  constructor(name, options) {
+    this.name = name;
+    this.startTime = options?.startTime || performance.now();
+    this.detail = options?.detail;
+  }
+  get duration() {
+    return performance.now() - this.startTime;
+  }
+  toJSON() {
+    return {
+      name: this.name,
+      entryType: this.entryType,
+      startTime: this.startTime,
+      duration: this.duration,
+      detail: this.detail
+    };
+  }
+};
+var PerformanceEntry = globalThis.PerformanceEntry || _PerformanceEntry;
+var _PerformanceMark = class extends _PerformanceEntry {
+  static {
+    __name(this, "_PerformanceMark");
+  }
+  entryType = "mark";
+};
+var PerformanceMark = globalThis.PerformanceMark || _PerformanceMark;
+var _PerformanceMeasure = class extends _PerformanceEntry {
+  static {
+    __name(this, "_PerformanceMeasure");
+  }
+  entryType = "measure";
+};
+var PerformanceMeasure = globalThis.PerformanceMeasure || _PerformanceMeasure;
+var _PerformanceResourceTiming = class extends _PerformanceEntry {
+  static {
+    __name(this, "_PerformanceResourceTiming");
+  }
+  entryType = "resource";
+  serverTiming = [];
+  connectEnd = 0;
+  connectStart = 0;
+  decodedBodySize = 0;
+  domainLookupEnd = 0;
+  domainLookupStart = 0;
+  encodedBodySize = 0;
+  fetchStart = 0;
+  initiatorType = "";
+  name = "";
+  nextHopProtocol = "";
+  redirectEnd = 0;
+  redirectStart = 0;
+  requestStart = 0;
+  responseEnd = 0;
+  responseStart = 0;
+  secureConnectionStart = 0;
+  startTime = 0;
+  transferSize = 0;
+  workerStart = 0;
+};
+var PerformanceResourceTiming = globalThis.PerformanceResourceTiming || _PerformanceResourceTiming;
+
+// .sst/platform/node_modules/unenv-sst/runtime/web/performance/_performance.mjs
+var _timeOrigin = Date.now();
+var _Performance = class {
+  static {
+    __name(this, "_Performance");
+  }
+  __unenv__ = true;
+  timeOrigin = _timeOrigin;
+  eventCounts = /* @__PURE__ */ new Map();
+  _entries = [];
+  _resourceTimingBufferSize = 0;
+  navigation = proxy_default.__createMock__("PerformanceNavigation");
+  timing = proxy_default.__createMock__("PerformanceTiming");
+  onresourcetimingbufferfull = null;
+  now() {
+    if (globalThis?.performance?.now && this.timeOrigin === _timeOrigin) {
+      return globalThis.performance.now();
+    }
+    return Date.now() - this.timeOrigin;
+  }
+  clearMarks(markName) {
+    this._entries = markName ? this._entries.filter((e) => e.name !== markName) : this._entries.filter((e) => e.entryType !== "mark");
+  }
+  clearMeasures(measureName) {
+    this._entries = measureName ? this._entries.filter((e) => e.name !== measureName) : this._entries.filter((e) => e.entryType !== "measure");
+  }
+  clearResourceTimings() {
+    this._entries = this._entries.filter(
+      (e) => e.entryType !== "resource" || e.entryType !== "navigation"
+    );
+  }
+  getEntries() {
+    return this._entries;
+  }
+  getEntriesByName(name, type) {
+    return this._entries.filter(
+      (e) => e.name === name && (!type || e.entryType === type)
+    );
+  }
+  getEntriesByType(type) {
+    return this._entries.filter(
+      (e) => e.entryType === type
+    );
+  }
+  mark(name, options) {
+    const entry = new _PerformanceMark(name, options);
+    this._entries.push(entry);
+    return entry;
+  }
+  measure(measureName, startOrMeasureOptions, endMark) {
+    let start;
+    let end;
+    if (typeof startOrMeasureOptions === "string") {
+      start = this.getEntriesByName(startOrMeasureOptions, "mark")[0]?.startTime;
+      end = this.getEntriesByName(endMark, "mark")[0]?.startTime;
+    } else {
+      start = Number.parseFloat(startOrMeasureOptions?.start) || performance2.now();
+      end = Number.parseFloat(startOrMeasureOptions?.end) || performance2.now();
+    }
+    const entry = new _PerformanceMeasure(measureName, {
+      startTime: start,
+      detail: { start, end }
+    });
+    this._entries.push(entry);
+    return entry;
+  }
+  setResourceTimingBufferSize(maxSize) {
+    this._resourceTimingBufferSize = maxSize;
+  }
+  toJSON() {
+    return this;
+  }
+  addEventListener(type, listener, options) {
+    throw createNotImplementedError("Performance.addEventListener");
+  }
+  removeEventListener(type, listener, options) {
+    throw createNotImplementedError("Performance.removeEventListener");
+  }
+  dispatchEvent(event) {
+    throw createNotImplementedError("Performance.dispatchEvent");
+  }
+};
+var Performance = globalThis.Performance || _Performance;
+var performance2 = globalThis.performance || new Performance();
+
+// .sst/platform/node_modules/unenv-sst/runtime/web/performance/_observer.mjs
+var _PerformanceObserver = class {
+  static {
+    __name(this, "_PerformanceObserver");
+  }
+  __unenv__ = true;
+  static supportedEntryTypes = _supportedEntryTypes;
+  _callback = null;
+  constructor(callback) {
+    this._callback = callback;
+  }
+  takeRecords() {
+    return [];
+  }
+  disconnect() {
+    throw createNotImplementedError("PerformanceObserver.disconnect");
+  }
+  observe(options) {
+    throw createNotImplementedError("PerformanceObserver.observe");
+  }
+};
+var PerformanceObserver = globalThis.PerformanceObserver || _PerformanceObserver;
+var _PerformanceObserverEntryList = class {
+  static {
+    __name(this, "_PerformanceObserverEntryList");
+  }
+  __unenv__ = true;
+  getEntries() {
+    return [];
+  }
+  getEntriesByName(_name, _type) {
+    return [];
+  }
+  getEntriesByType(type) {
+    return [];
+  }
+};
+var PerformanceObserverEntryList = globalThis.PerformanceObserverEntryList || _PerformanceObserverEntryList;
+
+// .sst/platform/node_modules/unenv-sst/runtime/polyfill/global-this.mjs
+function getGlobal() {
+  if (typeof globalThis !== "undefined") {
+    return globalThis;
+  }
+  if (typeof self !== "undefined") {
+    return self;
+  }
+  if (typeof window !== "undefined") {
+    return window;
+  }
+  if (typeof global !== "undefined") {
+    return global;
+  }
+  return {};
+}
+__name(getGlobal, "getGlobal");
+var global_this_default = getGlobal();
+
+// .sst/platform/node_modules/unenv-sst/runtime/polyfill/performance.mjs
+global_this_default.performance = global_this_default.performance || performance2;
+global_this_default.Performance = global_this_default.Performance || Performance;
+global_this_default.PerformanceEntry = global_this_default.PerformanceEntry || PerformanceEntry;
+global_this_default.PerformanceMark = global_this_default.PerformanceMark || PerformanceMark;
+global_this_default.PerformanceMeasure = global_this_default.PerformanceMeasure || PerformanceMeasure;
+global_this_default.PerformanceObserver = global_this_default.PerformanceObserver || PerformanceObserver;
+global_this_default.PerformanceObserverEntryList = global_this_default.PerformanceObserverEntryList || PerformanceObserverEntryList;
+global_this_default.PerformanceResourceTiming = global_this_default.PerformanceResourceTiming || PerformanceResourceTiming;
+var performance_default = global_this_default.performance;
+
+// .sst/platform/node_modules/unenv-sst/runtime/mock/empty.mjs
+var empty_default = Object.freeze(
+  Object.create(null, {
+    __unenv__: { get: /* @__PURE__ */ __name(() => true, "get") }
+  })
+);
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/process/internal/env.mjs
+var _envShim = /* @__PURE__ */ Object.create(null);
+var _processEnv = globalThis.process?.env;
+var _getEnv = /* @__PURE__ */ __name((useShim) => _processEnv || globalThis.__env__ || (useShim ? _envShim : globalThis), "_getEnv");
+var env = new Proxy(_envShim, {
+  get(_, prop) {
+    const env22 = _getEnv();
+    return env22[prop] ?? _envShim[prop];
+  },
+  has(_, prop) {
+    const env22 = _getEnv();
+    return prop in env22 || prop in _envShim;
+  },
+  set(_, prop, value) {
+    const env22 = _getEnv(true);
+    env22[prop] = value;
+    return true;
+  },
+  deleteProperty(_, prop) {
+    const env22 = _getEnv(true);
+    delete env22[prop];
+    return true;
+  },
+  ownKeys() {
+    const env22 = _getEnv();
+    return Object.keys(env22);
+  }
+});
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/process/internal/time.mjs
+var hrtime = Object.assign(
+  /* @__PURE__ */ __name(function hrtime2(startTime) {
+    const now = Date.now();
+    const seconds = Math.trunc(now / 1e3);
+    const nanos = now % 1e3 * 1e6;
+    if (startTime) {
+      let diffSeconds = seconds - startTime[0];
+      let diffNanos = nanos - startTime[0];
+      if (diffNanos < 0) {
+        diffSeconds = diffSeconds - 1;
+        diffNanos = 1e9 + diffNanos;
+      }
+      return [diffSeconds, diffNanos];
+    }
+    return [seconds, nanos];
+  }, "hrtime2"),
+  {
+    bigint: /* @__PURE__ */ __name(function bigint() {
+      return BigInt(Date.now() * 1e6);
+    }, "bigint")
+  }
+);
+var nextTick = globalThis.queueMicrotask ? (cb, ...args) => {
+  globalThis.queueMicrotask(cb.bind(void 0, ...args));
+} : _createNextTickWithTimeout();
+function _createNextTickWithTimeout() {
+  let queue = [];
+  let draining = false;
+  let currentQueue;
+  let queueIndex = -1;
+  function cleanUpNextTick() {
+    if (!draining || !currentQueue) {
+      return;
+    }
+    draining = false;
+    if (currentQueue.length > 0) {
+      queue = [...currentQueue, ...queue];
+    } else {
+      queueIndex = -1;
+    }
+    if (queue.length > 0) {
+      drainQueue();
+    }
+  }
+  __name(cleanUpNextTick, "cleanUpNextTick");
+  function drainQueue() {
+    if (draining) {
+      return;
+    }
+    const timeout = setTimeout(cleanUpNextTick);
+    draining = true;
+    let len = queue.length;
+    while (len) {
+      currentQueue = queue;
+      queue = [];
+      while (++queueIndex < len) {
+        if (currentQueue) {
+          currentQueue[queueIndex]();
+        }
+      }
+      queueIndex = -1;
+      len = queue.length;
+    }
+    currentQueue = void 0;
+    draining = false;
+    clearTimeout(timeout);
+  }
+  __name(drainQueue, "drainQueue");
+  const nextTick22 = /* @__PURE__ */ __name((cb, ...args) => {
+    queue.push(cb.bind(void 0, ...args));
+    if (queue.length === 1 && !draining) {
+      setTimeout(drainQueue);
+    }
+  }, "nextTick2");
+  return nextTick22;
+}
+__name(_createNextTickWithTimeout, "_createNextTickWithTimeout");
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/process/internal/process.mjs
+var title = "unenv";
+var argv = [];
+var version = "";
+var versions = {
+  ares: "",
+  http_parser: "",
+  icu: "",
+  modules: "",
+  node: "",
+  openssl: "",
+  uv: "",
+  v8: "",
+  zlib: ""
+};
+function noop() {
+  return process2;
+}
+__name(noop, "noop");
+var on = noop;
+var addListener = noop;
+var once = noop;
+var off = noop;
+var removeListener = noop;
+var removeAllListeners = noop;
+var emit = /* @__PURE__ */ __name(function emit2(event) {
+  if (event === "message" || event === "multipleResolves") {
+    return process2;
+  }
+  return false;
+}, "emit2");
+var prependListener = noop;
+var prependOnceListener = noop;
+var listeners = /* @__PURE__ */ __name(function(name) {
+  return [];
+}, "listeners");
+var listenerCount = /* @__PURE__ */ __name(() => 0, "listenerCount");
+var binding = /* @__PURE__ */ __name(function(name) {
+  throw new Error("[unenv] process.binding is not supported");
+}, "binding");
+var _cwd = "/";
+var cwd = /* @__PURE__ */ __name(function cwd2() {
+  return _cwd;
+}, "cwd2");
+var chdir = /* @__PURE__ */ __name(function chdir2(dir) {
+  _cwd = dir;
+}, "chdir2");
+var umask = /* @__PURE__ */ __name(function umask2() {
+  return 0;
+}, "umask2");
+var getegid = /* @__PURE__ */ __name(function getegid2() {
+  return 1e3;
+}, "getegid2");
+var geteuid = /* @__PURE__ */ __name(function geteuid2() {
+  return 1e3;
+}, "geteuid2");
+var getgid = /* @__PURE__ */ __name(function getgid2() {
+  return 1e3;
+}, "getgid2");
+var getuid = /* @__PURE__ */ __name(function getuid2() {
+  return 1e3;
+}, "getuid2");
+var getgroups = /* @__PURE__ */ __name(function getgroups2() {
+  return [];
+}, "getgroups2");
+var getBuiltinModule = /* @__PURE__ */ __name((_name) => void 0, "getBuiltinModule");
+var abort = notImplemented("process.abort");
+var allowedNodeEnvironmentFlags = /* @__PURE__ */ new Set();
+var arch = "";
+var argv0 = "";
+var config = empty_default;
+var connected = false;
+var constrainedMemory = /* @__PURE__ */ __name(() => 0, "constrainedMemory");
+var availableMemory = /* @__PURE__ */ __name(() => 0, "availableMemory");
+var cpuUsage = notImplemented("process.cpuUsage");
+var debugPort = 0;
+var dlopen = notImplemented("process.dlopen");
+var disconnect = noop;
+var emitWarning = noop;
+var eventNames = notImplemented("process.eventNames");
+var execArgv = [];
+var execPath = "";
+var exit = notImplemented("process.exit");
+var features = /* @__PURE__ */ Object.create({
+  inspector: void 0,
+  debug: void 0,
+  uv: void 0,
+  ipv6: void 0,
+  tls_alpn: void 0,
+  tls_sni: void 0,
+  tls_ocsp: void 0,
+  tls: void 0,
+  cached_builtins: void 0
+});
+var getActiveResourcesInfo = /* @__PURE__ */ __name(() => [], "getActiveResourcesInfo");
+var getMaxListeners = notImplemented(
+  "process.getMaxListeners"
+);
+var kill = notImplemented("process.kill");
+var memoryUsage = Object.assign(
+  () => ({
+    arrayBuffers: 0,
+    rss: 0,
+    external: 0,
+    heapTotal: 0,
+    heapUsed: 0
+  }),
+  { rss: /* @__PURE__ */ __name(() => 0, "rss") }
+);
+var pid = 1e3;
+var platform = "";
+var ppid = 1e3;
+var rawListeners = notImplemented(
+  "process.rawListeners"
+);
+var release = /* @__PURE__ */ Object.create({
+  name: "",
+  lts: "",
+  sourceUrl: void 0,
+  headersUrl: void 0
+});
+var report = /* @__PURE__ */ Object.create({
+  compact: void 0,
+  directory: void 0,
+  filename: void 0,
+  getReport: notImplemented("process.report.getReport"),
+  reportOnFatalError: void 0,
+  reportOnSignal: void 0,
+  reportOnUncaughtException: void 0,
+  signal: void 0,
+  writeReport: notImplemented("process.report.writeReport")
+});
+var resourceUsage = notImplemented(
+  "process.resourceUsage"
+);
+var setegid = notImplemented("process.setegid");
+var seteuid = notImplemented("process.seteuid");
+var setgid = notImplemented("process.setgid");
+var setgroups = notImplemented("process.setgroups");
+var setuid = notImplemented("process.setuid");
+var setMaxListeners = notImplemented(
+  "process.setMaxListeners"
+);
+var setSourceMapsEnabled = notImplemented("process.setSourceMapsEnabled");
+var stdout = proxy_default.__createMock__("process.stdout");
+var stderr = proxy_default.__createMock__("process.stderr");
+var stdin = proxy_default.__createMock__("process.stdin");
+var traceDeprecation = false;
+var uptime = /* @__PURE__ */ __name(() => 0, "uptime");
+var exitCode = 0;
+var setUncaughtExceptionCaptureCallback = notImplemented("process.setUncaughtExceptionCaptureCallback");
+var hasUncaughtExceptionCaptureCallback = /* @__PURE__ */ __name(() => false, "hasUncaughtExceptionCaptureCallback");
+var sourceMapsEnabled = false;
+var loadEnvFile = notImplemented(
+  "process.loadEnvFile"
+);
+var mainModule = void 0;
+var permission = {
+  has: /* @__PURE__ */ __name(() => false, "has")
+};
+var channel = {
+  ref() {
+  },
+  unref() {
+  }
+};
+var throwDeprecation = false;
+var assert = notImplemented("process.assert");
+var openStdin = notImplemented("process.openStdin");
+var _debugEnd = notImplemented("process._debugEnd");
+var _debugProcess = notImplemented("process._debugProcess");
+var _fatalException = notImplemented("process._fatalException");
+var _getActiveHandles = notImplemented("process._getActiveHandles");
+var _getActiveRequests = notImplemented("process._getActiveRequests");
+var _kill = notImplemented("process._kill");
+var _preload_modules = [];
+var _rawDebug = notImplemented("process._rawDebug");
+var _startProfilerIdleNotifier = notImplemented(
+  "process._startProfilerIdleNotifier"
+);
+var _stopProfilerIdleNotifier = notImplemented(
+  "process.__stopProfilerIdleNotifier"
+);
+var _tickCallback = notImplemented("process._tickCallback");
+var _linkedBinding = notImplemented("process._linkedBinding");
+var domain = proxy_default.__createMock__("process.domain");
+var initgroups = notImplemented("process.initgroups");
+var moduleLoadList = [];
+var reallyExit = noop;
+var _exiting = false;
+var _events = [];
+var _eventsCount = 0;
+var _maxListeners = 0;
+var process2 = {
+  // @ts-expect-error
+  _events,
+  _eventsCount,
+  _exiting,
+  _maxListeners,
+  _debugEnd,
+  _debugProcess,
+  _fatalException,
+  _getActiveHandles,
+  _getActiveRequests,
+  _kill,
+  _preload_modules,
+  _rawDebug,
+  _startProfilerIdleNotifier,
+  _stopProfilerIdleNotifier,
+  _tickCallback,
+  domain,
+  initgroups,
+  moduleLoadList,
+  reallyExit,
+  exitCode,
+  abort,
+  addListener,
+  allowedNodeEnvironmentFlags,
+  hasUncaughtExceptionCaptureCallback,
+  setUncaughtExceptionCaptureCallback,
+  loadEnvFile,
+  sourceMapsEnabled,
+  throwDeprecation,
+  mainModule,
+  permission,
+  channel,
+  arch,
+  argv,
+  argv0,
+  assert,
+  binding,
+  chdir,
+  config,
+  connected,
+  constrainedMemory,
+  availableMemory,
+  cpuUsage,
+  cwd,
+  debugPort,
+  dlopen,
+  disconnect,
+  emit,
+  emitWarning,
+  env,
+  eventNames,
+  execArgv,
+  execPath,
+  exit,
+  features,
+  getBuiltinModule,
+  getegid,
+  geteuid,
+  getgid,
+  getgroups,
+  getuid,
+  getActiveResourcesInfo,
+  getMaxListeners,
+  hrtime,
+  kill,
+  listeners,
+  listenerCount,
+  memoryUsage,
+  nextTick,
+  on,
+  off,
+  once,
+  openStdin,
+  pid,
+  platform,
+  ppid,
+  prependListener,
+  prependOnceListener,
+  rawListeners,
+  release,
+  removeAllListeners,
+  removeListener,
+  report,
+  resourceUsage,
+  setegid,
+  seteuid,
+  setgid,
+  setgroups,
+  setuid,
+  setMaxListeners,
+  setSourceMapsEnabled,
+  stderr,
+  stdin,
+  stdout,
+  title,
+  traceDeprecation,
+  umask,
+  uptime,
+  version,
+  versions
+};
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/process/index.mjs
+var process_default2 = process2;
+
+// .sst/platform/node_modules/unenv-sst/runtime/polyfill/process.mjs
+Object.assign(globalThis.process, {
+  ...process_default2,
+  ...globalThis.process
+});
+var process_default = globalThis.process;
+
+// .sst/platform/functions/cf-static-site-router-worker/index.ts
+import path from "node:path";
+var cf_static_site_router_worker_default = {
+  async fetch(request, env3) {
+    const url = new URL(request.url);
+    const pathname = url.pathname.replace(/^\//, "");
+    const filePath = pathname === "" ? env3.INDEX_PAGE : pathname;
+    let cachedResponse = await lookupCache();
+    if (cachedResponse) return cachedResponse;
+    {
+      const object = await env3.ASSETS.getWithMetadata(filePath);
+      if (object.value) return await respond(200, filePath, object);
+    }
+    {
+      const guess = path.join(filePath, "index.html");
+      const object = await env3.ASSETS.getWithMetadata(guess);
+      if (object.value) return await respond(200, guess, object);
+    }
+    {
+      const guess = filePath + ".html";
+      const object = await env3.ASSETS.getWithMetadata(guess);
+      if (object.value) return await respond(200, guess, object);
+    }
+    if (env3.ERROR_PAGE) {
+      const object = await env3.ASSETS.getWithMetadata(env3.ERROR_PAGE);
+      if (object.value) return await respond(404, env3.ERROR_PAGE, object);
+    } else {
+      const object = await env3.ASSETS.getWithMetadata(env3.INDEX_PAGE);
+      if (object.value) return await respond(200, env3.INDEX_PAGE, object);
+    }
+    return new Response("Page Not Found", { status: 404 });
+    async function lookupCache() {
+      const cache = caches.default;
+      const r = await cache.match(request);
+      if (!r) return;
+      if (r.headers.get("etag") !== define_SST_ASSET_MANIFEST_default[filePath]) return;
+      return r;
+    }
+    __name(lookupCache, "lookupCache");
+    async function saveCache(response) {
+      const cache = caches.default;
+      await cache.put(request, response.clone());
+    }
+    __name(saveCache, "saveCache");
+    async function respond(status, filePath2, object) {
+      const headers = new Headers();
+      if (define_SST_ASSET_MANIFEST_default[filePath2]) {
+        headers.set("etag", define_SST_ASSET_MANIFEST_default[filePath2]);
+        headers.set("content-type", object.metadata.contentType);
+        headers.set("cache-control", object.metadata.cacheControl);
+      }
+      const response = new Response(base64ToArrayBuffer(object.value), {
+        status,
+        headers
+      });
+      if (request.method === "GET") {
+        await saveCache(response);
+      }
+      return response;
+    }
+    __name(respond, "respond");
+  }
+};
+function base64ToArrayBuffer(base64) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+__name(base64ToArrayBuffer, "base64ToArrayBuffer");
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/process/$cloudflare.mjs
+var unpatchedGlobalThisProcess = globalThis["process"];
+var getBuiltinModule2 = unpatchedGlobalThisProcess.getBuiltinModule;
+var workerdProcess = getBuiltinModule2("node:process");
+var { env: env2, exit: exit2, nextTick: nextTick2, platform: platform2 } = workerdProcess;
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/fs/internal/promises.mjs
+var access = notImplemented("fs.access");
+var copyFile = notImplemented("fs.copyFile");
+var cp = notImplemented("fs.cp");
+var open = notImplemented("fs.open");
+var opendir = notImplemented("fs.opendir");
+var rename = notImplemented("fs.rename");
+var truncate = notImplemented("fs.truncate");
+var rm = notImplemented("fs.rm");
+var rmdir = notImplemented("fs.rmdir");
+var mkdir = notImplemented(
+  "fs.mkdir"
+);
+var readdir = notImplemented(
+  "fs.readdir"
+);
+var readlink = notImplemented(
+  "fs.readlink"
+);
+var symlink = notImplemented("fs.symlink");
+var lstat = notImplemented(
+  "fs.lstat"
+);
+var stat = notImplemented(
+  "fs.stat"
+);
+var link = notImplemented("fs.link");
+var unlink = notImplemented("fs.unlink");
+var chmod = notImplemented("fs.chmod");
+var lchmod = notImplemented("fs.lchmod");
+var lchown = notImplemented("fs.lchown");
+var chown = notImplemented("fs.chown");
+var utimes = notImplemented("fs.utimes");
+var lutimes = notImplemented("fs.lutimes");
+var realpath = notImplemented(
+  "fs.realpath"
+);
+var mkdtemp = notImplemented(
+  "fs.mkdtemp"
+);
+var writeFile = notImplemented("fs.writeFile");
+var appendFile = notImplemented("fs.appendFile");
+var readFile = notImplemented(
+  "fs.readFile"
+);
+var watch = notImplemented(
+  "fs.watch"
+);
+var statfs = notImplemented(
+  "fs.statfs"
+);
+var glob = notImplemented("fs.glob");
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/fs/internal/fs.mjs
+function callbackify(fn2) {
+  const fnc = /* @__PURE__ */ __name(function(...args) {
+    const cb = args.pop();
+    fn2().catch((error) => cb(error)).then((val) => cb(void 0, val));
+  }, "fnc");
+  fnc.__promisify__ = fn2;
+  fnc.native = fnc;
+  return fnc;
+}
+__name(callbackify, "callbackify");
+var access2 = callbackify(access);
+var appendFile2 = callbackify(appendFile);
+var chown2 = callbackify(chown);
+var chmod2 = callbackify(chmod);
+var copyFile2 = callbackify(copyFile);
+var cp2 = callbackify(cp);
+var lchown2 = callbackify(lchown);
+var lchmod2 = callbackify(lchmod);
+var link2 = callbackify(link);
+var lstat2 = callbackify(lstat);
+var lutimes2 = callbackify(lutimes);
+var mkdir2 = callbackify(mkdir);
+var mkdtemp2 = callbackify(mkdtemp);
+var realpath2 = callbackify(realpath);
+var open2 = callbackify(open);
+var opendir2 = callbackify(opendir);
+var readdir2 = callbackify(readdir);
+var readFile2 = callbackify(readFile);
+var readlink2 = callbackify(readlink);
+var rename2 = callbackify(rename);
+var rm2 = callbackify(rm);
+var rmdir2 = callbackify(rmdir);
+var stat2 = callbackify(stat);
+var symlink2 = callbackify(symlink);
+var truncate2 = callbackify(truncate);
+var unlink2 = callbackify(unlink);
+var utimes2 = callbackify(utimes);
+var writeFile2 = callbackify(writeFile);
+var statfs2 = callbackify(statfs);
+var close = notImplementedAsync("fs.close");
+var createReadStream = notImplementedAsync(
+  "fs.createReadStream"
+);
+var createWriteStream = notImplementedAsync("fs.createWriteStream");
+var exists = notImplementedAsync("fs.exists");
+var fchown = notImplementedAsync("fs.fchown");
+var fchmod = notImplementedAsync("fs.fchmod");
+var fdatasync = notImplementedAsync("fs.fdatasync");
+var fstat = notImplementedAsync("fs.fstat");
+var fsync = notImplementedAsync("fs.fsync");
+var ftruncate = notImplementedAsync("fs.ftruncate");
+var futimes = notImplementedAsync("fs.futimes");
+var lstatSync = notImplementedAsync("fs.lstatSync");
+var read = notImplementedAsync("fs.read");
+var readv = notImplementedAsync("fs.readv");
+var realpathSync = notImplementedAsync("fs.realpathSync");
+var statSync = notImplementedAsync("fs.statSync");
+var unwatchFile = notImplementedAsync("fs.unwatchFile");
+var watch2 = notImplementedAsync("fs.watch");
+var watchFile = notImplementedAsync("fs.watchFile");
+var write = notImplementedAsync("fs.write");
+var writev = notImplementedAsync("fs.writev");
+var _toUnixTimestamp = notImplementedAsync("fs._toUnixTimestamp");
+var openAsBlob = notImplementedAsync("fs.openAsBlob");
+var glob2 = notImplementedAsync("fs.glob");
+var appendFileSync = notImplemented("fs.appendFileSync");
+var accessSync = notImplemented("fs.accessSync");
+var chownSync = notImplemented("fs.chownSync");
+var chmodSync = notImplemented("fs.chmodSync");
+var closeSync = notImplemented("fs.closeSync");
+var copyFileSync = notImplemented("fs.copyFileSync");
+var cpSync = notImplemented("fs.cpSync");
+var fchownSync = notImplemented("fs.fchownSync");
+var fchmodSync = notImplemented("fs.fchmodSync");
+var fdatasyncSync = notImplemented("fs.fdatasyncSync");
+var fstatSync = notImplemented(
+  "fs.fstatSync"
+);
+var fsyncSync = notImplemented("fs.fsyncSync");
+var ftruncateSync = notImplemented("fs.ftruncateSync");
+var futimesSync = notImplemented("fs.futimesSync");
+var lchownSync = notImplemented("fs.lchownSync");
+var lchmodSync = notImplemented("fs.lchmodSync");
+var linkSync = notImplemented("fs.linkSync");
+var lutimesSync = notImplemented("fs.lutimesSync");
+var mkdirSync = notImplemented("fs.mkdirSync");
+var mkdtempSync = notImplemented(
+  "fs.mkdtempSync"
+);
+var openSync = notImplemented("fs.openSync");
+var opendirSync = notImplemented("fs.opendirSync");
+var readdirSync = notImplemented(
+  "fs.readdirSync"
+);
+var readSync = notImplemented("fs.readSync");
+var readvSync = notImplemented("fs.readvSync");
+var readFileSync = notImplemented(
+  "fs.readFileSync"
+);
+var readlinkSync = notImplemented(
+  "fs.readlinkSync"
+);
+var renameSync = notImplemented("fs.renameSync");
+var rmSync = notImplemented("fs.rmSync");
+var rmdirSync = notImplemented("fs.rmdirSync");
+var symlinkSync = notImplemented("fs.symlinkSync");
+var truncateSync = notImplemented("fs.truncateSync");
+var unlinkSync = notImplemented("fs.unlinkSync");
+var utimesSync = notImplemented("fs.utimesSync");
+var writeFileSync = notImplemented("fs.writeFileSync");
+var writeSync = notImplemented("fs.writeSync");
+var writevSync = notImplemented("fs.writevSync");
+var statfsSync = notImplemented(
+  "fs.statfsSync"
+);
+var globSync = notImplemented("fs.globSync");
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/crypto/internal/web.mjs
+var web_exports = {};
+__export(web_exports, {
+  getRandomValues: () => getRandomValues,
+  randomUUID: () => randomUUID,
+  subtle: () => subtle
+});
+var subtle = globalThis.crypto?.subtle;
+var randomUUID = /* @__PURE__ */ __name(() => {
+  return globalThis.crypto?.randomUUID();
+}, "randomUUID");
+var getRandomValues = /* @__PURE__ */ __name((array) => {
+  return globalThis.crypto?.getRandomValues(array);
+}, "getRandomValues");
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/crypto/internal/node.mjs
+var node_exports = {};
+__export(node_exports, {
+  Certificate: () => Certificate,
+  Cipher: () => Cipher,
+  Cipheriv: () => Cipheriv,
+  Decipher: () => Decipher,
+  Decipheriv: () => Decipheriv,
+  DiffieHellman: () => DiffieHellman,
+  DiffieHellmanGroup: () => DiffieHellmanGroup,
+  ECDH: () => ECDH,
+  Hash: () => Hash,
+  Hmac: () => Hmac,
+  KeyObject: () => KeyObject,
+  Sign: () => Sign,
+  Verify: () => Verify,
+  X509Certificate: () => X509Certificate,
+  checkPrime: () => checkPrime,
+  checkPrimeSync: () => checkPrimeSync,
+  constants: () => constants,
+  createCipher: () => createCipher,
+  createCipheriv: () => createCipheriv,
+  createDecipher: () => createDecipher,
+  createDecipheriv: () => createDecipheriv,
+  createDiffieHellman: () => createDiffieHellman,
+  createDiffieHellmanGroup: () => createDiffieHellmanGroup,
+  createECDH: () => createECDH,
+  createHash: () => createHash,
+  createHmac: () => createHmac,
+  createPrivateKey: () => createPrivateKey,
+  createPublicKey: () => createPublicKey,
+  createSecretKey: () => createSecretKey,
+  createSign: () => createSign,
+  createVerify: () => createVerify,
+  diffieHellman: () => diffieHellman,
+  fips: () => fips,
+  generateKey: () => generateKey,
+  generateKeyPair: () => generateKeyPair,
+  generateKeyPairSync: () => generateKeyPairSync,
+  generateKeySync: () => generateKeySync,
+  generatePrime: () => generatePrime,
+  generatePrimeSync: () => generatePrimeSync,
+  getCipherInfo: () => getCipherInfo,
+  getCiphers: () => getCiphers,
+  getCurves: () => getCurves,
+  getDiffieHellman: () => getDiffieHellman,
+  getFips: () => getFips,
+  getHashes: () => getHashes,
+  hash: () => hash,
+  hkdf: () => hkdf,
+  hkdfSync: () => hkdfSync,
+  pbkdf2: () => pbkdf2,
+  pbkdf2Sync: () => pbkdf2Sync,
+  privateDecrypt: () => privateDecrypt,
+  privateEncrypt: () => privateEncrypt,
+  pseudoRandomBytes: () => pseudoRandomBytes,
+  publicDecrypt: () => publicDecrypt,
+  publicEncrypt: () => publicEncrypt,
+  randomBytes: () => randomBytes,
+  randomFill: () => randomFill,
+  randomFillSync: () => randomFillSync,
+  randomInt: () => randomInt,
+  scrypt: () => scrypt,
+  scryptSync: () => scryptSync,
+  secureHeapUsed: () => secureHeapUsed,
+  setEngine: () => setEngine,
+  setFips: () => setFips,
+  sign: () => sign,
+  timingSafeEqual: () => timingSafeEqual,
+  verify: () => verify,
+  webcrypto: () => webcrypto
+});
+var MAX_RANDOM_VALUE_BYTES = 65536;
+var webcrypto = new Proxy(
+  globalThis.crypto,
+  {
+    get(_, key) {
+      if (key === "CryptoKey") {
+        return globalThis.CryptoKey;
+      }
+      if (typeof globalThis.crypto[key] === "function") {
+        return globalThis.crypto[key].bind(globalThis.crypto);
+      }
+      return globalThis.crypto[key];
+    }
+  }
+);
+var randomBytes = /* @__PURE__ */ __name((size, cb) => {
+  const bytes = Buffer.alloc(size, 0, void 0);
+  for (let generated = 0; generated < size; generated += MAX_RANDOM_VALUE_BYTES) {
+    getRandomValues(
+      Uint8Array.prototype.slice.call(
+        bytes,
+        generated,
+        generated + MAX_RANDOM_VALUE_BYTES
+      )
+    );
+  }
+  if (typeof cb === "function") {
+    cb(null, bytes);
+    return void 0;
+  }
+  return bytes;
+}, "randomBytes");
+var fips = false;
+var constants = {};
+var checkPrime = notImplemented("crypto.checkPrime");
+var checkPrimeSync = notImplemented(
+  "crypto.checkPrimeSync"
+);
+var createCipher = notImplemented("crypto.createCipher");
+var createDecipher = notImplemented("crypto.createDecipher");
+var pseudoRandomBytes = notImplemented("crypto.pseudoRandomBytes");
+var createCipheriv = notImplemented(
+  "crypto.createCipheriv"
+);
+var createDecipheriv = notImplemented("crypto.createDecipheriv");
+var createDiffieHellman = notImplemented("crypto.createDiffieHellman");
+var createDiffieHellmanGroup = notImplemented("crypto.createDiffieHellmanGroup");
+var createECDH = notImplemented("crypto.createECDH");
+var createHash = notImplemented("crypto.createHash");
+var createHmac = notImplemented("crypto.createHmac");
+var createPrivateKey = notImplemented("crypto.createPrivateKey");
+var createPublicKey = notImplemented("crypto.createPublicKey");
+var createSecretKey = notImplemented("crypto.createSecretKey");
+var createSign = notImplemented("crypto.createSign");
+var createVerify = notImplemented(
+  "crypto.createVerify"
+);
+var diffieHellman = notImplemented(
+  "crypto.diffieHellman"
+);
+var generatePrime = notImplemented(
+  "crypto.generatePrime"
+);
+var generatePrimeSync = notImplemented("crypto.generatePrimeSync");
+var getCiphers = notImplemented("crypto.getCiphers");
+var getCipherInfo = notImplemented(
+  "crypto.getCipherInfo"
+);
+var getCurves = notImplemented("crypto.getCurves");
+var getDiffieHellman = notImplemented("crypto.getDiffieHellman");
+var getHashes = notImplemented("crypto.getHashes");
+var hkdf = notImplemented("crypto.hkdf");
+var hkdfSync = notImplemented("crypto.hkdfSync");
+var pbkdf2 = notImplemented("crypto.pbkdf2");
+var pbkdf2Sync = notImplemented("crypto.pbkdf2Sync");
+var generateKeyPair = notImplemented("crypto.generateKeyPair");
+var generateKeyPairSync = notImplemented("crypto.generateKeyPairSync");
+var generateKey = notImplemented("crypto.generateKey");
+var generateKeySync = notImplemented("crypto.generateKeySync");
+var privateDecrypt = notImplemented(
+  "crypto.privateDecrypt"
+);
+var privateEncrypt = notImplemented(
+  "crypto.privateEncrypt"
+);
+var publicDecrypt = notImplemented(
+  "crypto.publicDecrypt"
+);
+var publicEncrypt = notImplemented(
+  "crypto.publicEncrypt"
+);
+var randomFill = notImplemented("crypto.randomFill");
+var randomFillSync = notImplemented(
+  "crypto.randomFillSync"
+);
+var randomInt = notImplemented("crypto.randomInt");
+var scrypt = notImplemented("crypto.scrypt");
+var scryptSync = notImplemented("crypto.scryptSync");
+var sign = notImplemented("crypto.sign");
+var setEngine = notImplemented("crypto.setEngine");
+var timingSafeEqual = notImplemented("crypto.timingSafeEqual");
+var getFips = notImplemented("crypto.getFips");
+var setFips = notImplemented("crypto.setFips");
+var verify = notImplemented("crypto.verify");
+var secureHeapUsed = notImplemented(
+  "crypto.secureHeapUsed"
+);
+var hash = notImplemented("crypto.hash");
+var Certificate = notImplementedClass(
+  "crypto.Certificate"
+);
+var Cipher = notImplementedClass(
+  "crypto.Cipher"
+);
+var Cipheriv = notImplementedClass(
+  "crypto.Cipheriv"
+  // @ts-expect-error not typed yet
+);
+var Decipher = notImplementedClass(
+  "crypto.Decipher"
+);
+var Decipheriv = notImplementedClass(
+  "crypto.Decipheriv"
+  // @ts-expect-error not typed yet
+);
+var DiffieHellman = notImplementedClass(
+  "crypto.DiffieHellman"
+);
+var DiffieHellmanGroup = notImplementedClass(
+  "crypto.DiffieHellmanGroup"
+);
+var ECDH = notImplementedClass(
+  "crypto.ECDH"
+);
+var Hash = notImplementedClass(
+  "crypto.Hash"
+);
+var Hmac = notImplementedClass(
+  "crypto.Hmac"
+);
+var KeyObject = notImplementedClass(
+  "crypto.KeyObject"
+);
+var Sign = notImplementedClass(
+  "crypto.Sign"
+);
+var Verify = notImplementedClass(
+  "crypto.Verify"
+);
+var X509Certificate = notImplementedClass(
+  "crypto.X509Certificate"
+);
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/crypto/internal/constants.mjs
+var constants2 = {
+  ALPN_ENABLED: 1,
+  // Node.js v18 only
+  DH_CHECK_P_NOT_PRIME: 1,
+  DH_CHECK_P_NOT_SAFE_PRIME: 2,
+  DH_NOT_SUITABLE_GENERATOR: 8,
+  DH_UNABLE_TO_CHECK_GENERATOR: 4,
+  ENGINE_METHOD_ALL: 65535,
+  ENGINE_METHOD_CIPHERS: 64,
+  ENGINE_METHOD_DH: 4,
+  ENGINE_METHOD_DIGESTS: 128,
+  ENGINE_METHOD_DSA: 2,
+  ENGINE_METHOD_EC: 2048,
+  ENGINE_METHOD_NONE: 0,
+  ENGINE_METHOD_PKEY_ASN1_METHS: 1024,
+  ENGINE_METHOD_PKEY_METHS: 512,
+  ENGINE_METHOD_RAND: 8,
+  ENGINE_METHOD_RSA: 1,
+  OPENSSL_VERSION_NUMBER: 0,
+  // explicitly set to 0 to avoid version misdetection
+  POINT_CONVERSION_COMPRESSED: 2,
+  POINT_CONVERSION_HYBRID: 6,
+  POINT_CONVERSION_UNCOMPRESSED: 4,
+  RSA_NO_PADDING: 3,
+  RSA_PKCS1_OAEP_PADDING: 4,
+  RSA_PKCS1_PADDING: 1,
+  RSA_PKCS1_PSS_PADDING: 6,
+  RSA_PSS_SALTLEN_AUTO: -2,
+  RSA_PSS_SALTLEN_DIGEST: -1,
+  RSA_PSS_SALTLEN_MAX_SIGN: -2,
+  RSA_X931_PADDING: 5,
+  SSL_OP_ALL: 2147485776,
+  SSL_OP_ALLOW_NO_DHE_KEX: 1024,
+  SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144,
+  SSL_OP_CIPHER_SERVER_PREFERENCE: 4194304,
+  SSL_OP_CISCO_ANYCONNECT: 32768,
+  SSL_OP_COOKIE_EXCHANGE: 8192,
+  SSL_OP_CRYPTOPRO_TLSEXT_BUG: 2147483648,
+  SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS: 2048,
+  SSL_OP_EPHEMERAL_RSA: 0,
+  // Node.js v18 only
+  SSL_OP_LEGACY_SERVER_CONNECT: 4,
+  SSL_OP_MICROSOFT_BIG_SSLV3_BUFFER: 0,
+  // Node.js v18 only
+  SSL_OP_MICROSOFT_SESS_ID_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_MSIE_SSLV2_RSA_PADDING: 0,
+  // Node.js v18 only
+  SSL_OP_NETSCAPE_CA_DN_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_NETSCAPE_CHALLENGE_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_NETSCAPE_DEMO_CIPHER_CHANGE_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_NETSCAPE_REUSE_CIPHER_CHANGE_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_NO_COMPRESSION: 131072,
+  SSL_OP_NO_ENCRYPT_THEN_MAC: 524288,
+  SSL_OP_NO_QUERY_MTU: 4096,
+  SSL_OP_NO_RENEGOTIATION: 1073741824,
+  SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION: 65536,
+  SSL_OP_NO_SSLv2: 0,
+  SSL_OP_NO_SSLv3: 33554432,
+  SSL_OP_NO_TICKET: 16384,
+  SSL_OP_NO_TLSv1_1: 268435456,
+  SSL_OP_NO_TLSv1_2: 134217728,
+  SSL_OP_NO_TLSv1_3: 536870912,
+  SSL_OP_NO_TLSv1: 67108864,
+  SSL_OP_PKCS1_CHECK_1: 0,
+  // Node.js v18 only
+  SSL_OP_PKCS1_CHECK_2: 0,
+  // Node.js v18 only
+  SSL_OP_PRIORITIZE_CHACHA: 2097152,
+  SSL_OP_SINGLE_DH_USE: 0,
+  // Node.js v18 only
+  SSL_OP_SINGLE_ECDH_USE: 0,
+  // Node.js v18 only
+  SSL_OP_SSLEAY_080_CLIENT_DH_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_SSLREF2_REUSE_CERT_TYPE_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_TLS_BLOCK_PADDING_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_TLS_D5_BUG: 0,
+  // Node.js v18 only
+  SSL_OP_TLS_ROLLBACK_BUG: 8388608,
+  TLS1_1_VERSION: 0,
+  // explicitly set to 0 to avoid version misdetection
+  TLS1_2_VERSION: 0,
+  // explicitly set to 0 to avoid version misdetection
+  TLS1_3_VERSION: 0,
+  // explicitly set to 0 to avoid version misdetection
+  TLS1_VERSION: 0,
+  // explicitly set to 0 to avoid version misdetection
+  defaultCoreCipherList: "",
+  // explicitly set to "" to avoid version misdetection
+  get defaultCipherList() {
+    return constants2.defaultCoreCipherList;
+  },
+  set defaultCipherList(_ignored) {
+  }
+};
+var constants_default = constants2;
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/crypto/index.mjs
+var crypto_default = {
+  ...web_exports,
+  ...node_exports,
+  // @ts-expect-error @types/node is out of date - this is a bug in typings
+  constants: constants_default
+};
+
+// .sst/platform/node_modules/unenv-sst/runtime/node/crypto/$cloudflare.mjs
+var workerdCrypto = process.getBuiltinModule("node:crypto");
+var {
+  Certificate: Certificate2,
+  DiffieHellman: DiffieHellman2,
+  DiffieHellmanGroup: DiffieHellmanGroup2,
+  Hash: Hash2,
+  Hmac: Hmac2,
+  KeyObject: KeyObject2,
+  X509Certificate: X509Certificate2,
+  checkPrime: checkPrime2,
+  checkPrimeSync: checkPrimeSync2,
+  createDiffieHellman: createDiffieHellman2,
+  createDiffieHellmanGroup: createDiffieHellmanGroup2,
+  createHash: createHash2,
+  createHmac: createHmac2,
+  createPrivateKey: createPrivateKey2,
+  createPublicKey: createPublicKey2,
+  createSecretKey: createSecretKey2,
+  generateKey: generateKey2,
+  generateKeyPair: generateKeyPair2,
+  generateKeyPairSync: generateKeyPairSync2,
+  generateKeySync: generateKeySync2,
+  generatePrime: generatePrime2,
+  generatePrimeSync: generatePrimeSync2,
+  getCiphers: getCiphers2,
+  getCurves: getCurves2,
+  getDiffieHellman: getDiffieHellman2,
+  getFips: getFips2,
+  getHashes: getHashes2,
+  hkdf: hkdf2,
+  hkdfSync: hkdfSync2,
+  pbkdf2: pbkdf22,
+  pbkdf2Sync: pbkdf2Sync2,
+  randomBytes: randomBytes2,
+  randomFill: randomFill2,
+  randomFillSync: randomFillSync2,
+  randomInt: randomInt2,
+  randomUUID: randomUUID2,
+  scrypt: scrypt2,
+  scryptSync: scryptSync2,
+  secureHeapUsed: secureHeapUsed2,
+  setEngine: setEngine2,
+  setFips: setFips2,
+  subtle: subtle2,
+  timingSafeEqual: timingSafeEqual2
+} = workerdCrypto;
+var getRandomValues2 = workerdCrypto.getRandomValues.bind(
+  workerdCrypto.webcrypto
+);
+var webcrypto2 = {
+  CryptoKey: webcrypto.CryptoKey,
+  getRandomValues: getRandomValues2,
+  randomUUID: randomUUID2,
+  subtle: subtle2
+};
+var fips2 = workerdCrypto.fips;
+var cloudflare_default = {
+  /**
+   * manually unroll unenv-polyfilled-symbols to make it tree-shakeable
+   */
+  Certificate: Certificate2,
+  Cipher,
+  Cipheriv,
+  Decipher,
+  Decipheriv,
+  ECDH,
+  Sign,
+  Verify,
+  X509Certificate: X509Certificate2,
+  // @ts-expect-error @types/node is out of date - this is a bug in typings
+  constants: constants_default,
+  createCipheriv,
+  createDecipheriv,
+  createECDH,
+  createSign,
+  createVerify,
+  diffieHellman,
+  getCipherInfo,
+  hash,
+  privateDecrypt,
+  privateEncrypt,
+  publicDecrypt,
+  publicEncrypt,
+  scrypt: scrypt2,
+  scryptSync: scryptSync2,
+  sign,
+  verify,
+  // default-only export from unenv
+  createCipher,
+  createDecipher,
+  pseudoRandomBytes,
+  /**
+   * manually unroll workerd-polyfilled-symbols to make it tree-shakeable
+   */
+  DiffieHellman: DiffieHellman2,
+  DiffieHellmanGroup: DiffieHellmanGroup2,
+  Hash: Hash2,
+  Hmac: Hmac2,
+  KeyObject: KeyObject2,
+  checkPrime: checkPrime2,
+  checkPrimeSync: checkPrimeSync2,
+  createDiffieHellman: createDiffieHellman2,
+  createDiffieHellmanGroup: createDiffieHellmanGroup2,
+  createHash: createHash2,
+  createHmac: createHmac2,
+  createPrivateKey: createPrivateKey2,
+  createPublicKey: createPublicKey2,
+  createSecretKey: createSecretKey2,
+  generateKey: generateKey2,
+  generateKeyPair: generateKeyPair2,
+  generateKeyPairSync: generateKeyPairSync2,
+  generateKeySync: generateKeySync2,
+  generatePrime: generatePrime2,
+  generatePrimeSync: generatePrimeSync2,
+  getCiphers: getCiphers2,
+  getCurves: getCurves2,
+  getDiffieHellman: getDiffieHellman2,
+  getFips: getFips2,
+  getHashes: getHashes2,
+  getRandomValues: getRandomValues2,
+  hkdf: hkdf2,
+  hkdfSync: hkdfSync2,
+  pbkdf2: pbkdf22,
+  pbkdf2Sync: pbkdf2Sync2,
+  randomBytes: randomBytes2,
+  randomFill: randomFill2,
+  randomFillSync: randomFillSync2,
+  randomInt: randomInt2,
+  randomUUID: randomUUID2,
+  secureHeapUsed: secureHeapUsed2,
+  setEngine: setEngine2,
+  setFips: setFips2,
+  subtle: subtle2,
+  timingSafeEqual: timingSafeEqual2,
+  // default-only export from workerd
+  fips: fips2,
+  // special-cased deep merged symbols
+  webcrypto: webcrypto2
+};
+
+// node_modules/sst/dist/resource.js
+var raw = {
+  // @ts-expect-error,
+  ...globalThis.$SST_LINKS
+};
+var environment = {
+  ...env2,
+  ...globalThis.process?.env
+};
+if (environment.SST_RESOURCES_JSON) {
+  try {
+    const allResources = JSON.parse(environment.SST_RESOURCES_JSON);
+    Object.assign(raw, allResources);
+  } catch (error) {
+    console.error("Failed to parse SST_RESOURCES_JSON:", error);
+  }
+}
+for (const [key, value] of Object.entries(environment)) {
+  if (key.startsWith("SST_RESOURCE_") && value) {
+    raw[key.slice("SST_RESOURCE_".length)] = JSON.parse(value);
+  }
+}
+if (env2.SST_KEY_FILE && env2.SST_KEY && !globalThis.SST_KEY_FILE_DATA) {
+  const key = Buffer.from(env2.SST_KEY, "base64");
+  const encryptedData = readFileSync(env2.SST_KEY_FILE);
+  const nonce = Buffer.alloc(12, 0);
+  const decipher = cloudflare_default.createDecipheriv("aes-256-gcm", key, nonce);
+  const authTag = encryptedData.subarray(-16);
+  const actualCiphertext = encryptedData.subarray(0, -16);
+  decipher.setAuthTag(authTag);
+  let decrypted = decipher.update(actualCiphertext);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  const decryptedData = JSON.parse(decrypted.toString());
+  Object.assign(raw, decryptedData);
+}
+if (globalThis.SST_KEY_FILE_DATA) {
+  Object.assign(raw, globalThis.SST_KEY_FILE_DATA);
+}
+function fromCloudflareEnv(input) {
+  for (let [key, value] of Object.entries(input)) {
+    if (typeof value === "string") {
+      try {
+        value = JSON.parse(value);
+      } catch {
+      }
+    }
+    raw[key] = value;
+    if (key.startsWith("SST_RESOURCE_")) {
+      raw[key.replace("SST_RESOURCE_", "")] = value;
+    }
+  }
+}
+__name(fromCloudflareEnv, "fromCloudflareEnv");
+function wrapCloudflareHandler(handler) {
+  if (typeof handler === "function" && handler.hasOwnProperty("prototype")) {
+    return class extends handler {
+      constructor(ctx, env3) {
+        fromCloudflareEnv(env3);
+        super(ctx, env3);
+      }
+    };
+  }
+  function wrap(fn2) {
+    return function(req, env3, ...rest) {
+      fromCloudflareEnv(env3);
+      return fn2(req, env3, ...rest);
+    };
+  }
+  __name(wrap, "wrap");
+  const result = {};
+  for (const [key, value] of Object.entries(handler)) {
+    result[key] = wrap(value);
+  }
+  return result;
+}
+__name(wrapCloudflareHandler, "wrapCloudflareHandler");
+var Resource = new Proxy(raw, {
+  get(_target, prop) {
+    if (prop in raw) {
+      return raw[prop];
+    }
+    if (!env2.SST_RESOURCE_App) {
+      throw new Error("It does not look like SST links are active. If this is in local development and you are not starting this process through the multiplexer, wrap your command with `sst dev -- <command>`");
+    }
+    let msg = `"${prop}" is not linked in your sst.config.ts`;
+    if (env2.AWS_LAMBDA_FUNCTION_NAME) {
+      msg += ` to ${env2.AWS_LAMBDA_FUNCTION_NAME}`;
+    }
+    throw new Error(msg);
+  }
+});
+
+// <stdin>
+var stdin_default = wrapCloudflareHandler(cf_static_site_router_worker_default);
+export {
+  stdin_default as default
+};
