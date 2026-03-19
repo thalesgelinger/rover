@@ -90,6 +90,32 @@ Routes are built from nested table access:
 - `api.users.p_id.get` → `/users/:id` (GET)
 - `api.users.p_id.posts.p_pid.get` → `/users/:id/posts/:pid` (GET)
 
+## Static Mounts
+
+Use `api.<scope>.static { ... }` to mount static files under a route prefix.
+
+```lua
+local api = rover.server {}
+
+api.assets.static {
+    dir = "public",
+    cache = "public, max-age=60"
+}
+
+function api.assets.health.get(ctx)
+    return { ok = true }
+end
+
+return api
+```
+
+Behavior:
+
+- `GET /assets/app.js` serves `public/app.js`.
+- Static mounts include traversal protection, cache validators (`ETag`, `Last-Modified`), and conditional `304` handling.
+- `cache` maps to the `Cache-Control` response header.
+- Exact API routes under the same prefix (like `/assets/health`) take precedence over static mount catch-all paths.
+
 ## Next Steps
 
 - [Context API](/docs/guides/context-api) - Access request data

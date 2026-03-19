@@ -83,6 +83,20 @@ mod tests {
         }
     }
 
+    fn dummy_route_with_body(lua: &Lua, method: HttpMethod, path: &str, body: &str) -> Route {
+        let body = body.to_string();
+        Route {
+            method,
+            pattern: Bytes::copy_from_slice(path.as_bytes()),
+            param_names: Vec::new(),
+            handler: lua
+                .create_function(move |lua, ()| lua.create_string(&body))
+                .unwrap(),
+            is_static: true,
+            middlewares: Default::default(),
+        }
+    }
+
     #[test]
     fn should_auto_map_head_to_get() {
         let lua = Lua::new();
@@ -221,6 +235,49 @@ mod tests {
                 assert!(allowed.contains(&HttpMethod::Options));
             }
             _ => panic!("expected 405 with merged methods"),
+        }
+    }
+
+    #[test]
+    fn should_prefer_exact_api_route_over_static_mount_catch_all() {
+        let lua = Lua::new();
+
+        let api_route = dummy_route_with_body(&lua, HttpMethod::Get, "/assets/health", "api");
+        let static_mount_route = Route {
+            method: HttpMethod::Get,
+            pattern: Bytes::from_static(b"/assets/{*__rover_mount_path}"),
+            param_names: vec!["__rover_mount_path".to_string()],
+            handler: lua
+                .create_function(|lua, ()| lua.create_string("static"))
+                .unwrap(),
+            is_static: false,
+            middlewares: Default::default(),
+        };
+
+        let router = FastRouter::from_routes(vec![static_mount_route, api_route]).expect("router");
+
+        match router.match_route(HttpMethod::Get, "/assets/health") {
+            RouteMatch::Found {
+                handler, params, ..
+            } => {
+                let body: mlua::String = handler.call(()).expect("call handler");
+                assert_eq!(body.to_str().expect("body str"), "api");
+                assert!(params.is_empty());
+            }
+            _ => panic!("expected exact API route to match first"),
+        }
+
+        match router.match_route(HttpMethod::Get, "/assets/app.js") {
+            RouteMatch::Found {
+                handler, params, ..
+            } => {
+                let body: mlua::String = handler.call(()).expect("call handler");
+                assert_eq!(body.to_str().expect("body str"), "static");
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].0, Bytes::from_static(b"__rover_mount_path"));
+                assert_eq!(params[0].1, Bytes::from_static(b"app.js"));
+            }
+            _ => panic!("expected static mount route to match fallback"),
         }
     }
 }
