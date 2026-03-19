@@ -43,6 +43,8 @@ use mlua::{
 use std::sync::Arc;
 use tracing::info;
 
+use crate::compression::CompressionAlgorithm;
+
 pub type Bytes = bytes::Bytes;
 const DEFAULT_BODY_SIZE_LIMIT: usize = 1024 * 1024;
 
@@ -51,6 +53,25 @@ pub struct TlsConfig {
     pub cert_file: String,
     pub key_file: String,
     pub reload_interval_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompressionConfig {
+    pub enabled: bool,
+    pub algorithms: Vec<CompressionAlgorithm>,
+    pub min_size: usize,
+    pub types: Vec<String>,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            algorithms: vec![CompressionAlgorithm::Gzip, CompressionAlgorithm::Deflate],
+            min_size: 1024,
+            types: vec![],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -203,6 +224,7 @@ pub struct ServerConfig {
     pub management_token: Option<String>,
     pub allow_unauthenticated_management: bool,
     pub tls: Option<TlsConfig>,
+    pub compress: CompressionConfig,
     pub rate_limit: RateLimitConfig,
     pub load_shed: LoadShedConfig,
     /// Graceful shutdown drain timeout in seconds
@@ -309,6 +331,84 @@ impl ServerConfig {
             requests_per_window,
             window_secs,
             key_header,
+        })
+    }
+
+    fn parse_compression_config(config: &mlua::Table) -> mlua::Result<CompressionConfig> {
+        let compress_value = config.get::<Value>("compress")?;
+        let table = match compress_value {
+            Value::Nil => return Ok(CompressionConfig::default()),
+            Value::Table(table) => table,
+            _ => Err(anyhow!("compress should be a table"))?,
+        };
+
+        let enabled = match table.get::<Value>("enabled")? {
+            Value::Nil => true,
+            Value::Boolean(value) => value,
+            _ => Err(anyhow!("compress.enabled should be a boolean"))?,
+        };
+
+        let min_size = match table.get::<Value>("min_size")? {
+            Value::Nil => 1024,
+            Value::Integer(value) if value >= 0 => value as usize,
+            Value::Number(value) if value >= 0.0 => value as usize,
+            Value::Integer(_) | Value::Number(_) => {
+                Err(anyhow!("compress.min_size should be >= 0"))?
+            }
+            _ => Err(anyhow!("compress.min_size should be a number"))?,
+        };
+
+        let algorithms = match table.get::<Value>("algorithms")? {
+            Value::Nil => CompressionConfig::default().algorithms,
+            Value::Table(algorithms_table) => {
+                let mut values = Vec::new();
+                for pair in algorithms_table.sequence_values::<Value>() {
+                    let value = pair?;
+                    let algorithm = match value {
+                        Value::String(name) => match name.to_str()?.to_ascii_lowercase().as_str() {
+                            "gzip" | "x-gzip" => CompressionAlgorithm::Gzip,
+                            "deflate" => CompressionAlgorithm::Deflate,
+                            _ => Err(anyhow!(
+                                "compress.algorithms supports only 'gzip' and 'deflate'"
+                            ))?,
+                        },
+                        _ => Err(anyhow!("compress.algorithms should be an array of strings"))?,
+                    };
+                    values.push(algorithm);
+                }
+
+                if values.is_empty() {
+                    Err(anyhow!("compress.algorithms should not be empty"))?
+                }
+
+                values
+            }
+            _ => Err(anyhow!("compress.algorithms should be an array"))?,
+        };
+
+        let types = match table.get::<Value>("types")? {
+            Value::Nil => Vec::new(),
+            Value::Table(types_table) => {
+                let mut values = Vec::new();
+                for pair in types_table.sequence_values::<Value>() {
+                    let value = pair?;
+                    match value {
+                        Value::String(content_type) => {
+                            values.push(content_type.to_str()?.trim().to_string())
+                        }
+                        _ => Err(anyhow!("compress.types should be an array of strings"))?,
+                    }
+                }
+                values
+            }
+            _ => Err(anyhow!("compress.types should be an array"))?,
+        };
+
+        Ok(CompressionConfig {
+            enabled,
+            algorithms,
+            min_size,
+            types,
         })
     }
 
@@ -637,6 +737,7 @@ impl FromLua for ServerConfig {
                     management_token,
                     allow_unauthenticated_management,
                     tls: Self::parse_tls_config(&config)?,
+                    compress: Self::parse_compression_config(&config)?,
                     rate_limit: Self::parse_rate_limit_config(&config)?,
                     load_shed: Self::parse_load_shed_config(&config)?,
                     drain_timeout_secs,
@@ -743,7 +844,10 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_BODY_SIZE_LIMIT, LoadShedConfig, RateLimitConfig, ServerConfig};
+    use super::{
+        CompressionConfig, DEFAULT_BODY_SIZE_LIMIT, LoadShedConfig, RateLimitConfig, ServerConfig,
+    };
+    use crate::compression::CompressionAlgorithm;
     use mlua::{FromLua, Lua, Value};
 
     fn config_from_lua(lua_src: &str) -> ServerConfig {
@@ -771,6 +875,40 @@ mod tests {
         assert!(!config.allow_insecure_http);
         assert!(!config.allow_unauthenticated_management);
         assert!(config.tls.is_none());
+        assert_eq!(config.compress, CompressionConfig::default());
+    }
+
+    #[test]
+    fn should_parse_compression_config() {
+        let config = config_from_lua(
+            "{ compress = { enabled = false, algorithms = { 'deflate' }, min_size = 2048, types = { 'application/json', 'text/html' } } }",
+        );
+
+        assert!(!config.compress.enabled);
+        assert_eq!(
+            config.compress.algorithms,
+            vec![CompressionAlgorithm::Deflate]
+        );
+        assert_eq!(config.compress.min_size, 2048);
+        assert_eq!(
+            config.compress.types,
+            vec!["application/json".to_string(), "text/html".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_reject_invalid_compression_config() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ compress = { algorithms = { 'brotli' } } }")
+            .eval()
+            .expect("lua eval");
+
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(
+            err.to_string()
+                .contains("compress.algorithms supports only 'gzip' and 'deflate'")
+        );
     }
 
     #[test]
@@ -916,6 +1054,7 @@ mod tests {
             management_token: None,
             allow_unauthenticated_management: false,
             tls: None,
+            compress: CompressionConfig::default(),
             rate_limit: RateLimitConfig::default(),
             load_shed: LoadShedConfig::default(),
             drain_timeout_secs: None,

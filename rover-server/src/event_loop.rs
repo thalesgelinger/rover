@@ -130,6 +130,7 @@ mod tests {
             management_token: None,
             allow_unauthenticated_management: false,
             tls: None,
+            compress: crate::CompressionConfig::default(),
             rate_limit: crate::RateLimitConfig::default(),
             load_shed: crate::LoadShedConfig::default(),
             drain_timeout_secs: None,
