@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rover_parser::{AppFeatures, detect_features};
+use rover_parser::{detect_features, AppFeatures};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -206,9 +206,9 @@ return api
     #[test]
     fn test_detect_features_ui() {
         let code = r#"
-rover.render(function()
+function rover.render()
     return {}
-end)
+end
 "#;
         let features = detect_features(code);
         assert!(features.ui);

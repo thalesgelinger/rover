@@ -279,8 +279,24 @@ pub(super) fn build_specs() -> Vec<ApiSpec> {
                 api_member!("server" => "rover_server_constructor", "Create a Rover server.", method),
                 api_member!("guard" => "rover_guard", "Guard builder namespace.", field),
                 api_member!("db" => "rover_db", "Database namespace.", field),
-                api_member!("ws_client" => "rover_ws_client_constructor", "Create a WebSocket client.", method)
+                api_member!("ws_client" => "rover_ws_client_constructor", "Create a WebSocket client.", method),
+                api_member!("ui" => "any", "UI namespace.", field),
+                api_member!("tui" => "any", "Terminal UI namespace.", field),
+                api_member!("signal" => "rover_signal_constructor", "Create a reactive signal.", method),
+                api_member!("derive" => "rover_derive", "Create a derived reactive value.", method)
             ]
+        ),
+        api_function!(
+            "rover_signal_constructor",
+            "Create a reactive signal.",
+            [api_param!("initial", "any", "Initial signal value")],
+            Some("any")
+        ),
+        api_function!(
+            "rover_derive",
+            "Create a derived reactive value.",
+            [api_param!("compute", "function", "Computation callback")],
+            Some("any")
         ),
         api_function!(
             "rover_ws_client_constructor",

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tree_sitter::{Node, Parser};
 
-use crate::db_intent::{DbSchema, analyze_db_intent};
+use crate::db_intent::{analyze_db_intent, DbSchema};
 use crate::types::{FunctionType, LuaType, TableType, TypeError};
 
 /// Type environment mapping variable names to their types at a given point
@@ -2821,6 +2821,10 @@ local user = db.users:find():first()
 "#;
         let (tree, source) = parse(code);
         let mut inf = TypeInference::new(&source);
+        inf.db_schema = DbSchema::from_table_fields(HashMap::from([(
+            "users".to_string(),
+            vec!["name".to_string(), "age".to_string()],
+        )]));
 
         let all_call =
             find_call_with_text(tree.root_node(), &source, ":all").expect("all call not found");
