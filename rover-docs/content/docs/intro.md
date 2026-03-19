@@ -42,6 +42,7 @@ Run it and visit `http://localhost:4242/hello` to see your API in action!
 ## Next Steps
 
 - [Installation](/docs/getting-started/installation) - Set up Rover
-- [Backend Server Guide](/docs/guides/backend-server) - Build your first API
-- [Context API](/docs/guides/context-api) - Access request data
-- [Response Builders](/docs/guides/response-builders) - Return structured responses
+- [Backend Server Guide](/docs/server/backend-server/) - Build your first API
+- [Context API](/docs/server/context-api/) - Access request data
+- [Response Builders](/docs/server/response-builders/) - Return structured responses
+- [Server](/docs/server/) - Browse server docs and APIs

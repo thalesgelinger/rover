@@ -11,8 +11,8 @@ If you're new, start here:
 
 - [Getting Started](/docs/getting-started/) - install Rover and run your first app
 - [Introduction](/docs/intro/) - core concepts and platform overview
-- [Backend Server Guide](/docs/guides/backend-server/) - create routes and handlers
-- [API Reference](/docs/api-reference/) - complete module docs
+- [Server](/docs/server/) - routing, responses, config, and server APIs
+- [Security](/docs/security/) - auth, sessions, cookies, and CORS
 
 ## Build Something Fast
 
@@ -27,5 +27,34 @@ Use Rover when you want:
 1. Open [Getting Started](/docs/getting-started/)
 2. Follow [Installation](/docs/getting-started/installation/)
 3. Read [Introduction](/docs/intro/)
-4. Build with [Guides](/docs/guides/)
-5. Keep [API Reference](/docs/api-reference/) open while coding
+4. Build with [Server](/docs/server/)
+5. Explore [Runtime](/docs/runtime/) and [Data](/docs/data/)
+
+## Browse By Category
+
+- Server: build APIs, route, configure, and use HTTP/server APIs
+- Security: auth, cookies, sessions, and browser policy
+- HTTP and Realtime: streams, uploads, OpenAPI, HTTP + WS clients/servers
+- Operations: lifecycle, deployment, CLI, and production flows
+- Data: database guides and query DSL
+- Runtime: signals, IO, validation, debug, UI/TUI, performance
+
+## Jump In
+
+<div class="docs-section-grid">
+
+### Start Here
+
+- [Getting Started](/docs/getting-started/)
+- [Introduction](/docs/intro/)
+- [Server](/docs/server/)
+- [Runtime](/docs/runtime/)
+
+### Backend Work
+
+- [Server](/docs/server/)
+- [Security](/docs/security/)
+- [HTTP and Realtime](/docs/http-and-realtime/)
+- [Operations](/docs/operations/)
+
+</div>

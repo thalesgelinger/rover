@@ -46,4 +46,4 @@ Your server is now running at `http://localhost:4242`!
 
 ## Next Steps
 
-Continue to the [Backend Server Guide](/docs/guides/backend-server) to learn more about building APIs with Rover.
+Continue to the [Backend Server Guide](/docs/server/backend-server/) to learn more about building APIs with Rover.

@@ -5,9 +5,9 @@ title = 'Rover'
 [params]
   [params.ui]
     showLightDarkModeMenu = true
-    sidebar_menu_compact = true
-    sidebar_menu_foldable = true
-    ul_show = 1
+    sidebar_menu_compact = false
+    sidebar_menu_foldable = false
+    ul_show = 3
     sidebar_menu_truncate = 200
     breadcrumb_disable = false
     taxonomy_breadcrumb_disable = true
@@ -17,6 +17,11 @@ title = 'Rover'
 
 [module]
   proxy = "direct"
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
 
   [module.hugoVersion]
     extended = true
@@ -31,21 +36,36 @@ title = 'Rover'
     disable = false
 
 [[menu.main]]
-  name = "Features"
-  url = "/#features"
+  name = "Docs"
+  url = "/docs/"
   weight = 10
 
 [[menu.main]]
-  name = "Examples"
-  url = "/#code"
+  name = "Server"
+  url = "/docs/server/"
   weight = 20
 
 [[menu.main]]
-  name = "Roadmap"
-  url = "/#roadmap"
+  name = "Security"
+  url = "/docs/security/"
   weight = 30
 
 [[menu.main]]
-  name = "Docs"
-  url = "/docs/"
+  name = "Runtime"
+  url = "/docs/runtime/"
   weight = 40
+
+[[menu.main]]
+  name = "Data"
+  url = "/docs/data/"
+  weight = 50
+
+[[menu.main]]
+  name = "CLI"
+  url = "/docs/operations/cli/"
+  weight = 60
+
+[[menu.main]]
+  name = "Website"
+  url = "/"
+  weight = 70

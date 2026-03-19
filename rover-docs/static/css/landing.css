@@ -1774,6 +1774,18 @@
   color: var(--foreground);
   text-decoration: none;
 }
+.landing-site-footer {
+  position: relative;
+  left: 50%;
+  width: 100vw;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  background: color-mix(in oklch, var(--background) 92%, transparent);
+  backdrop-filter: blur(16px);
+}
+.landing-site-footer__inner {
+  width: min(72rem, 100%);
+}
 .landing-code-pre {
   min-width: max-content;
 }

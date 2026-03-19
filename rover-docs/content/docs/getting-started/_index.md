@@ -14,6 +14,6 @@ Start here if this is your first Rover project.
 
 ## Next After Setup
 
-- Build your first routes in [Backend Server](/docs/guides/backend-server/)
-- Learn request flow in [Context API](/docs/guides/context-api/)
-- Return structured outputs with [Response Builders](/docs/guides/response-builders/)
+- Build your first routes in [Backend Server](/docs/server/backend-server/)
+- Learn request flow in [Context API](/docs/server/context-api/)
+- Return structured outputs with [Response Builders](/docs/server/response-builders/)
