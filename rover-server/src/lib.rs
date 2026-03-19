@@ -365,13 +365,17 @@ impl ServerConfig {
                 for pair in algorithms_table.sequence_values::<Value>() {
                     let value = pair?;
                     let algorithm = match value {
-                        Value::String(name) => match name.to_str()?.to_ascii_lowercase().as_str() {
-                            "gzip" | "x-gzip" => CompressionAlgorithm::Gzip,
-                            "deflate" => CompressionAlgorithm::Deflate,
-                            _ => Err(anyhow!(
-                                "compress.algorithms supports only 'gzip' and 'deflate'"
-                            ))?,
-                        },
+                        Value::String(name) => {
+                            let name = name.to_str()?;
+                            match name.to_ascii_lowercase().as_str() {
+                                "gzip" | "x-gzip" => CompressionAlgorithm::Gzip,
+                                "deflate" => CompressionAlgorithm::Deflate,
+                                _ => Err(anyhow!(
+                                    "compress.algorithms contains unsupported value '{}'; supported values: 'gzip' and 'deflate'",
+                                    name
+                                ))?,
+                            }
+                        }
                         _ => Err(anyhow!("compress.algorithms should be an array of strings"))?,
                     };
                     values.push(algorithm);
@@ -907,7 +911,7 @@ mod tests {
         let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
         assert!(
             err.to_string()
-                .contains("compress.algorithms supports only 'gzip' and 'deflate'")
+                .contains("compress.algorithms contains unsupported value 'brotli'; supported values: 'gzip' and 'deflate'")
         );
     }
 
