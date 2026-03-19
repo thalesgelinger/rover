@@ -74,6 +74,7 @@ struct PendingCoroutine {
 mod tests {
     use std::collections::HashMap;
 
+    use crate::compression::CompressionAlgorithm;
     use mlua::{Lua, Value};
 
     use super::{EventLoop, ServerConfig};
@@ -276,6 +277,24 @@ mod tests {
     }
 
     #[test]
+    fn should_detect_existing_content_encoding_header_case_insensitive() {
+        let mut headers = HashMap::new();
+        headers.insert("content-encoding".to_string(), "gzip".to_string());
+        assert!(EventLoop::has_content_encoding(&headers));
+
+        let mut headers = HashMap::new();
+        headers.insert("Content-Encoding".to_string(), "deflate".to_string());
+        assert!(EventLoop::has_content_encoding(&headers));
+    }
+
+    #[test]
+    fn should_not_detect_content_encoding_when_header_is_absent() {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        assert!(!EventLoop::has_content_encoding(&headers));
+    }
+
+    #[test]
     fn should_detect_compressible_content_types() {
         assert!(EventLoop::is_compressible(Some("text/html")));
         assert!(EventLoop::is_compressible(Some("application/json")));
@@ -363,11 +382,13 @@ mod tests {
 
     #[test]
     fn should_parse_accept_encoding_from_header_buffer() {
-        use crate::compression::CompressionAlgorithm;
-
         let buf = b"accept-encoding: gzip, deflate\r\nhost: example.com\r\n\r\n";
         let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 15, 17, 13)];
-        let result = EventLoop::negotiate_encoding_from_headers(buf, &headers);
+        let result = EventLoop::negotiate_encoding_from_headers(
+            buf,
+            &headers,
+            &[CompressionAlgorithm::Gzip, CompressionAlgorithm::Deflate],
+        );
         assert_eq!(result, Some(CompressionAlgorithm::Gzip));
     }
 
@@ -375,8 +396,25 @@ mod tests {
     fn should_handle_encoding_negotiation_missing_header() {
         let buf = b"host: example.com\r\n\r\n";
         let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 4, 6, 11)];
-        let result = EventLoop::negotiate_encoding_from_headers(buf, &headers);
+        let result = EventLoop::negotiate_encoding_from_headers(
+            buf,
+            &headers,
+            &[CompressionAlgorithm::Gzip, CompressionAlgorithm::Deflate],
+        );
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn should_negotiate_with_configured_algorithm_order() {
+        let buf = b"accept-encoding: gzip;q=0.8, deflate;q=0.8\r\nhost: example.com\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 15, 17, 29)];
+        let result = EventLoop::negotiate_encoding_from_headers(
+            buf,
+            &headers,
+            &[CompressionAlgorithm::Deflate, CompressionAlgorithm::Gzip],
+        );
+
+        assert_eq!(result, Some(CompressionAlgorithm::Deflate));
     }
 
     #[test]
@@ -589,9 +627,10 @@ impl EventLoop {
     fn negotiate_encoding_from_headers(
         buf: &[u8],
         headers: &[(usize, usize, usize, usize)],
+        configured_algorithms: &[CompressionAlgorithm],
     ) -> Option<CompressionAlgorithm> {
         Self::get_header_value(buf, headers, "accept-encoding")
-            .and_then(|ae| negotiate_encoding(&ae))
+            .and_then(|ae| negotiate_encoding(&ae, configured_algorithms))
     }
 
     fn accepts_content_type(accept: &str, content_type: &str) -> bool {
@@ -632,6 +671,10 @@ impl EventLoop {
             .keys()
             .find(|k| k.eq_ignore_ascii_case(name))
             .map(String::as_str)
+    }
+
+    fn has_content_encoding(headers: &HashMap<String, String>) -> bool {
+        Self::find_header_key_ci(headers, "Content-Encoding").is_some()
     }
 
     fn is_safe_security_header_override(name: &str, value: &str) -> bool {
@@ -690,10 +733,11 @@ impl EventLoop {
         Self::apply_default_security_headers(&self.config, &mut headers);
 
         let is_compressible_type = Self::is_compressible(content_type);
+        let already_encoded = Self::has_content_encoding(&headers);
 
         let (final_body, final_headers) = if let Some(algo) = compression {
             const MIN_COMPRESS_SIZE: usize = 1024;
-            if body.len() >= MIN_COMPRESS_SIZE && is_compressible_type {
+            if !already_encoded && body.len() >= MIN_COMPRESS_SIZE && is_compressible_type {
                 let compressed = compress(&body, algo);
                 if compressed.len() < body.len() {
                     let mut h = headers;
@@ -1828,7 +1872,11 @@ impl EventLoop {
         }
 
         let accept_header = Self::get_header_value(buf_ref, &conn.header_offsets, "accept");
-        let accept_encoding = Self::negotiate_encoding_from_headers(buf_ref, &conn.header_offsets);
+        let accept_encoding = Self::negotiate_encoding_from_headers(
+            buf_ref,
+            &conn.header_offsets,
+            &self.config.compress.algorithms,
+        );
 
         // Generate or extract request ID for correlation
         let request_id = extract_or_generate_request_id(buf_ref, &conn.header_offsets);
