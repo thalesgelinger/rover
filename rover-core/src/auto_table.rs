@@ -15,10 +15,18 @@ impl AutoTable for Lua {
                 let is_sealed = tbl.raw_get::<bool>("__sealed").unwrap_or(false);
                 if is_sealed {
                     return Err(Error::RuntimeError(format!("Unkown key {:?}", k)));
+                } else if k == "static" {
+                    let owner = tbl.clone();
+                    let static_mount = lua.create_function(move |_lua, config: Table| {
+                        owner.raw_set("__rover_static_mount", config)?;
+                        Ok(())
+                    })?;
+                    tbl.raw_set("static", static_mount.clone())?;
+                    Ok(Value::Function(static_mount))
                 } else {
                     let new_table = lua.create_auto_table()?;
                     tbl.raw_set(k, &new_table)?;
-                    Ok(new_table)
+                    Ok(Value::Table(new_table))
                 }
             })?,
         )?;

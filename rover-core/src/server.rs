@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, ObjectLike, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
 use rover_server::to_json::ToJson;
@@ -10,7 +10,7 @@ use rover_server::{
 use rover_types::ValidationErrors;
 use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
-use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::html::{get_rover_html, render_template_with_components};
 use crate::{app_type::AppType, auto_table::AutoTable};
@@ -521,6 +521,151 @@ impl Server for Table {
     }
 
     fn get_routes(&self, lua: &Lua) -> Result<RouteTable> {
+        fn create_static_mount_handler(
+            lua: &Lua,
+            mount_dir: PathBuf,
+            mount_param_name: String,
+        ) -> Result<mlua::Function> {
+            let handler = lua.create_function(move |lua, ctx: Value| {
+                let (params_table, headers_table): (Table, Table) = match ctx {
+                    Value::UserData(ud) => {
+                        let params: Table = ud.call_method("params", ())?;
+                        let headers: Table = ud.call_method("headers", ())?;
+                        (params, headers)
+                    }
+                    Value::Table(t) => {
+                        let params_fn: mlua::Function = t.get("params")?;
+                        let headers_fn: mlua::Function = t.get("headers")?;
+                        let params: Table = params_fn.call(())?;
+                        let headers: Table = headers_fn.call(())?;
+                        (params, headers)
+                    }
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "static mount handler expected request context, got {:?}",
+                            other
+                        )));
+                    }
+                };
+
+                let mounted_path = params_table
+                    .get::<Option<String>>(mount_param_name.as_str())?
+                    .unwrap_or_default();
+
+                let mut request_headers = HashMap::new();
+                for pair in headers_table.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    request_headers.insert(key, value);
+                }
+
+                let request_headers_ref = if request_headers.is_empty() {
+                    None
+                } else {
+                    Some(&request_headers)
+                };
+
+                let response = rover_server::serve_static_file(
+                    mount_dir.as_path(),
+                    &mounted_path,
+                    request_headers_ref,
+                    None,
+                );
+
+                lua.create_userdata(response).map(Value::UserData)
+            })?;
+
+            Ok(handler)
+        }
+
+        fn extract_static_mount_route(
+            lua: &Lua,
+            table: &Table,
+            current_path: &str,
+            routes: &mut Vec<Route>,
+        ) -> Result<()> {
+            let mount_config = match table.raw_get::<Value>("__rover_static_mount")? {
+                Value::Table(config) => config,
+                Value::Nil => return Ok(()),
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid static mount at '{}': expected table config",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+            };
+
+            let mount_dir = match mount_config.get::<Value>("dir")? {
+                Value::String(s) => s.to_str()?.trim().to_string(),
+                Value::Nil => {
+                    return Err(anyhow!(
+                        "Missing 'dir' in static mount at '{}'",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid 'dir' in static mount at '{}': expected string",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+            };
+
+            if mount_dir.is_empty() {
+                return Err(anyhow!(
+                    "Invalid static mount at '{}': 'dir' cannot be empty",
+                    if current_path.is_empty() {
+                        "/"
+                    } else {
+                        current_path
+                    }
+                ));
+            }
+
+            let mount_base = if current_path.is_empty() {
+                "/"
+            } else {
+                current_path
+            };
+            let mount_param_name = "__rover_mount_path".to_string();
+            let pattern = if mount_base == "/" {
+                format!("/{{*{}}}", mount_param_name)
+            } else {
+                format!(
+                    "{}/{{*{}}}",
+                    mount_base.trim_end_matches('/'),
+                    mount_param_name
+                )
+            };
+            let handler = create_static_mount_handler(
+                lua,
+                PathBuf::from(mount_dir),
+                mount_param_name.clone(),
+            )?;
+
+            routes.push(Route {
+                method: HttpMethod::Get,
+                pattern: Bytes::from(pattern),
+                param_names: vec![mount_param_name],
+                handler,
+                is_static: false,
+                middlewares: MiddlewareChain::default(),
+            });
+
+            Ok(())
+        }
+
         fn extract_recursive(
             lua: &Lua,
             table: &Table,
@@ -535,6 +680,8 @@ impl Server for Table {
                 inherited_middlewares,
                 &local_middlewares,
             );
+
+            extract_static_mount_route(lua, table, current_path, routes)?;
 
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
@@ -569,6 +716,10 @@ impl Server for Table {
                 match (key, value) {
                     (Value::String(key_str), Value::Function(func)) => {
                         let key_string = key_str.to_str()?.to_string();
+
+                        if key_string == "static" {
+                            continue;
+                        }
 
                         let path = if current_path.is_empty() {
                             "/"
@@ -835,6 +986,8 @@ mod tests {
     use super::{AppServer, Server};
     use mlua::{Lua, Table, Value};
     use rover_server::{HttpMethod, RoverResponse, SseResponse};
+    use std::fs;
+    use tempfile::tempdir;
 
     fn create_ctx(lua: &Lua, headers: &[(&str, &str)]) -> mlua::Result<Table> {
         let ctx = lua.create_table()?;
@@ -882,6 +1035,112 @@ mod tests {
             .expect("response body must be utf-8")
             .to_string();
         (response.status, body)
+    }
+
+    #[test]
+    fn should_support_single_static_mount() {
+        let temp = tempdir().expect("create temp dir");
+        let static_dir = temp.path().join("public");
+        fs::create_dir_all(&static_dir).expect("create static dir");
+        fs::write(static_dir.join("app.js"), "console.log('ok');").expect("write static file");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = static_dir
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            api.assets.static {{ dir = "{}" }}
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua.load(&script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/assets/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "app.js")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+        let (status, body) = parse_response(value);
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "console.log('ok');");
+    }
+
+    #[test]
+    fn should_support_multiple_static_mounts() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            api.assets.static { dir = "public" }
+            api.uploads.static { dir = "uploads" }
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+
+        let patterns: Vec<String> = routes
+            .routes
+            .iter()
+            .filter(|r| r.method == HttpMethod::Get)
+            .map(|r| std::str::from_utf8(r.pattern.as_ref()).unwrap().to_string())
+            .collect();
+
+        assert!(patterns.contains(&"/assets/{*__rover_mount_path}".to_string()));
+        assert!(patterns.contains(&"/uploads/{*__rover_mount_path}".to_string()));
     }
 
     #[test]
