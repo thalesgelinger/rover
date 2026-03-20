@@ -41,6 +41,8 @@ pub fn serve_static_file(
     };
 
     // Check if the path is a directory (don't serve directories)
+    // Scope: Directory index/listing support is explicitly out of scope for this release.
+    // Requests to directory paths return 403 Forbidden to prevent information leakage.
     if sanitized.is_dir() {
         emit_file_access_denied(requested_path, "Directory listing not allowed");
         return forbidden_response("Directory listing not allowed");
@@ -985,5 +987,19 @@ mod tests {
             response_headers.get("Cache-Control"),
             Some(&"private, max-age=120".to_string())
         );
+    }
+
+    #[test]
+    fn should_reject_directory_index_requests_with_403() {
+        // Scope: Directory index support is explicitly out of scope for this release.
+        // This test verifies that directory paths return 403 Forbidden.
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path().join("public")).unwrap();
+        std::fs::write(temp_dir.path().join("public/file.txt"), "content").unwrap();
+
+        // Request to directory should return 403, not a listing
+        let response = serve_static_file(temp_dir.path(), "public", None, None);
+        assert_eq!(response.status, 403);
+        assert!(String::from_utf8_lossy(&response.body).contains("Directory listing not allowed"));
     }
 }

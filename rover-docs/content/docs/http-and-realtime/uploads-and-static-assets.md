@@ -59,6 +59,8 @@ Foundation static file support includes:
 - conditional `304` handling
 - coexistence with API routes without ambiguity
 
+**Scope Note:** Directory index support (listing directory contents) is explicitly **not supported** in this release. Requests to directory paths return 403 Forbidden. This is a deliberate security and scope decision—no directory listings, no auto-index pages, and no index.html fallback for directory paths.
+
 Current runtime docs in this site focus on the observable behavior and safety guarantees. If you are exposing static assets behind a proxy, preserve cache validators and avoid rewriting asset paths in ways that bypass normalization.
 
 ## Static Serving Example
