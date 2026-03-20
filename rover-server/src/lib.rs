@@ -3,7 +3,7 @@ pub mod compression;
 mod connection;
 pub mod direct_json_parser;
 mod event_loop;
-mod fast_router;
+pub mod fast_router;
 mod http_server;
 pub mod http_task;
 pub mod lifecycle;
@@ -23,6 +23,7 @@ pub mod ws_handshake;
 pub mod ws_lua;
 pub mod ws_manager;
 
+pub use fast_router::{FastRouter, RouteMatch};
 pub use http_task::{CoroutineResponse, HttpResponse};
 pub use lifecycle::{LifecycleConfig, LifecycleEvent, LifecycleManager, LifecyclePhase};
 pub use load_shedder::{LoadShedConfig, LoadShedder, RequestGuard};
@@ -32,9 +33,13 @@ pub use response::{
     write_chunk_header, write_final_chunk,
 };
 pub use static_file::serve_static_file;
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::anyhow;
+use rover_types::{Permission, PermissionMode, PermissionsConfig};
+use std::collections::HashSet;
+use std::str::FromStr;
 
 use mlua::{
     FromLua, Function, Lua, RegistryKey,
@@ -61,6 +66,148 @@ pub struct CompressionConfig {
     pub algorithms: Vec<CompressionAlgorithm>,
     pub min_size: usize,
     pub types: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedProxyCidr {
+    pub network: IpAddr,
+    pub prefix_len: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedProxyRange {
+    pub start: IpAddr,
+    pub end: IpAddr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustedProxy {
+    Cidr(TrustedProxyCidr),
+    Range(TrustedProxyRange),
+}
+
+impl TrustedProxy {
+    pub fn contains_ip(&self, source_ip: IpAddr) -> bool {
+        match self {
+            TrustedProxy::Cidr(cidr) => match (cidr.network, source_ip) {
+                (IpAddr::V4(network), IpAddr::V4(source)) => {
+                    let prefix_len = cidr.prefix_len as u32;
+                    let mask = if prefix_len == 0 {
+                        0
+                    } else {
+                        u32::MAX << (32 - prefix_len)
+                    };
+                    (u32::from(network) & mask) == (u32::from(source) & mask)
+                }
+                (IpAddr::V6(network), IpAddr::V6(source)) => {
+                    let prefix_len = cidr.prefix_len as u32;
+                    let mask = if prefix_len == 0 {
+                        0
+                    } else {
+                        u128::MAX << (128 - prefix_len)
+                    };
+                    (u128::from(network) & mask) == (u128::from(source) & mask)
+                }
+                _ => false,
+            },
+            TrustedProxy::Range(range) => match (range.start, range.end, source_ip) {
+                (IpAddr::V4(start), IpAddr::V4(end), IpAddr::V4(source)) => {
+                    let source = u32::from(source);
+                    source >= u32::from(start) && source <= u32::from(end)
+                }
+                (IpAddr::V6(start), IpAddr::V6(end), IpAddr::V6(source)) => {
+                    let source = u128::from(source);
+                    source >= u128::from(start) && source <= u128::from(end)
+                }
+                _ => false,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadinessConfig {
+    /// Dependency readiness map. false means dependency is unavailable.
+    pub dependencies: HashMap<String, bool>,
+}
+
+impl Default for ReadinessConfig {
+    fn default() -> Self {
+        Self {
+            dependencies: HashMap::new(),
+        }
+    }
+}
+
+impl ReadinessConfig {
+    pub fn failed_dependencies(&self) -> Vec<String> {
+        let mut failed = self
+            .dependencies
+            .iter()
+            .filter_map(|(name, is_ready)| if *is_ready { None } else { Some(name.clone()) })
+            .collect::<Vec<_>>();
+        failed.sort();
+        failed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadinessState {
+    Healthy,
+    Degraded,
+    DependencyFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadinessProbeResult {
+    pub state: ReadinessState,
+    pub status_code: u16,
+    pub body: Bytes,
+}
+
+pub fn readiness_probe_result(
+    phase: LifecyclePhase,
+    failed_dependencies: &[String],
+) -> ReadinessProbeResult {
+    if !phase.can_accept_connections() {
+        return ReadinessProbeResult {
+            state: ReadinessState::Degraded,
+            status_code: 503,
+            body: Bytes::from_static(b"{\"status\":\"not_ready\"}"),
+        };
+    }
+
+    if !failed_dependencies.is_empty() {
+        let reasons = failed_dependencies
+            .iter()
+            .map(|dependency| {
+                serde_json::json!({
+                    "code": "dependency_unavailable",
+                    "dependency": dependency,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let body = serde_json::json!({
+            "status": "not_ready",
+            "reasons": reasons,
+        });
+
+        return ReadinessProbeResult {
+            state: ReadinessState::DependencyFailure,
+            status_code: 503,
+            body: Bytes::from(
+                serde_json::to_vec(&body)
+                    .unwrap_or_else(|_| b"{\"status\":\"not_ready\"}".to_vec()),
+            ),
+        };
+    }
+
+    ReadinessProbeResult {
+        state: ReadinessState::Healthy,
+        status_code: 200,
+        body: Bytes::from_static(b"{\"status\":\"ready\"}"),
+    }
 }
 
 impl Default for CompressionConfig {
@@ -223,17 +370,27 @@ pub struct ServerConfig {
     pub management_prefix: String,
     pub management_token: Option<String>,
     pub allow_unauthenticated_management: bool,
+    pub trusted_proxies: Vec<TrustedProxy>,
     pub tls: Option<TlsConfig>,
     pub compress: CompressionConfig,
     pub rate_limit: RateLimitConfig,
     pub load_shed: LoadShedConfig,
+    pub readiness: ReadinessConfig,
     /// Graceful shutdown drain timeout in seconds
     pub drain_timeout_secs: Option<u64>,
+    /// Permissions configuration
+    pub permissions: PermissionsConfig,
 }
 
 impl ServerConfig {
     pub fn management_docs_path(&self) -> String {
         format!("{}/docs", self.management_prefix)
+    }
+
+    pub fn is_trusted_proxy_source(&self, source_ip: IpAddr) -> bool {
+        self.trusted_proxies
+            .iter()
+            .any(|trusted_proxy| trusted_proxy.contains_ip(source_ip))
     }
 
     fn parse_management_prefix(config: &mlua::Table) -> mlua::Result<String> {
@@ -300,6 +457,160 @@ impl ServerConfig {
             key_file,
             reload_interval_secs,
         }))
+    }
+
+    fn parse_ip(raw: &str, field_name: &str) -> mlua::Result<IpAddr> {
+        raw.parse::<IpAddr>()
+            .map_err(|_| anyhow!("{} should be a valid IP address", field_name).into())
+    }
+
+    fn parse_trusted_proxy_cidr(raw: &str) -> mlua::Result<TrustedProxy> {
+        let (network_raw, prefix_raw) = raw
+            .split_once('/')
+            .ok_or_else(|| anyhow!("trusted_proxies CIDR should be '<ip>/<prefix>'"))?;
+        let network = Self::parse_ip(network_raw.trim(), "trusted_proxies CIDR network")?;
+        let prefix_len = prefix_raw
+            .trim()
+            .parse::<u16>()
+            .map_err(|_| anyhow!("trusted_proxies CIDR prefix should be a number"))?;
+
+        let max_prefix = match network {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        if prefix_len > max_prefix as u16 {
+            Err(anyhow!(
+                "trusted_proxies CIDR prefix {} is out of range for {}",
+                prefix_len,
+                match network {
+                    IpAddr::V4(_) => "IPv4",
+                    IpAddr::V6(_) => "IPv6",
+                }
+            ))?
+        }
+
+        Ok(TrustedProxy::Cidr(TrustedProxyCidr {
+            network,
+            prefix_len: prefix_len as u8,
+        }))
+    }
+
+    fn parse_trusted_proxy_range(start_raw: &str, end_raw: &str) -> mlua::Result<TrustedProxy> {
+        let start = Self::parse_ip(start_raw.trim(), "trusted_proxies range start")?;
+        let end = Self::parse_ip(end_raw.trim(), "trusted_proxies range end")?;
+
+        match (start, end) {
+            (IpAddr::V4(start_v4), IpAddr::V4(end_v4)) => {
+                if u32::from(start_v4) > u32::from(end_v4) {
+                    Err(anyhow!(
+                        "trusted_proxies range start must be <= end for IPv4"
+                    ))?
+                }
+
+                Ok(TrustedProxy::Range(TrustedProxyRange {
+                    start: IpAddr::V4(start_v4),
+                    end: IpAddr::V4(end_v4),
+                }))
+            }
+            (IpAddr::V6(start_v6), IpAddr::V6(end_v6)) => {
+                if u128::from(start_v6) > u128::from(end_v6) {
+                    Err(anyhow!(
+                        "trusted_proxies range start must be <= end for IPv6"
+                    ))?
+                }
+
+                Ok(TrustedProxy::Range(TrustedProxyRange {
+                    start: IpAddr::V6(start_v6),
+                    end: IpAddr::V6(end_v6),
+                }))
+            }
+            _ => Err(anyhow!(
+                "trusted_proxies range start and end must use the same IP family"
+            ))?,
+        }
+    }
+
+    fn parse_trusted_proxy_item(value: Value) -> mlua::Result<TrustedProxy> {
+        match value {
+            Value::String(value) => {
+                let raw = value.to_str()?.trim().to_string();
+                if raw.is_empty() {
+                    Err(anyhow!("trusted_proxies entries cannot be empty strings"))?
+                }
+
+                if raw.contains('/') {
+                    return Self::parse_trusted_proxy_cidr(&raw);
+                }
+
+                if let Some((start_raw, end_raw)) = raw.split_once('-') {
+                    return Self::parse_trusted_proxy_range(start_raw, end_raw);
+                }
+
+                Err(anyhow!(
+                    "trusted_proxies string entries should be CIDR ('10.0.0.0/8') or range ('10.0.0.1-10.0.0.20')"
+                ))?
+            }
+            Value::Table(table) => {
+                let cidr = table.get::<Value>("cidr")?;
+                match cidr {
+                    Value::String(cidr_value) => {
+                        let raw = cidr_value.to_str()?.trim().to_string();
+                        if raw.is_empty() {
+                            Err(anyhow!("trusted_proxies[].cidr cannot be empty"))?
+                        }
+                        Self::parse_trusted_proxy_cidr(&raw)
+                    }
+                    Value::Nil => {
+                        let start = match table.get::<Value>("start")? {
+                            Value::String(v) => v.to_str()?.trim().to_string(),
+                            Value::Nil => Err(anyhow!(
+                                "trusted_proxies[] should include either 'cidr' or both 'start' and 'end'"
+                            ))?,
+                            _ => Err(anyhow!("trusted_proxies[].start should be a string"))?,
+                        };
+
+                        let end = match table.get::<Value>("end")? {
+                            Value::String(v) => v.to_str()?.trim().to_string(),
+                            Value::Nil => match table.get::<Value>("to")? {
+                                Value::String(v) => v.to_str()?.trim().to_string(),
+                                Value::Nil => Err(anyhow!(
+                                    "trusted_proxies[] range end is required (use 'to' or ['end'])"
+                                ))?,
+                                _ => Err(anyhow!("trusted_proxies[].to should be a string"))?,
+                            },
+                            _ => Err(anyhow!("trusted_proxies[].end should be a string"))?,
+                        };
+
+                        if start.is_empty() || end.is_empty() {
+                            Err(anyhow!("trusted_proxies[] range values cannot be empty"))?
+                        }
+
+                        Self::parse_trusted_proxy_range(&start, &end)
+                    }
+                    _ => Err(anyhow!("trusted_proxies[].cidr should be a string"))?,
+                }
+            }
+            _ => Err(anyhow!(
+                "trusted_proxies should contain string or table entries"
+            ))?,
+        }
+    }
+
+    fn parse_trusted_proxies(config: &mlua::Table) -> mlua::Result<Vec<TrustedProxy>> {
+        let value = config.get::<Value>("trusted_proxies")?;
+        let table = match value {
+            Value::Nil => return Ok(Vec::new()),
+            Value::Table(table) => table,
+            _ => Err(anyhow!("trusted_proxies should be an array"))?,
+        };
+
+        let mut entries = Vec::new();
+        for pair in table.sequence_values::<Value>() {
+            let item = pair?;
+            entries.push(Self::parse_trusted_proxy_item(item)?);
+        }
+
+        Ok(entries)
     }
 
     fn parse_rate_limit_policy(table: &mlua::Table) -> mlua::Result<RateLimitPolicy> {
@@ -510,6 +821,126 @@ impl ServerConfig {
                 })
             }
             _ => Err(anyhow!("load_shed should be a boolean or table"))?,
+        }
+    }
+
+    fn parse_readiness_config(config: &mlua::Table) -> mlua::Result<ReadinessConfig> {
+        let readiness_value = config.get::<Value>("readiness")?;
+        let readiness_table = match readiness_value {
+            Value::Nil => return Ok(ReadinessConfig::default()),
+            Value::Table(table) => table,
+            _ => Err(anyhow!("readiness should be a table"))?,
+        };
+
+        let dependencies = match readiness_table.get::<Value>("dependencies")? {
+            Value::Nil => HashMap::new(),
+            Value::Table(deps_table) => {
+                let mut deps = HashMap::new();
+                for pair in deps_table.pairs::<Value, Value>() {
+                    let (key, value) = pair?;
+                    let dep_name = match key {
+                        Value::String(s) => s.to_str()?.trim().to_string(),
+                        _ => Err(anyhow!("readiness.dependencies keys should be strings"))?,
+                    };
+                    if dep_name.is_empty() {
+                        Err(anyhow!("readiness.dependencies keys cannot be empty"))?;
+                    }
+
+                    let is_ready = match value {
+                        Value::Boolean(b) => b,
+                        _ => Err(anyhow!(
+                            "readiness.dependencies['{}'] should be a boolean",
+                            dep_name
+                        ))?,
+                    };
+                    deps.insert(dep_name, is_ready);
+                }
+                deps
+            }
+            _ => Err(anyhow!("readiness.dependencies should be a table"))?,
+        };
+
+        Ok(ReadinessConfig { dependencies })
+    }
+
+    fn parse_permissions_config(config: &mlua::Table) -> mlua::Result<PermissionsConfig> {
+        let permissions_value = config.get::<Value>("permissions")?;
+        match permissions_value {
+            Value::Nil => Ok(PermissionsConfig::new()),
+            Value::Table(table) => {
+                let mode = match table.get::<Value>("mode")? {
+                    Value::Nil => PermissionMode::Development,
+                    Value::String(s) => {
+                        let mode_str = s.to_str()?.to_lowercase();
+                        match mode_str.as_str() {
+                            "development" | "dev" => PermissionMode::Development,
+                            "production" | "prod" => PermissionMode::Production,
+                            _ => Err(anyhow!(
+                                "permissions.mode must be 'development' or 'production', got '{}'",
+                                mode_str
+                            ))?,
+                        }
+                    }
+                    _ => Err(anyhow!("permissions.mode should be a string"))?,
+                };
+
+                let mut allow: HashSet<Permission> = HashSet::new();
+                let allow_table = table.get::<Value>("allow")?;
+                if let Value::Table(allow_t) = allow_table {
+                    for pair in allow_t.sequence_values::<Value>() {
+                        let value = pair?;
+                        if let Value::String(s) = value {
+                            let perm_str = s.to_str()?;
+                            match Permission::from_str(&perm_str) {
+                                Ok(perm) => {
+                                    allow.insert(perm);
+                                }
+                                Err(_) => Err(anyhow!(
+                                    "permissions.allow contains invalid permission '{}'; valid values are: fs, net, env, process, ffi",
+                                    perm_str
+                                ))?,
+                            }
+                        } else {
+                            Err(anyhow!("permissions.allow should be an array of strings"))?;
+                        }
+                    }
+                }
+
+                let mut deny: HashSet<Permission> = HashSet::new();
+                let deny_table = table.get::<Value>("deny")?;
+                if let Value::Table(deny_t) = deny_table {
+                    for pair in deny_t.sequence_values::<Value>() {
+                        let value = pair?;
+                        if let Value::String(s) = value {
+                            let perm_str = s.to_str()?;
+                            match Permission::from_str(&perm_str) {
+                                Ok(perm) => {
+                                    deny.insert(perm);
+                                }
+                                Err(_) => Err(anyhow!(
+                                    "permissions.deny contains invalid permission '{}'; valid values are: fs, net, env, process, ffi",
+                                    perm_str
+                                ))?,
+                            }
+                        } else {
+                            Err(anyhow!("permissions.deny should be an array of strings"))?;
+                        }
+                    }
+                }
+
+                // Check for ambiguous permissions (same permission in both allow and deny)
+                let ambiguous: Vec<_> = allow.intersection(&deny).collect();
+                if !ambiguous.is_empty() {
+                    let ambiguous_names: Vec<_> = ambiguous.iter().map(|p| p.as_str()).collect();
+                    Err(anyhow!(
+                        "permissions contains ambiguous permissions that appear in both allow and deny: {}",
+                        ambiguous_names.join(", ")
+                    ))?
+                }
+
+                Ok(PermissionsConfig { mode, allow, deny })
+            }
+            _ => Err(anyhow!("permissions should be a table"))?,
         }
     }
 
@@ -740,11 +1171,14 @@ impl FromLua for ServerConfig {
                     management_prefix,
                     management_token,
                     allow_unauthenticated_management,
+                    trusted_proxies: Self::parse_trusted_proxies(&config)?,
                     tls: Self::parse_tls_config(&config)?,
                     compress: Self::parse_compression_config(&config)?,
                     rate_limit: Self::parse_rate_limit_config(&config)?,
                     load_shed: Self::parse_load_shed_config(&config)?,
+                    readiness: Self::parse_readiness_config(&config)?,
                     drain_timeout_secs,
+                    permissions: Self::parse_permissions_config(&config)?,
                 };
 
                 parsed.validate_startup().map_err(mlua::Error::external)?;
@@ -849,7 +1283,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        CompressionConfig, DEFAULT_BODY_SIZE_LIMIT, LoadShedConfig, RateLimitConfig, ServerConfig,
+        CompressionConfig, DEFAULT_BODY_SIZE_LIMIT, LoadShedConfig, RateLimitConfig,
+        ReadinessConfig, ServerConfig, TrustedProxy, TrustedProxyCidr, TrustedProxyRange,
     };
     use crate::compression::CompressionAlgorithm;
     use mlua::{FromLua, Lua, Value};
@@ -878,8 +1313,10 @@ mod tests {
         assert!(config.management_token.is_none());
         assert!(!config.allow_insecure_http);
         assert!(!config.allow_unauthenticated_management);
+        assert!(config.trusted_proxies.is_empty());
         assert!(config.tls.is_none());
         assert_eq!(config.compress, CompressionConfig::default());
+        assert_eq!(config.readiness, ReadinessConfig::default());
     }
 
     #[test]
@@ -1057,11 +1494,14 @@ mod tests {
             management_prefix: "/_rover".to_string(),
             management_token: None,
             allow_unauthenticated_management: false,
+            trusted_proxies: Vec::new(),
             tls: None,
             compress: CompressionConfig::default(),
             rate_limit: RateLimitConfig::default(),
             load_shed: LoadShedConfig::default(),
+            readiness: ReadinessConfig::default(),
             drain_timeout_secs: None,
+            permissions: rover_types::PermissionsConfig::new(),
         };
 
         let err = config.validate_startup().expect_err("must reject config");
@@ -1081,6 +1521,72 @@ mod tests {
         assert_eq!(config.management_docs_path(), "/ops/docs");
         assert_eq!(config.management_token.as_deref(), Some("abc123"));
         assert!(config.allow_unauthenticated_management);
+    }
+
+    #[test]
+    fn should_parse_trusted_proxies_from_cidr_and_range() {
+        let config = config_from_lua(
+            "{ trusted_proxies = { '10.0.0.0/8', { start = '192.168.0.1', to = '192.168.0.10' }, { cidr = 'fd00::/8' } } }",
+        );
+
+        assert_eq!(
+            config.trusted_proxies,
+            vec![
+                TrustedProxy::Cidr(TrustedProxyCidr {
+                    network: "10.0.0.0".parse().unwrap(),
+                    prefix_len: 8,
+                }),
+                TrustedProxy::Range(TrustedProxyRange {
+                    start: "192.168.0.1".parse().unwrap(),
+                    end: "192.168.0.10".parse().unwrap(),
+                }),
+                TrustedProxy::Cidr(TrustedProxyCidr {
+                    network: "fd00::".parse().unwrap(),
+                    prefix_len: 8,
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn should_reject_invalid_trusted_proxy_cidr() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ trusted_proxies = { '10.0.0.0/999' } }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject invalid cidr");
+        assert!(
+            err.to_string()
+                .contains("trusted_proxies CIDR prefix 999 is out of range for IPv4")
+        );
+    }
+
+    #[test]
+    fn should_reject_invalid_trusted_proxy_range() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ trusted_proxies = { '10.0.0.20-10.0.0.10' } }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject invalid range");
+        assert!(
+            err.to_string()
+                .contains("trusted_proxies range start must be <= end for IPv4")
+        );
+    }
+
+    #[test]
+    fn should_match_trusted_proxy_sources() {
+        let config = config_from_lua(
+            "{ trusted_proxies = { '10.0.0.0/8', { start = '192.168.0.10', to = '192.168.0.20' }, 'fd00::/8' } }",
+        );
+
+        assert!(config.is_trusted_proxy_source("10.1.2.3".parse().unwrap()));
+        assert!(config.is_trusted_proxy_source("192.168.0.15".parse().unwrap()));
+        assert!(config.is_trusted_proxy_source("fd00::1".parse().unwrap()));
+        assert!(!config.is_trusted_proxy_source("127.0.0.1".parse().unwrap()));
+        assert!(!config.is_trusted_proxy_source("2001:db8::1".parse().unwrap()));
     }
 
     #[test]
@@ -1181,6 +1687,33 @@ mod tests {
     fn should_parse_drain_timeout_secs() {
         let config = config_from_lua("{ drain_timeout_secs = 60 }");
         assert_eq!(config.drain_timeout_secs, Some(60));
+    }
+
+    #[test]
+    fn should_parse_readiness_dependencies() {
+        let config = config_from_lua(
+            "{ readiness = { dependencies = { database = true, redis = false } } }",
+        );
+        assert_eq!(config.readiness.dependencies.get("database"), Some(&true));
+        assert_eq!(config.readiness.dependencies.get("redis"), Some(&false));
+        assert_eq!(
+            config.readiness.failed_dependencies(),
+            vec!["redis".to_string()]
+        );
+    }
+
+    #[test]
+    fn should_reject_non_boolean_readiness_dependency_status() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ readiness = { dependencies = { database = 'down' } } }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject readiness config");
+        assert!(
+            err.to_string()
+                .contains("readiness.dependencies['database'] should be a boolean")
+        );
     }
 
     #[test]
