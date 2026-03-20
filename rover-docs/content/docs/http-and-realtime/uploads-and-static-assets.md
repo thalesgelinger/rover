@@ -101,6 +101,67 @@ When your deployment serves `public/` as the static root, requests like `GET /as
 
 Static responses include standard cache metadata so clients and proxies can revalidate efficiently.
 
+### Cache-Control Header
+
+The `cache` option in the static mount DSL maps directly to the `Cache-Control` HTTP response header:
+
+```lua
+api.assets.static {
+    dir = "public",
+    cache = "public, max-age=31536000, immutable"  -- 1 year cache for versioned assets
+}
+```
+
+When the `cache` option is set, the response includes a `Cache-Control` header with the specified value. This header tells browsers and proxies how to cache the file.
+
+### Default Cache Behavior
+
+If you don't specify a `cache` option, Rover applies sensible defaults based on file extension:
+
+| File Type | Extensions | Cache-Control Value |
+|-----------|------------|---------------------|
+| Documents | `.html`, `.htm`, `.json`, `.xml`, `.webmanifest` | `no-cache` |
+| Static Assets | `.css`, `.js`, `.mjs`, `.cjs`, `.map`, images (`.png`, `.jpg`, `.svg`, etc.), fonts (`.woff`, `.woff2`, `.ttf`, etc.), `.wasm` | `public, max-age=31536000, immutable` |
+| Other Files | Any other extension | `public, max-age=86400` |
+
+The custom `cache` option **overrides** these defaults. For example, to cache HTML files:
+
+```lua
+api.assets.static {
+    dir = "public",
+    cache = "public, max-age=60"  -- Cache HTML and all files for 60 seconds
+}
+```
+
+### Cache Validators
+
+All static file responses include cache validator headers for efficient revalidation:
+
+- **`ETag`**: A hash of the file content. Clients send `If-None-Match` on subsequent requests.
+- **`Last-Modified`**: The file's modification timestamp. Clients send `If-Modified-Since` on subsequent requests.
+
+### Conditional Requests (304 Not Modified)
+
+When a client has a cached version and makes a repeat request:
+
+- If `If-None-Match` matches the current `ETag`, Rover returns `304 Not Modified`
+- If `If-Modified-Since` is equal to or later than the file's `Last-Modified`, Rover returns `304 Not Modified`
+
+Example request flow:
+
+```
+# First request
+GET /assets/app.js
+→ 200 OK with ETag: "abc123", Last-Modified: Mon, 20 Jan 2025...
+
+# Second request (client has cached version)
+GET /assets/app.js
+If-None-Match: "abc123"
+→ 304 Not Modified (no body sent, client uses cached version)
+```
+
+This reduces bandwidth and improves performance for repeat visitors.
+
 ## Example
 
 - Multipart/session examples: `examples/session_demo.lua`, `examples/foundation_server_capabilities.lua`

@@ -899,4 +899,91 @@ mod tests {
         assert_eq!(strip_etag_encoding_suffix("abc"), "abc");
         assert_eq!(strip_etag_encoding_suffix("\"abc-xz\""), "abc");
     }
+
+    #[test]
+    fn should_override_default_cache_with_custom_cache_control() {
+        let temp_dir = TempDir::new().unwrap();
+        // HTML files default to "no-cache"
+        std::fs::write(temp_dir.path().join("index.html"), "<html></html>").unwrap();
+
+        let mut custom_headers = HashMap::new();
+        custom_headers.insert(
+            "Cache-Control".to_string(),
+            "public, max-age=3600".to_string(),
+        );
+
+        let response = serve_static_file(temp_dir.path(), "index.html", None, Some(custom_headers));
+        let headers = response.headers.unwrap();
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"public, max-age=3600".to_string())
+        );
+    }
+
+    #[test]
+    fn should_override_asset_default_with_custom_cache_control() {
+        let temp_dir = TempDir::new().unwrap();
+        // JS files default to "public, max-age=31536000, immutable"
+        std::fs::write(temp_dir.path().join("app.js"), "console.log('test');").unwrap();
+
+        let mut custom_headers = HashMap::new();
+        custom_headers.insert("Cache-Control".to_string(), "no-store".to_string());
+
+        let response = serve_static_file(temp_dir.path(), "app.js", None, Some(custom_headers));
+        let headers = response.headers.unwrap();
+        assert_eq!(headers.get("Cache-Control"), Some(&"no-store".to_string()));
+    }
+
+    #[test]
+    fn should_include_custom_cache_control_in_304_response() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("test.txt"), "content").unwrap();
+
+        let mut custom_headers = HashMap::new();
+        custom_headers.insert(
+            "Cache-Control".to_string(),
+            "private, max-age=120".to_string(),
+        );
+
+        let first_response = serve_static_file(
+            temp_dir.path(),
+            "test.txt",
+            None,
+            Some(custom_headers.clone()),
+        );
+        let etag = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("ETag")
+            .cloned()
+            .unwrap();
+        let cache_control = first_response
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("Cache-Control")
+            .cloned()
+            .unwrap();
+        assert_eq!(cache_control, "private, max-age=120");
+
+        // Conditional request with matching ETag
+        let mut headers = HashMap::new();
+        headers.insert("If-None-Match".to_string(), etag);
+
+        let response = serve_static_file(
+            temp_dir.path(),
+            "test.txt",
+            Some(&headers),
+            Some(custom_headers),
+        );
+        assert_eq!(response.status, 304);
+
+        // 304 response should preserve the custom cache header
+        let response_headers = response.headers.unwrap();
+        assert_eq!(
+            response_headers.get("Cache-Control"),
+            Some(&"private, max-age=120".to_string())
+        );
+    }
 }
