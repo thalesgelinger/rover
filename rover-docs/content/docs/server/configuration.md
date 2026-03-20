@@ -271,6 +271,48 @@ rover.server {
 - **Default**: `nil`
 - **Description**: Max shutdown drain window before remaining connections are closed
 
+### `compress`
+
+- **Type**: `boolean | table`
+- **Default**: enabled with default algorithms
+- **Description**: Configures response compression for supported content types
+
+Supported compression algorithms:
+- `gzip` (RFC 1952)
+- `deflate` (RFC 1951)
+
+Example configuration:
+
+```lua
+rover.server {
+    compress = {
+        enabled = true,
+        algorithms = { "gzip", "deflate" },
+        min_size = 1024,        -- Only compress responses >= 1024 bytes
+        types = {               -- Only compress these content types
+            "application/json",
+            "text/html",
+            "text/plain",
+        },
+    }
+}
+```
+
+Configuration options:
+
+- **`enabled`** (`boolean`, default: `true`): Enable or disable compression
+- **`algorithms`** (`array[string]`): List of supported algorithms (must be `"gzip"` or `"deflate"`)
+- **`min_size`** (`number`, default: `1024`): Minimum response size in bytes to trigger compression
+- **`types`** (`array[string]`): Content types to compress (empty means compress all eligible types)
+
+Behavior notes:
+
+- Encoding negotiation respects client `Accept-Encoding` quality values
+- Responses include `Content-Encoding` and `Vary: Accept-Encoding` headers when compressed
+- Unsupported encodings (like brotli) are ignored
+- Small responses below `min_size` are not compressed
+- Already compressed content types (images, videos) are automatically skipped
+
 ## Environment Variables
 
 Rover provides direct access to environment variables via `rover.env`.
