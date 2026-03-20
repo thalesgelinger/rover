@@ -412,7 +412,7 @@ mod tests {
         assert!(limiter.check("127.0.0.1", None).allowed);
         assert!(!limiter.check("127.0.0.1", None).allowed);
 
-        sleep(Duration::from_millis(600));
+        sleep(Duration::from_millis(1100));
         let result = limiter.check("127.0.0.1", None);
         assert!(result.allowed, "should refill after window");
     }

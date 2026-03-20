@@ -30,6 +30,7 @@ async fn send_and_receive(url: &str, messages: Vec<Value>) -> Result<Vec<Value>>
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_echo_server() -> Result<()> {
     let url = format!("{}/echo", get_server_url());
 
@@ -50,6 +51,7 @@ async fn test_websocket_echo_server() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_join_hook() -> Result<()> {
     let url = format!("{}/echo", get_server_url());
 
@@ -66,6 +68,7 @@ async fn test_websocket_join_hook() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_state_management() -> Result<()> {
     let url = format!("{}/chat?user_id=test_user", get_server_url());
 
@@ -88,6 +91,7 @@ async fn test_websocket_state_management() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_broadcast() -> Result<()> {
     let url = format!("{}/chat?user_id=broadcaster", get_server_url());
 
@@ -111,6 +115,7 @@ async fn test_websocket_broadcast() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_validation() -> Result<()> {
     let url = format!("{}/chat?user_id=validator", get_server_url());
 
@@ -133,6 +138,7 @@ async fn test_websocket_validation() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_path_parameters() -> Result<()> {
     let url = format!("{}/chat/general?user_id=room_user", get_server_url());
 
@@ -155,6 +161,7 @@ async fn test_websocket_path_parameters() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_topic_subscription() -> Result<()> {
     let url = format!("{}/chat/room1?user_id=subscriber", get_server_url());
 
@@ -177,6 +184,7 @@ async fn test_websocket_topic_subscription() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_fallback_handler() -> Result<()> {
     let url = format!("{}/echo", get_server_url());
 
@@ -199,6 +207,7 @@ async fn test_websocket_fallback_handler() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_leave_hook() -> Result<()> {
     let url = format!("{}/chat?user_id=leaver", get_server_url());
 
@@ -220,6 +229,7 @@ async fn test_websocket_leave_hook() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_multiple_clients() -> Result<()> {
     let url1 = format!("{}/chat?user_id=client1", get_server_url());
     let url2 = format!("{}/chat?user_id=client2", get_server_url());
@@ -244,6 +254,7 @@ async fn test_websocket_multiple_clients() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_connect_flow_ctx_methods() -> Result<()> {
     let url = format!(
         "{}/chat/general?user_id=ctx_test&name=TestUser",
@@ -265,6 +276,7 @@ async fn test_websocket_connect_flow_ctx_methods() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_message_flow_state_propagation() -> Result<()> {
     let url = format!("{}/chat?user_id=state_test", get_server_url());
 
@@ -302,6 +314,7 @@ async fn test_websocket_message_flow_state_propagation() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_close_flow_state_cleanup() -> Result<()> {
     let url1 = format!("{}/chat?user_id=closer1", get_server_url());
     let url2 = format!("{}/chat?user_id=closer2", get_server_url());
@@ -334,6 +347,7 @@ async fn test_websocket_close_flow_state_cleanup() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_complete_lifecycle() -> Result<()> {
     let url = format!("{}/chat?user_id=lifecycle_test", get_server_url());
 
@@ -377,6 +391,7 @@ async fn test_websocket_complete_lifecycle() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires ROVER_TEST_SERVER_URL"]
 async fn test_websocket_state_update_chain() -> Result<()> {
     let url = format!("{}/chat?user_id=chain_test", get_server_url());
 

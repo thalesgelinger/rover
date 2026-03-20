@@ -36,13 +36,6 @@ fn get_ui_theme_table(lua: &mlua::Lua) -> mlua::Result<Table> {
     lua.globals().get("_rover_ui_theme")
 }
 
-fn create_ui_mod(lua: &mlua::Lua) -> mlua::Result<Table> {
-    let globals = lua.globals();
-    let theme: Table = globals.get("_rover_ui_theme")?;
-    let create_mod: Function = globals.get("_rover_ui_create_mod")?;
-    create_mod.call(theme)
-}
-
 fn ensure_tui_target(lua: &mlua::Lua) -> mlua::Result<()> {
     let target = crate::lua::helpers::get_target(lua)?;
     if crate::lua::helpers::has_capability(lua, crate::platform::UiCapability::TuiNamespace)? {
@@ -780,7 +773,7 @@ impl UserData for LuaUi {
                 } else if key == "theme" {
                     Ok(Value::Table(get_ui_theme_table(_lua)?))
                 } else if key == "mod" {
-                    Ok(Value::Table(create_ui_mod(_lua)?))
+                    uv.get::<Value>("mod")
                 } else {
                     uv.get::<Value>(key)
                 }
