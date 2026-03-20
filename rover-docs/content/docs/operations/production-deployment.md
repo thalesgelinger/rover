@@ -55,16 +55,10 @@ local api = rover.server {
   management_prefix = "/_rover",
 }
 
-function api.healthz.get(ctx)
-  return api.json { status = "ok" }
-end
-
-function api.readyz.get(ctx)
-  return api.json { ready = true }
-end
-
 return api
 ```
+
+Rover serves `/healthz` and `/readyz` probes by default. See [Operations](/docs/operations/operations/) for the exact response contract and status codes.
 
 ## Scaling Patterns
 

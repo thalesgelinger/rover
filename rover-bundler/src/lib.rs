@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rover_parser::{detect_features, AppFeatures};
+use rover_parser::{AppFeatures, detect_features};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};

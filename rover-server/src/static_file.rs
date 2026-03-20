@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::{Bytes, RoverResponse};
+use rover_types::emit_file_access_denied;
 
 /// Maximum allowed path length to prevent abuse
 const MAX_PATH_LENGTH: usize = 4096;
 
-/// Default cache control header value (1 day)
-const DEFAULT_CACHE_CONTROL: &str = "public, max-age=86400";
+/// Cache headers by file class
+const CACHE_CONTROL_DOCUMENT: &str = "no-cache";
+const CACHE_CONTROL_ASSET: &str = "public, max-age=31536000, immutable";
+const CACHE_CONTROL_DEFAULT: &str = "public, max-age=86400";
 
 /// Serve a static file with traversal protection and cache headers
 ///
@@ -32,12 +35,14 @@ pub fn serve_static_file(
             if e == "Not found" {
                 return not_found_response();
             }
+            emit_file_access_denied(requested_path, &e);
             return forbidden_response(&e);
         }
     };
 
     // Check if the path is a directory (don't serve directories)
     if sanitized.is_dir() {
+        emit_file_access_denied(requested_path, "Directory listing not allowed");
         return forbidden_response("Directory listing not allowed");
     }
 
@@ -72,7 +77,9 @@ pub fn serve_static_file(
             if e.kind() == std::io::ErrorKind::NotFound {
                 not_found_response()
             } else {
-                forbidden_response(&format!("Access denied: {}", e))
+                let error_msg = format!("Access denied: {}", e);
+                emit_file_access_denied(requested_path, &error_msg);
+                forbidden_response(&error_msg)
             }
         }
     }
@@ -91,6 +98,14 @@ fn sanitize_path(base_path: &Path, requested_path: &str) -> Result<PathBuf, Stri
     // Remove null bytes
     if requested_path.contains('\0') {
         return Err("Invalid path".to_string());
+    }
+
+    if requested_path.contains('%') && !is_valid_percent_encoding(requested_path) {
+        return Err("Invalid path".to_string());
+    }
+
+    if has_traversal_attempt(requested_path) {
+        return Err("Directory traversal not allowed".to_string());
     }
 
     // Normalize URL-style leading slashes to a relative path within base_path
@@ -147,16 +162,88 @@ fn sanitize_path(base_path: &Path, requested_path: &str) -> Result<PathBuf, Stri
     Ok(canonical_requested)
 }
 
+fn has_traversal_attempt(path: &str) -> bool {
+    if has_parent_dir_component(path) {
+        return true;
+    }
+
+    if !path.contains('%') {
+        return false;
+    }
+
+    let mut decoded = path.to_string();
+    for _ in 0..2 {
+        let next = match urlencoding::decode(&decoded) {
+            Ok(value) => value.into_owned(),
+            Err(_) => return false,
+        };
+
+        if next == decoded {
+            return false;
+        }
+
+        if has_parent_dir_component(&next) {
+            return true;
+        }
+
+        if !next.contains('%') {
+            return false;
+        }
+
+        if !is_valid_percent_encoding(&next) {
+            return false;
+        }
+
+        decoded = next;
+    }
+
+    false
+}
+
+fn has_parent_dir_component(path: &str) -> bool {
+    Path::new(path.trim_start_matches('/'))
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn is_valid_percent_encoding(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            i += 1;
+            continue;
+        }
+
+        if i + 2 >= bytes.len() {
+            return false;
+        }
+
+        let hi = bytes[i + 1];
+        let lo = bytes[i + 2];
+        if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+            return false;
+        }
+
+        i += 3;
+    }
+
+    true
+}
+
 /// Guess the content type based on file extension
 fn guess_content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("html") | Some("htm") => "text/html",
         Some("css") => "text/css",
-        Some("js") => "application/javascript",
+        Some("js") | Some("mjs") | Some("cjs") => "application/javascript",
         Some("json") => "application/json",
+        Some("map") => "application/json",
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
         Some("svg") => "image/svg+xml",
         Some("ico") => "image/x-icon",
         Some("woff") => "font/woff",
@@ -166,10 +253,23 @@ fn guess_content_type(path: &Path) -> &'static str {
         Some("eot") => "application/vnd.ms-fontobject",
         Some("pdf") => "application/pdf",
         Some("txt") => "text/plain",
+        Some("csv") => "text/csv",
         Some("xml") => "application/xml",
         Some("wasm") => "application/wasm",
         Some("webmanifest") => "application/manifest+json",
         _ => "application/octet-stream",
+    }
+}
+
+fn default_cache_control(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") | Some("htm") => CACHE_CONTROL_DOCUMENT,
+        Some("css") | Some("js") | Some("mjs") | Some("cjs") | Some("map") | Some("png")
+        | Some("jpg") | Some("jpeg") | Some("gif") | Some("webp") | Some("avif") | Some("svg")
+        | Some("ico") | Some("woff") | Some("woff2") | Some("ttf") | Some("otf") | Some("eot")
+        | Some("wasm") => CACHE_CONTROL_ASSET,
+        Some("json") | Some("xml") | Some("webmanifest") => CACHE_CONTROL_DOCUMENT,
+        _ => CACHE_CONTROL_DEFAULT,
     }
 }
 
@@ -178,7 +278,7 @@ fn add_cache_headers(headers: &mut HashMap<String, String>, path: &Path, content
     // Add Cache-Control header
     headers
         .entry("Cache-Control".to_string())
-        .or_insert_with(|| DEFAULT_CACHE_CONTROL.to_string());
+        .or_insert_with(|| default_cache_control(path).to_string());
 
     // Generate ETag based on file content (simple hash)
     let etag = format!("\"{}\"", hash_content(content));
@@ -358,6 +458,22 @@ mod tests {
     }
 
     #[test]
+    fn should_detect_directory_traversal_with_encoded_dotdot() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "%2e%2e/etc/passwd", None, None);
+        assert_eq!(response.status, 403);
+    }
+
+    #[test]
+    fn should_detect_directory_traversal_with_double_encoded_dotdot() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "%252e%252e/etc/passwd", None, None);
+        assert_eq!(response.status, 403);
+    }
+
+    #[test]
     fn should_serve_file_with_leading_slash_path() {
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.txt");
@@ -425,6 +541,69 @@ mod tests {
 
         let response = serve_static_file(temp_dir.path(), "app.js", None, None);
         assert_eq!(response.content_type, "application/javascript");
+    }
+
+    #[test]
+    fn should_guess_content_type_webp() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("image.webp"), "webp").unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "image.webp", None, None);
+        assert_eq!(response.content_type, "image/webp");
+    }
+
+    #[test]
+    fn should_guess_content_type_mjs() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("module.mjs"), "export const x = 1;").unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "module.mjs", None, None);
+        assert_eq!(response.content_type, "application/javascript");
+    }
+
+    #[test]
+    fn should_guess_content_type_sourcemap() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("app.js.map"), "{}").unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "app.js.map", None, None);
+        assert_eq!(response.content_type, "application/json");
+    }
+
+    #[test]
+    fn should_default_html_cache_control_to_no_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("index.html"), "<html></html>").unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "index.html", None, None);
+        let headers = response.headers.unwrap();
+        assert_eq!(headers.get("Cache-Control"), Some(&"no-cache".to_string()));
+    }
+
+    #[test]
+    fn should_default_static_asset_cache_control_to_immutable() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("app.js"), "console.log('hi')").unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "app.js", None, None);
+        let headers = response.headers.unwrap();
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"public, max-age=31536000, immutable".to_string())
+        );
+    }
+
+    #[test]
+    fn should_keep_default_cache_for_unrecognized_extensions() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("blob.bin"), "x").unwrap();
+
+        let response = serve_static_file(temp_dir.path(), "blob.bin", None, None);
+        let headers = response.headers.unwrap();
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"public, max-age=86400".to_string())
+        );
     }
 
     #[test]

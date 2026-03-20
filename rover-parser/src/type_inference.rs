@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tree_sitter::{Node, Parser};
 
-use crate::db_intent::{analyze_db_intent, DbSchema};
+use crate::db_intent::{DbSchema, analyze_db_intent};
 use crate::types::{FunctionType, LuaType, TableType, TypeError};
 
 /// Type environment mapping variable names to their types at a given point

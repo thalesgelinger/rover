@@ -61,6 +61,42 @@ Foundation static file support includes:
 
 Current runtime docs in this site focus on the observable behavior and safety guarantees. If you are exposing static assets behind a proxy, preserve cache validators and avoid rewriting asset paths in ways that bypass normalization.
 
+## Static Serving Example
+
+Use this pattern for docs sites, dashboards, or simple frontends that ship with API routes:
+
+```text
+my-app/
+|- app.lua
+`- public/
+   `- assets/
+      |- app.js
+      `- site.css
+```
+
+```lua
+local api = rover.server {}
+
+function api.get(ctx)
+    return api.html {} [[
+        <!doctype html>
+        <html>
+          <head>
+            <link rel="stylesheet" href="/assets/site.css" />
+          </head>
+          <body>
+            <h1>Rover App</h1>
+            <script src="/assets/app.js"></script>
+          </body>
+        </html>
+    ]]
+end
+
+return api
+```
+
+When your deployment serves `public/` as the static root, requests like `GET /assets/app.js` resolve as static files while API routes keep working normally.
+
 ## Cache Behavior
 
 Static responses include standard cache metadata so clients and proxies can revalidate efficiently.
@@ -68,6 +104,7 @@ Static responses include standard cache metadata so clients and proxies can reva
 ## Example
 
 - Multipart/session examples: `examples/session_demo.lua`, `examples/foundation_server_capabilities.lua`
+- Static behavior check: request a file twice and verify `ETag`/`Last-Modified` and `304 Not Modified` on revalidation.
 
 ## Related
 

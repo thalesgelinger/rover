@@ -147,7 +147,17 @@ mod tests {
             load_shed: crate::LoadShedConfig::default(),
             readiness: crate::ReadinessConfig::default(),
             drain_timeout_secs: None,
+            permissions: rover_types::PermissionsConfig::new(),
         }
+    }
+
+    fn trusted_proxy_config() -> ServerConfig {
+        let mut config = base_config();
+        config.trusted_proxies = vec![crate::TrustedProxy::Cidr(crate::TrustedProxyCidr {
+            network: "10.0.0.0".parse().unwrap(),
+            prefix_len: 8,
+        })];
+        config
     }
 
     fn header_offsets_from_raw(raw: &[u8]) -> Vec<(usize, usize, usize, usize)> {
@@ -284,6 +294,7 @@ mod tests {
             &headers,
             Some("10.0.0.8".parse().unwrap()),
             true,
+            &base_config(),
         );
 
         assert_eq!(client_ip, "203.0.113.10");
@@ -300,6 +311,7 @@ mod tests {
             &headers,
             Some("10.0.0.8".parse().unwrap()),
             true,
+            &base_config(),
         );
 
         assert_eq!(client_ip, "198.51.100.9");
@@ -316,10 +328,130 @@ mod tests {
             &headers,
             Some("10.0.0.8".parse().unwrap()),
             false,
+            &base_config(),
         );
 
         assert_eq!(client_ip, "10.0.0.8");
         assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_ignore_malformed_forwarded_pairs_and_parse_valid_parts() {
+        let raw =
+            b"forwarded: by=proxy;broken;for=203.0.113.10;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.10");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_fallback_when_forwarded_values_are_malformed() {
+        let raw = b"forwarded: for=not-an-ip;proto=ws\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "10.0.0.8");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_use_first_valid_value_across_multiple_forwarded_headers() {
+        let raw = b"forwarded: for=bad-ip;proto=ws\r\nforwarded: for=203.0.113.10;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.10");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_use_first_x_forwarded_values_when_multiple_headers_conflict() {
+        let raw = b"x-forwarded-for: 198.51.100.9\r\nx-forwarded-for: 198.51.100.10\r\nx-forwarded-proto: https\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_prefer_forwarded_over_x_forwarded_when_values_conflict() {
+        let raw = b"forwarded: for=203.0.113.20;proto=https\r\nx-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.20");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_reject_spoofed_x_forwarded_chain_from_untrusted_peer() {
+        let raw = b"x-forwarded-for: 198.51.100.99, 203.0.113.9\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &trusted_proxy_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.9");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_handle_trusted_proxy_chain_permutations() {
+        let raw = b"x-forwarded-for: 198.51.100.9, 10.1.1.1, 10.2.2.2\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.9.9.9".parse().unwrap()),
+            true,
+            &trusted_proxy_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
     }
 
     #[test]
@@ -879,6 +1011,23 @@ impl EventLoop {
         None
     }
 
+    fn get_header_values<'a>(
+        buf: &'a [u8],
+        headers: &[(usize, usize, usize, usize)],
+        name: &str,
+    ) -> Vec<&'a str> {
+        let mut values = Vec::new();
+        for &(name_off, name_len, val_off, val_len) in headers {
+            let key = unsafe { std::str::from_utf8_unchecked(&buf[name_off..name_off + name_len]) };
+            if key.eq_ignore_ascii_case(name) {
+                let value =
+                    unsafe { std::str::from_utf8_unchecked(&buf[val_off..val_off + val_len]) };
+                values.push(value);
+            }
+        }
+        values
+    }
+
     fn negotiate_encoding_from_headers(
         buf: &[u8],
         headers: &[(usize, usize, usize, usize)],
@@ -956,12 +1105,13 @@ impl EventLoop {
         }
     }
 
-    fn parse_forwarded_client_ip(value: &str) -> Option<String> {
-        let first_entry = value.split(',').next()?.trim();
-        for pair in first_entry.split(';') {
-            let (name, raw_value) = pair.split_once('=')?;
+    fn parse_forwarded_entry_client_ip(entry: &str) -> Option<IpAddr> {
+        for pair in entry.split(';') {
+            let Some((name, raw_value)) = pair.split_once('=') else {
+                continue;
+            };
             if name.trim().eq_ignore_ascii_case("for") {
-                return Self::parse_client_ip_token(raw_value);
+                return Self::parse_client_ip_token(raw_value)?.parse().ok();
             }
         }
         None
@@ -970,7 +1120,9 @@ impl EventLoop {
     fn parse_forwarded_client_proto(value: &str) -> Option<String> {
         let first_entry = value.split(',').next()?.trim();
         for pair in first_entry.split(';') {
-            let (name, raw_value) = pair.split_once('=')?;
+            let Some((name, raw_value)) = pair.split_once('=') else {
+                continue;
+            };
             if name.trim().eq_ignore_ascii_case("proto") {
                 return Self::parse_client_proto_token(raw_value);
             }
@@ -978,40 +1130,89 @@ impl EventLoop {
         None
     }
 
+    fn choose_client_ip_from_chain(
+        client_ip_chain: &[IpAddr],
+        source_ip: Option<IpAddr>,
+        config: &ServerConfig,
+    ) -> Option<String> {
+        if client_ip_chain.is_empty() {
+            return None;
+        }
+
+        if source_ip.is_none() || config.trusted_proxies.is_empty() {
+            return client_ip_chain.first().map(ToString::to_string);
+        }
+
+        for ip in client_ip_chain.iter().rev() {
+            if !config.is_trusted_proxy_source(*ip) {
+                return Some(ip.to_string());
+            }
+        }
+
+        client_ip_chain.first().map(ToString::to_string)
+    }
+
     fn derive_client_context(
         buf: &[u8],
         headers: &[(usize, usize, usize, usize)],
         source_ip: Option<IpAddr>,
         should_trust_forwarded: bool,
+        config: &ServerConfig,
     ) -> (String, String) {
         let fallback_ip = source_ip.map(|ip| ip.to_string()).unwrap_or_default();
         let mut client_ip = String::new();
         let mut client_proto = "http".to_string();
 
         if should_trust_forwarded {
-            if let Some(forwarded) = Self::get_header_value(buf, headers, "forwarded") {
-                if let Some(parsed_ip) = Self::parse_forwarded_client_ip(&forwarded) {
-                    client_ip = parsed_ip;
+            let forwarded_values = Self::get_header_values(buf, headers, "forwarded");
+            let mut forwarded_ip_chain = Vec::new();
+            for forwarded in forwarded_values {
+                for entry in forwarded.split(',') {
+                    if let Some(parsed_ip) = Self::parse_forwarded_entry_client_ip(entry.trim()) {
+                        forwarded_ip_chain.push(parsed_ip);
+                    }
                 }
-                if let Some(parsed_proto) = Self::parse_forwarded_client_proto(&forwarded) {
+
+                if client_proto == "http"
+                    && let Some(parsed_proto) = Self::parse_forwarded_client_proto(forwarded)
+                {
                     client_proto = parsed_proto;
                 }
             }
 
-            if client_ip.is_empty()
-                && let Some(value) = Self::get_header_value(buf, headers, "x-forwarded-for")
-                && let Some(first) = value.split(',').next()
-                && let Some(parsed_ip) = Self::parse_client_ip_token(first)
-            {
-                client_ip = parsed_ip;
+            if client_ip.is_empty() {
+                client_ip =
+                    Self::choose_client_ip_from_chain(&forwarded_ip_chain, source_ip, config)
+                        .unwrap_or_default();
             }
 
-            if client_proto == "http"
-                && let Some(value) = Self::get_header_value(buf, headers, "x-forwarded-proto")
-                && let Some(first) = value.split(',').next()
-                && let Some(parsed_proto) = Self::parse_client_proto_token(first)
-            {
-                client_proto = parsed_proto;
+            if client_ip.is_empty() {
+                let xff_values = Self::get_header_values(buf, headers, "x-forwarded-for");
+                let mut xff_chain = Vec::new();
+                for value in xff_values {
+                    for token in value.split(',') {
+                        if let Some(parsed_ip) = Self::parse_client_ip_token(token)
+                            && let Ok(ip) = parsed_ip.parse::<IpAddr>()
+                        {
+                            xff_chain.push(ip);
+                        }
+                    }
+                }
+
+                client_ip = Self::choose_client_ip_from_chain(&xff_chain, source_ip, config)
+                    .unwrap_or_default();
+            }
+
+            if client_proto == "http" {
+                let xfp_values = Self::get_header_values(buf, headers, "x-forwarded-proto");
+                for value in xfp_values {
+                    if let Some(first) = value.split(',').next()
+                        && let Some(parsed_proto) = Self::parse_client_proto_token(first)
+                    {
+                        client_proto = parsed_proto;
+                        break;
+                    }
+                }
             }
         }
 
@@ -2341,6 +2542,7 @@ impl EventLoop {
             &conn.header_offsets,
             source_ip,
             should_trust_forwarded,
+            &self.config,
         );
 
         let accept_header = Self::get_header_value(buf_ref, &conn.header_offsets, "accept");
@@ -2793,6 +2995,7 @@ impl EventLoop {
             &header_offsets_raw,
             source_ip,
             should_trust_forwarded,
+            &self.config,
         );
 
         // Upgrade the connection

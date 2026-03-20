@@ -3,6 +3,8 @@ languageCode = 'en-us'
 title = 'Rover'
 
 [params]
+  offlineSearch = true
+
   [params.ui]
     showLightDarkModeMenu = true
     sidebar_menu_compact = false

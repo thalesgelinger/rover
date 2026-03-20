@@ -2507,8 +2507,10 @@ dependencies = [
  "anyhow",
  "jsonwebtoken",
  "mlua",
+ "rover_types",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -2714,6 +2716,8 @@ dependencies = [
  "anyhow",
  "mlua",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2722,9 +2726,11 @@ version = "0.1.0"
 dependencies = [
  "mlua",
  "parking_lot",
+ "rover_types",
  "smallvec",
  "smartstring",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

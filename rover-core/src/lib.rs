@@ -8,6 +8,7 @@ pub mod html;
 pub mod http;
 pub mod io;
 pub mod middleware;
+pub mod permissions;
 pub mod server;
 pub mod session;
 pub mod template;
@@ -17,6 +18,7 @@ use env::{create_config_module, create_env_module, load_dotenv};
 use html::create_html_module;
 use http::create_http_module;
 use io::create_io_module;
+use permissions::PermissionsConfig;
 use rover_auth::create_auth_module;
 use rover_db::create_db_module;
 use rover_ui::platform::{
@@ -77,6 +79,10 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     // Initialize UI runtime config with TUI as default (needed for server/scripts)
     let runtime_config = UiRuntimeConfig::new(UiTarget::Tui);
     lua.set_app_data(runtime_config);
+
+    // Initialize permissions config with defaults
+    let permissions_config = PermissionsConfig::new();
+    lua.set_app_data(permissions_config);
 
     // Initialize viewport signals with defaults
     let viewport_signals = ViewportSignals {

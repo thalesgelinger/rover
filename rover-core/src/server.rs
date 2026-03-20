@@ -525,6 +525,7 @@ impl Server for Table {
             lua: &Lua,
             mount_dir: PathBuf,
             mount_param_name: String,
+            cache_control: Option<String>,
         ) -> Result<mlua::Function> {
             let handler = lua.create_function(move |lua, ctx: Value| {
                 let (params_table, headers_table): (Table, Table) = match ctx {
@@ -564,11 +565,17 @@ impl Server for Table {
                     Some(&request_headers)
                 };
 
+                let custom_headers = cache_control.as_ref().map(|cache| {
+                    let mut headers = HashMap::new();
+                    headers.insert("Cache-Control".to_string(), cache.clone());
+                    headers
+                });
+
                 let response = rover_server::serve_static_file(
                     mount_dir.as_path(),
                     &mounted_path,
                     request_headers_ref,
-                    None,
+                    custom_headers,
                 );
 
                 lua.create_userdata(response).map(Value::UserData)
@@ -638,6 +645,33 @@ impl Server for Table {
             } else {
                 current_path
             };
+            let cache_control = match mount_config.get::<Value>("cache")? {
+                Value::Nil => None,
+                Value::String(s) => {
+                    let value = s.to_str()?.trim().to_string();
+                    if value.is_empty() {
+                        return Err(anyhow!(
+                            "Invalid 'cache' in static mount at '{}': value cannot be empty",
+                            if current_path.is_empty() {
+                                "/"
+                            } else {
+                                current_path
+                            }
+                        ));
+                    }
+                    Some(value)
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid 'cache' in static mount at '{}': expected string",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+            };
             let mount_param_name = "__rover_mount_path".to_string();
             let pattern = if mount_base == "/" {
                 format!("/{{*{}}}", mount_param_name)
@@ -652,6 +686,7 @@ impl Server for Table {
                 lua,
                 PathBuf::from(mount_dir),
                 mount_param_name.clone(),
+                cache_control,
             )?;
 
             routes.push(Route {
@@ -1037,6 +1072,16 @@ mod tests {
         (response.status, body)
     }
 
+    fn parse_response_headers(value: Value) -> Option<std::collections::HashMap<String, String>> {
+        let response_ud = value
+            .as_userdata()
+            .expect("route must return RoverResponse userdata");
+        let response = response_ud
+            .borrow::<RoverResponse>()
+            .expect("response userdata must be RoverResponse");
+        response.headers.clone()
+    }
+
     #[test]
     fn should_support_single_static_mount() {
         let temp = tempdir().expect("create temp dir");
@@ -1141,6 +1186,79 @@ mod tests {
 
         assert!(patterns.contains(&"/assets/{*__rover_mount_path}".to_string()));
         assert!(patterns.contains(&"/uploads/{*__rover_mount_path}".to_string()));
+    }
+
+    #[test]
+    fn should_map_static_cache_option_to_cache_control_header() {
+        let temp = tempdir().expect("create temp dir");
+        let static_dir = temp.path().join("public");
+        fs::create_dir_all(&static_dir).expect("create static dir");
+        fs::write(static_dir.join("app.js"), "console.log('ok');").expect("write static file");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = static_dir
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            api.assets.static {{ dir = "{}", cache = "public, max-age=60" }}
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua.load(&script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/assets/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "app.js")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+        let headers = parse_response_headers(value).expect("response headers");
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"public, max-age=60".to_string())
+        );
     }
 
     #[test]

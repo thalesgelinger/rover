@@ -327,10 +327,11 @@ fn test_raw_sql_escape_hatch() {
         .unwrap();
 
     assert_eq!(info.get::<String>("intent").unwrap(), "RAW SQL");
-    assert!(info
-        .get::<String>("sql")
-        .unwrap()
-        .contains("SELECT * FROM users"));
+    assert!(
+        info.get::<String>("sql")
+            .unwrap()
+            .contains("SELECT * FROM users")
+    );
 }
 
 #[test]

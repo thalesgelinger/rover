@@ -331,3 +331,39 @@ mod etag_handling_edge_cases {
         assert_eq!(strip_etag_encoding_suffix("\"hash\""), "hash");
     }
 }
+
+mod accept_encoding_negotiation_paths {
+    use super::*;
+    use rover_server::compression::negotiate_encoding;
+
+    const CONFIGURED_ALGOS: [CompressionAlgorithm; 2] =
+        [CompressionAlgorithm::Gzip, CompressionAlgorithm::Deflate];
+
+    #[test]
+    fn should_take_gzip_when_br_and_gzip_are_present() {
+        let selected = negotiate_encoding("br, gzip", &CONFIGURED_ALGOS);
+
+        assert_eq!(selected, Some(CompressionAlgorithm::Gzip));
+    }
+
+    #[test]
+    fn should_return_none_for_br_only() {
+        let selected = negotiate_encoding("br", &CONFIGURED_ALGOS);
+
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn should_return_none_for_no_match_values() {
+        let selected = negotiate_encoding("compress, zstd", &CONFIGURED_ALGOS);
+
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn should_fallback_to_identity_when_only_identity_matches() {
+        let selected = negotiate_encoding("identity, br", &CONFIGURED_ALGOS);
+
+        assert_eq!(selected, None);
+    }
+}

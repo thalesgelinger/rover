@@ -248,6 +248,46 @@ mod https_startup {
     }
 }
 
+mod trusted_proxy_config {
+    use super::*;
+
+    #[test]
+    fn should_parse_trusted_proxy_definitions() {
+        let config = config_from_lua(
+            "{ trusted_proxies = { '10.0.0.0/8', { start = '172.16.0.10', to = '172.16.0.20' } } }",
+        );
+
+        assert_eq!(config.trusted_proxies.len(), 2);
+    }
+
+    #[test]
+    fn should_reject_trusted_proxy_range_with_mixed_families() {
+        let err = parse_config("{ trusted_proxies = { { start = '10.0.0.1', to = '::1' } } }")
+            .expect_err("must reject mixed IP range");
+
+        assert!(
+            err.to_string()
+                .contains("trusted_proxies range start and end must use the same IP family")
+        );
+    }
+
+    #[test]
+    fn should_match_trusted_proxy_source_from_cidr() {
+        let config = config_from_lua("{ trusted_proxies = { '10.0.0.0/8' } }");
+        assert!(config.is_trusted_proxy_source("10.1.2.3".parse().unwrap()));
+        assert!(!config.is_trusted_proxy_source("127.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn should_match_trusted_proxy_source_from_range() {
+        let config = config_from_lua(
+            "{ trusted_proxies = { { start = '172.16.0.10', to = '172.16.0.20' } } }",
+        );
+        assert!(config.is_trusted_proxy_source("172.16.0.15".parse().unwrap()));
+        assert!(!config.is_trusted_proxy_source("172.16.0.21".parse().unwrap()));
+    }
+}
+
 mod timeout_config {
     use super::*;
 

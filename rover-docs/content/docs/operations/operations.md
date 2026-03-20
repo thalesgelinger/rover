@@ -10,22 +10,31 @@ Use a few simple contracts for health, readiness, request IDs, and logs.
 
 ## Health and Readiness
 
-These are app-defined routes, not magic built-ins.
+Rover exposes built-in probe routes:
+
+- `GET`/`HEAD /healthz`: liveness probe
+- `GET`/`HEAD /readyz`: readiness probe
+
+Contract and status codes:
+
+- `200 /healthz` -> `{ "status": "ok" }`
+- `200 /readyz` -> `{ "status": "ready" }`
+- `503 /readyz` (draining or dependency outage) -> `{ "status": "not_ready" }`
+- `503 /readyz` with dependency failures -> `{ "status": "not_ready", "reasons": [{ "code": "dependency_unavailable", "dependency": "<name>" }] }`
+- `405 /healthz` and `405 /readyz` for non-`GET`/`HEAD` methods (with `Allow: GET, HEAD`)
+
+Readiness dependency state comes from server config:
 
 ```lua
-function api.healthz.get(ctx)
-    return api.json { status = "ok" }
-end
-
-function api.readyz.get(ctx)
-    return api.json { ready = true }
-end
+local api = rover.server {
+    readiness = {
+        dependencies = {
+            database = true,
+            redis = true,
+        },
+    },
+}
 ```
-
-Common split:
-
-- `healthz`: process alive
-- `readyz`: dependencies ready for traffic
 
 ## Request IDs
 

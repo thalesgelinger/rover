@@ -135,8 +135,14 @@ mod tests {
 
     #[test]
     fn test_float_equality() {
-        assert!(SignalValue::Float(3.14).eq_value(&SignalValue::Float(3.14)));
-        assert!(!SignalValue::Float(3.14).eq_value(&SignalValue::Float(3.15)));
+        assert!(
+            SignalValue::Float(std::f64::consts::PI)
+                .eq_value(&SignalValue::Float(std::f64::consts::PI))
+        );
+        assert!(
+            !SignalValue::Float(std::f64::consts::PI)
+                .eq_value(&SignalValue::Float(std::f64::consts::PI + 0.01))
+        );
 
         // NaN handling
         assert!(SignalValue::Float(f64::NAN).eq_value(&SignalValue::Float(f64::NAN)));

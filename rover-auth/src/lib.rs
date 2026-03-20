@@ -1,6 +1,7 @@
 use anyhow::Result;
 use jsonwebtoken::{decode, decode_header, encode, DecodingKey, EncodingKey, Header, Validation};
 use mlua::{Function, Lua, ObjectLike, Table, Value};
+use rover_types::emit_auth_denied;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -461,6 +462,7 @@ fn create_require_middleware(
             });
 
         let Some(header_value) = header_value else {
+            emit_auth_denied("require_middleware", "missing Authorization bearer token");
             return deny_response(
                 lua,
                 &api,
@@ -474,6 +476,7 @@ fn create_require_middleware(
             .or_else(|| header_value.strip_prefix("bearer "));
 
         let Some(token) = token else {
+            emit_auth_denied("require_middleware", "Authorization must use Bearer token");
             return deny_response(
                 lua,
                 &api,
@@ -486,12 +489,14 @@ fn create_require_middleware(
         let claims = match verify_result {
             Value::Table(table) => table,
             _ => {
+                emit_auth_denied("require_middleware", "invalid token response");
                 return deny_response(lua, &api, 401, "Unauthorized: invalid token response");
             }
         };
 
         let valid = claims.get::<bool>("valid").unwrap_or(false);
         if !valid {
+            emit_auth_denied("require_middleware", "invalid or expired token");
             return deny_response(lua, &api, 401, "Unauthorized: invalid or expired token");
         }
 
