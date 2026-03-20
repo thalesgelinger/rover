@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -55,16 +56,42 @@ fn is_valid_percent_encoding(value: &str) -> bool {
     true
 }
 
+#[inline]
+fn is_mount_catch_all(pattern: &[u8]) -> bool {
+    pattern.ends_with(b"/{*__rover_mount_path}")
+}
+
+fn compare_dynamic_patterns(a: &[u8], b: &[u8]) -> Ordering {
+    let a_is_mount = is_mount_catch_all(a);
+    let b_is_mount = is_mount_catch_all(b);
+    if a_is_mount != b_is_mount {
+        return if a_is_mount {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        };
+    }
+
+    b.len().cmp(&a.len()).then_with(|| a.cmp(b))
+}
+
 pub struct FastRouter {
     router: Router<SmallVec<[(HttpMethod, usize); 2]>>,
     handlers: Vec<Function>,
     static_routes: HashMap<(u64, HttpMethod), usize>,
     static_path_methods: HashMap<u64, SmallVec<[HttpMethod; 4]>>,
+    mount_routes: Vec<MountRoute>,
 
     // WebSocket routing (separate from HTTP to avoid polluting hot path)
     ws_router: Router<u16>,       // path pattern -> endpoint_idx
     ws_static: HashMap<u64, u16>, // hash(path) -> endpoint_idx (static WS paths)
     has_ws_routes: bool,
+}
+
+struct MountRoute {
+    base_path: String,
+    method: HttpMethod,
+    handler_idx: usize,
 }
 
 #[cfg(test)]
@@ -280,9 +307,102 @@ mod tests {
             _ => panic!("expected static mount route to match fallback"),
         }
     }
+
+    #[test]
+    fn should_match_dynamic_api_route_before_static_mount_regardless_of_registration_order() {
+        let lua = Lua::new();
+
+        let new_static_mount = || Route {
+            method: HttpMethod::Get,
+            pattern: Bytes::from_static(b"/assets/{*__rover_mount_path}"),
+            param_names: vec!["__rover_mount_path".to_string()],
+            handler: lua
+                .create_function(|lua, ()| lua.create_string("static"))
+                .unwrap(),
+            is_static: false,
+            middlewares: Default::default(),
+        };
+
+        let new_dynamic_api = || Route {
+            method: HttpMethod::Get,
+            pattern: Bytes::from_static(b"/assets/{id}"),
+            param_names: vec!["id".to_string()],
+            handler: lua
+                .create_function(|lua, ()| lua.create_string("api"))
+                .unwrap(),
+            is_static: false,
+            middlewares: Default::default(),
+        };
+
+        let router_mount_first =
+            FastRouter::from_routes(vec![new_static_mount(), new_dynamic_api()]).expect("router");
+        let router_api_first =
+            FastRouter::from_routes(vec![new_dynamic_api(), new_static_mount()]).expect("router");
+
+        for router in [router_mount_first, router_api_first] {
+            match router.match_route(HttpMethod::Get, "/assets/health") {
+                RouteMatch::Found {
+                    handler, params, ..
+                } => {
+                    let body: mlua::String = handler.call(()).expect("call handler");
+                    assert_eq!(body.to_str().expect("body str"), "api");
+                    assert_eq!(params.len(), 1);
+                    assert_eq!(params[0].0, Bytes::from_static(b"id"));
+                    assert_eq!(params[0].1, Bytes::from_static(b"health"));
+                }
+                _ => panic!("expected dynamic API route to match first"),
+            }
+
+            match router.match_route(HttpMethod::Get, "/assets/js/app.js") {
+                RouteMatch::Found {
+                    handler, params, ..
+                } => {
+                    let body: mlua::String = handler.call(()).expect("call handler");
+                    assert_eq!(body.to_str().expect("body str"), "static");
+                    assert_eq!(params.len(), 1);
+                    assert_eq!(params[0].0, Bytes::from_static(b"__rover_mount_path"));
+                    assert_eq!(params[0].1, Bytes::from_static(b"js/app.js"));
+                }
+                _ => panic!("expected static mount fallback for nested asset path"),
+            }
+        }
+    }
 }
 
 impl FastRouter {
+    fn match_mount_route(&self, path: &str) -> Option<(&MountRoute, Bytes)> {
+        for mount in &self.mount_routes {
+            let raw_tail = if mount.base_path == "/" {
+                match path.strip_prefix('/') {
+                    Some(tail) => tail,
+                    None => continue,
+                }
+            } else {
+                let prefix = format!("{}/", mount.base_path.trim_end_matches('/'));
+                match path.strip_prefix(&prefix) {
+                    Some(tail) => tail,
+                    None => continue,
+                }
+            };
+
+            if raw_tail.is_empty() || !is_valid_percent_encoding(raw_tail) {
+                continue;
+            }
+
+            let decoded = match urlencoding::decode(raw_tail) {
+                Ok(d) => d.into_owned(),
+                Err(_) => continue,
+            };
+            if decoded.is_empty() {
+                continue;
+            }
+
+            return Some((mount, Bytes::copy_from_slice(decoded.as_bytes())));
+        }
+
+        None
+    }
+
     fn collect_allowed_methods(
         static_methods: Option<&[HttpMethod]>,
         dynamic_methods: Option<&[(HttpMethod, usize)]>,
@@ -306,6 +426,7 @@ impl FastRouter {
         let mut pattern_map: HashMap<Vec<u8>, SmallVec<[(HttpMethod, usize); 2]>> = HashMap::new();
         let mut static_routes = HashMap::new();
         let mut static_path_methods: HashMap<u64, SmallVec<[HttpMethod; 4]>> = HashMap::new();
+        let mut mount_routes = Vec::new();
 
         for route in routes {
             let handler_idx = handlers.len();
@@ -323,6 +444,24 @@ impl FastRouter {
                 continue;
             }
 
+            if is_mount_catch_all(route.pattern.as_ref()) {
+                let pattern_str = std::str::from_utf8(&route.pattern)
+                    .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?;
+                let suffix = "/{*__rover_mount_path}";
+                let base_path = if pattern_str == suffix {
+                    "/".to_string()
+                } else {
+                    pattern_str.trim_end_matches(suffix).to_string()
+                };
+
+                mount_routes.push(MountRoute {
+                    base_path,
+                    method: route.method,
+                    handler_idx,
+                });
+                continue;
+            }
+
             let methods = pattern_map.entry(route.pattern.to_vec()).or_default();
             if methods.iter().any(|(m, _)| *m == route.method)
                 && let Ok(pattern_str) = std::str::from_utf8(&route.pattern)
@@ -336,7 +475,17 @@ impl FastRouter {
             methods.push((route.method, handler_idx));
         }
 
-        for (pattern_bytes, methods) in pattern_map {
+        let mut pattern_entries: Vec<_> = pattern_map.into_iter().collect();
+        pattern_entries.sort_by(|(a, _), (b, _)| compare_dynamic_patterns(a, b));
+
+        mount_routes.sort_by(|a, b| {
+            b.base_path
+                .len()
+                .cmp(&a.base_path.len())
+                .then_with(|| a.base_path.cmp(&b.base_path))
+        });
+
+        for (pattern_bytes, methods) in pattern_entries {
             let pattern_str = std::str::from_utf8(&pattern_bytes)
                 .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in route pattern"))?;
             router.insert(pattern_str, methods)?;
@@ -347,6 +496,7 @@ impl FastRouter {
             handlers,
             static_routes,
             static_path_methods,
+            mount_routes,
             ws_router: Router::new(),
             ws_static: HashMap::new(),
             has_ws_routes: false,
@@ -519,6 +669,22 @@ impl FastRouter {
         if let Some(methods) = static_methods {
             return RouteMatch::MethodNotAllowed {
                 allowed: Self::normalize_allowed_methods(methods),
+            };
+        }
+
+        if let Some((mount, mount_path)) = self.match_mount_route(path) {
+            if method == mount.method
+                || (method == HttpMethod::Head && mount.method == HttpMethod::Get)
+            {
+                return RouteMatch::Found {
+                    handler: self.handlers[mount.handler_idx].clone(),
+                    params: vec![(Bytes::from_static(b"__rover_mount_path"), mount_path)],
+                    is_head: method == HttpMethod::Head,
+                };
+            }
+
+            return RouteMatch::MethodNotAllowed {
+                allowed: Self::normalize_allowed_methods(&[mount.method]),
             };
         }
 
