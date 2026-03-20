@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::mem;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -37,6 +37,7 @@ use crate::{Bytes, HttpMethod, Route, ServerConfig, SseWriter, WsRoute, generate
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
 const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 30;
+const HEALTHZ_OK_BODY: &[u8] = b"{\"status\":\"ok\"}";
 const DEFAULT_SECURITY_HEADERS: [(&str, &str); 3] = [
     ("X-Content-Type-Options", "nosniff"),
     ("X-Frame-Options", "DENY"),
@@ -70,10 +71,19 @@ struct PendingCoroutine {
     ctx_idx: usize,
 }
 
+#[derive(Debug, Clone)]
+struct BuiltinProbeResponse {
+    status: u16,
+    body: Bytes,
+    content_type: Option<&'static str>,
+    headers: HashMap<String, String>,
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
+    use crate::Bytes;
     use crate::compression::CompressionAlgorithm;
     use mlua::{Lua, Value};
 
@@ -130,12 +140,44 @@ mod tests {
             management_prefix: "/_rover".to_string(),
             management_token: None,
             allow_unauthenticated_management: false,
+            trusted_proxies: Vec::new(),
             tls: None,
             compress: crate::CompressionConfig::default(),
             rate_limit: crate::RateLimitConfig::default(),
             load_shed: crate::LoadShedConfig::default(),
+            readiness: crate::ReadinessConfig::default(),
             drain_timeout_secs: None,
         }
+    }
+
+    fn header_offsets_from_raw(raw: &[u8]) -> Vec<(usize, usize, usize, usize)> {
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        while cursor + 1 < raw.len() {
+            if raw[cursor] == b'\r' && raw[cursor + 1] == b'\n' {
+                break;
+            }
+
+            let line_start = cursor;
+            while cursor + 1 < raw.len() && !(raw[cursor] == b'\r' && raw[cursor + 1] == b'\n') {
+                cursor += 1;
+            }
+            let line_end = cursor;
+            let line = &raw[line_start..line_end];
+            if let Some(colon) = line.iter().position(|b| *b == b':') {
+                let name_len = colon;
+                let value_start = if line.get(colon + 1) == Some(&b' ') {
+                    line_start + colon + 2
+                } else {
+                    line_start + colon + 1
+                };
+                let value_len = line_end.saturating_sub(value_start);
+                out.push((line_start, name_len, value_start, value_len));
+            }
+
+            cursor += 2;
+        }
+        out
     }
 
     #[test]
@@ -211,6 +253,187 @@ mod tests {
     }
 
     #[test]
+    fn should_detect_forwarded_header_names_case_insensitive() {
+        assert!(EventLoop::is_forwarded_header_name("Forwarded"));
+        assert!(EventLoop::is_forwarded_header_name("X-Forwarded-For"));
+        assert!(EventLoop::is_forwarded_header_name("x-forwarded-proto"));
+        assert!(!EventLoop::is_forwarded_header_name("Host"));
+    }
+
+    #[test]
+    fn should_strip_forwarded_headers_when_proxy_is_untrusted() {
+        let buf = b"forwarded: a\r\nx-forwarded-for: b\r\nhost: c\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> =
+            vec![(0, 9, 11, 1), (14, 15, 31, 1), (34, 4, 40, 1)];
+
+        let sanitized_untrusted = EventLoop::sanitize_header_offsets(buf, &headers, false);
+        assert_eq!(sanitized_untrusted.len(), 1);
+        assert_eq!(sanitized_untrusted[0], (34, 4, 40, 1));
+
+        let sanitized_trusted = EventLoop::sanitize_header_offsets(buf, &headers, true);
+        assert_eq!(sanitized_trusted.len(), 3);
+    }
+
+    #[test]
+    fn should_derive_client_context_from_forwarded_when_trusted() {
+        let raw = b"forwarded: for=203.0.113.10;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+        );
+
+        assert_eq!(client_ip, "203.0.113.10");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_derive_client_context_from_x_forwarded_headers_when_trusted() {
+        let raw = b"x-forwarded-for: 198.51.100.9, 198.51.100.10\r\nx-forwarded-proto: HTTPS\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_ignore_forwarded_headers_for_untrusted_source() {
+        let raw = b"x-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            false,
+        );
+
+        assert_eq!(client_ip, "10.0.0.8");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_serve_healthz_probe() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/healthz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Bytes::from_static(b"{\"status\":\"ok\"}"));
+        assert_eq!(response.content_type, Some("application/json"));
+    }
+
+    #[test]
+    fn should_serve_readyz_probe_when_running() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/readyz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("readyz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Bytes::from_static(b"{\"status\":\"ready\"}"));
+        assert_eq!(response.content_type, Some("application/json"));
+    }
+
+    #[test]
+    fn should_allow_head_for_probes() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Head,
+            "/healthz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, Some("application/json"));
+    }
+
+    #[test]
+    fn should_mark_readyz_not_ready_while_draining() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/readyz",
+            crate::LifecyclePhase::Draining,
+            &[],
+        )
+        .expect("readyz should be recognized");
+
+        assert_eq!(response.status, 503);
+        assert_eq!(
+            response.body,
+            Bytes::from_static(b"{\"status\":\"not_ready\"}")
+        );
+    }
+
+    #[test]
+    fn should_reject_non_get_methods_for_probes() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Post,
+            "/healthz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 405);
+        assert_eq!(
+            response.headers.get("Allow").map(String::as_str),
+            Some("GET, HEAD")
+        );
+    }
+
+    #[test]
+    fn should_mark_readyz_not_ready_when_dependency_fails() {
+        let failed_dependencies = vec!["database".to_string()];
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/readyz",
+            crate::LifecyclePhase::Running,
+            &failed_dependencies,
+        )
+        .expect("readyz should be recognized");
+
+        assert_eq!(response.status, 503);
+        let body = std::str::from_utf8(response.body.as_ref()).expect("utf8 body");
+        assert!(body.contains("\"status\":\"not_ready\""));
+        assert!(body.contains("\"code\":\"dependency_unavailable\""));
+        assert!(body.contains("\"dependency\":\"database\""));
+    }
+
+    #[test]
+    fn should_keep_healthz_ok_even_when_dependency_fails() {
+        let failed_dependencies = vec!["database".to_string()];
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/healthz",
+            crate::LifecyclePhase::Draining,
+            &failed_dependencies,
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Bytes::from_static(b"{\"status\":\"ok\"}"));
+    }
+
+    #[test]
     fn should_require_management_auth_by_default() {
         let config = base_config();
         assert!(!EventLoop::is_management_request_authorized(
@@ -277,6 +500,34 @@ mod tests {
     }
 
     #[test]
+    fn should_handle_existing_vary_header_case_insensitively() {
+        let mut headers = HashMap::new();
+        headers.insert("vary".to_string(), "Origin".to_string());
+
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+
+        assert_eq!(headers.len(), 1);
+        assert_eq!(
+            headers.get("vary"),
+            Some(&"Origin, Accept-Encoding".to_string())
+        );
+        assert!(!headers.contains_key("Vary"));
+    }
+
+    #[test]
+    fn should_not_duplicate_vary_values_case_insensitively() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "accept-encoding, Origin".to_string());
+
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"accept-encoding, Origin".to_string())
+        );
+    }
+
+    #[test]
     fn should_detect_existing_content_encoding_header_case_insensitive() {
         let mut headers = HashMap::new();
         headers.insert("content-encoding".to_string(), "gzip".to_string());
@@ -302,6 +553,7 @@ mod tests {
         assert!(EventLoop::is_compressible(Some("application/xml")));
         assert!(EventLoop::is_compressible(Some("application/vnd.api+json")));
         assert!(EventLoop::is_compressible(Some("application/atom+xml")));
+        assert!(!EventLoop::is_compressible(Some("text/event-stream")));
         assert!(!EventLoop::is_compressible(Some("image/png")));
         assert!(!EventLoop::is_compressible(Some("video/mp4")));
         assert!(!EventLoop::is_compressible(None));
@@ -324,6 +576,9 @@ mod tests {
             "application/json;charset=utf-8"
         )));
         assert!(EventLoop::is_compressible(Some("text/html; charset=UTF-8")));
+        assert!(!EventLoop::is_compressible(Some(
+            "text/event-stream; charset=UTF-8"
+        )));
     }
 
     #[test]
@@ -633,6 +888,140 @@ impl EventLoop {
             .and_then(|ae| negotiate_encoding(&ae, configured_algorithms))
     }
 
+    fn is_forwarded_header_name(name: &str) -> bool {
+        name.eq_ignore_ascii_case("forwarded")
+            || name
+                .get(..12)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("x-forwarded-"))
+    }
+
+    fn sanitize_header_offsets(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+        should_trust_forwarded: bool,
+    ) -> Vec<(u16, u8, u16, u16)> {
+        let mut sanitized = Vec::with_capacity(headers.len());
+        for &(name_off, name_len, val_off, val_len) in headers {
+            let header_name =
+                unsafe { std::str::from_utf8_unchecked(&buf[name_off..name_off + name_len]) };
+            if !should_trust_forwarded && Self::is_forwarded_header_name(header_name) {
+                continue;
+            }
+
+            sanitized.push((
+                name_off as u16,
+                name_len as u8,
+                val_off as u16,
+                val_len as u16,
+            ));
+        }
+
+        sanitized
+    }
+
+    fn parse_client_ip_token(value: &str) -> Option<String> {
+        let trimmed = value.trim().trim_matches('"');
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if let Some(ipv6) = trimmed
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']').map(|(host, _)| host))
+            && ipv6.parse::<IpAddr>().is_ok()
+        {
+            return Some(ipv6.to_string());
+        }
+
+        if trimmed.parse::<IpAddr>().is_ok() {
+            return Some(trimmed.to_string());
+        }
+
+        if let Some((host, port)) = trimmed.rsplit_once(':')
+            && !host.is_empty()
+            && port.chars().all(|ch| ch.is_ascii_digit())
+            && host.parse::<IpAddr>().is_ok()
+        {
+            return Some(host.to_string());
+        }
+
+        None
+    }
+
+    fn parse_client_proto_token(value: &str) -> Option<String> {
+        let proto = value.trim().trim_matches('"').to_ascii_lowercase();
+        match proto.as_str() {
+            "http" | "https" => Some(proto),
+            _ => None,
+        }
+    }
+
+    fn parse_forwarded_client_ip(value: &str) -> Option<String> {
+        let first_entry = value.split(',').next()?.trim();
+        for pair in first_entry.split(';') {
+            let (name, raw_value) = pair.split_once('=')?;
+            if name.trim().eq_ignore_ascii_case("for") {
+                return Self::parse_client_ip_token(raw_value);
+            }
+        }
+        None
+    }
+
+    fn parse_forwarded_client_proto(value: &str) -> Option<String> {
+        let first_entry = value.split(',').next()?.trim();
+        for pair in first_entry.split(';') {
+            let (name, raw_value) = pair.split_once('=')?;
+            if name.trim().eq_ignore_ascii_case("proto") {
+                return Self::parse_client_proto_token(raw_value);
+            }
+        }
+        None
+    }
+
+    fn derive_client_context(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+        source_ip: Option<IpAddr>,
+        should_trust_forwarded: bool,
+    ) -> (String, String) {
+        let fallback_ip = source_ip.map(|ip| ip.to_string()).unwrap_or_default();
+        let mut client_ip = String::new();
+        let mut client_proto = "http".to_string();
+
+        if should_trust_forwarded {
+            if let Some(forwarded) = Self::get_header_value(buf, headers, "forwarded") {
+                if let Some(parsed_ip) = Self::parse_forwarded_client_ip(&forwarded) {
+                    client_ip = parsed_ip;
+                }
+                if let Some(parsed_proto) = Self::parse_forwarded_client_proto(&forwarded) {
+                    client_proto = parsed_proto;
+                }
+            }
+
+            if client_ip.is_empty()
+                && let Some(value) = Self::get_header_value(buf, headers, "x-forwarded-for")
+                && let Some(first) = value.split(',').next()
+                && let Some(parsed_ip) = Self::parse_client_ip_token(first)
+            {
+                client_ip = parsed_ip;
+            }
+
+            if client_proto == "http"
+                && let Some(value) = Self::get_header_value(buf, headers, "x-forwarded-proto")
+                && let Some(first) = value.split(',').next()
+                && let Some(parsed_proto) = Self::parse_client_proto_token(first)
+            {
+                client_proto = parsed_proto;
+            }
+        }
+
+        if client_ip.is_empty() {
+            client_ip = fallback_ip;
+        }
+
+        (client_ip, client_proto)
+    }
+
     fn accepts_content_type(accept: &str, content_type: &str) -> bool {
         let ct = content_type
             .split(';')
@@ -664,6 +1053,44 @@ impl EventLoop {
         }
 
         false
+    }
+
+    fn builtin_probe_response(
+        method: HttpMethod,
+        path: &str,
+        phase: LifecyclePhase,
+        failed_dependencies: &[String],
+    ) -> Option<BuiltinProbeResponse> {
+        if path != "/healthz" && path != "/readyz" {
+            return None;
+        }
+
+        if !matches!(method, HttpMethod::Get | HttpMethod::Head) {
+            let mut headers = HashMap::new();
+            headers.insert("Allow".to_string(), "GET, HEAD".to_string());
+            return Some(BuiltinProbeResponse {
+                status: 405,
+                body: Bytes::from_static(b"Method Not Allowed"),
+                content_type: Some("text/plain"),
+                headers,
+            });
+        }
+
+        let (status, body) = match path {
+            "/healthz" => (200, Bytes::from_static(HEALTHZ_OK_BODY)),
+            "/readyz" => {
+                let readiness = crate::readiness_probe_result(phase, failed_dependencies);
+                (readiness.status_code, readiness.body)
+            }
+            _ => return None,
+        };
+
+        Some(BuiltinProbeResponse {
+            status,
+            body,
+            content_type: Some("application/json"),
+            headers: HashMap::new(),
+        })
     }
 
     fn find_header_key_ci<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
@@ -758,17 +1185,21 @@ impl EventLoop {
                     (Bytes::from(compressed), h)
                 } else {
                     let mut h = headers;
-                    if is_compressible_type {
+                    if is_compressible_type || already_encoded {
                         Self::add_vary_header(&mut h, "Accept-Encoding");
                     }
                     (body, h)
                 }
             } else {
-                (body, headers)
+                let mut h = headers;
+                if already_encoded {
+                    Self::add_vary_header(&mut h, "Accept-Encoding");
+                }
+                (body, h)
             }
         } else {
             let mut h = headers;
-            if is_compressible_type {
+            if is_compressible_type || already_encoded {
                 Self::add_vary_header(&mut h, "Accept-Encoding");
             }
             (body, h)
@@ -794,7 +1225,7 @@ impl EventLoop {
             None => return false,
         };
         let lower = ct.to_ascii_lowercase();
-        lower.starts_with("text/")
+        (lower.starts_with("text/") && !lower.starts_with("text/event-stream"))
             || lower.starts_with("application/json")
             || lower.starts_with("application/javascript")
             || lower.starts_with("application/xml")
@@ -805,11 +1236,20 @@ impl EventLoop {
     }
 
     fn add_vary_header(headers: &mut HashMap<String, String>, value: &str) {
-        if let Some(existing) = headers.get_mut("Vary") {
-            let values: std::collections::HashSet<&str> =
-                existing.split(',').map(|s| s.trim()).collect();
-            if !values.contains(value) {
-                *existing = format!("{}, {}", existing, value);
+        if let Some(vary_key) = Self::find_header_key_ci(headers, "Vary").map(str::to_string) {
+            let existing = headers.get(&vary_key).cloned().unwrap_or_default();
+            let already_has_value = existing
+                .split(',')
+                .map(str::trim)
+                .any(|current| current.eq_ignore_ascii_case(value));
+
+            if !already_has_value {
+                let new_value = if existing.trim().is_empty() {
+                    value.to_string()
+                } else {
+                    format!("{}, {}", existing, value)
+                };
+                headers.insert(vary_key, new_value);
             }
         } else {
             headers.insert("Vary".to_string(), value.to_string());
@@ -1560,6 +2000,10 @@ impl EventLoop {
         };
         let (path_off, path_len) = conn.path_offset.unwrap_or((0, 0));
         let keep_alive = conn.keep_alive;
+        let source_ip = conn.socket.peer_addr().ok().map(|addr| addr.ip());
+        let should_trust_forwarded = source_ip
+            .map(|ip| self.config.is_trusted_proxy_source(ip))
+            .unwrap_or(false);
 
         // ── Check for WebSocket upgrade ──
         let has_upgrade =
@@ -1714,6 +2158,35 @@ impl EventLoop {
             }
         };
 
+        if let Some(probe_response) = Self::builtin_probe_response(
+            http_method,
+            path,
+            self.lifecycle_manager.current_phase(),
+            &self.config.readiness.failed_dependencies(),
+        ) {
+            drop(conns);
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.keep_alive = keep_alive;
+            let body = if http_method == HttpMethod::Head {
+                Bytes::new()
+            } else {
+                probe_response.body
+            };
+            let buf = self.buffer_pool.get_response_buf();
+            self.set_http_response(
+                conn,
+                probe_response.status,
+                body,
+                probe_response.content_type,
+                probe_response.headers,
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            return Ok(());
+        }
+
         let path_owned = path.to_string();
         let (handler, params, is_head_request) =
             match self.router.match_route(http_method, &path_owned) {
@@ -1861,15 +2334,14 @@ impl EventLoop {
             Vec::new()
         };
 
-        let mut header_offsets = Vec::with_capacity(conn.header_offsets.len());
-        for &(name_off, name_len, val_off, val_len) in conn.header_offsets.iter() {
-            header_offsets.push((
-                name_off as u16,
-                name_len as u8,
-                val_off as u16,
-                val_len as u16,
-            ));
-        }
+        let header_offsets =
+            Self::sanitize_header_offsets(buf_ref, &conn.header_offsets, should_trust_forwarded);
+        let (client_ip, client_proto) = Self::derive_client_context(
+            buf_ref,
+            &conn.header_offsets,
+            source_ip,
+            should_trust_forwarded,
+        );
 
         let accept_header = Self::get_header_value(buf_ref, &conn.header_offsets, "accept");
         let accept_encoding = Self::negotiate_encoding_from_headers(
@@ -1922,6 +2394,8 @@ impl EventLoop {
             query_offsets,
             &params,
             request_id,
+            client_ip,
+            client_proto,
             started_at,
             &mut self.thread_pool,
             &mut self.request_pool,
@@ -2214,6 +2688,8 @@ impl EventLoop {
             path_len,
             method_off,
             method_len,
+            source_ip,
+            should_trust_forwarded,
         ) = {
             let conns = self.connections.borrow();
             let conn = &conns[conn_idx];
@@ -2228,6 +2704,10 @@ impl EventLoop {
                 .map(|&(no, nl, vo, vl)| (no as u16, nl as u8, vo as u16, vl as u16))
                 .collect();
             let header_offsets_raw = conn.header_offsets.clone();
+            let source_ip = conn.socket.peer_addr().ok().map(|addr| addr.ip());
+            let should_trust_forwarded = source_ip
+                .map(|ip| self.config.is_trusted_proxy_source(ip))
+                .unwrap_or(false);
             let (po, pl) = conn.path_offset.unwrap_or((0, 0));
             let (mo, ml) = conn.method_offset.unwrap_or((0, 0));
             let query_offsets = {
@@ -2301,11 +2781,19 @@ impl EventLoop {
                 pl as u16,
                 mo as u16,
                 ml as u8,
+                source_ip,
+                should_trust_forwarded,
             )
         };
 
         // Generate request ID for WebSocket connection
         let ws_request_id = extract_or_generate_request_id(&buf, &header_offsets_raw);
+        let (client_ip, client_proto) = Self::derive_client_context(
+            &buf,
+            &header_offsets_raw,
+            source_ip,
+            should_trust_forwarded,
+        );
 
         // Upgrade the connection
         {
@@ -2341,6 +2829,8 @@ impl EventLoop {
                 query_offsets,
                 &params,
                 ws_request_id.clone(),
+                client_ip.clone(),
+                client_proto.clone(),
             )?;
 
             drop(mgr);

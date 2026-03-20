@@ -3,7 +3,8 @@ use std::time::Instant;
 
 use anyhow::Result;
 use mlua::{
-    Function, Lua, RegistryKey, Table, Thread, ThreadStatus, UserData, UserDataMethods, Value,
+    Function, Lua, RegistryKey, Table, Thread, ThreadStatus, UserData, UserDataFields,
+    UserDataMethods, Value,
 };
 
 use tracing::{debug, info, warn};
@@ -86,6 +87,9 @@ pub struct RequestContext {
     /// Request ID for correlation across request lifecycle
     request_id: String,
 
+    client_ip: String,
+    client_proto: String,
+
     /// Context storage for request-scoped data (used by middleware)
     context_data: std::cell::RefCell<std::collections::HashMap<String, Value>>,
 
@@ -116,6 +120,13 @@ impl RequestContext {
 }
 
 impl UserData for RequestContext {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("client_ip", |_lua, this| Ok(this.client_ip.clone()));
+        fields.add_field_method_get("client_proto", |_lua, this| Ok(this.client_proto.clone()));
+        fields.add_field_method_get("ip", |_lua, this| Ok(this.client_ip.clone()));
+        fields.add_field_method_get("proto", |_lua, this| Ok(this.client_proto.clone()));
+    }
+
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("headers", |lua, this, ()| {
             if this.headers.is_empty() {
@@ -542,6 +553,8 @@ impl RequestContextPool {
                 query: Vec::new(),
                 params: Vec::new(),
                 request_id: String::new(),
+                client_ip: String::new(),
+                client_proto: String::new(),
                 context_data: std::cell::RefCell::new(std::collections::HashMap::new()),
                 middleware_chain: std::cell::RefCell::new(None),
                 chain_position: std::cell::Cell::new(0),
@@ -574,6 +587,8 @@ impl RequestContextPool {
         query: Vec<(u16, u8, u16, u16)>,
         params: &[(Bytes, Bytes)],
         request_id: String,
+        client_ip: String,
+        client_proto: String,
     ) -> mlua::Result<(Value, usize)> {
         let idx = self
             .available
@@ -598,6 +613,8 @@ impl RequestContextPool {
         ctx.params.clear();
         ctx.params.extend_from_slice(params);
         ctx.request_id = request_id;
+        ctx.client_ip = client_ip;
+        ctx.client_proto = client_proto;
         // Clear context data and chain state from previous request
         ctx.context_data.borrow_mut().clear();
         ctx.middleware_chain.borrow_mut().take();
@@ -689,6 +706,8 @@ pub fn execute_handler_coroutine(
     query: Vec<(u16, u8, u16, u16)>,
     params: &[(Bytes, Bytes)],
     request_id: String,
+    client_ip: String,
+    client_proto: String,
     started_at: Instant,
     thread_pool: &mut ThreadPool,
     request_pool: &mut RequestContextPool,
@@ -721,6 +740,8 @@ pub fn execute_handler_coroutine(
         query,
         params,
         request_id,
+        client_ip,
+        client_proto,
     ) {
         Ok(c) => c,
         Err(e) => {
@@ -1132,8 +1153,11 @@ fn lua_table_to_json(table: &Table, buffer_pool: &mut BufferPool) -> Result<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{BodyValue, extract_or_generate_request_id, generate_request_id};
+    use super::{
+        BodyValue, RequestContextPool, extract_or_generate_request_id, generate_request_id,
+    };
     use bytes::Bytes;
+    use mlua::{Lua, MultiValue, Value};
 
     #[test]
     fn should_allow_application_json_media_type() {
@@ -1227,6 +1251,51 @@ mod tests {
         assert!(
             !id.is_empty(),
             "Should generate a request ID when header value is empty"
+        );
+    }
+
+    #[test]
+    fn should_expose_client_network_fields_on_request_context() {
+        let lua = Lua::new();
+        let mut pool = RequestContextPool::new(&lua, 1).expect("pool");
+        let buf = Bytes::from_static(b"GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n");
+
+        let (ctx, _idx) = pool
+            .acquire(
+                &lua,
+                buf,
+                0,
+                3,
+                4,
+                6,
+                0,
+                0,
+                Vec::new(),
+                Vec::new(),
+                &[],
+                "req-1".to_string(),
+                "203.0.113.7".to_string(),
+                "https".to_string(),
+            )
+            .expect("acquire");
+
+        lua.globals().set("ctx", ctx).expect("set ctx");
+        let values: MultiValue = lua
+            .load("return ctx.client_ip, ctx.client_proto, ctx.ip, ctx.proto")
+            .eval()
+            .expect("eval");
+
+        let collected = values
+            .into_iter()
+            .map(|value| match value {
+                Value::String(s) => s.to_str().unwrap().to_string(),
+                other => panic!("expected string, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            collected,
+            vec!["203.0.113.7", "https", "203.0.113.7", "https"]
         );
     }
 }
