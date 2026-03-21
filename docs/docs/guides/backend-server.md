@@ -160,7 +160,7 @@ Requests:
 ### Security Features
 
 - **Path traversal protection**: Requests attempting to access files outside the mounted directory (e.g., `../../../etc/passwd`) are rejected.
-- **No directory listings**: Directory index requests return a 404 response.
+- **No directory listings**: Directory index/listing support is explicitly out of scope for this release. Requests to directory paths return 403 Forbidden.
 - **Cache validation**: Static files are served with `ETag` and `Last-Modified` headers for efficient client-side caching.
 
 ### Cache Behavior

@@ -62,9 +62,9 @@ Final implementation recommendations locked for this PRD:
 **Acceptance Criteria:**
 - [x] Static mount DSL is documented exactly as implemented.
 - [x] Route precedence between API routes and static mounts is documented and covered by tests.
-- [ ] Path traversal attempts are rejected and covered by tests.
-- [ ] Cache behavior is documented, including how static mount `cache` maps to `Cache-Control` output.
-- [ ] Scope mismatch is resolved explicitly by removing directory index support from documented/Plane scope for this release.
+- [x] Path traversal attempts are rejected and covered by tests.
+- [x] Cache behavior is documented, including how static mount `cache` maps to `Cache-Control` output.
+- [x] Scope mismatch is resolved explicitly by removing directory index support from documented/Plane scope for this release.
 - [ ] `rover-docs` includes a runnable static assets example and an uploads/static guide that matches current DSL.
 - [ ] At least one runnable example mounts one or more static directories from `examples/`.
 - [ ] `cargo test -p rover-core` and relevant `rover-server` tests pass.
@@ -73,7 +73,7 @@ Final implementation recommendations locked for this PRD:
 **Description:** As a deploy operator, I want health and readiness behavior documented and exemplified accurately so that orchestrators and load balancers use the built-in probes correctly.
 
 **Acceptance Criteria:**
-- [ ] Built-in `/healthz` and `/readyz` behavior remains documented with exact status code and response body contracts.
+- [x] Built-in `/healthz` and `/readyz` behavior remains documented with exact status code and response body contracts.
 - [ ] Readiness dependency failure behavior is documented with structured response examples.
 - [ ] Existing examples are updated so they do not redefine built-in probes in misleading ways unless the example is explicitly about overriding behavior.
 - [ ] At least one runnable example shows readiness dependency config and expected operational usage.
