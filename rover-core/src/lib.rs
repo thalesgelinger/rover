@@ -9,6 +9,7 @@ pub mod http;
 pub mod io;
 pub mod middleware;
 pub mod permissions;
+pub mod security;
 pub mod server;
 pub mod session;
 pub mod template;
