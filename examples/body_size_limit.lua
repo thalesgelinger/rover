@@ -5,6 +5,9 @@
 --   cargo run -p rover_cli -- run examples/body_size_limit.lua
 --
 -- Test commands:
+--   # Built-in health probe (no body expected)
+--   curl http://localhost:4242/healthz
+--
 --   curl -X POST -d "small body" http://localhost:4242/echo
 --   curl -X POST -d "$(python3 -c 'print(\"x\" * 10000)')" http://localhost:4242/echo
 
@@ -21,14 +24,6 @@ function api.echo.post(ctx)
     received = body,
     length = #body,
     message = "Body received successfully",
-  }
-end
-
--- Health check (no body expected)
-function api.health.get(ctx)
-  return api.json {
-    status = "healthy",
-    body_size_limit = 1024,
   }
 end
 

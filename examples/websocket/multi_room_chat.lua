@@ -6,6 +6,9 @@
 --   wscat -c "ws://localhost:4242/chat/random?user_id=bob&name=Bob"
 --
 -- Messages flow only within the same room.
+--
+-- Note: Built-in /healthz and /readyz probes are provided automatically.
+-- Use those for health checks rather than defining custom endpoints.
 
 local api = rover.server {}
 
@@ -59,11 +62,6 @@ function api.chat.p_room_id.ws(ws)
     }
   end
 
-end
-
--- HTTP endpoint to check server health alongside WS
-function api.health.get()
-  return rover.server.json { status = "ok" }
 end
 
 return api

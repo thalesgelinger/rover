@@ -649,6 +649,83 @@ return server
     }
 
     #[test]
+    fn should_warn_on_builtin_probe_redefinition() {
+        let code = r#"
+local api = rover.server {}
+
+function api.healthz.get(ctx)
+    return api.json { status = "ok" }
+end
+
+function api.readyz.get(ctx)
+    return api.json { status = "ready" }
+end
+
+return api
+        "#;
+
+        let model = analyze(code);
+
+        // Should have warnings for both healthz and readyz
+        let probe_warnings: Vec<_> = model
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("built-in") && w.message.contains("probe"))
+            .collect();
+
+        assert_eq!(
+            probe_warnings.len(),
+            2,
+            "Expected 2 warnings for healthz and readyz redefinition, got: {:?}",
+            probe_warnings
+        );
+
+        // Verify the warnings mention the conflicting paths
+        assert!(
+            probe_warnings
+                .iter()
+                .any(|w| w.message.contains("/healthz")),
+            "Expected warning about /healthz conflict"
+        );
+        assert!(
+            probe_warnings.iter().any(|w| w.message.contains("/readyz")),
+            "Expected warning about /readyz conflict"
+        );
+    }
+
+    #[test]
+    fn should_not_warn_on_custom_health_routes() {
+        let code = r#"
+local api = rover.server {}
+
+function api.health.get(ctx)
+    return api.json { status = "ok" }
+end
+
+function api.status.get(ctx)
+    return api.json { status = "ok" }
+end
+
+return api
+        "#;
+
+        let model = analyze(code);
+
+        // Should have no probe-related warnings
+        let probe_warnings: Vec<_> = model
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("built-in") && w.message.contains("probe"))
+            .collect();
+
+        assert!(
+            probe_warnings.is_empty(),
+            "Expected no warnings for custom health routes, got: {:?}",
+            probe_warnings
+        );
+    }
+
+    #[test]
     fn should_populate_symbol_table_with_locals() {
         let code = r#"
 local x = 10

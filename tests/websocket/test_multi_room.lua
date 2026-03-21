@@ -54,8 +54,4 @@ function api.chat.p_room_id.ws(ws)
   end
 end
 
-function api.health.get()
-  return rover.server.json { status = "ok" }
-end
-
 return api

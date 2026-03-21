@@ -5,6 +5,9 @@
 --   cargo run -p rover_cli -- run examples/rate_limiting.lua
 --
 -- Test commands:
+--   # Built-in health probe
+--   curl http://localhost:4242/healthz
+--
 --   # Global rate limit (100 requests per 60 seconds by default)
 --   for i in {1..110}; do curl -s http://localhost:4242/api/status | head -c 100; echo; done
 --
@@ -46,14 +49,6 @@ function api.limited.get(ctx)
     return api.json {
         status = "ok",
         message = "This endpoint has stricter rate limits",
-    }
-end
-
--- Health check endpoint
-function api.health.get(ctx)
-    return api.json {
-        status = "healthy",
-        rate_limiting = "enabled",
     }
 end
 

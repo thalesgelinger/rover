@@ -736,6 +736,21 @@ impl Analyzer {
         let path_params = self.extract_path_params_from_path(&path);
 
         if let Some(ref mut server) = self.model.server {
+            // Warn if route conflicts with built-in health probes
+            if method == "GET" && (path == "/healthz" || path == "/readyz") {
+                self.model.warnings.push(ParsingError {
+                    message: format!(
+                        "Route '{}' conflicts with built-in {} probe. \
+                         Use the built-in endpoint instead of defining a custom one. \
+                         See examples/foundation_server_capabilities.lua for proper usage.",
+                        path,
+                        path.trim_start_matches('/')
+                    ),
+                    function_name: Some(func_name.clone()),
+                    range: Some(function_range.clone()),
+                });
+            }
+
             server.routes.push(Route {
                 method,
                 path,
