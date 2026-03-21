@@ -165,6 +165,42 @@ pub struct ReadinessProbeResult {
     pub body: Bytes,
 }
 
+/// Compute readiness probe result based on lifecycle phase and dependencies.
+///
+/// # Status Codes and Response Bodies
+///
+/// - **200**: Ready to accept connections with all dependencies healthy
+///   - Body: `{"status":"ready"}`
+///
+/// - **503**: Not accepting connections (draining/shutting down)
+///   - Body: `{"status":"not_ready"}`
+///   - State: `ReadinessState::Degraded`
+///
+/// - **503**: Dependencies unavailable
+///   - Body: `{"status":"not_ready","reasons":[{"code":"dependency_unavailable","dependency":"<name>"}]}`
+///   - State: `ReadinessState::DependencyFailure`
+///
+/// # Examples
+///
+/// ```
+/// use rover_server::{LifecyclePhase, ReadinessState, readiness_probe_result};
+///
+/// // Healthy state
+/// let result = readiness_probe_result(LifecyclePhase::Running, &[]);
+/// assert_eq!(result.state, ReadinessState::Healthy);
+/// assert_eq!(result.status_code, 200);
+///
+/// // Draining state
+/// let result = readiness_probe_result(LifecyclePhase::Draining, &[]);
+/// assert_eq!(result.state, ReadinessState::Degraded);
+/// assert_eq!(result.status_code, 503);
+///
+/// // Dependency failure
+/// let deps = vec!["database".to_string()];
+/// let result = readiness_probe_result(LifecyclePhase::Running, &deps);
+/// assert_eq!(result.state, ReadinessState::DependencyFailure);
+/// assert_eq!(result.status_code, 503);
+/// ```
 pub fn readiness_probe_result(
     phase: LifecyclePhase,
     failed_dependencies: &[String],

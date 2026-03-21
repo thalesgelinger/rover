@@ -37,6 +37,10 @@ use crate::{Bytes, HttpMethod, Route, ServerConfig, SseWriter, WsRoute, generate
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
 const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 30;
+/// Response body for `/healthz` probe when healthy.
+///
+/// Body: `{"status":"ok"}`
+/// Status: 200 OK
 const HEALTHZ_OK_BODY: &[u8] = b"{\"status\":\"ok\"}";
 const DEFAULT_SECURITY_HEADERS: [(&str, &str); 3] = [
     ("X-Content-Type-Options", "nosniff"),
@@ -1256,6 +1260,25 @@ impl EventLoop {
         false
     }
 
+    /// Generate built-in probe response for `/healthz` and `/readyz` endpoints.
+    ///
+    /// # Probe Contracts
+    ///
+    /// ## `/healthz` (Liveness Probe)
+    /// - **GET** or **HEAD**: Returns `200 OK` with body `{"status":"ok"}`
+    /// - Returns `405 Method Not Allowed` for other methods (with `Allow: GET, HEAD` header)
+    /// - Always healthy regardless of lifecycle phase or dependencies
+    ///
+    /// ## `/readyz` (Readiness Probe)
+    /// - **GET** or **HEAD**: Returns readiness state
+    ///   - **200 OK**: `{"status":"ready"}` when healthy and accepting connections
+    ///   - **503 Service Unavailable**: `{"status":"not_ready"}` when draining
+    ///   - **503 Service Unavailable**: `{"status":"not_ready","reasons":[{"code":"dependency_unavailable","dependency":"<name>"}]}` when dependencies fail
+    /// - Returns `405 Method Not Allowed` for other methods (with `Allow: GET, HEAD` header)
+    ///
+    /// # Returns
+    /// - `Some(BuiltinProbeResponse)` if the path is a recognized probe endpoint
+    /// - `None` if the path is not `/healthz` or `/readyz`
     fn builtin_probe_response(
         method: HttpMethod,
         path: &str,
