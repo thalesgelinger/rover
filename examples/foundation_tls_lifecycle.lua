@@ -31,11 +31,7 @@ api.on_shutdown = function()
   print("shutdown requested, draining connections")
 end
 
-function api.healthz.get(ctx)
-  return api.json {
-    status = "ok",
-    tls = true,
-  }
-end
+-- Note: Use built-in /healthz and /readyz probes instead of custom endpoints.
+-- These are automatically provided by rover.server() and should not be redefined.
 
 return api

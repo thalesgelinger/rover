@@ -15,13 +15,74 @@ Rover exposes built-in probe routes:
 - `GET`/`HEAD /healthz`: liveness probe
 - `GET`/`HEAD /readyz`: readiness probe
 
-Contract and status codes:
+### Response Contracts
 
-- `200 /healthz` -> `{ "status": "ok" }`
-- `200 /readyz` -> `{ "status": "ready" }`
-- `503 /readyz` (draining or dependency outage) -> `{ "status": "not_ready" }`
-- `503 /readyz` with dependency failures -> `{ "status": "not_ready", "reasons": [{ "code": "dependency_unavailable", "dependency": "<name>" }] }`
-- `405 /healthz` and `405 /readyz` for non-`GET`/`HEAD` methods (with `Allow: GET, HEAD`)
+#### Liveness Probe (`/healthz`)
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| `200` | `{ "status": "ok" }` | Server is alive and running |
+| `405` | (with `Allow: GET, HEAD`) | Method not allowed for non-GET/HEAD requests |
+
+#### Readiness Probe (`/readyz`)
+
+| Status | Body | State | Meaning |
+|--------|------|-------|---------|
+| `200` | `{ "status": "ready" }` | Healthy | Ready to accept connections, all dependencies healthy |
+| `503` | `{ "status": "not_ready" }` | Degraded | Draining/shutting down, not accepting new connections |
+| `503` | `{ "status": "not_ready", "reasons": [...] }` | DependencyFailure | Dependencies unavailable, see structured reasons |
+| `405` | (with `Allow: GET, HEAD`) | - | Method not allowed for non-GET/HEAD requests |
+
+### Dependency Failure Response Structure
+
+When one or more dependencies are unhealthy, the readiness probe returns a structured response with detailed failure reasons:
+
+**Single Dependency Failure:**
+
+```json
+{
+  "status": "not_ready",
+  "reasons": [
+    {
+      "code": "dependency_unavailable",
+      "dependency": "database"
+    }
+  ]
+}
+```
+
+**Multiple Dependency Failures:**
+
+```json
+{
+  "status": "not_ready",
+  "reasons": [
+    {
+      "code": "dependency_unavailable",
+      "dependency": "database"
+    },
+    {
+      "code": "dependency_unavailable",
+      "dependency": "redis"
+    },
+    {
+      "code": "dependency_unavailable",
+      "dependency": "payment_gateway"
+    }
+  ]
+}
+```
+
+**Response Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Always `"not_ready"` for dependency failures |
+| `reasons` | array | List of failure reason objects |
+| `reasons[].code` | string | Error code: `"dependency_unavailable"` |
+| `reasons[].dependency` | string | Name of the failed dependency (from config) |
+
+### Configuring Dependencies
 
 Readiness dependency state comes from server config:
 
@@ -31,9 +92,52 @@ local api = rover.server {
         dependencies = {
             database = true,
             redis = true,
+            payment_gateway = true,
         },
     },
 }
+```
+
+Each dependency is a boolean flag:
+- `true` - dependency is considered healthy
+- `false` - dependency is considered failed
+
+### Operational Usage
+
+**Kubernetes Example:**
+
+```yaml
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: app
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 3000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 3000
+        initialDelaySeconds: 10
+        periodSeconds: 15
+```
+
+**Load Balancer Health Check:**
+
+```bash
+# Check liveness
+curl -f http://localhost:3000/healthz || exit 1
+
+# Check readiness with dependency state
+curl -s http://localhost:3000/readyz | jq '.status'
+
+# Full readiness response with reasons
+curl -s http://localhost:3000/readyz | jq '.'
 ```
 
 ## Request IDs

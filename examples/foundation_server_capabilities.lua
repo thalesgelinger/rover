@@ -40,18 +40,9 @@ local sessions = rover.session.new {
   same_site = "lax",
 }
 
-function api.healthz.get(ctx)
-  return api.json {
-    status = "ok",
-    service = "foundation-example",
-  }
-end
-
-function api.readyz.get(ctx)
-  return api.json {
-    ready = true,
-  }
-end
+-- Note: Use built-in /healthz and /readyz probes instead of custom endpoints.
+-- These are automatically provided by rover.server() with proper status codes
+-- and response contracts. See /docs/operations/ for details.
 
 function api.v1.ping.get(ctx)
   return api.json {
