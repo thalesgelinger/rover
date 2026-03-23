@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use mlua::{Lua, ObjectLike, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
@@ -8,8 +8,8 @@ use rover_server::{
     SseResponse, WsRoute,
 };
 use rover_types::ValidationErrors;
-use rover_ui::scheduler::SharedScheduler;
 use rover_ui::SharedSignalRuntime;
+use rover_ui::scheduler::SharedScheduler;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::html::{get_rover_html, render_template_with_components};
