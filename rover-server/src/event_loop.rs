@@ -426,6 +426,183 @@ mod tests {
     }
 
     #[test]
+    fn should_use_x_forwarded_ip_when_forwarded_has_no_for_parameter() {
+        let raw =
+            b"forwarded: proto=https\r\nx-forwarded-for: 198.51.100.9\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_use_x_forwarded_proto_when_forwarded_has_no_proto_parameter() {
+        let raw =
+            b"forwarded: for=203.0.113.20\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.20");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_use_x_forwarded_when_forwarded_is_malformed() {
+        let raw = b"forwarded: completely-bad-value\r\nx-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_ignore_x_forwarded_when_forwarded_has_valid_ip() {
+        let raw = b"forwarded: for=203.0.113.20\r\nx-forwarded-for: 198.51.100.9, 198.51.100.10\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.20");
+    }
+
+    #[test]
+    fn should_ignore_x_forwarded_proto_when_forwarded_has_valid_proto() {
+        let raw = b"forwarded: proto=https\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (_, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_handle_forwarded_and_x_forwarded_combinations_deterministically() {
+        // Case 1: Both Forwarded and X-Forwarded-* present with valid values
+        let raw1 = b"forwarded: for=203.0.113.20;proto=https\r\nx-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers1 = header_offsets_from_raw(raw1);
+        let (ip1, proto1) = EventLoop::derive_client_context(
+            raw1,
+            &headers1,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+        assert_eq!(ip1, "203.0.113.20");
+        assert_eq!(proto1, "https");
+
+        // Case 2: Only Forwarded present
+        let raw2 = b"forwarded: for=203.0.113.20;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers2 = header_offsets_from_raw(raw2);
+        let (ip2, proto2) = EventLoop::derive_client_context(
+            raw2,
+            &headers2,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+        assert_eq!(ip2, "203.0.113.20");
+        assert_eq!(proto2, "https");
+
+        // Case 3: Only X-Forwarded-* present
+        let raw3 = b"x-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers3 = header_offsets_from_raw(raw3);
+        let (ip3, proto3) = EventLoop::derive_client_context(
+            raw3,
+            &headers3,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+        assert_eq!(ip3, "198.51.100.9");
+        assert_eq!(proto3, "https");
+    }
+
+    #[test]
+    fn should_use_forwarded_first_ip_when_multiple_forwarded_entries() {
+        let raw = b"forwarded: for=203.0.113.20, for=203.0.113.21\r\nx-forwarded-for: 198.51.100.9\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        // First valid IP from Forwarded should be used
+        assert_eq!(client_ip, "203.0.113.20");
+    }
+
+    #[test]
+    fn should_use_source_ip_when_no_forwarded_headers_present() {
+        let raw = b"host: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "10.0.0.8");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_fallback_to_x_forwarded_for_ip_chain_when_forwarded_empty() {
+        let raw = b"forwarded: \r\nx-forwarded-for: 198.51.100.9, 198.51.100.10\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+    }
+
+    #[test]
     fn should_reject_spoofed_x_forwarded_chain_from_untrusted_peer() {
         let raw = b"x-forwarded-for: 198.51.100.99, 203.0.113.9\r\nhost: example.com\r\n\r\n";
         let headers = header_offsets_from_raw(raw);

@@ -356,6 +356,28 @@ When the request source matches a trusted proxy:
 - The `Forwarded` header takes precedence over `X-Forwarded-*` when both are present
 - IP chains are evaluated from right to left, stopping at the first untrusted IP
 
+**Conflict resolution (deterministic):**
+
+When both `Forwarded` and `X-Forwarded-*` headers are present, the server uses this deterministic priority:
+
+1. **Client IP**: First valid IP from `Forwarded:for=` is used; only if `Forwarded` has no valid `for=` parameter, `X-Forwarded-For` is consulted
+2. **Protocol**: First valid proto from `Forwarded:proto=` is used; only if `Forwarded` has no valid `proto=` parameter, `X-Forwarded-Proto` is consulted
+3. **Malformed values**: Invalid `Forwarded` header syntax falls back to `X-Forwarded-*` headers
+
+Examples:
+```
+# Forwarded takes precedence
+Forwarded: for=203.0.113.20;proto=https
+X-Forwarded-For: 198.51.100.9
+X-Forwarded-Proto: http
+# Result: IP=203.0.113.20, Proto=https
+
+# Falls back to X-Forwarded-* when Forwarded lacks parameters
+Forwarded: proto=https
+X-Forwarded-For: 198.51.100.9
+# Result: IP=198.51.100.9 (from X-Forwarded-For), Proto=https (from Forwarded)
+```
+
 **Trust boundaries:**
 
 - Untrusted sources cannot spoof client identity via forwarded headers
