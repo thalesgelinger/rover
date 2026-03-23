@@ -65,9 +65,9 @@ Final implementation recommendations locked for this PRD:
 - [x] Path traversal attempts are rejected and covered by tests.
 - [x] Cache behavior is documented, including how static mount `cache` maps to `Cache-Control` output.
 - [x] Scope mismatch is resolved explicitly by removing directory index support from documented/Plane scope for this release.
-- [ ] `rover-docs` includes a runnable static assets example and an uploads/static guide that matches current DSL.
-- [ ] At least one runnable example mounts one or more static directories from `examples/`.
-- [ ] `cargo test -p rover-core` and relevant `rover-server` tests pass.
+- [x] `rover-docs` includes a runnable static assets example and an uploads/static guide that matches current DSL.
+- [x] At least one runnable example mounts one or more static directories from `examples/`.
+- [x] `cargo test -p rover-core` and relevant `rover-server` tests pass.
 
 ### US-003: Align health and readiness docs and examples
 **Description:** As a deploy operator, I want health and readiness behavior documented and exemplified accurately so that orchestrators and load balancers use the built-in probes correctly.
