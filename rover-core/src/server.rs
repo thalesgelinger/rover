@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use mlua::{Lua, ObjectLike, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
@@ -8,8 +8,8 @@ use rover_server::{
     SseResponse, WsRoute,
 };
 use rover_types::ValidationErrors;
-use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
+use rover_ui::SharedSignalRuntime;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use crate::html::{get_rover_html, render_template_with_components};
@@ -1379,5 +1379,266 @@ mod tests {
 
         assert_eq!(sse.status, 200);
         assert_eq!(sse.retry_ms, Some(1500));
+    }
+
+    #[test]
+    fn should_support_rover_docs_static_assets_example_dsl() {
+        let temp = tempdir().expect("create temp dir");
+        let assets_dir = temp.path().join("public/assets");
+        fs::create_dir_all(&assets_dir).expect("create assets dir");
+        fs::write(assets_dir.join("site.css"), "body { color: blue; }").expect("write css");
+        fs::write(assets_dir.join("app.js"), "console.log('ok');").expect("write js");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = assets_dir
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("public/assets")
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            
+            -- Static mount with cache settings (as used in rover-docs example)
+            api.assets.static {{
+                dir = "{}",
+                cache = "public, max-age=31536000, immutable"
+            }}
+            
+            -- Route precedence: API over static
+            function api.assets.health.get(ctx)
+                return {{
+                    status = "healthy",
+                    timestamp = os.time()
+                }}
+            end
+            
+            -- Dynamic route also takes precedence
+            function api.assets.p_id.get(ctx)
+                return {{
+                    file_id = ctx:params().id,
+                    requested_path = ctx.path
+                }}
+            end
+            
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua
+            .load(&script)
+            .eval()
+            .expect("load static-assets example app");
+        let routes = app.get_routes(&lua).expect("get routes");
+
+        // Should have static mount route
+        let static_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/assets/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        // Should have API routes that take precedence
+        let _health_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/assets/health")
+            })
+            .expect("health route must exist");
+
+        let _dynamic_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/assets/{id}")
+            })
+            .expect("dynamic route must exist");
+
+        // Test static file serving
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "site.css")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = static_route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+
+        let (status, body) = parse_response(value.clone());
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "body { color: blue; }");
+
+        let headers = parse_response_headers(value).expect("headers must exist");
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"public, max-age=31536000, immutable".to_string())
+        );
+        assert!(headers.contains_key("ETag"));
+    }
+
+    #[test]
+    fn should_support_rover_docs_uploads_demo_dsl() {
+        let temp = tempdir().expect("create temp dir");
+        let uploads_dir = temp.path().join("uploads");
+        fs::create_dir_all(&uploads_dir).expect("create uploads dir");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = uploads_dir
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            
+            -- Static mount for uploaded files (no cache)
+            api.uploads.static {{
+                dir = "{}",
+                cache = "private, max-age=0, must-revalidate"
+            }}
+            
+            -- File metadata endpoint (takes precedence over static)
+            function api.uploads.p_filename.get(ctx)
+                local filename = ctx:params().filename:gsub("[\\\\/]", "_")
+                return {{
+                    filename = filename,
+                    requested = true
+                }}
+            end
+            
+            -- File delete endpoint
+            function api.uploads.p_filename.delete(ctx)
+                return api.json:status(200, {{ message = "deleted" }})
+            end
+            
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua
+            .load(&script)
+            .eval()
+            .expect("load uploads-demo example app");
+        let routes = app.get_routes(&lua).expect("get routes");
+
+        // Should have static mount route
+        let static_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/uploads/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        // Should have GET metadata route (takes precedence over static)
+        let meta_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/uploads/{filename}")
+            })
+            .expect("metadata route must exist");
+
+        // Should have DELETE route
+        let delete_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Delete
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/uploads/{filename}")
+            })
+            .expect("delete route must exist");
+
+        // Create a test file for static serving test
+        fs::write(uploads_dir.join("test.txt"), "test content").expect("write test file");
+
+        // Test static mount serves file with correct cache headers
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "test.txt")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = static_route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+
+        let headers = parse_response_headers(value).expect("headers must exist");
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"private, max-age=0, must-revalidate".to_string())
+        );
+
+        // Verify both routes exist and have correct methods
+        assert_eq!(meta_route.method, HttpMethod::Get);
+        assert_eq!(delete_route.method, HttpMethod::Delete);
     }
 }

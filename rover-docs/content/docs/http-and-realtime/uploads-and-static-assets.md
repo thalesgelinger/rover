@@ -166,8 +166,14 @@ This reduces bandwidth and improves performance for repeat visitors.
 
 ## Example
 
-- Multipart/session examples: `examples/session_demo.lua`, `examples/foundation_server_capabilities.lua`
-- Static behavior check: request a file twice and verify `ETag`/`Last-Modified` and `304 Not Modified` on revalidation.
+Runnable examples demonstrating these features:
+
+- **Static Assets Example**: `rover-docs/examples/static-assets/` - Complete static file serving with route precedence, cache headers, and 304 handling
+- **Uploads Demo**: `rover-docs/examples/uploads-demo/` - Multipart file upload with validation and static serving
+
+Additional multipart/session examples: `examples/session_demo.lua`, `examples/foundation_server_capabilities.lua`
+
+Static behavior check: request a file twice and verify `ETag`/`Last-Modified` and `304 Not Modified` on revalidation.
 
 ## Related
 
