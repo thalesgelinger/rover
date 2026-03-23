@@ -313,7 +313,76 @@ Behavior notes:
 - Small responses below `min_size` are not compressed
 - Already compressed content types (images, videos) are automatically skipped
 
-## Environment Variables
+### `trusted_proxies`
+
+- **Type**: `array[string | table]`
+- **Default**: `nil` (no trusted proxies)
+- **Description**: Define which proxy sources are trusted for forwarded headers
+
+When running behind a reverse proxy or load balancer, configure `trusted_proxies` so Rover can safely derive client IP and protocol from forwarded headers. Requests from untrusted sources have forwarded headers stripped to prevent spoofing.
+
+Supported formats:
+
+**CIDR notation (string):**
+```lua
+rover.server {
+    trusted_proxies = { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16" }
+}
+```
+
+**IP range (string with dash):**
+```lua
+rover.server {
+    trusted_proxies = { "10.0.0.1-10.0.0.255" }
+}
+```
+
+**Table format with explicit fields:**
+```lua
+rover.server {
+    trusted_proxies = {
+        { cidr = "10.0.0.0/8" },
+        { start = "172.16.0.10", to = "172.16.0.20" },
+        { start = "192.168.1.1", end = "192.168.1.100" },
+    }
+}
+```
+
+**Forwarded header handling:**
+
+When the request source matches a trusted proxy:
+- `Forwarded` header (RFC 7239) is parsed for `for=` (client IP) and `proto=` (protocol)
+- `X-Forwarded-For` and `X-Forwarded-Proto` are used as fallbacks
+- The `Forwarded` header takes precedence over `X-Forwarded-*` when both are present
+- IP chains are evaluated from right to left, stopping at the first untrusted IP
+
+**Trust boundaries:**
+
+- Untrusted sources cannot spoof client identity via forwarded headers
+- Malformed forwarded header values are ignored
+- Requests without trusted proxies only see the direct connection IP
+
+**Common deployment examples:**
+
+```lua
+-- AWS ALB/ELB in VPC
+rover.server {
+    trusted_proxies = { "10.0.0.0/8" }
+}
+
+-- nginx reverse proxy on private subnet
+rover.server {
+    trusted_proxies = { "172.16.0.0/12" }
+}
+
+-- Multiple proxy tiers
+rover.server {
+    trusted_proxies = {
+        "10.0.0.0/8",     -- Load balancer tier
+        "172.16.0.0/12",  -- Internal proxy tier
+    }
+}
+```
 
 Rover provides direct access to environment variables via `rover.env`.
 
