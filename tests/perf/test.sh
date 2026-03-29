@@ -1,9 +1,11 @@
 #!/bin/bash
-# Performance benchmark test
-# -t2: 2 threads (2 CPUs)
-# -c100: 100 concurrent connections
-# -d30s: 30 second test duration
-# -s benchmark.lua: Use custom benchmark script for detailed metrics
+set -euo pipefail
 
-wrk -t2 -c100 -d30s -s benchmark.lua http://localhost:3000/echo
+# Rust-native perf regression test.
+# Override thresholds via env vars:
+#   ROVER_PERF_THREADS
+#   ROVER_PERF_REQUESTS_PER_THREAD
+#   ROVER_PERF_MIN_RPS
+#   ROVER_PERF_MAX_P99_MS
 
+cargo test --release -p rover_cli perf_http_echo_regression -- --ignored --nocapture
