@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use mlua::{Lua, ObjectLike, Table, Value};
+use mlua::{Lua, MultiValue, ObjectLike, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
 use rover_server::to_json::ToJson;
@@ -10,10 +10,31 @@ use rover_server::{
 use rover_types::ValidationErrors;
 use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use crate::html::{get_rover_html, render_template_with_components};
 use crate::{app_type::AppType, auto_table::AutoTable};
+
+#[derive(Clone)]
+struct IdempotencyEntry {
+    expires_at: Instant,
+    fingerprint: u64,
+    response: RoverResponse,
+}
+
+static IDEMPOTENCY_STORE: OnceLock<Mutex<HashMap<String, IdempotencyEntry>>> = OnceLock::new();
+static IDEMPOTENCY_ROUTE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn idempotency_store() -> &'static Mutex<HashMap<String, IdempotencyEntry>> {
+    IDEMPOTENCY_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub trait AppServer {
     fn create_server(&self, config: Table) -> Result<Table>;
@@ -335,6 +356,194 @@ impl AppServer for Lua {
 
         let no_content_fn = self.create_function(|_lua, _: Table| Ok(RoverResponse::empty(204)))?;
         server.set("no_content", no_content_fn)?;
+
+        let idempotent_fn = self.create_function(|lua, args: MultiValue| {
+                fn context_headers(lua: &Lua, ctx: &Value) -> mlua::Result<Table> {
+                    match ctx {
+                        Value::UserData(ud) => ud.call_method("headers", ()),
+                        Value::Table(table) => {
+                            let headers_fn: mlua::Function = table.get("headers")?;
+                            headers_fn.call(table.clone())
+                        }
+                        _ => lua.create_table(),
+                    }
+                }
+
+                fn context_body(ctx: &Value) -> Option<String> {
+                    match ctx {
+                        Value::UserData(ud) => {
+                            let body_value: Value = ud.call_method("body", ()).ok()?;
+                            match body_value {
+                                Value::UserData(body_ud) => {
+                                    body_ud.call_method::<String>("as_string", ()).ok()
+                                }
+                                Value::Table(body_table) => {
+                                    let as_string: mlua::Function =
+                                        body_table.get("as_string").ok()?;
+                                    as_string.call(body_table).ok()
+                                }
+                                _ => None,
+                            }
+                        }
+                        Value::Table(table) => {
+                            let body_fn: mlua::Function = table.get("body").ok()?;
+                            let body_value: Value = body_fn.call(table.clone()).ok()?;
+                            match body_value {
+                                Value::UserData(body_ud) => {
+                                    body_ud.call_method::<String>("as_string", ()).ok()
+                                }
+                                Value::Table(body_table) => {
+                                    let as_string: mlua::Function =
+                                        body_table.get("as_string").ok()?;
+                                    as_string.call(body_table).ok()
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+
+                fn context_method(ctx: &Value) -> Option<String> {
+                    match ctx {
+                        Value::UserData(ud) => match ud.get::<Value>("method").ok()? {
+                            Value::String(s) => Some(s.to_str().ok()?.to_string()),
+                            Value::Integer(i) => Some(i.to_string()),
+                            Value::Number(n) => Some(n.to_string()),
+                            _ => None,
+                        },
+                        Value::Table(table) => match table.get::<Value>("method").ok()? {
+                            Value::String(s) => Some(s.to_str().ok()?.to_string()),
+                            Value::Integer(i) => Some(i.to_string()),
+                            Value::Number(n) => Some(n.to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+
+                fn compute_fingerprint(method: &str, route_identity: &str, body: &str) -> u64 {
+                    let mut hasher = DefaultHasher::new();
+                    method.hash(&mut hasher);
+                    route_identity.hash(&mut hasher);
+                    body.hash(&mut hasher);
+                    hasher.finish()
+                }
+
+                let values = args.into_vec();
+                let (config, handler) = match values.as_slice() {
+                    [Value::Function(handler)] => (None, handler.clone()),
+                    [Value::Table(config), Value::Function(handler)] => {
+                        (Some(config.clone()), handler.clone())
+                    }
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "api.idempotent() expects (handler) or (config, handler)".to_string(),
+                        ));
+                    }
+                };
+
+                let header_name = if let Some(config) = &config {
+                    config
+                        .get::<Option<String>>("header")?
+                        .unwrap_or_else(|| "Idempotency-Key".to_string())
+                } else {
+                    "Idempotency-Key".to_string()
+                };
+
+                let ttl_ms = if let Some(config) = &config {
+                    config.get::<Option<u64>>("ttl_ms")?.unwrap_or(300_000)
+                } else {
+                    300_000
+                };
+                let ttl = Duration::from_millis(ttl_ms);
+
+                let route_scope = format!(
+                    "route:{}",
+                    IDEMPOTENCY_ROUTE_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let wrapped = lua.create_function(move |lua, ctx: Value| {
+                    let headers = context_headers(lua, &ctx)?;
+                    let mut idempotency_key: Option<String> = None;
+                    for pair in headers.pairs::<String, Value>() {
+                        let (key, value) = pair?;
+                        if key.eq_ignore_ascii_case(&header_name) {
+                            match value {
+                                Value::String(s) => {
+                                    let candidate = s.to_str()?.trim().to_string();
+                                    if !candidate.is_empty() {
+                                        idempotency_key = Some(candidate);
+                                    }
+                                }
+                                Value::Integer(i) => {
+                                    idempotency_key = Some(i.to_string());
+                                }
+                                Value::Number(n) => {
+                                    idempotency_key = Some(n.to_string());
+                                }
+                                _ => {}
+                            }
+                            break;
+                        }
+                    }
+
+                    let Some(idempotency_key) = idempotency_key else {
+                        return handler.call::<Value>(ctx);
+                    };
+
+                    let method = context_method(&ctx).unwrap_or_default();
+                    let body = context_body(&ctx).unwrap_or_default();
+                    let fingerprint = compute_fingerprint(&method, &route_scope, &body);
+                    let store_key = format!("{}:{}", route_scope, idempotency_key);
+
+                    {
+                        let now = Instant::now();
+                        let mut store = idempotency_store().lock().map_err(|_| {
+                            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
+                        })?;
+                        store.retain(|_, entry| entry.expires_at > now);
+
+                        if let Some(entry) = store.get(&store_key) {
+                            if entry.fingerprint != fingerprint {
+                                let conflict = RoverResponse::json(
+                                    409,
+                                    Bytes::from_static(
+                                        br#"{"error":"Idempotency key already used with different payload"}"#,
+                                    ),
+                                    None,
+                                );
+                                return lua.create_userdata(conflict).map(Value::UserData);
+                            }
+                            return lua
+                                .create_userdata(entry.response.clone())
+                                .map(Value::UserData);
+                        }
+                    }
+
+                    let result: Value = handler.call(ctx.clone())?;
+
+                    if let Some(ud) = result.as_userdata()
+                        && let Ok(response) = ud.borrow::<RoverResponse>()
+                    {
+                        let mut store = idempotency_store().lock().map_err(|_| {
+                            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
+                        })?;
+                        store.insert(
+                            store_key,
+                            IdempotencyEntry {
+                                expires_at: Instant::now() + ttl,
+                                fingerprint,
+                                response: response.clone(),
+                            },
+                        );
+                    }
+
+                    Ok(result)
+                })?;
+
+                Ok(wrapped)
+            })?;
+        server.set("idempotent", idempotent_fn)?;
 
         let raw_helper = self.create_table()?;
 
@@ -739,6 +948,7 @@ impl Server for Table {
                         || key_str_val == "stream"
                         || key_str_val == "stream_with_headers"
                         || key_str_val == "sse"
+                        || key_str_val == "idempotent"
                         || (is_root
                             && (key_str_val == "before"
                                 || key_str_val == "after"
@@ -1022,6 +1232,8 @@ mod tests {
     use mlua::{Lua, Table, Value};
     use rover_server::{HttpMethod, RoverResponse, SseResponse};
     use std::fs;
+    use std::thread::sleep;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn create_ctx(lua: &Lua, headers: &[(&str, &str)]) -> mlua::Result<Table> {
@@ -1056,6 +1268,28 @@ mod tests {
             })?,
         )?;
 
+        Ok(ctx)
+    }
+
+    fn create_ctx_with_body(
+        lua: &Lua,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> mlua::Result<Table> {
+        let ctx = create_ctx(lua, headers)?;
+        let body_text = body.to_string();
+        ctx.set(
+            "body",
+            lua.create_function(move |lua, _self: Table| {
+                let body_ud = lua.create_table()?;
+                let text = body_text.clone();
+                body_ud.set(
+                    "as_string",
+                    lua.create_function(move |_lua, _inner: Table| Ok(text.clone()))?,
+                )?;
+                Ok(body_ud)
+            })?,
+        )?;
         Ok(ctx)
     }
 
@@ -1640,5 +1874,315 @@ mod tests {
         // Verify both routes exist and have correct methods
         assert_eq!(meta_route.method, HttpMethod::Get);
         assert_eq!(delete_route.method, HttpMethod::Delete);
+    }
+
+    #[test]
+    fn should_replay_response_for_duplicate_idempotency_key() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local counter = 0
+
+            api.orders.post = api.idempotent(function(ctx)
+                counter = counter + 1
+                return api.json { counter = counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first_ctx = create_ctx(&lua, &[("Idempotency-Key", "abc-123")]).expect("first ctx");
+        let first = route
+            .handler
+            .call::<Value>(Value::Table(first_ctx))
+            .expect("first call");
+        let (_, first_body) = parse_response(first);
+
+        let second_ctx = create_ctx(&lua, &[("Idempotency-Key", "abc-123")]).expect("second ctx");
+        let second = route
+            .handler
+            .call::<Value>(Value::Table(second_ctx))
+            .expect("second call");
+        let (_, second_body) = parse_response(second);
+
+        assert_eq!(first_body, "{\"counter\":1}");
+        assert_eq!(second_body, "{\"counter\":1}");
+    }
+
+    #[test]
+    fn should_reject_reused_key_with_different_payload() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            api.orders.post = api.idempotent(function(ctx)
+                return api.json { ok = true }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first_ctx = create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-1")], "{\"a\":1}")
+            .expect("first ctx");
+        route
+            .handler
+            .call::<Value>(Value::Table(first_ctx))
+            .expect("first call");
+
+        let second_ctx = create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-1")], "{\"a\":2}")
+            .expect("second ctx");
+        let conflict = route
+            .handler
+            .call::<Value>(Value::Table(second_ctx))
+            .expect("second call");
+        let (status, body) = parse_response(conflict);
+
+        assert_eq!(status, 409);
+        assert!(body.contains("Idempotency key already used with different payload"));
+    }
+
+    #[test]
+    fn should_reject_reused_key_with_different_method() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            api.orders.post = api.idempotent(function(ctx)
+                return api.json { ok = true }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first_ctx =
+            create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-method")], "{\"a\":1}")
+                .expect("first ctx");
+        first_ctx.set("method", "POST").expect("set first method");
+        route
+            .handler
+            .call::<Value>(Value::Table(first_ctx))
+            .expect("first call");
+
+        let second_ctx =
+            create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-method")], "{\"a\":1}")
+                .expect("second ctx");
+        second_ctx.set("method", "PUT").expect("set second method");
+        let conflict = route
+            .handler
+            .call::<Value>(Value::Table(second_ctx))
+            .expect("second call");
+        let (status, body) = parse_response(conflict);
+
+        assert_eq!(status, 409);
+        assert!(body.contains("Idempotency key already used with different payload"));
+    }
+
+    #[test]
+    fn should_honor_custom_idempotency_header_per_route() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local orders_counter = 0
+            local payments_counter = 0
+
+            api.orders.post = api.idempotent({ header = "X-Orders-Key" }, function(ctx)
+                orders_counter = orders_counter + 1
+                return api.json { counter = orders_counter }
+            end)
+
+            api.payments.post = api.idempotent({ header = "X-Payments-Key" }, function(ctx)
+                payments_counter = payments_counter + 1
+                return api.json { counter = payments_counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let orders_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+        let payments_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/payments")
+            })
+            .expect("route /payments must exist");
+
+        let orders_first = orders_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Orders-Key", "orders-1")]).expect("orders first ctx"),
+            ))
+            .expect("orders first call");
+        let (_, orders_first_body) = parse_response(orders_first);
+
+        let orders_second = orders_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Orders-Key", "orders-1")]).expect("orders second ctx"),
+            ))
+            .expect("orders second call");
+        let (_, orders_second_body) = parse_response(orders_second);
+
+        let payments_first = payments_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Payments-Key", "payments-1")]).expect("payments first ctx"),
+            ))
+            .expect("payments first call");
+        let (_, payments_first_body) = parse_response(payments_first);
+
+        let payments_second = payments_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Payments-Key", "payments-1")]).expect("payments second ctx"),
+            ))
+            .expect("payments second call");
+        let (_, payments_second_body) = parse_response(payments_second);
+
+        assert_eq!(orders_first_body, "{\"counter\":1}");
+        assert_eq!(orders_second_body, "{\"counter\":1}");
+        assert_eq!(payments_first_body, "{\"counter\":1}");
+        assert_eq!(payments_second_body, "{\"counter\":1}");
+    }
+
+    #[test]
+    fn should_expire_idempotency_entry_with_custom_ttl() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local counter = 0
+
+            api.orders.post = api.idempotent({ ttl_ms = 5 }, function(ctx)
+                counter = counter + 1
+                return api.json { counter = counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "ttl-1")]).expect("first ctx"),
+            ))
+            .expect("first call");
+        let (_, first_body) = parse_response(first);
+
+        sleep(Duration::from_millis(15));
+
+        let second = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "ttl-1")]).expect("second ctx"),
+            ))
+            .expect("second call");
+        let (_, second_body) = parse_response(second);
+
+        assert_eq!(first_body, "{\"counter\":1}");
+        assert_eq!(second_body, "{\"counter\":2}");
     }
 }

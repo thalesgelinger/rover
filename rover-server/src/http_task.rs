@@ -121,6 +121,23 @@ impl RequestContext {
 
 impl UserData for RequestContext {
     fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("method", |_lua, this| {
+            let method = unsafe {
+                std::str::from_utf8_unchecked(
+                    &this.buf[this.method_off as usize
+                        ..(this.method_off + this.method_len as u16) as usize],
+                )
+            };
+            Ok(method.to_string())
+        });
+        fields.add_field_method_get("path", |_lua, this| {
+            let path = unsafe {
+                std::str::from_utf8_unchecked(
+                    &this.buf[this.path_off as usize..(this.path_off + this.path_len) as usize],
+                )
+            };
+            Ok(path.to_string())
+        });
         fields.add_field_method_get("client_ip", |_lua, this| Ok(this.client_ip.clone()));
         fields.add_field_method_get("client_proto", |_lua, this| Ok(this.client_proto.clone()));
         fields.add_field_method_get("ip", |_lua, this| Ok(this.client_ip.clone()));
@@ -1255,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn should_expose_client_network_fields_on_request_context() {
+    fn should_expose_request_and_network_fields_on_request_context() {
         let lua = Lua::new();
         let mut pool = RequestContextPool::new(&lua, 1).expect("pool");
         let buf = Bytes::from_static(b"GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n");
@@ -1281,7 +1298,7 @@ mod tests {
 
         lua.globals().set("ctx", ctx).expect("set ctx");
         let values: MultiValue = lua
-            .load("return ctx.client_ip, ctx.client_proto, ctx.ip, ctx.proto")
+            .load("return ctx.method, ctx.path, ctx.client_ip, ctx.client_proto, ctx.ip, ctx.proto")
             .eval()
             .expect("eval");
 
@@ -1295,7 +1312,14 @@ mod tests {
 
         assert_eq!(
             collected,
-            vec!["203.0.113.7", "https", "203.0.113.7", "https"]
+            vec![
+                "GET",
+                "/hello",
+                "203.0.113.7",
+                "https",
+                "203.0.113.7",
+                "https",
+            ]
         );
     }
 }
