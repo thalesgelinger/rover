@@ -26,6 +26,7 @@ local api = rover.server {
     security_headers = true,
     allow_insecure_security_header_overrides = false,
     https_redirect = false,
+    http2 = true,
     body_size_limit = 1024 * 1024,
     cors_origin = "*",
     cors_methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD",
@@ -34,6 +35,10 @@ local api = rover.server {
     management_prefix = "/_rover",
     management_token = rover.env.ROVER_MANAGEMENT_TOKEN,
     allow_unauthenticated_management = false,
+    permissions = {
+        mode = "production",
+        allow = { "env" },
+    },
     rate_limit = {
         enabled = true,
         global = { requests_per_window = 120, window_secs = 60 },
@@ -88,6 +93,31 @@ local api = rover.server {
 - **Description**: Interval in seconds to check for certificate file changes. Set to enable hot reload of TLS certificates without server restart.
 
 Important: Hot reload only applies to TLS certificates. Route, middleware, config, and Lua code changes still require restart.
+
+### `http2`
+
+- **Type**: `boolean`
+- **Default**: `true`
+- **Description**: Enable HTTP/2 rollout switch (TLS required for strict mode safety)
+
+When `strict_mode = true`, startup rejects `http2 = true` without TLS config.
+
+### `permissions`
+
+- **Type**: `table`
+- **Default**: development defaults
+- **Description**: Capability permissions policy (`mode`, `allow`, `deny`)
+
+Example:
+
+```lua
+rover.server {
+    permissions = {
+        mode = "production",
+        allow = { "env" },
+    }
+}
+```
 
 ## Configuration Reference
 
@@ -453,8 +483,11 @@ return api
 - [Auth](/docs/security/auth/) - bearer, JWT, sessions, management auth
 - [Sessions and Cookies](/docs/security/sessions-and-cookies/) - cookie/session state patterns
 - [CORS and Security](/docs/security/cors-and-security/) - browser + header hardening
+- [Permissions](/docs/security/permissions/) - capability policy and enforcement boundary
 - [Streaming](/docs/http-and-realtime/streaming/) - chunked responses and SSE
 - [Response Optimization](/docs/http-and-realtime/response-optimization/) - compression and validators
+- [Idempotency Keys](/docs/http-and-realtime/idempotency-keys/) - safe retry semantics
+- [HTTP2 and ALPN](/docs/http-and-realtime/http2-and-alpn/) - transport rollout controls
 - [OpenAPI and Versioning](/docs/http-and-realtime/openapi-and-versioning/) - docs UI and route versioning
 - [Operations](/docs/operations/operations/) - health, readiness, request IDs
 - [Server Lifecycle](/docs/operations/server-lifecycle/) - startup hooks, drain, TLS reload

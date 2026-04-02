@@ -197,28 +197,28 @@ fn should_clean_up_expired_idempotency_entries() {
         .set(
             "idempotency:key_1",
             "response_1".into(),
-            Some(Duration::from_millis(50)),
+            Some(Duration::from_millis(120)),
         )
         .unwrap();
     store
         .set(
             "idempotency:key_2",
             "response_2".into(),
-            Some(Duration::from_millis(200)),
+            Some(Duration::from_millis(750)),
         )
         .unwrap();
     store
         .set("idempotency:key_3", "response_3".into(), None)
         .unwrap();
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(260));
     store.cleanup_expired();
 
     assert!(store.get("idempotency:key_1").unwrap().is_none());
     assert!(store.get("idempotency:key_2").unwrap().is_some());
     assert!(store.get("idempotency:key_3").unwrap().is_some());
 
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(Duration::from_millis(560));
     store.cleanup_expired();
 
     assert!(store.get("idempotency:key_1").unwrap().is_none());
@@ -344,23 +344,23 @@ fn should_extend_ttl_on_refresh() {
         .set(
             "idempotency:refreshable_key",
             "initial_response".into(),
-            Some(Duration::from_millis(100)),
+            Some(Duration::from_millis(250)),
         )
         .unwrap();
 
     assert!(store.get("idempotency:refreshable_key").unwrap().is_some());
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(Duration::from_millis(80));
 
     store
         .set(
             "idempotency:refreshable_key",
             "refreshed_response".into(),
-            Some(Duration::from_millis(200)),
+            Some(Duration::from_millis(700)),
         )
         .unwrap();
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(220));
 
     store.cleanup_expired();
 
@@ -369,7 +369,7 @@ fn should_extend_ttl_on_refresh() {
         "Entry should still exist after original TTL due to refresh"
     );
 
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(Duration::from_millis(560));
 
     store.cleanup_expired();
 

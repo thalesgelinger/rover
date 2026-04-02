@@ -11,6 +11,7 @@ local api = rover.server {
   strict_mode = true,
   allow_public_bind = true,
   security_headers = true,
+  http2 = true,
   drain_timeout_secs = 30,
   tls = {
     cert_file = "./certs/dev-cert.pem",
@@ -33,5 +34,6 @@ end
 
 -- Note: Use built-in /healthz and /readyz probes instead of custom endpoints.
 -- These are automatically provided by rover.server() and should not be redefined.
+-- For rollout fallback testing, set http2 = false while keeping TLS enabled.
 
 return api
