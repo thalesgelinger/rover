@@ -37,6 +37,12 @@ return api
 
 This keeps transport rollout explicit and avoids speculative tuning knobs.
 
+## Current Phase Status
+
+- ALPN intent is computed from config (`h2,http/1.1` when `http2=true`, otherwise `http/1.1`).
+- Startup validation enforces TLS requirement for `http2=true` in strict mode.
+- Current event-loop transport still serves HTTP/1.1 while TLS/HTTP2 transport migration is in progress.
+
 ## Safety Notes
 
 - Keep `http2 = false` as a compatibility fallback during staged rollout.

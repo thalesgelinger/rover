@@ -70,14 +70,37 @@ Conflict body:
 
 ## Storage Model
 
-Current built-in store is in-memory.
+Configure idempotency storage in `rover.server { idempotency = ... }`.
+
+### In-Memory (Default)
+
+```lua
+local api = rover.server {
+    idempotency = {
+        backend = "memory",
+    },
+}
+```
 
 - good for local dev/test
 - good for single-instance deployments
 - not shared across instances
 - entries are lost on process restart
 
-For multi-instance production, use a durable uniqueness boundary in your data layer (for example, unique key constraints in DB workflow) until shared backend wiring is available.
+### SQLite Backend (Production-Safe MVP)
+
+```lua
+local api = rover.server {
+    idempotency = {
+        backend = "sqlite",
+        sqlite_path = "./data/idempotency.db",
+    },
+}
+```
+
+- persists entries across restarts
+- supports multi-instance sharing when instances point to same sqlite file on shared volume
+- startup fails if `backend = "sqlite"` and `sqlite_path` is missing/empty
 
 ## Runnable Example
 

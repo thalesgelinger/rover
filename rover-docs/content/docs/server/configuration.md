@@ -119,6 +119,28 @@ rover.server {
 }
 ```
 
+### `idempotency`
+
+- **Type**: `table`
+- **Default**: `{ backend = "memory" }`
+- **Description**: Storage backend used by route-level `api.idempotent(...)`
+
+Options:
+
+- `backend`: `"memory" | "sqlite"`
+- `sqlite_path`: required when backend is `"sqlite"`
+
+Example:
+
+```lua
+rover.server {
+    idempotency = {
+        backend = "sqlite",
+        sqlite_path = "./data/idempotency.db",
+    },
+}
+```
+
 ## Configuration Reference
 
 ### `host`

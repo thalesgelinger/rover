@@ -1,15 +1,16 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use mlua::{Lua, MultiValue, ObjectLike, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
+use rover_server::store::{NamespacedStore, SharedStore, StoreBackendType, StoreValue};
 use rover_server::to_json::ToJson;
 use rover_server::{
     Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig,
     SseResponse, WsRoute,
 };
 use rover_types::ValidationErrors;
-use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
+use rover_ui::SharedSignalRuntime;
 use std::{
     collections::HashMap,
     hash::{DefaultHasher, Hash, Hasher},
@@ -27,6 +28,174 @@ struct IdempotencyEntry {
     expires_at: Instant,
     fingerprint: u64,
     response: RoverResponse,
+}
+
+#[derive(Clone)]
+struct IdempotencyStoreContext {
+    store: NamespacedStore,
+}
+
+fn to_rover_response(value: Value) -> mlua::Result<RoverResponse> {
+    match value {
+        Value::UserData(ud) => {
+            if let Ok(response) = ud.borrow::<RoverResponse>() {
+                Ok(response.clone())
+            } else {
+                Ok(RoverResponse::text(
+                    500,
+                    Bytes::from_static(b"Invalid userdata type"),
+                    None,
+                ))
+            }
+        }
+        Value::String(s) => {
+            let body = s.to_str()?.to_string();
+            Ok(RoverResponse::text(200, Bytes::from(body), None))
+        }
+        Value::Table(table) => {
+            let json = table.to_json_string().map_err(|e| {
+                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+            })?;
+            Ok(RoverResponse::json(200, Bytes::from(json), None))
+        }
+        Value::Integer(i) => Ok(RoverResponse::text(200, Bytes::from(i.to_string()), None)),
+        Value::Number(n) => Ok(RoverResponse::text(200, Bytes::from(n.to_string()), None)),
+        Value::Boolean(b) => Ok(RoverResponse::text(200, Bytes::from(b.to_string()), None)),
+        Value::Nil => Ok(RoverResponse::empty(204)),
+        Value::Error(e) => Ok(RoverResponse::text(500, Bytes::from(e.to_string()), None)),
+        _ => Ok(RoverResponse::text(
+            500,
+            Bytes::from_static(b"Unsupported return type"),
+            None,
+        )),
+    }
+}
+
+fn content_type_to_static(content_type: &str) -> &'static str {
+    match content_type {
+        "application/json" => "application/json",
+        "text/plain" => "text/plain",
+        "text/html" => "text/html",
+        "application/octet-stream" => "application/octet-stream",
+        other => Box::leak(other.to_string().into_boxed_str()),
+    }
+}
+
+fn encode_idempotency_entry(entry: &IdempotencyEntry) -> mlua::Result<Vec<u8>> {
+    let json = serde_json::json!({
+        "fingerprint": entry.fingerprint,
+        "status": entry.response.status,
+        "body": entry.response.body.as_ref(),
+        "content_type": entry.response.content_type,
+        "headers": entry.response.headers,
+    });
+
+    serde_json::to_vec(&json)
+        .map_err(|e| mlua::Error::RuntimeError(format!("idempotency encode error: {}", e)))
+}
+
+fn decode_idempotency_entry(payload: &[u8], ttl: Duration) -> mlua::Result<IdempotencyEntry> {
+    let value: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| mlua::Error::RuntimeError(format!("idempotency decode error: {}", e)))?;
+
+    let fingerprint = value
+        .get("fingerprint")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("idempotency payload missing fingerprint".to_string())
+        })?;
+
+    let status = value
+        .get("status")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("idempotency payload missing status".to_string())
+        })? as u16;
+
+    let body: Vec<u8> = serde_json::from_value(value.get("body").cloned().ok_or_else(|| {
+        mlua::Error::RuntimeError("idempotency payload missing body".to_string())
+    })?)
+    .map_err(|e| {
+        mlua::Error::RuntimeError(format!("idempotency payload body decode error: {}", e))
+    })?;
+
+    let content_type = value
+        .get("content_type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("idempotency payload missing content_type".to_string())
+        })?;
+
+    let headers = match value.get("headers") {
+        Some(v) if !v.is_null() => Some(
+            serde_json::from_value::<HashMap<String, String>>(v.clone()).map_err(|e| {
+                mlua::Error::RuntimeError(format!(
+                    "idempotency payload headers decode error: {}",
+                    e
+                ))
+            })?,
+        ),
+        _ => None,
+    };
+
+    Ok(IdempotencyEntry {
+        expires_at: Instant::now() + ttl,
+        fingerprint,
+        response: RoverResponse {
+            status,
+            body: Bytes::from(body),
+            content_type: content_type_to_static(content_type),
+            headers,
+        },
+    })
+}
+
+fn load_idempotency_entry(
+    lua: &Lua,
+    key: &str,
+    ttl: Duration,
+) -> mlua::Result<Option<IdempotencyEntry>> {
+    if let Some(ctx) = lua.app_data_ref::<IdempotencyStoreContext>() {
+        match ctx.store.get(key).map_err(|e| {
+            mlua::Error::RuntimeError(format!("idempotency store read failed: {}", e))
+        })? {
+            Some(StoreValue::Bytes(payload)) => decode_idempotency_entry(&payload, ttl).map(Some),
+            Some(StoreValue::String(payload)) => {
+                decode_idempotency_entry(payload.as_bytes(), ttl).map(Some)
+            }
+            Some(_) => Ok(None),
+            None => Ok(None),
+        }
+    } else {
+        let now = Instant::now();
+        let mut store = idempotency_store().lock().map_err(|_| {
+            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
+        })?;
+        store.retain(|_, entry| entry.expires_at > now);
+        Ok(store.get(key).cloned())
+    }
+}
+
+fn save_idempotency_entry(
+    lua: &Lua,
+    key: &str,
+    entry: IdempotencyEntry,
+    ttl: Duration,
+) -> mlua::Result<()> {
+    if let Some(ctx) = lua.app_data_ref::<IdempotencyStoreContext>() {
+        let payload = encode_idempotency_entry(&entry)?;
+        ctx.store
+            .set(key, StoreValue::Bytes(payload), Some(ttl))
+            .map_err(|e| {
+                mlua::Error::RuntimeError(format!("idempotency store write failed: {}", e))
+            })
+    } else {
+        let mut store = idempotency_store().lock().map_err(|_| {
+            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
+        })?;
+        store.insert(key.to_string(), entry);
+        Ok(())
+    }
 }
 
 static IDEMPOTENCY_STORE: OnceLock<Mutex<HashMap<String, IdempotencyEntry>>> = OnceLock::new();
@@ -496,49 +665,35 @@ impl AppServer for Lua {
                     let fingerprint = compute_fingerprint(&method, &route_scope, &body);
                     let store_key = format!("{}:{}", route_scope, idempotency_key);
 
-                    {
-                        let now = Instant::now();
-                        let mut store = idempotency_store().lock().map_err(|_| {
-                            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
-                        })?;
-                        store.retain(|_, entry| entry.expires_at > now);
-
-                        if let Some(entry) = store.get(&store_key) {
-                            if entry.fingerprint != fingerprint {
-                                let conflict = RoverResponse::json(
-                                    409,
-                                    Bytes::from_static(
-                                        br#"{"error":"Idempotency key already used with different payload"}"#,
-                                    ),
-                                    None,
-                                );
-                                return lua.create_userdata(conflict).map(Value::UserData);
-                            }
-                            return lua
-                                .create_userdata(entry.response.clone())
-                                .map(Value::UserData);
+                    if let Some(entry) = load_idempotency_entry(lua, &store_key, ttl)? {
+                        if entry.fingerprint != fingerprint {
+                            let conflict = RoverResponse::json(
+                                409,
+                                Bytes::from_static(
+                                    br#"{"error":"Idempotency key already used with different payload"}"#,
+                                ),
+                                None,
+                            );
+                            return lua.create_userdata(conflict).map(Value::UserData);
                         }
+                        return lua.create_userdata(entry.response).map(Value::UserData);
                     }
 
                     let result: Value = handler.call(ctx.clone())?;
+                    let response = to_rover_response(result)?;
 
-                    if let Some(ud) = result.as_userdata()
-                        && let Ok(response) = ud.borrow::<RoverResponse>()
-                    {
-                        let mut store = idempotency_store().lock().map_err(|_| {
-                            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
-                        })?;
-                        store.insert(
-                            store_key,
-                            IdempotencyEntry {
-                                expires_at: Instant::now() + ttl,
-                                fingerprint,
-                                response: response.clone(),
-                            },
-                        );
-                    }
+                    save_idempotency_entry(
+                        lua,
+                        &store_key,
+                        IdempotencyEntry {
+                            expires_at: Instant::now() + ttl,
+                            fingerprint,
+                            response: response.clone(),
+                        },
+                        ttl,
+                    )?;
 
-                    Ok(result)
+                    lua.create_userdata(response).map(Value::UserData)
                 })?;
 
                 Ok(wrapped)
@@ -716,6 +871,25 @@ impl Server for Table {
 
         let runtime = lua.app_data_ref::<SharedSignalRuntime>().map(|r| r.clone());
         let scheduler = lua.app_data_ref::<SharedScheduler>().map(|s| s.clone());
+        let idempotency_store = match config.idempotency.backend {
+            StoreBackendType::InMemory => SharedStore::memory(),
+            StoreBackendType::Sqlite => {
+                let path =
+                    config.idempotency.sqlite_path.as_deref().ok_or_else(|| {
+                        anyhow!("idempotency backend 'sqlite' requires sqlite_path")
+                    })?;
+                SharedStore::sqlite(path).map_err(|e| {
+                    anyhow!(
+                        "failed to initialize idempotency sqlite store at '{}': {}",
+                        path,
+                        e
+                    )
+                })?
+            }
+        };
+        let idempotency_store_context = IdempotencyStoreContext {
+            store: idempotency_store.namespace_strict("idempotency"),
+        };
 
         let server_lua = lua.clone();
         if let Some(runtime) = runtime {
@@ -724,6 +898,7 @@ impl Server for Table {
         if let Some(scheduler) = scheduler {
             server_lua.set_app_data(scheduler);
         }
+        server_lua.set_app_data(idempotency_store_context);
 
         rover_server::run(server_lua, routes, config, openapi_spec);
         Ok(())
@@ -1923,6 +2098,62 @@ mod tests {
         let second = route
             .handler
             .call::<Value>(Value::Table(second_ctx))
+            .expect("second call");
+        let (_, second_body) = parse_response(second);
+
+        assert_eq!(first_body, "{\"counter\":1}");
+        assert_eq!(second_body, "{\"counter\":1}");
+    }
+
+    #[test]
+    fn should_replay_plain_table_response_for_duplicate_idempotency_key() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local counter = 0
+
+            api.orders.post = api.idempotent(function(ctx)
+                counter = counter + 1
+                return { counter = counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "plain-table-1")]).expect("first ctx"),
+            ))
+            .expect("first call");
+        let (_, first_body) = parse_response(first);
+
+        let second = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "plain-table-1")]).expect("second ctx"),
+            ))
             .expect("second call");
         let (_, second_body) = parse_response(second);
 

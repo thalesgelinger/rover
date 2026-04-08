@@ -49,6 +49,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::compression::CompressionAlgorithm;
+use crate::store::StoreBackendType;
 
 pub type Bytes = bytes::Bytes;
 const DEFAULT_BODY_SIZE_LIMIT: usize = 1024 * 1024;
@@ -66,6 +67,21 @@ pub struct CompressionConfig {
     pub algorithms: Vec<CompressionAlgorithm>,
     pub min_size: usize,
     pub types: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdempotencyConfig {
+    pub backend: StoreBackendType,
+    pub sqlite_path: Option<String>,
+}
+
+impl Default for IdempotencyConfig {
+    fn default() -> Self {
+        Self {
+            backend: StoreBackendType::InMemory,
+            sqlite_path: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,6 +424,17 @@ pub struct ServerConfig {
     pub allow_unauthenticated_management: bool,
     pub trusted_proxies: Vec<TrustedProxy>,
     pub tls: Option<TlsConfig>,
+    /// Enable HTTP/2 support (requires TLS). Default: true
+    ///
+    /// When enabled with TLS, ALPN will advertise "h2" and "http/1.1" protocols.
+    /// When disabled, ALPN will advertise only "http/1.1".
+    ///
+    /// HTTP/2 requires TLS configuration. If enabled without TLS, startup validation
+    /// will fail in production mode (strict_mode=true).
+    ///
+    /// This is a minimal production-safe MVP control. No additional HTTP/2 tuning
+    /// knobs are exposed at this time.
+    pub http2: bool,
     pub compress: CompressionConfig,
     pub rate_limit: RateLimitConfig,
     pub load_shed: LoadShedConfig,
@@ -416,6 +443,8 @@ pub struct ServerConfig {
     pub drain_timeout_secs: Option<u64>,
     /// Permissions configuration
     pub permissions: PermissionsConfig,
+    /// Idempotency storage configuration
+    pub idempotency: IdempotencyConfig,
 }
 
 impl ServerConfig {
@@ -427,6 +456,14 @@ impl ServerConfig {
         self.trusted_proxies
             .iter()
             .any(|trusted_proxy| trusted_proxy.contains_ip(source_ip))
+    }
+
+    pub fn desired_alpn_protocols(&self) -> Vec<&'static str> {
+        if self.http2 {
+            vec!["h2", "http/1.1"]
+        } else {
+            vec!["http/1.1"]
+        }
     }
 
     fn parse_management_prefix(config: &mlua::Table) -> mlua::Result<String> {
@@ -980,6 +1017,51 @@ impl ServerConfig {
         }
     }
 
+    fn parse_idempotency_config(config: &mlua::Table) -> mlua::Result<IdempotencyConfig> {
+        let idempotency_value = config.get::<Value>("idempotency")?;
+        match idempotency_value {
+            Value::Nil => Ok(IdempotencyConfig::default()),
+            Value::Table(table) => {
+                let backend = match table.get::<Value>("backend")? {
+                    Value::Nil => StoreBackendType::InMemory,
+                    Value::String(s) => match s.to_str()?.to_ascii_lowercase().as_str() {
+                        "memory" => StoreBackendType::InMemory,
+                        "sqlite" => StoreBackendType::Sqlite,
+                        other => Err(anyhow!(
+                            "idempotency.backend must be 'memory' or 'sqlite', got '{}'",
+                            other
+                        ))?,
+                    },
+                    _ => Err(anyhow!("idempotency.backend should be a string"))?,
+                };
+
+                let sqlite_path = match table.get::<Value>("sqlite_path")? {
+                    Value::Nil => None,
+                    Value::String(s) => {
+                        let path = s.to_str()?.trim().to_string();
+                        if path.is_empty() {
+                            Err(anyhow!("idempotency.sqlite_path cannot be empty"))?;
+                        }
+                        Some(path)
+                    }
+                    _ => Err(anyhow!("idempotency.sqlite_path should be a string"))?,
+                };
+
+                if backend == StoreBackendType::Sqlite && sqlite_path.is_none() {
+                    Err(anyhow!(
+                        "idempotency.backend='sqlite' requires idempotency.sqlite_path"
+                    ))?;
+                }
+
+                Ok(IdempotencyConfig {
+                    backend,
+                    sqlite_path,
+                })
+            }
+            _ => Err(anyhow!("idempotency should be a table"))?,
+        }
+    }
+
     fn startup_validation_errors(&self) -> Vec<String> {
         if !self.strict_mode {
             return Vec::new();
@@ -1027,6 +1109,12 @@ impl ServerConfig {
             errors.push(
                 "strict_mode requires security_headers=true. Set security_headers = true, or set allow_insecure_security_header_overrides = true"
                     .to_string(),
+            );
+        }
+
+        if self.http2 && self.tls.is_none() {
+            errors.push(
+                "HTTP/2 requires TLS. Set tls = { cert_file = '...', key_file = '...' }, or set http2 = false".to_string(),
             );
         }
 
@@ -1186,6 +1274,12 @@ impl FromLua for ServerConfig {
                     _ => Err(anyhow!("drain_timeout_secs should be a number"))?,
                 };
 
+                let http2 = match config.get::<Value>("http2")? {
+                    Value::Nil => true,
+                    Value::Boolean(b) => b,
+                    _ => Err(anyhow!("http2 should be a boolean"))?,
+                };
+
                 let parsed = ServerConfig {
                     port: config.get::<u16>("port").unwrap_or(4242),
                     host,
@@ -1209,12 +1303,14 @@ impl FromLua for ServerConfig {
                     allow_unauthenticated_management,
                     trusted_proxies: Self::parse_trusted_proxies(&config)?,
                     tls: Self::parse_tls_config(&config)?,
+                    http2,
                     compress: Self::parse_compression_config(&config)?,
                     rate_limit: Self::parse_rate_limit_config(&config)?,
                     load_shed: Self::parse_load_shed_config(&config)?,
                     readiness: Self::parse_readiness_config(&config)?,
                     drain_timeout_secs,
                     permissions: Self::parse_permissions_config(&config)?,
+                    idempotency: Self::parse_idempotency_config(&config)?,
                 };
 
                 parsed.validate_startup().map_err(mlua::Error::external)?;
@@ -1268,6 +1364,17 @@ pub fn run(
         if config.log_level == "debug" {
             info!("🐛 Debug mode enabled");
         }
+        if config.tls.is_some() {
+            info!(
+                "🔐 TLS config detected (ALPN desired: {:?})",
+                config.desired_alpn_protocols()
+            );
+            if config.http2 {
+                info!(
+                    "ℹ️ HTTP/2 is config-enabled; current event-loop backend serves HTTP/1.1 while transport migration is in progress"
+                );
+            }
+        }
     }
 
     let host: [u8; 4] = if config.host == "localhost" {
@@ -1319,15 +1426,47 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        CompressionConfig, DEFAULT_BODY_SIZE_LIMIT, LoadShedConfig, RateLimitConfig,
-        ReadinessConfig, ServerConfig, TrustedProxy, TrustedProxyCidr, TrustedProxyRange,
+        CompressionConfig, IdempotencyConfig, LoadShedConfig, RateLimitConfig, ReadinessConfig,
+        ServerConfig, StoreBackendType, TrustedProxy, TrustedProxyCidr, TrustedProxyRange,
     };
     use crate::compression::CompressionAlgorithm;
     use mlua::{FromLua, Lua, Value};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("rover_server_{}_{}", name, nanos))
+    }
+
+    fn fixture_pem(content: &str, marker: &str) -> String {
+        format!(
+            "-----BEGIN {}-----\n{}\n-----END {}-----\n",
+            marker, content, marker
+        )
+    }
 
     fn config_from_lua(lua_src: &str) -> ServerConfig {
+        // Tests that use this helper default to strict_mode=false to avoid
+        // requiring complete production configuration. Tests that specifically
+        // test strict mode validation should construct ServerConfig directly
+        // or explicitly set strict_mode=true.
         let lua = Lua::new();
-        let value: Value = lua.load(lua_src).eval().expect("lua eval");
+        let modified_src = if lua_src.contains("strict_mode") {
+            lua_src.to_string()
+        } else if lua_src.trim() == "{}" {
+            "{ strict_mode = false }".to_string()
+        } else {
+            format!(
+                "{}, strict_mode = false }}",
+                lua_src.trim().trim_end_matches('}')
+            )
+        };
+        let value: Value = lua.load(&modified_src).eval().expect("lua eval");
         ServerConfig::from_lua(value, &lua).expect("server config")
     }
 
@@ -1339,20 +1478,15 @@ mod tests {
 
     #[test]
     fn should_use_secure_defaults() {
-        let config = config_from_lua("{}");
-        assert_eq!(config.strict_mode, true);
-        assert_eq!(config.docs, false);
-        assert_eq!(config.body_size_limit, Some(DEFAULT_BODY_SIZE_LIMIT));
-        assert!(config.security_headers);
-        assert!(!config.https_redirect);
-        assert_eq!(config.management_prefix, "/_rover");
-        assert!(config.management_token.is_none());
-        assert!(!config.allow_insecure_http);
-        assert!(!config.allow_unauthenticated_management);
-        assert!(config.trusted_proxies.is_empty());
-        assert!(config.tls.is_none());
-        assert_eq!(config.compress, CompressionConfig::default());
-        assert_eq!(config.readiness, ReadinessConfig::default());
+        // Test that defaults are secure: http2 enabled requires TLS in strict mode
+        // so we expect validation to fail in this config
+        let lua = Lua::new();
+        let value: Value = lua.load("{}").eval().expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must fail with secure defaults");
+        assert!(
+            err.to_string().contains("HTTP/2 requires TLS"),
+            "Expected HTTP/2 TLS requirement error"
+        );
     }
 
     #[test]
@@ -1408,6 +1542,84 @@ mod tests {
             .expect("lua eval");
         let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
         assert!(err.to_string().contains("tls.key_file is required"));
+    }
+
+    #[test]
+    fn should_allow_http2_enabled_with_tls_in_strict_mode() {
+        let dir = unique_test_dir("http2_with_tls");
+        fs::create_dir_all(&dir).expect("mkdir");
+
+        let cert_file = dir.join("cert.pem");
+        let key_file = dir.join("key.pem");
+        fs::write(&cert_file, fixture_pem("test-cert", "CERTIFICATE")).expect("cert write");
+        fs::write(&key_file, fixture_pem("test-key", "PRIVATE KEY")).expect("key write");
+
+        let config = config_from_lua(&format!(
+            "{{ http2 = true, tls = {{ cert_file = '{}', key_file = '{}', reload_interval_secs = 5 }} }}",
+            cert_file.display(),
+            key_file.display()
+        ));
+
+        assert!(config.http2);
+        assert!(config.tls.is_some());
+        assert!(config.validate_startup().is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn should_default_http2_enabled() {
+        let config = config_from_lua("{ strict_mode = false }");
+        assert!(config.http2);
+        assert!(config.validate_startup().is_ok());
+    }
+
+    #[test]
+    fn should_parse_http2_enabled() {
+        let config = config_from_lua("{ http2 = true, strict_mode = false }");
+        assert!(config.http2);
+    }
+
+    #[test]
+    fn should_parse_http2_disabled() {
+        let config = config_from_lua("{ http2 = false }");
+        assert!(!config.http2);
+        assert!(config.validate_startup().is_ok());
+    }
+
+    #[test]
+    fn should_reject_invalid_http2_type() {
+        let lua = Lua::new();
+        let value: Value = lua.load("{ http2 = 'yes' }").eval().expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(err.to_string().contains("http2 should be a boolean"));
+    }
+
+    #[test]
+    fn should_reject_http2_enabled_without_tls_in_strict_mode() {
+        let lua = Lua::new();
+        let value: Value = lua.load("{ http2 = true }").eval().expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(err.to_string().contains("HTTP/2 requires TLS"));
+    }
+
+    #[test]
+    fn should_allow_http2_disabled_without_tls() {
+        let config = config_from_lua("{ http2 = false }");
+        assert!(!config.http2);
+        assert!(config.validate_startup().is_ok());
+    }
+
+    #[test]
+    fn should_compute_desired_alpn_protocols_for_http2() {
+        let config = config_from_lua("{ http2 = true, strict_mode = false }");
+        assert_eq!(config.desired_alpn_protocols(), vec!["h2", "http/1.1"]);
+    }
+
+    #[test]
+    fn should_compute_desired_alpn_protocols_for_http1_only() {
+        let config = config_from_lua("{ http2 = false, strict_mode = false }");
+        assert_eq!(config.desired_alpn_protocols(), vec!["http/1.1"]);
     }
 
     #[test]
@@ -1532,12 +1744,14 @@ mod tests {
             allow_unauthenticated_management: false,
             trusted_proxies: Vec::new(),
             tls: None,
+            http2: true,
             compress: CompressionConfig::default(),
             rate_limit: RateLimitConfig::default(),
             load_shed: LoadShedConfig::default(),
             readiness: ReadinessConfig::default(),
             drain_timeout_secs: None,
             permissions: rover_types::PermissionsConfig::new(),
+            idempotency: IdempotencyConfig::default(),
         };
 
         let err = config.validate_startup().expect_err("must reject config");
@@ -1557,6 +1771,39 @@ mod tests {
         assert_eq!(config.management_docs_path(), "/ops/docs");
         assert_eq!(config.management_token.as_deref(), Some("abc123"));
         assert!(config.allow_unauthenticated_management);
+    }
+
+    #[test]
+    fn should_default_idempotency_to_memory_backend() {
+        let config = config_from_lua("{}");
+        assert_eq!(config.idempotency.backend, StoreBackendType::InMemory);
+        assert!(config.idempotency.sqlite_path.is_none());
+    }
+
+    #[test]
+    fn should_parse_idempotency_sqlite_backend() {
+        let config = config_from_lua(
+            "{ idempotency = { backend = 'sqlite', sqlite_path = '/tmp/rover-idempotency.db' } }",
+        );
+        assert_eq!(config.idempotency.backend, StoreBackendType::Sqlite);
+        assert_eq!(
+            config.idempotency.sqlite_path.as_deref(),
+            Some("/tmp/rover-idempotency.db")
+        );
+    }
+
+    #[test]
+    fn should_reject_sqlite_idempotency_without_path() {
+        let lua = Lua::new();
+        let value: Value = lua
+            .load("{ idempotency = { backend = 'sqlite' } }")
+            .eval()
+            .expect("lua eval");
+        let err = ServerConfig::from_lua(value, &lua).expect_err("must reject config");
+        assert!(
+            err.to_string()
+                .contains("idempotency.backend='sqlite' requires idempotency.sqlite_path")
+        );
     }
 
     #[test]

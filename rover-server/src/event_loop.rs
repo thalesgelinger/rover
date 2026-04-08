@@ -146,12 +146,14 @@ mod tests {
             allow_unauthenticated_management: false,
             trusted_proxies: Vec::new(),
             tls: None,
+            http2: true,
             compress: crate::CompressionConfig::default(),
             rate_limit: crate::RateLimitConfig::default(),
             load_shed: crate::LoadShedConfig::default(),
             readiness: crate::ReadinessConfig::default(),
             drain_timeout_secs: None,
             permissions: rover_types::PermissionsConfig::new(),
+            idempotency: crate::IdempotencyConfig::default(),
         }
     }
 
