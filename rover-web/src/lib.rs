@@ -71,12 +71,14 @@ fn build_server_config(options: &WebServerOptions) -> ServerConfig {
         allow_unauthenticated_management: false,
         trusted_proxies: Vec::new(),
         tls: None,
+        http2: false,
         compress: Default::default(),
         rate_limit: Default::default(),
         load_shed: Default::default(),
         readiness: Default::default(),
         drain_timeout_secs: None,
         permissions: Default::default(),
+        idempotency: Default::default(),
     }
 }
 

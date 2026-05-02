@@ -74,76 +74,76 @@ Final implementation recommendations locked for this PRD:
 
 **Acceptance Criteria:**
 - [x] Built-in `/healthz` and `/readyz` behavior remains documented with exact status code and response body contracts.
-- [ ] Readiness dependency failure behavior is documented with structured response examples.
-- [ ] Existing examples are updated so they do not redefine built-in probes in misleading ways unless the example is explicitly about overriding behavior.
-- [ ] At least one runnable example shows readiness dependency config and expected operational usage.
-- [ ] `rover-docs` production/operations pages link clearly to probe behavior and deployment guidance.
-- [ ] Integration tests cover healthy, draining, and dependency-failure readiness states.
-- [ ] `cargo test -p rover-server --test health_probe_states_integration` passes.
+- [x] Readiness dependency failure behavior is documented with structured response examples.
+- [x] Existing examples are updated so they do not redefine built-in probes in misleading ways unless the example is explicitly about overriding behavior.
+- [x] At least one runnable example shows readiness dependency config and expected operational usage.
+- [x] `rover-docs` production/operations pages link clearly to probe behavior and deployment guidance.
+- [x] Integration tests cover healthy, draining, and dependency-failure readiness states.
+- [x] `cargo test -p rover-server --test health_probe_states_integration` passes.
 
 ### US-004: Finish trusted proxy delivery
 **Description:** As an operator behind a reverse proxy or load balancer, I want trusted proxy configuration and forwarded-header handling documented clearly so that client IP and protocol are derived safely.
 
 **Acceptance Criteria:**
-- [ ] Trusted proxy configuration supports the documented production-safe MVP forms already implemented by the runtime.
-- [ ] Requests from untrusted sources ignore spoofed forwarded headers.
-- [ ] Conflict handling between `Forwarded` and `X-Forwarded-*` headers is deterministic and documented.
-- [ ] `rover-docs` includes a dedicated section or page for trusted proxy configuration, trust boundaries, and common deployment examples.
-- [ ] At least one runnable example shows a server configured for trusted proxies.
-- [ ] Integration tests cover trusted and untrusted proxy permutations and malformed forwarded-header cases.
-- [ ] `cargo test -p rover-server --test https_and_proxy_tests` passes.
+- [x] Trusted proxy configuration supports the documented production-safe MVP forms already implemented by the runtime.
+- [x] Requests from untrusted sources ignore spoofed forwarded headers.
+- [x] Conflict handling between `Forwarded` and `X-Forwarded-*` headers is deterministic and documented.
+- [x] `rover-docs` includes a dedicated section or page for trusted proxy configuration, trust boundaries, and common deployment examples.
+- [x] At least one runnable example shows a server configured for trusted proxies.
+- [x] Integration tests cover trusted and untrusted proxy permutations and malformed forwarded-header cases.
+- [x] `cargo test -p rover-server --test https_and_proxy_tests` passes.
 
 ### US-005: Implement capability permissions MVP
 **Description:** As a runtime owner, I want a production-safe capability permissions model so that unsafe capabilities are denied by default and violations are auditable.
 
 **Acceptance Criteria:**
-- [ ] Server config supports a production-safe MVP permissions schema covering `fs`, `net`, `env`, `process`, and `ffi`.
-- [ ] Production mode is deny-by-default.
-- [ ] Startup validation rejects invalid or ambiguous permissions configuration.
-- [ ] Runtime permission checks are enforced only at capability boundaries that are actually implemented in this release, and docs clearly state any unsupported granularity.
-- [ ] Denied operations return typed errors without leaking secrets or sensitive paths beyond what is explicitly allowed.
-- [ ] Denied operations emit structured audit log events.
-- [ ] Tests cover FS traversal bypass attempts, NET bypass attempts, and process/child-process behavior for the supported MVP boundaries.
-- [ ] `rover-docs` includes a dedicated permissions page with config examples, production guidance, and limitations.
-- [ ] At least one runnable example demonstrates restrictive production permissions and one allowed capability path.
-- [ ] Targeted tests for permissions pass.
+- [x] Server config supports a production-safe MVP permissions schema covering `fs`, `net`, `env`, `process`, and `ffi`.
+- [x] Production mode is deny-by-default.
+- [x] Startup validation rejects invalid or ambiguous permissions configuration.
+- [x] Runtime permission checks are enforced only at capability boundaries that are actually implemented in this release, and docs clearly state any unsupported granularity.
+- [x] Denied operations return typed errors without leaking secrets or sensitive paths beyond what is explicitly allowed.
+- [x] Denied operations emit structured audit log events.
+- [x] Tests cover FS traversal bypass attempts, NET bypass attempts, and process/child-process behavior for the supported MVP boundaries.
+- [x] `rover-docs` includes a dedicated permissions page with config examples, production guidance, and limitations.
+- [x] At least one runnable example demonstrates restrictive production permissions and one allowed capability path.
+- [x] Targeted tests for permissions pass.
 
 ### US-006: Implement idempotency keys MVP
 **Description:** As an API developer, I want route-level idempotency support so that retrying write requests does not duplicate side effects in production.
 
 **Acceptance Criteria:**
-- [ ] Middleware or equivalent route-level API exists to enable idempotency per route.
-- [ ] Idempotency key header name and TTL are configurable per route within documented MVP constraints.
-- [ ] Request fingerprint includes method, route identity, and body fingerprint.
-- [ ] Duplicate request with same key and same fingerprint replays the original stored response.
-- [ ] Same key with different fingerprint returns a conflict response.
-- [ ] Concurrent duplicate requests are race-safe.
-- [ ] Production-safe shared backend support exists for multi-instance use, and local in-memory mode is clearly limited to dev/test.
-- [ ] Startup fails clearly when shared backend is selected but misconfigured.
-- [ ] `rover-docs` includes a dedicated idempotency page with usage guidance, replay semantics, conflicts, and storage guidance.
-- [ ] At least one runnable example demonstrates idempotent write behavior.
-- [ ] Targeted integration tests cover replay, conflict, TTL expiry, and multi-instance/shared-storage semantics.
+- [x] Middleware or equivalent route-level API exists to enable idempotency per route.
+- [x] Idempotency key header name and TTL are configurable per route within documented MVP constraints.
+- [x] Request fingerprint includes method, route identity, and body fingerprint.
+- [x] Duplicate request with same key and same fingerprint replays the original stored response.
+- [x] Same key with different fingerprint returns a conflict response.
+- [x] Concurrent duplicate requests are race-safe.
+- [x] Production-safe shared backend support exists for multi-instance use, and local in-memory mode is clearly limited to dev/test.
+- [x] Startup fails clearly when shared backend is selected but misconfigured.
+- [x] `rover-docs` includes a dedicated idempotency page with usage guidance, replay semantics, conflicts, and storage guidance.
+- [x] At least one runnable example demonstrates idempotent write behavior.
+- [x] Targeted integration tests cover replay, conflict, TTL expiry, and multi-instance/shared-storage semantics.
 
 ### US-007: Implement HTTP/2 with safe fallback
 **Description:** As a platform operator, I want HTTP/2 over TLS with ALPN and safe fallback to HTTP/1.1 so that modern clients get better transport support without breaking compatibility.
 
 **Acceptance Criteria:**
-- [ ] TLS ALPN negotiates `h2` and falls back to `http/1.1` when required.
-- [ ] Configuration exposes an explicit HTTP/2 enable/disable switch.
-- [ ] Configuration exposes a minimal production-safe MVP control set for HTTP/2 rollout: enable/disable switch, ALPN fallback safety, and only implementation-supported extra limits.
-- [ ] Representative interop tests cover at least one HTTP/2-capable client path and one fallback path.
-- [ ] `rover-docs` includes a dedicated HTTP/2 page or production transport section covering enablement, fallback, compatibility notes, and rollout guidance.
-- [ ] At least one runnable example shows TLS config prepared for HTTP/2-capable deployment.
-- [ ] Targeted transport tests pass.
+- [x] TLS ALPN negotiates `h2` and falls back to `http/1.1` when required.
+- [x] Configuration exposes an explicit HTTP/2 enable/disable switch.
+- [x] Configuration exposes a minimal production-safe MVP control set for HTTP/2 rollout: enable/disable switch, ALPN fallback safety, and only implementation-supported extra limits.
+- [x] Representative interop tests cover at least one HTTP/2-capable client path and one fallback path.
+- [x] `rover-docs` includes a dedicated HTTP/2 page or production transport section covering enablement, fallback, compatibility notes, and rollout guidance.
+- [x] At least one runnable example shows TLS config prepared for HTTP/2-capable deployment.
+- [x] Targeted transport tests pass.
 
 ### US-008: Move Foundation Plane items to Done with evidence
 **Description:** As a project owner, I want each Foundation item closed with evidence so that Plane accurately reflects shipped capability rather than partial progress.
 
 **Acceptance Criteria:**
-- [ ] Each of the seven open Foundation Plane items has linked evidence in comments or description updates.
-- [ ] Evidence includes code references, test coverage, `rover-docs` path, and example path.
-- [ ] Items are moved to `Done` only after acceptance criteria for the corresponding capability are satisfied.
-- [ ] Any scope reduction from original Plane wording is documented explicitly before marking the item complete.
+- [x] Each of the seven open Foundation Plane items has linked evidence in comments or description updates.
+- [x] Evidence includes code references, test coverage, `rover-docs` path, and example path.
+- [x] Items are moved to `Done` only after acceptance criteria for the corresponding capability are satisfied.
+- [x] Any scope reduction from original Plane wording is documented explicitly before marking the item complete.
 
 ## 4. Functional Requirements
 

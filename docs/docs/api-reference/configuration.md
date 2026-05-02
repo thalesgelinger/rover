@@ -201,6 +201,22 @@ rover.server {
 - **Default**: `false`
 - **Description**: Sets `Access-Control-Allow-Credentials: true` when enabled
 
+## Permissions Configuration
+
+Configure runtime permissions with `permissions.mode`, `permissions.allow`, and `permissions.deny`:
+
+```lua
+local api = rover.server {
+    permissions = {
+        mode = "production",
+        allow = { "env" },
+        deny = { "process" },
+    },
+}
+```
+
+For complete examples, production guidance, and current enforcement limitations, see [Permissions](/docs/guides/permissions).
+
 ## Complete Example
 
 ```lua

@@ -135,6 +135,19 @@ local api = rover.server {
 
 ## Production Recommendations
 
+### Probe Behavior During Lifecycle
+
+Load balancers and orchestrators use HTTP health probes to determine traffic routing. Configure your health endpoints to return appropriate status codes based on the lifecycle phase:
+
+| Phase | Liveness Probe | Readiness Probe | Expected Behavior |
+|-------|---------------|-----------------|-------------------|
+| `Starting` | 200 (process alive) | 503 (not ready) | Don't route traffic yet |
+| `Running` | 200 | 200 | Route traffic normally |
+| `Draining` | 200 (still alive) | 503 (stopping) | Stop new connections |
+| `ShuttingDown` | 200 (finishing) | 503 | Wait for completion |
+
+For production deployment guidance and probe configuration examples, see [Production Deployment](/docs/guides/production-deployment).
+
 ### TLS Certificate Management
 
 1. **Use automation**: Integrate with certbot or similar for automatic renewal
@@ -209,5 +222,6 @@ openssl s_client -connect localhost:443 -servername localhost </dev/null 2>/dev/
 
 ## See Also
 
+- [Production Deployment](/docs/guides/production-deployment) - Health probes, load balancing, and production operations
 - [Configuration](/docs/api-reference/configuration) - Server configuration options
 - [Backend Server](/docs/guides/backend-server) - Creating HTTP APIs

@@ -14,6 +14,12 @@ pub use permissions::*;
 mod audit;
 pub use audit::*;
 
+mod denied;
+pub use denied::*;
+
+mod sanitize;
+pub use sanitize::*;
+
 /// Represents a validation error with path and message
 #[derive(Debug, Clone)]
 pub struct ValidationError {

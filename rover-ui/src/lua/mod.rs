@@ -11,6 +11,7 @@ use crate::platform::{UiCapability, ViewportSignals};
 use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
 use mlua::{Function, Lua, Result, Table, UserData, Value};
+use rover_types::{AuthReason, DeniedError};
 use signal::LuaSignal;
 
 /// Marker for delayed coroutine execution
@@ -194,15 +195,10 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
         lua.create_function(|lua, _name: Value| {
             let target = crate::lua::helpers::get_target(lua)?;
             if !crate::lua::helpers::has_capability(lua, UiCapability::TuiNamespace)? {
-                rover_types::emit_capability_denied(
-                    UiCapability::TuiNamespace.as_str(),
-                    target.as_str(),
-                );
-                return Err(mlua::Error::RuntimeError(format!(
-                    "require(\"rover.tui\") denied by capability policy (capability={}, target={})",
-                    UiCapability::TuiNamespace.as_str(),
-                    target.as_str()
-                )));
+                let err =
+                    DeniedError::capability(UiCapability::TuiNamespace.as_str(), target.as_str());
+                err.emit();
+                return Err(mlua::Error::RuntimeError(err.user_message()));
             }
 
             let rover_table: Table = lua.globals().get("rover")?;

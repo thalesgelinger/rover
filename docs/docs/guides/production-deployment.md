@@ -142,7 +142,24 @@ upstream rover_backend {
 
 ### Health Checks
 
-Configure health checks in your reverse proxy:
+Configure health checks in your reverse proxy. Understanding probe behavior is essential for production deployments—see the [Server Lifecycle](/docs/guides/server-lifecycle) guide for details on how the server transitions through phases and how probes interact with each phase.
+
+### Liveness vs Readiness Probes
+
+Kubernetes distinguishes between two probe types that map to Rover's lifecycle phases:
+
+| Probe Type | Purpose | HTTP Endpoint | Lifecycle Phase |
+|------------|---------|---------------|-----------------|
+| **Liveness** | Is the server running? Should it be restarted? | `/health` | Running |
+| **Readiness** | Is the server ready to accept traffic? | `/health` | Running |
+| **Startup** | Has the server finished starting? | `/health` | Starting → Running |
+
+**When probes respond:**
+- During `Starting` phase: Readiness returns 503, liveness returns 200 (process is alive but not ready)
+- During `Running` phase: Both return 200 when healthy
+- During `Draining` phase: Readiness returns 503 (stop sending new traffic), liveness returns 200 (don't restart yet)
+
+### Nginx Health Checks
 
 ```nginx
 upstream rover_backend {
@@ -467,9 +484,9 @@ Key metrics to monitor:
 | `rover_active_connections` | Active connections | > 80% of max |
 | `rover_memory_usage_bytes` | Memory usage | > 85% limit |
 
-### Health Checks
+### Comprehensive Health Endpoint
 
-Comprehensive health check endpoint:
+For detailed health checking with dependency validation. The response status code should reflect the [server lifecycle phase](/docs/guides/server-lifecycle)—return 503 during startup or shutdown to signal load balancers to route traffic elsewhere:
 
 ```lua
 function api.health.get(ctx)
@@ -545,6 +562,6 @@ end
 
 ## See Also
 
-- [Server Lifecycle](/docs/guides/server-lifecycle) - Hot reload and shutdown handling
+- [Server Lifecycle](/docs/guides/server-lifecycle) - Probe behavior and lifecycle phases (starting, draining, shutdown)
 - [Configuration](/docs/api-reference/configuration) - Server configuration options
 - [Performance](/docs/performance) - Optimization guidelines

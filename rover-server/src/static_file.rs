@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::{Bytes, RoverResponse};
-use rover_types::emit_file_access_denied;
+use rover_types::{DeniedError, FileAccessReason};
 
 /// Maximum allowed path length to prevent abuse
 const MAX_PATH_LENGTH: usize = 4096;
@@ -31,12 +31,18 @@ pub fn serve_static_file(
     // Validate and sanitize the requested path
     let sanitized = match sanitize_path(base_path, requested_path) {
         Ok(path) => path,
-        Err(e) => {
-            if e == "Not found" {
+        Err(err) => {
+            err.emit();
+            if matches!(
+                err,
+                DeniedError::FileAccess {
+                    reason: FileAccessReason::NotFound,
+                    ..
+                }
+            ) {
                 return not_found_response();
             }
-            emit_file_access_denied(requested_path, &e);
-            return forbidden_response(&e);
+            return forbidden_response(&err.user_message());
         }
     };
 
@@ -44,8 +50,9 @@ pub fn serve_static_file(
     // Scope: Directory index/listing support is explicitly out of scope for this release.
     // Requests to directory paths return 403 Forbidden to prevent information leakage.
     if sanitized.is_dir() {
-        emit_file_access_denied(requested_path, "Directory listing not allowed");
-        return forbidden_response("Directory listing not allowed");
+        let err = DeniedError::file_access(requested_path, FileAccessReason::DirectoryListing);
+        err.emit();
+        return forbidden_response(&err.user_message());
     }
 
     // Read the file
@@ -79,35 +86,44 @@ pub fn serve_static_file(
             if e.kind() == std::io::ErrorKind::NotFound {
                 not_found_response()
             } else {
-                let error_msg = format!("Access denied: {}", e);
-                emit_file_access_denied(requested_path, &error_msg);
-                forbidden_response(&error_msg)
+                let err =
+                    DeniedError::file_access(requested_path, FileAccessReason::PermissionDenied);
+                err.emit();
+                forbidden_response(&err.user_message())
             }
         }
     }
 }
 
-/// Sanitize a path to prevent directory traversal attacks
-///
-/// Returns the canonical path if it's within the base directory,
-/// or an error if traversal is detected
-fn sanitize_path(base_path: &Path, requested_path: &str) -> Result<PathBuf, String> {
+fn sanitize_path(base_path: &Path, requested_path: &str) -> Result<PathBuf, DeniedError> {
     // Check path length
     if requested_path.len() > MAX_PATH_LENGTH {
-        return Err("Path too long".to_string());
+        return Err(DeniedError::file_access(
+            requested_path,
+            FileAccessReason::PathTooLong,
+        ));
     }
 
     // Remove null bytes
     if requested_path.contains('\0') {
-        return Err("Invalid path".to_string());
+        return Err(DeniedError::file_access(
+            requested_path,
+            FileAccessReason::InvalidPath,
+        ));
     }
 
     if requested_path.contains('%') && !is_valid_percent_encoding(requested_path) {
-        return Err("Invalid path".to_string());
+        return Err(DeniedError::file_access(
+            requested_path,
+            FileAccessReason::InvalidPath,
+        ));
     }
 
     if has_traversal_attempt(requested_path) {
-        return Err("Directory traversal not allowed".to_string());
+        return Err(DeniedError::file_access(
+            requested_path,
+            FileAccessReason::TraversalAttempt,
+        ));
     }
 
     // Normalize URL-style leading slashes to a relative path within base_path
@@ -126,17 +142,19 @@ fn sanitize_path(base_path: &Path, requested_path: &str) -> Result<PathBuf, Stri
                 full_path.push(name);
             }
             Component::ParentDir => {
-                // Check if this would escape the base directory
-                // by canonicalizing and checking prefix
-                return Err("Directory traversal not allowed".to_string());
+                return Err(DeniedError::file_access(
+                    requested_path,
+                    FileAccessReason::TraversalAttempt,
+                ));
             }
             Component::CurDir => {
-                // Skip current directory markers
                 continue;
             }
             Component::RootDir | Component::Prefix(_) => {
-                // Don't allow absolute paths or Windows prefixes
-                return Err("Absolute paths not allowed".to_string());
+                return Err(DeniedError::file_access(
+                    requested_path,
+                    FileAccessReason::AbsolutePathNotAllowed,
+                ));
             }
         }
     }
@@ -144,21 +162,27 @@ fn sanitize_path(base_path: &Path, requested_path: &str) -> Result<PathBuf, Stri
     // Canonicalize the base path first
     let canonical_base = base_path
         .canonicalize()
-        .map_err(|_| "Invalid base path".to_string())?;
+        .map_err(|_| DeniedError::file_access(requested_path, FileAccessReason::InvalidPath))?;
 
     // Check if the file exists before canonicalizing to distinguish between
     // "file not found" and "directory traversal"
     if !full_path.exists() {
-        return Err("Not found".to_string());
+        return Err(DeniedError::file_access(
+            requested_path,
+            FileAccessReason::NotFound,
+        ));
     }
 
     let canonical_requested = full_path
         .canonicalize()
-        .map_err(|_| "Invalid path".to_string())?;
+        .map_err(|_| DeniedError::file_access(requested_path, FileAccessReason::InvalidPath))?;
 
     // Verify the canonical path is within the base directory
     if !canonical_requested.starts_with(&canonical_base) {
-        return Err("Directory traversal not allowed".to_string());
+        return Err(DeniedError::file_access(
+            requested_path,
+            FileAccessReason::TraversalAttempt,
+        ));
     }
 
     Ok(canonical_requested)

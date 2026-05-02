@@ -347,10 +347,34 @@ impl Session {
 }
 
 /// Session store manager
+///
+/// Manages session persistence using a configurable backend store.
+///
+/// # Backend Selection
+///
+/// - **Development/Testing**: Use `SessionStore::new()` or `SessionStore::dev()` for in-memory
+///   storage. Sessions are lost on restart and cannot be shared across instances.
+/// - **Production**: Use `SessionStore::with_sqlite()` for persistent storage. Sessions survive
+///   restarts and can be shared across multiple server instances.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let config = SessionConfig::default();
+///
+/// // Dev/test (in-memory)
+/// let store = SessionStore::new(config);
+/// assert!(store.is_in_memory());
+///
+/// // Production (persistent SQLite)
+/// let store = SessionStore::with_sqlite(config, "sessions.db")?;
+/// assert!(!store.is_in_memory());
+/// ```
 #[derive(Clone)]
 pub struct SessionStore {
     store: NamespacedStore,
     config: Arc<SessionConfig>,
+    is_memory_backend: bool,
 }
 
 impl std::fmt::Debug for SessionStore {
@@ -362,18 +386,78 @@ impl std::fmt::Debug for SessionStore {
 }
 
 impl SessionStore {
-    /// Create a new session store with memory backend
+    /// Create a new session store with in-memory backend
+    ///
+    /// **Warning**: This creates an in-memory store that is NOT suitable for production.
+    /// Sessions will be lost on process restart and cannot be shared across instances.
+    ///
+    /// For production deployments, use `SessionStore::with_sqlite()` instead.
     pub fn new(config: SessionConfig) -> Self {
         let store = SharedStore::memory();
         Self::with_store(config, store)
     }
 
     /// Create a new session store with custom store backend
+    ///
+    /// This allows you to provide a custom backend implementation. Use this when you need
+    /// fine-grained control over the storage layer.
     pub fn with_store(config: SessionConfig, store: SharedStore) -> Self {
+        let is_memory = store.is_in_memory();
         Self {
             store: store.namespace("session"),
             config: Arc::new(config),
+            is_memory_backend: is_memory,
         }
+    }
+
+    /// Create a session store with SQLite backend for production use
+    ///
+    /// This creates a persistent session store suitable for production deployments.
+    /// Sessions will survive process restarts and can be shared across multiple instances.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Session configuration
+    /// * `db_path` - Path to SQLite database file (use ":memory:" for in-memory, but prefer a file path for production)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let config = SessionConfig::default();
+    /// let store = SessionStore::with_sqlite(config, "sessions.db")?;
+    /// ```
+    pub fn with_sqlite(config: SessionConfig, db_path: &str) -> StoreResult<Self> {
+        let store = SharedStore::sqlite(db_path)?;
+        Ok(Self::with_store(config, store))
+    }
+
+    /// Create a dev/test-only session store (in-memory, not persistent)
+    ///
+    /// This is equivalent to `SessionStore::new()` but makes it explicit that this is
+    /// intended for development and testing only.
+    ///
+    /// **Warning**: NOT SUITABLE FOR PRODUCTION. Use `SessionStore::with_sqlite()` instead.
+    pub fn dev(config: SessionConfig) -> Self {
+        Self::new(config)
+    }
+
+    /// Check if this store is using an in-memory backend (unsuitable for production)
+    ///
+    /// Returns `true` if the underlying store is in-memory (development/testing).
+    /// Returns `false` if the store is persistent (production-ready).
+    ///
+    /// Use this to validate configuration at startup and warn/panic in production.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let store = SessionStore::new(config);
+    /// if store.is_in_memory() {
+    ///     eprintln!("WARNING: Using in-memory session store. NOT SUITABLE FOR PRODUCTION!");
+    /// }
+    /// ```
+    pub fn is_in_memory(&self) -> bool {
+        self.is_memory_backend
     }
 
     /// Create a new session

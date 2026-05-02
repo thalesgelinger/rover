@@ -101,7 +101,7 @@ fn should_reject_multiple_ambiguous_permissions() {
 #[test]
 fn should_accept_valid_permissions_config() {
     let config =
-        parse_config("{ permissions = { allow = { 'fs', 'net' }, deny = { 'process', 'ffi' } } }")
+        parse_config("{ permissions = { allow = { 'fs', 'net' }, deny = { 'process', 'ffi' } }, strict_mode = false }")
             .expect("should accept valid permissions config");
 
     assert!(config.permissions.is_allowed(Permission::Fs));
@@ -112,7 +112,8 @@ fn should_accept_valid_permissions_config() {
 
 #[test]
 fn should_accept_empty_permissions_config() {
-    let config = parse_config("{}").expect("should accept empty config and use defaults");
+    let config = parse_config("{ strict_mode = false }")
+        .expect("should accept empty config and use defaults");
 
     // Should use default development mode permissions
     assert!(config.permissions.is_allowed(Permission::Fs));
@@ -120,4 +121,31 @@ fn should_accept_empty_permissions_config() {
     assert!(config.permissions.is_allowed(Permission::Env));
     assert!(!config.permissions.is_allowed(Permission::Process));
     assert!(!config.permissions.is_allowed(Permission::Ffi));
+}
+
+#[test]
+fn should_apply_production_permission_mode_defaults() {
+    let config = parse_config("{ permissions = { mode = 'production' }, strict_mode = false }")
+        .expect("should accept production permission mode");
+
+    assert!(!config.permissions.is_allowed(Permission::Fs));
+    assert!(!config.permissions.is_allowed(Permission::Net));
+    assert!(!config.permissions.is_allowed(Permission::Env));
+    assert!(!config.permissions.is_allowed(Permission::Process));
+    assert!(!config.permissions.is_allowed(Permission::Ffi));
+}
+
+#[test]
+fn should_accept_permission_mode_aliases() {
+    let dev_alias = parse_config("{ permissions = { mode = 'dev' }, strict_mode = false }")
+        .expect("should accept dev mode alias");
+    let prod_alias =
+        parse_config("{ permissions = { mode = 'prod', allow = { 'env' } }, strict_mode = false }")
+            .expect("should accept prod mode alias");
+
+    assert!(dev_alias.permissions.is_allowed(Permission::Fs));
+    assert!(!dev_alias.permissions.is_allowed(Permission::Process));
+
+    assert!(prod_alias.permissions.is_allowed(Permission::Env));
+    assert!(!prod_alias.permissions.is_allowed(Permission::Fs));
 }

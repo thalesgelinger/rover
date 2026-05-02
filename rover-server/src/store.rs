@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::runtime::Runtime;
 
 /// Error types for store operations
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +37,7 @@ impl std::error::Error for StoreError {}
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Value stored in the store
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StoreValue {
     String(String),
     Bytes(Vec<u8>),
@@ -143,6 +145,17 @@ pub trait StoreBackend: Send + Sync {
 }
 
 /// In-memory store implementation
+///
+/// **Development/Testing Only**: This store keeps all data in memory and does not persist
+/// to disk. Data is lost when the process exits and cannot be shared across instances.
+///
+/// **NOT SUITABLE FOR PRODUCTION**:
+/// - Data is lost on process restart
+/// - Cannot be shared across multiple server instances
+/// - No persistence guarantees
+///
+/// For production use, see `SqliteStore` which provides persistent storage that can be
+/// shared across multiple instances.
 pub struct MemoryStore {
     data: Mutex<HashMap<String, StoreEntry>>,
 }
@@ -257,6 +270,314 @@ impl StoreBackend for MemoryStore {
     }
 }
 
+/// SQLite-based persistent store for production use
+///
+/// This store persists data to disk, making it suitable for production deployments
+/// where data must survive process restarts and be shared across multiple instances.
+///
+/// **Production-ready**: Data is persisted to SQLite, supporting multi-instance deployments.
+///
+/// **Dev/Test alternative**: For development and testing, use `MemoryStore` which keeps
+/// data in memory but loses it on restart. Memory backends are unsuitable for production
+/// because:
+/// - Data is lost on process restart
+/// - Cannot be shared across multiple instances
+/// - No persistence guarantees
+pub struct SqliteStore {
+    db: libsql::Database,
+    conn: libsql::Connection,
+    runtime: Arc<Runtime>,
+}
+
+impl SqliteStore {
+    pub fn new(path: &str) -> StoreResult<Self> {
+        let runtime = Runtime::new()
+            .map_err(|e| StoreError::Other(format!("Failed to create runtime: {}", e)))?;
+
+        let (db, conn) = runtime.block_on(async {
+            let db = if path == ":memory:" {
+                libsql::Builder::new_local(":memory:")
+                    .build()
+                    .await
+                    .map_err(|e| {
+                        StoreError::Other(format!("Failed to create in-memory db: {}", e))
+                    })?
+            } else {
+                libsql::Builder::new_local(path)
+                    .build()
+                    .await
+                    .map_err(|e| {
+                        StoreError::Other(format!("Failed to create db at {}: {}", path, e))
+                    })?
+            };
+
+            let conn = db
+                .connect()
+                .map_err(|e| StoreError::Other(format!("Failed to connect: {}", e)))?;
+
+            Ok::<_, StoreError>((db, conn))
+        })?;
+
+        let store = Self {
+            db,
+            conn,
+            runtime: Arc::new(runtime),
+        };
+
+        store.initialize_schema()?;
+        Ok(store)
+    }
+
+    fn initialize_schema(&self) -> StoreResult<()> {
+        self.runtime.block_on(async {
+            self.conn
+                .execute(
+                    "CREATE TABLE IF NOT EXISTS store (
+                        key TEXT PRIMARY KEY,
+                        value BLOB NOT NULL,
+                        expires_at REAL
+                    )",
+                    (),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| StoreError::Other(format!("Failed to create schema: {}", e)))
+        })
+    }
+
+    fn serialize_value(value: &StoreValue) -> StoreResult<Vec<u8>> {
+        bincode::serialize(value).map_err(|e| StoreError::Serialization(e.to_string()))
+    }
+
+    fn deserialize_value(data: &[u8]) -> StoreResult<StoreValue> {
+        bincode::deserialize(data).map_err(|e| StoreError::Serialization(e.to_string()))
+    }
+
+    pub fn cleanup_expired(&self) -> StoreResult<()> {
+        self.runtime.block_on(async {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+
+            self.conn
+                .execute(
+                    "DELETE FROM store WHERE expires_at IS NOT NULL AND expires_at < ?",
+                    [libsql::Value::Real(now)],
+                )
+                .await
+                .map_err(|e| StoreError::Other(format!("Failed to cleanup: {}", e)))?;
+            Ok(())
+        })
+    }
+}
+
+impl StoreBackend for SqliteStore {
+    fn get(&self, key: &str) -> StoreResult<Option<StoreValue>> {
+        self.runtime.block_on(async {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT value FROM store WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)",
+                    [libsql::Value::Text(key.to_string()), libsql::Value::Real(now)],
+                )
+                .await
+                .map_err(|e| StoreError::Other(format!("Query failed: {}", e)))?;
+
+            if let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| StoreError::Other(format!("Failed to get row: {}", e)))?
+            {
+                let value_blob = row
+                    .get_value(0)
+                    .map_err(|e| StoreError::Other(format!("Failed to get value: {}", e)))?;
+
+                if let libsql::Value::Blob(data) = value_blob {
+                    Self::deserialize_value(&data).map(Some)
+                } else {
+                    Err(StoreError::Other("Expected blob value".to_string()))
+                }
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    fn set(&self, key: &str, value: StoreValue, ttl: Option<Duration>) -> StoreResult<()> {
+        self.runtime.block_on(async {
+            let serialized = Self::serialize_value(&value)?;
+            let expires_at = ttl.map(|d| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64();
+                now + d.as_secs_f64()
+            });
+
+            self.conn
+                .execute(
+                    "INSERT OR REPLACE INTO store (key, value, expires_at) VALUES (?, ?, ?)",
+                    [
+                        libsql::Value::Text(key.to_string()),
+                        libsql::Value::Blob(serialized),
+                        expires_at
+                            .map(libsql::Value::Real)
+                            .unwrap_or(libsql::Value::Null),
+                    ],
+                )
+                .await
+                .map_err(|e| StoreError::Other(format!("Insert failed: {}", e)))?;
+
+            Ok(())
+        })
+    }
+
+    fn delete(&self, key: &str) -> StoreResult<bool> {
+        self.runtime.block_on(async {
+            let rows_affected = self
+                .conn
+                .execute(
+                    "DELETE FROM store WHERE key = ?",
+                    [libsql::Value::Text(key.to_string())],
+                )
+                .await
+                .map_err(|e| StoreError::Other(format!("Delete failed: {}", e)))?;
+
+            Ok(rows_affected > 0)
+        })
+    }
+
+    fn exists(&self, key: &str) -> StoreResult<bool> {
+        self.runtime.block_on(async {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT 1 FROM store WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)",
+                    [
+                        libsql::Value::Text(key.to_string()),
+                        libsql::Value::Real(now),
+                    ],
+                )
+                .await
+                .map_err(|e| StoreError::Other(format!("Query failed: {}", e)))?;
+
+            Ok(rows
+                .next()
+                .await
+                .map_err(|e| StoreError::Other(format!("Failed to get row: {}", e)))?
+                .is_some())
+        })
+    }
+
+    fn increment(&self, key: &str, delta: i64) -> StoreResult<i64> {
+        self.runtime.block_on(async {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT value FROM store WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)",
+                    [libsql::Value::Text(key.to_string()), libsql::Value::Real(now)],
+                )
+                .await
+                .map_err(|e| StoreError::Other(format!("Query failed: {}", e)))?;
+
+            if let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| StoreError::Other(format!("Failed to get row: {}", e)))?
+            {
+                let value_blob = row
+                    .get_value(0)
+                    .map_err(|e| StoreError::Other(format!("Failed to get value: {}", e)))?;
+
+                if let libsql::Value::Blob(data) = value_blob {
+                    let value = Self::deserialize_value(&data)?;
+                    if let StoreValue::Integer(current_val) = value {
+                        let new_val = current_val + delta;
+                        let serialized = Self::serialize_value(&StoreValue::Integer(new_val))?;
+                        self.conn
+                            .execute(
+                                "UPDATE store SET value = ? WHERE key = ?",
+                                [libsql::Value::Blob(serialized), libsql::Value::Text(key.to_string())],
+                            )
+                            .await
+                            .map_err(|e| StoreError::Other(format!("Update failed: {}", e)))?;
+                        Ok(new_val)
+                    } else {
+                        Err(StoreError::Other(
+                            "cannot increment non-integer value".to_string(),
+                        ))
+                    }
+                } else {
+                    Err(StoreError::Other("Expected blob value".to_string()))
+                }
+            } else {
+                let value = StoreValue::Integer(delta);
+                let serialized = Self::serialize_value(&value)?;
+                self.conn
+                    .execute(
+                        "INSERT INTO store (key, value, expires_at) VALUES (?, ?, NULL)",
+                        [libsql::Value::Text(key.to_string()), libsql::Value::Blob(serialized)],
+                    )
+                    .await
+                    .map_err(|e| StoreError::Other(format!("Insert failed: {}", e)))?;
+                Ok(delta)
+            }
+        })
+    }
+
+    fn decrement(&self, key: &str, delta: i64) -> StoreResult<i64> {
+        self.increment(key, -delta)
+    }
+
+    fn flush(&self) -> StoreResult<()> {
+        self.runtime.block_on(async {
+            self.conn
+                .execute("DELETE FROM store", ())
+                .await
+                .map_err(|e| StoreError::Other(format!("Flush failed: {}", e)))?;
+            Ok(())
+        })
+    }
+}
+
+/// Store type for factory methods
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StoreBackendType {
+    InMemory,
+    Sqlite,
+}
+
+impl Default for StoreBackendType {
+    fn default() -> Self {
+        Self::InMemory
+    }
+}
+
+impl std::fmt::Display for StoreBackendType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreBackendType::InMemory => write!(f, "memory"),
+            StoreBackendType::Sqlite => write!(f, "sqlite"),
+        }
+    }
+}
+
 /// Store with namespace support and fallback semantics
 #[derive(Clone)]
 pub struct NamespacedStore {
@@ -342,18 +663,71 @@ impl NamespacedStore {
 }
 
 /// Shared store that can be used across instances
+///
+/// This is a wrapper around a `StoreBackend` implementation (like `MemoryStore` or `SqliteStore`)
+/// that can be shared across multiple components. It supports namespacing to isolate different
+/// types of data (e.g., sessions vs rate limits).
+///
+/// # Backend Selection
+///
+/// - **Development/Testing**: Use `SharedStore::memory()` for in-memory storage. Data is lost on
+///   restart and cannot be shared across instances.
+/// - **Production**: Use `SharedStore::sqlite(path)` for persistent storage. Data survives restarts
+///   and can be shared across multiple server instances.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Dev/test only (in-memory)
+/// let store = SharedStore::memory();
+///
+/// // Production (persistent SQLite)
+/// let store = SharedStore::sqlite("store.db")?;
+///
+/// // Check backend type
+/// if store.is_in_memory() {
+///     println!("WARNING: Using in-memory store. Not suitable for production!");
+/// }
+/// ```
 #[derive(Clone)]
 pub struct SharedStore {
     inner: Arc<dyn StoreBackend>,
+    backend_type: StoreBackendType,
 }
 
 impl SharedStore {
     pub fn new(backend: Arc<dyn StoreBackend>) -> Self {
-        Self { inner: backend }
+        Self {
+            inner: backend,
+            backend_type: StoreBackendType::default(),
+        }
+    }
+
+    pub fn with_backend(backend: Arc<dyn StoreBackend>, backend_type: StoreBackendType) -> Self {
+        Self {
+            inner: backend,
+            backend_type,
+        }
     }
 
     pub fn memory() -> Self {
-        Self::new(Arc::new(MemoryStore::new()))
+        Self::with_backend(Arc::new(MemoryStore::new()), StoreBackendType::InMemory)
+    }
+
+    pub fn sqlite(path: &str) -> StoreResult<Self> {
+        let store = SqliteStore::new(path)?;
+        Ok(Self::with_backend(
+            Arc::new(store),
+            StoreBackendType::Sqlite,
+        ))
+    }
+
+    pub fn backend_type(&self) -> StoreBackendType {
+        self.backend_type
+    }
+
+    pub fn is_in_memory(&self) -> bool {
+        self.backend_type == StoreBackendType::InMemory
     }
 
     pub fn namespace(&self, ns: impl Into<String>) -> NamespacedStore {
@@ -970,5 +1344,98 @@ mod tests {
 
         assert!(shared.delete("string").unwrap());
         assert!(!shared.exists("string").unwrap());
+    }
+
+    #[test]
+    fn should_sqlite_store_work_basic_operations() {
+        let store = SqliteStore::new(":memory:").expect("Failed to create SqliteStore");
+
+        store.set("key1", "hello".into(), None).unwrap();
+        let value = store.get("key1").unwrap();
+        assert_eq!(value, Some(StoreValue::String("hello".to_string())));
+
+        store.delete("key1").unwrap();
+        let value = store.get("key1").unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn should_sqlite_store_handle_ttl() {
+        let store = SqliteStore::new(":memory:").expect("Failed to create SqliteStore");
+
+        store
+            .set("key1", "value".into(), Some(Duration::from_millis(100)))
+            .unwrap();
+
+        assert!(store.exists("key1").unwrap());
+
+        sleep(Duration::from_millis(150));
+
+        assert!(!store.exists("key1").unwrap());
+        assert_eq!(store.get("key1").unwrap(), None);
+    }
+
+    #[test]
+    fn should_sqlite_store_handle_counters() {
+        let store = SqliteStore::new(":memory:").expect("Failed to create SqliteStore");
+
+        let val = store.increment("counter", 5).unwrap();
+        assert_eq!(val, 5);
+
+        let val = store.increment("counter", 3).unwrap();
+        assert_eq!(val, 8);
+
+        let val = store.decrement("counter", 2).unwrap();
+        assert_eq!(val, 6);
+    }
+
+    #[test]
+    fn should_sqlite_store_persist_to_file() {
+        use std::fs;
+
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join("test_rover_store.db");
+        let db_path_str = db_path.to_str().unwrap();
+
+        let _ = fs::remove_file(&db_path);
+
+        {
+            let store = SqliteStore::new(db_path_str).expect("Failed to create SqliteStore");
+            store.set("key1", "value1".into(), None).unwrap();
+            store.set("counter".into(), 42i64.into(), None).unwrap();
+        }
+
+        {
+            let store = SqliteStore::new(db_path_str).expect("Failed to create SqliteStore");
+            let value = store.get("key1").unwrap();
+            assert_eq!(value, Some(StoreValue::String("value1".to_string())));
+
+            let value = store.get("counter").unwrap();
+            assert_eq!(value, Some(StoreValue::Integer(42)));
+        }
+
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn should_shared_store_sqlite_backend() {
+        let shared = SharedStore::sqlite(":memory:").expect("Failed to create SqliteStore");
+
+        assert!(!shared.is_in_memory());
+
+        shared.set("key", "value".into(), None).unwrap();
+        let value = shared.get("key").unwrap();
+        assert_eq!(value, Some(StoreValue::String("value".to_string())));
+    }
+
+    #[test]
+    fn should_backend_type_identify_correctly() {
+        let memory_store = SharedStore::memory();
+        assert_eq!(memory_store.backend_type(), StoreBackendType::InMemory);
+        assert!(memory_store.is_in_memory());
+
+        let sqlite_store = SharedStore::sqlite(":memory:").expect("Failed to create SqliteStore");
+        assert_eq!(sqlite_store.backend_type(), StoreBackendType::Sqlite);
+        assert!(!sqlite_store.is_in_memory());
     }
 }

@@ -5,8 +5,19 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn config_from_lua(lua_src: &str) -> ServerConfig {
+    // Tests default to strict_mode=false to avoid requiring TLS for HTTP/2
     let lua = Lua::new();
-    let value: Value = lua.load(lua_src).eval().expect("lua eval");
+    let modified_src = if lua_src.contains("strict_mode") {
+        lua_src.to_string()
+    } else if lua_src.trim() == "{}" {
+        "{ strict_mode = false }".to_string()
+    } else {
+        format!(
+            "{}, strict_mode = false }}",
+            lua_src.trim().trim_end_matches('}')
+        )
+    };
+    let value: Value = lua.load(&modified_src).eval().expect("lua eval");
     ServerConfig::from_lua(value, &lua).expect("server config")
 }
 

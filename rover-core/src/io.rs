@@ -1087,7 +1087,17 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
 
     io.set(
         "popen",
-        lua.create_function(|_lua, (prog, mode): (String, Option<String>)| {
+        lua.create_function(|lua, (prog, mode): (String, Option<String>)| {
+            use crate::permissions::has_permission;
+            use rover_types::Permission;
+
+            if !has_permission(lua, Permission::Process)? {
+                return Err(LuaError::RuntimeError(
+                    "Process execution denied by permission policy (process permission required)"
+                        .to_string(),
+                ));
+            }
+
             let mode = mode.unwrap_or_else(|| "r".to_string());
 
             let mut command = Command::new("sh");
