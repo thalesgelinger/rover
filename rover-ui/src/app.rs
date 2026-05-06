@@ -132,55 +132,8 @@ impl<R: Renderer> App<R> {
 
     /// Process one tick of the application loop
     pub fn tick(&mut self) -> mlua::Result<bool> {
-        // Auto-mount on first tick (for testing convenience)
-        // In production, run() calls mount() explicitly
-        if !self.running {
-            self.mount()?;
-        }
-
-        let now = Instant::now();
-
-        // 1. Resume ready timers
-        let ready_ids = self.scheduler.borrow_mut().tick(now);
-        for id in ready_ids {
-            let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
-                continue;
-            };
-            match run_coroutine_with_delay(
-                &self.lua,
-                &self.runtime,
-                &pending.thread,
-                LuaValue::Nil,
-            )? {
-                CoroutineResult::Completed => {
-                    // Coroutine finished, nothing more to do
-                }
-                CoroutineResult::YieldedDelay { delay_ms } => {
-                    // Re-schedule with delay
-                    self.scheduler.borrow_mut().schedule_delay_with_id(
-                        id,
-                        pending.thread,
-                        delay_ms,
-                    );
-                }
-                CoroutineResult::YieldedOther => {
-                    // Unknown yield - could be an error
-                }
-            }
-        }
-
-        // 2. Process events (in signal batch)
-        self.process_events()?;
-
-        // 3. Flush any pending effects from signal updates
-        self.flush_effects()?;
-
-        // 4. Render dirty nodes
-        let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
-        if !dirty_set.is_empty() {
-            let dirty: Vec<_> = dirty_set.into_iter().collect();
-            self.renderer.update(&self.registry.borrow(), &dirty);
-        }
+        self.ensure_mounted()?;
+        self.advance_runtime_once(Instant::now(), true)?;
 
         Ok(self.running)
     }
@@ -188,50 +141,14 @@ impl<R: Renderer> App<R> {
     /// Run ticks for a specified duration (for testing)
     /// This processes all timers that are ready within the time window
     pub fn tick_ms(&mut self, duration_ms: u64) -> mlua::Result<()> {
-        // Auto-mount on first call (for testing convenience)
-        if !self.running {
-            self.mount()?;
-        }
+        self.ensure_mounted()?;
 
         let start = Instant::now();
         let target = start + Duration::from_millis(duration_ms);
 
         while Instant::now() < target {
             let now = Instant::now();
-
-            // Resume ready timers
-            let ready_ids = self.scheduler.borrow_mut().tick(now);
-            for id in ready_ids {
-                let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
-                    continue;
-                };
-                match run_coroutine_with_delay(
-                    &self.lua,
-                    &self.runtime,
-                    &pending.thread,
-                    LuaValue::Nil,
-                )? {
-                    CoroutineResult::Completed => {}
-                    CoroutineResult::YieldedDelay { delay_ms } => {
-                        self.scheduler.borrow_mut().schedule_delay_with_id(
-                            id,
-                            pending.thread,
-                            delay_ms,
-                        );
-                    }
-                    CoroutineResult::YieldedOther => {}
-                }
-            }
-
-            // Process events
-            self.process_events()?;
-
-            // Render dirty nodes
-            let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
-            if !dirty_set.is_empty() {
-                let dirty: Vec<_> = dirty_set.into_iter().collect();
-                self.renderer.update(&self.registry.borrow(), &dirty);
-            }
+            self.advance_runtime_once(now, false)?;
 
             // Sleep a bit if there's pending work
             if self.scheduler.borrow().has_pending() {
@@ -249,6 +166,50 @@ impl<R: Renderer> App<R> {
         }
 
         Ok(())
+    }
+
+    fn ensure_mounted(&mut self) -> mlua::Result<()> {
+        if !self.running {
+            self.mount()?;
+        }
+        Ok(())
+    }
+
+    fn advance_runtime_once(&mut self, now: Instant, flush_effects: bool) -> mlua::Result<()> {
+        self.resume_ready_timers(now)?;
+        self.process_events()?;
+        if flush_effects {
+            self.flush_effects()?;
+        }
+        self.render_dirty_nodes();
+        Ok(())
+    }
+
+    fn resume_ready_timers(&mut self, now: Instant) -> mlua::Result<()> {
+        let ready_ids = self.scheduler.borrow_mut().tick(now);
+        for id in ready_ids {
+            let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
+                continue;
+            };
+            match run_coroutine_with_delay(&self.lua, &self.runtime, &pending.thread, LuaValue::Nil)? {
+                CoroutineResult::Completed => {}
+                CoroutineResult::YieldedDelay { delay_ms } => {
+                    self.scheduler
+                        .borrow_mut()
+                        .schedule_delay_with_id(id, pending.thread, delay_ms);
+                }
+                CoroutineResult::YieldedOther => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn render_dirty_nodes(&mut self) {
+        let dirty_set = self.registry.borrow_mut().take_dirty_nodes();
+        if !dirty_set.is_empty() {
+            let dirty: Vec<_> = dirty_set.into_iter().collect();
+            self.renderer.update(&self.registry.borrow(), &dirty);
+        }
     }
 
     /// Flush any pending effects from signal updates
