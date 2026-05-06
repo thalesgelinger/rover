@@ -856,40 +856,61 @@ pub trait Server {
     fn get_routes(&self, lua: &Lua) -> Result<RouteTable>;
 }
 
+struct CompiledServerApp {
+    routes: RouteTable,
+    config: ServerConfig,
+    openapi_spec: Option<serde_json::Value>,
+}
+
+fn build_idempotency_store_context(config: &ServerConfig) -> Result<IdempotencyStoreContext> {
+    let idempotency_store = match config.idempotency.backend {
+        StoreBackendType::InMemory => SharedStore::memory(),
+        StoreBackendType::Sqlite => {
+            let path = config
+                .idempotency
+                .sqlite_path
+                .as_deref()
+                .ok_or_else(|| anyhow!("idempotency backend 'sqlite' requires sqlite_path"))?;
+            SharedStore::sqlite(path).map_err(|e| {
+                anyhow!(
+                    "failed to initialize idempotency sqlite store at '{}': {}",
+                    path,
+                    e
+                )
+            })?
+        }
+    };
+
+    Ok(IdempotencyStoreContext {
+        store: idempotency_store.namespace_strict("idempotency"),
+    })
+}
+
+fn compile_server_app(table: &Table, lua: &Lua, source: &str) -> Result<CompiledServerApp> {
+    let routes = table.get_routes(lua)?;
+    let config: ServerConfig = table.get("config")?;
+
+    let openapi_spec = if config.docs {
+        let model = analyze(source);
+        Some(generate_spec(&model, "API", "1.0.0"))
+    } else {
+        None
+    };
+
+    Ok(CompiledServerApp {
+        routes,
+        config,
+        openapi_spec,
+    })
+}
+
 impl Server for Table {
     fn run_server(&self, lua: &Lua, source: &str) -> Result<()> {
-        let routes = self.get_routes(lua)?;
-        let config: ServerConfig = self.get("config")?;
-
-        // Generate OpenAPI spec if docs enabled
-        let openapi_spec = if config.docs {
-            let model = analyze(source);
-            Some(generate_spec(&model, "API", "1.0.0"))
-        } else {
-            None
-        };
+        let compiled = compile_server_app(self, lua, source)?;
 
         let runtime = lua.app_data_ref::<SharedSignalRuntime>().map(|r| r.clone());
         let scheduler = lua.app_data_ref::<SharedScheduler>().map(|s| s.clone());
-        let idempotency_store = match config.idempotency.backend {
-            StoreBackendType::InMemory => SharedStore::memory(),
-            StoreBackendType::Sqlite => {
-                let path =
-                    config.idempotency.sqlite_path.as_deref().ok_or_else(|| {
-                        anyhow!("idempotency backend 'sqlite' requires sqlite_path")
-                    })?;
-                SharedStore::sqlite(path).map_err(|e| {
-                    anyhow!(
-                        "failed to initialize idempotency sqlite store at '{}': {}",
-                        path,
-                        e
-                    )
-                })?
-            }
-        };
-        let idempotency_store_context = IdempotencyStoreContext {
-            store: idempotency_store.namespace_strict("idempotency"),
-        };
+        let idempotency_store_context = build_idempotency_store_context(&compiled.config)?;
 
         let server_lua = lua.clone();
         if let Some(runtime) = runtime {
@@ -900,7 +921,12 @@ impl Server for Table {
         }
         server_lua.set_app_data(idempotency_store_context);
 
-        rover_server::run(server_lua, routes, config, openapi_spec);
+        rover_server::run(
+            server_lua,
+            compiled.routes,
+            compiled.config,
+            compiled.openapi_spec,
+        );
         Ok(())
     }
 
