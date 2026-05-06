@@ -3,7 +3,7 @@ use super::node::{TextContent, UiNode};
 use super::registry::UiRegistry;
 use super::style::NodeStyle;
 use crate::lua::{derived::LuaDerived, signal::LuaSignal};
-use mlua::{AnyUserData, Function, Table, UserData, UserDataMethods, Value};
+use mlua::{AnyUserData, Function, ObjectLike, Table, UserData, UserDataMethods, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -772,8 +772,6 @@ impl UserData for LuaUi {
                     uv.get::<Value>("render")
                 } else if key == "theme" {
                     Ok(Value::Table(get_ui_theme_table(_lua)?))
-                } else if key == "mod" {
-                    uv.get::<Value>("mod")
                 } else {
                     uv.get::<Value>(key)
                 }
@@ -1330,33 +1328,37 @@ fn apply_mod_to_node(
     props: &Table,
     node_id: super::node::NodeId,
 ) -> mlua::Result<()> {
-    let mod_value = props.get::<Value>("mod")?;
-    let mod_table = match mod_value {
+    let style_value = props.get::<Value>("style")?;
+    if !matches!(props.get::<Value>("mod")?, Value::Nil) {
+        return Err(mlua::Error::RuntimeError(
+            "props.mod removed. use props.style".to_string(),
+        ));
+    }
+
+    let style_table = match style_value {
         Value::Table(t) => t,
         Value::Nil => return Ok(()),
         _ => {
             return Err(mlua::Error::RuntimeError(
-                "props.mod must be a modifier table".to_string(),
+                "props.style must be a table".to_string(),
             ));
         }
     };
 
-    let resolve: mlua::Function = mod_table.get("resolve")?;
-    let resolved: Table = resolve.call(mod_table.clone())?;
+    let resolved = resolve_style_table(lua, &style_table)?;
     let style = NodeStyle::from_lua_table(&resolved)?;
     registry_rc.borrow_mut().set_node_style(node_id, style);
 
-    let is_reactive: mlua::Function = mod_table.get("is_reactive")?;
-    let reactive: bool = is_reactive.call(mod_table.clone())?;
+    let reactive = is_style_reactive(&style_table)?;
     if !reactive {
         return Ok(());
     }
 
     let runtime = crate::lua::helpers::get_runtime(lua)?;
     let registry_for_callback = registry_rc.clone();
+    let style_table_for_callback = style_table.clone();
     let callback = lua.create_function(move |_lua, ()| {
-        let resolve: mlua::Function = mod_table.get("resolve")?;
-        let resolved: Table = resolve.call(mod_table.clone())?;
+        let resolved = resolve_style_table(_lua, &style_table_for_callback)?;
         let style = NodeStyle::from_lua_table(&resolved)?;
         registry_for_callback
             .borrow_mut()
@@ -1371,6 +1373,108 @@ fn apply_mod_to_node(
 
     registry_rc.borrow_mut().attach_effect(node_id, effect_id);
     Ok(())
+}
+
+fn is_style_reactive(style_table: &Table) -> mlua::Result<bool> {
+    for pair in style_table.clone().pairs::<Value, Value>() {
+        let (_, value) = pair?;
+        if value_is_reactive(value)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn value_is_reactive(value: Value) -> mlua::Result<bool> {
+    match value {
+        Value::UserData(ud) => match ud.get::<Value>("val") {
+            Ok(val) => Ok(!matches!(val, Value::Nil)),
+            Err(_) => Ok(false),
+        },
+        Value::Table(t) => {
+            for pair in t.pairs::<Value, Value>() {
+                let (_, nested) = pair?;
+                if value_is_reactive(nested)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn resolve_style_table(lua: &mlua::Lua, style_table: &Table) -> mlua::Result<Table> {
+    let out = lua.create_table()?;
+    let theme = get_ui_theme_table(lua)?;
+
+    for pair in style_table.clone().pairs::<Value, Value>() {
+        let (key, value) = pair?;
+        let resolved = resolve_style_value(&theme, &key, value)?;
+        out.set(key, resolved)?;
+    }
+
+    Ok(out)
+}
+
+fn resolve_style_value(theme: &Table, key: &Value, value: Value) -> mlua::Result<Value> {
+    let unwrapped = unwrap_reactive(value)?;
+    let key_name = match key {
+        Value::String(s) => s.to_str().ok().map(|v| v.to_string()).unwrap_or_default(),
+        _ => String::new(),
+    };
+
+    match key_name.as_str() {
+        "padding" | "gap" => Ok(Value::Integer(resolve_theme_space(theme, unwrapped)? as i64)),
+        "backgroundColor" | "bg_color" | "borderColor" | "border_color" | "color" | "textColor"
+        | "fg_color" | "text_color" => resolve_theme_color(theme, unwrapped),
+        _ => Ok(unwrapped),
+    }
+}
+
+fn unwrap_reactive(value: Value) -> mlua::Result<Value> {
+    if let Value::UserData(ud) = value {
+        if let Ok(resolved) = ud.get::<Value>("val") {
+            if !matches!(resolved, Value::Nil) {
+                return Ok(resolved);
+            }
+        }
+        return Ok(Value::UserData(ud));
+    }
+    Ok(value)
+}
+
+fn resolve_theme_color(theme: &Table, value: Value) -> mlua::Result<Value> {
+    if let Value::String(s) = value.clone() {
+        let raw = s.to_str()?;
+        if raw.starts_with('#') {
+            return Ok(value);
+        }
+        let color_table: Table = theme.get("color")?;
+        let token_value: Value = color_table.get(raw)?;
+        if !matches!(token_value, Value::Nil) {
+            return Ok(token_value);
+        }
+    }
+    Ok(value)
+}
+
+fn resolve_theme_space(theme: &Table, value: Value) -> mlua::Result<u16> {
+    match value {
+        Value::Integer(n) => Ok(n.max(0) as u16),
+        Value::Number(n) => Ok(n.max(0.0) as u16),
+        Value::String(s) => {
+            let raw = s.to_str()?;
+            let space_table: Table = theme.get("space")?;
+            let token_value: Value = space_table.get(&raw)?;
+            match token_value {
+                Value::Integer(n) => Ok(n.max(0) as u16),
+                Value::Number(n) => Ok(n.max(0.0) as u16),
+                _ => Ok(raw.parse::<u16>().unwrap_or(0)),
+            }
+        }
+        _ => Ok(0),
+    }
 }
 
 fn replace_table_recursive(dst: &Table, src: &Table) -> mlua::Result<()> {

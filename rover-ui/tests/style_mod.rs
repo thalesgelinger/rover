@@ -2,32 +2,31 @@ use rover_ui::app::App;
 use rover_ui::ui::{StubRenderer, StyleOp};
 
 #[test]
-fn test_modifier_exists_and_is_extendable() {
+fn test_style_object_is_supported() {
     let renderer = StubRenderer::new();
     let app = App::new(renderer).unwrap();
 
-    let (before_debug, after_debug): (String, String) = app
+    let background: String = app
         .lua()
         .load(
             r#"
             local ui = rover.ui
-            local before_type = type(ui.mod.debug)
-            function ui.mod:debug()
-                return self:border_color("danger"):border_width(1)
-            end
-            local after_type = type(ui.mod.debug)
-            return before_type, after_type
+            local node = ui.view {
+                style = { backgroundColor = "surface" },
+                ui.text { "x" }
+            }
+            rover.render = function() return node end
+            return node ~= nil and "ok" or "no"
         "#,
         )
         .eval()
         .unwrap();
 
-    assert_eq!(before_debug, "nil");
-    assert_eq!(after_debug, "function");
+    assert_eq!(background, "ok");
 }
 
 #[test]
-fn test_reactive_modifier_updates_style() {
+fn test_reactive_style_updates_style() {
     let renderer = StubRenderer::new();
     let mut app = App::new(renderer).unwrap();
 
@@ -35,13 +34,11 @@ fn test_reactive_modifier_updates_style() {
         .load(
             r##"
             local ui = rover.ui
-            local mod = ui.mod
-
             _G.bg = rover.signal("#111111")
 
             function rover.render()
                 return ui.view {
-                    mod = mod:bg_color(_G.bg),
+                    style = { backgroundColor = _G.bg },
                     ui.text { "x" },
                 }
             end
@@ -84,61 +81,55 @@ fn test_reactive_modifier_updates_style() {
 }
 
 #[test]
-fn test_theme_set_and_extend_affect_mod_resolution() {
-    let renderer = StubRenderer::new();
-    let app = App::new(renderer).unwrap();
-
-    let (before, after_extend, after_set): (i64, i64, i64) = app
-        .lua()
-        .load(
-            r##"
-            local ui = rover.ui
-            local mod = ui.mod
-
-            local before = mod:padding("sm"):resolve().ops[1].value
-
-            ui.extend_theme({ space = { sm = 9 } })
-            local after_extend = mod:padding("sm"):resolve().ops[1].value
-
-            ui.set_theme({
-              space = { sm = 3 },
-              color = { surface = "#123456" },
+fn test_theme_set_and_extend_affect_style_resolution() {
+    fn padding_after(setup: &str) -> u16 {
+        let renderer = StubRenderer::new();
+        let mut app = App::new(renderer).unwrap();
+        app.lua().load(setup).exec().unwrap();
+        app.lua()
+            .load(
+                r##"
+                local ui = rover.ui
+                function rover.render()
+                    return ui.view { style = { padding = "sm" }, ui.text { "x" } }
+                end
+            "##,
+            )
+            .exec()
+            .unwrap();
+        app.tick().unwrap();
+        let root = app.registry().borrow().root().unwrap();
+        let style = app
+            .registry()
+            .borrow()
+            .get_node_style(root)
+            .cloned()
+            .unwrap();
+        style
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                StyleOp::Padding(v) => Some(*v),
+                _ => None,
             })
-            local after_set = mod:padding("sm"):resolve().ops[1].value
+            .unwrap_or(0)
+    }
 
-            return before, after_extend, after_set
-        "##,
-        )
-        .eval()
-        .unwrap();
-
-    assert_eq!(before, 2);
-    assert_eq!(after_extend, 9);
-    assert_eq!(after_set, 3);
+    assert_eq!(padding_after(""), 2);
+    assert_eq!(
+        padding_after("rover.ui.extend_theme({ space = { sm = 9 } })"),
+        9
+    );
+    assert_eq!(
+        padding_after(
+            "rover.ui.set_theme({ space = { sm = 3 }, color = { surface = '#123456' } })"
+        ),
+        3
+    );
 }
 
 #[test]
-fn test_color_modifier_resolves_theme_token() {
-    let renderer = StubRenderer::new();
-    let app = App::new(renderer).unwrap();
-
-    let color: String = app
-        .lua()
-        .load(
-            r##"
-            local ui = rover.ui
-            local mod = ui.mod
-            return mod:color("accent"):resolve().color
-        "##,
-        )
-        .eval()
-        .unwrap();
-
-    assert_eq!(color, "#22c55e");
-}
-
-#[test]
-fn test_reactive_scalar_modifier_updates_style() {
+fn test_color_style_resolves_theme_token() {
     let renderer = StubRenderer::new();
     let mut app = App::new(renderer).unwrap();
 
@@ -146,15 +137,41 @@ fn test_reactive_scalar_modifier_updates_style() {
         .load(
             r##"
             local ui = rover.ui
-            local mod = ui.mod
+            function rover.render()
+                return ui.text { "x", style = { color = "accent" } }
+            end
+        "##,
+        )
+        .exec()
+        .unwrap();
 
+    app.tick().unwrap();
+    let root = app.registry().borrow().root().unwrap();
+    let style = app
+        .registry()
+        .borrow()
+        .get_node_style(root)
+        .cloned()
+        .unwrap();
+    assert_eq!(style.color.as_deref(), Some("#22c55e"));
+}
+
+#[test]
+fn test_reactive_scalar_style_updates_style() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    app.lua()
+        .load(
+            r##"
+            local ui = rover.ui
             _G.pos_x = rover.signal(2)
             _G.pos_y = rover.signal(3)
 
             function rover.render()
                 return ui.stack {
                     ui.view {
-                        mod = mod:position("absolute"):left(_G.pos_x):top(_G.pos_y),
+                        style = { position = "absolute", left = _G.pos_x, top = _G.pos_y },
                         ui.text { "x" },
                     },
                 }

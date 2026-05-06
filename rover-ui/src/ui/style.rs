@@ -66,6 +66,19 @@ impl NodeStyle {
     pub fn from_lua_table(table: &Table) -> mlua::Result<Self> {
         let mut style = Self::default();
 
+        if let Some(v) = to_u16(get_alias(table, &["padding"])?) {
+            style.ops.push(StyleOp::Padding(v));
+        }
+        if let Some(v) = to_string(get_alias(table, &["backgroundColor", "bg_color"])?) {
+            style.ops.push(StyleOp::BgColor(v));
+        }
+        if let Some(v) = to_string(get_alias(table, &["borderColor", "border_color"])?) {
+            style.ops.push(StyleOp::BorderColor(v));
+        }
+        if let Some(v) = to_u16(get_alias(table, &["borderWidth", "border_width"])?) {
+            style.ops.push(StyleOp::BorderWidth(v));
+        }
+
         if let Ok(ops_table) = table.get::<Table>("ops") {
             for entry in ops_table.sequence_values::<Table>() {
                 let op = entry?;
@@ -96,11 +109,14 @@ impl NodeStyle {
             }
         }
 
-        style.width = parse_size_opt(table.get::<Value>("width")?);
-        style.height = parse_size_opt(table.get::<Value>("height")?);
-        style.color = to_string(table.get::<Value>("color")?);
+        style.width = parse_size_opt(get_alias(table, &["width"])?);
+        style.height = parse_size_opt(get_alias(table, &["height"])?);
+        style.color = to_string(get_alias(
+            table,
+            &["color", "textColor", "fg_color", "text_color"],
+        )?);
 
-        if let Some(pos) = to_string(table.get::<Value>("position")?) {
+        if let Some(pos) = to_string(get_alias(table, &["position"])?) {
             style.position = match pos.as_str() {
                 "absolute" => PositionType::Absolute,
                 "fixed" => PositionType::Fixed,
@@ -108,21 +124,32 @@ impl NodeStyle {
             };
         }
 
-        style.top = to_i32(table.get::<Value>("top")?);
-        style.left = to_i32(table.get::<Value>("left")?);
-        style.right = to_i32(table.get::<Value>("right")?);
-        style.bottom = to_i32(table.get::<Value>("bottom")?);
+        style.top = to_i32(get_alias(table, &["top"])?);
+        style.left = to_i32(get_alias(table, &["left"])?);
+        style.right = to_i32(get_alias(table, &["right"])?);
+        style.bottom = to_i32(get_alias(table, &["bottom"])?);
 
-        style.grow = to_f64(table.get::<Value>("grow")?);
-        style.gap = to_u16(table.get::<Value>("gap")?);
-        style.justify = to_string(table.get::<Value>("justify")?);
-        style.align = to_string(table.get::<Value>("align")?);
+        style.grow = to_f64(get_alias(table, &["grow", "flexGrow"])?);
+        style.gap = to_u16(get_alias(table, &["gap"])?);
+        style.justify = to_string(get_alias(table, &["justify", "justifyContent"])?);
+        style.align = to_string(get_alias(table, &["align", "alignItems"])?);
         style.horizontal =
-            to_string(table.get::<Value>("horizontal")?).or_else(|| style.justify.clone());
-        style.vertical = to_string(table.get::<Value>("vertical")?).or_else(|| style.align.clone());
+            to_string(get_alias(table, &["horizontal"])?).or_else(|| style.justify.clone());
+        style.vertical =
+            to_string(get_alias(table, &["vertical"])?).or_else(|| style.align.clone());
 
         Ok(style)
     }
+}
+
+fn get_alias(table: &Table, keys: &[&str]) -> mlua::Result<Value> {
+    for key in keys {
+        let value = table.get::<Value>(*key)?;
+        if !matches!(value, Value::Nil) {
+            return Ok(value);
+        }
+    }
+    Ok(Value::Nil)
 }
 
 fn parse_size_opt(value: Value) -> Option<StyleSize> {

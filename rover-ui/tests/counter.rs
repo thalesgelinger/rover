@@ -750,7 +750,7 @@ fn test_list_keyed_reuse_avoids_render_fn_rerun() {
             return ru.each(_G.items, function(item, index)
                 _G.render_calls = _G.render_calls + 1
                 return ru.view {
-                    mod = ru.mod:position("absolute"):left(item.x):top(1),
+                    style = { position = "absolute", left = item.x, top = 1 },
                     ru.text { item.id .. ":" .. index }
                 }
             end, function(item)
