@@ -1,0 +1,73 @@
+baseURL = 'https://rover.lu/'
+languageCode = 'en-us'
+title = 'Rover'
+
+[params]
+  offlineSearch = true
+
+  [params.ui]
+    showLightDarkModeMenu = true
+    sidebar_menu_compact = false
+    sidebar_menu_foldable = false
+    ul_show = 3
+    sidebar_menu_truncate = 200
+    breadcrumb_disable = false
+    taxonomy_breadcrumb_disable = true
+
+    [params.ui.scrollSpy]
+      rootMargin = "0px 0px -15%"
+
+[module]
+  proxy = "direct"
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+
+  [module.hugoVersion]
+    extended = true
+    min = "0.155.3"
+
+  [[module.imports]]
+    path = "github.com/google/docsy"
+    disable = false
+
+  [[module.imports]]
+    path = "github.com/google/docsy/dependencies"
+    disable = false
+
+[[menu.main]]
+  name = "Docs"
+  url = "/docs/"
+  weight = 10
+
+[[menu.main]]
+  name = "Server"
+  url = "/docs/server/"
+  weight = 20
+
+[[menu.main]]
+  name = "Security"
+  url = "/docs/security/"
+  weight = 30
+
+[[menu.main]]
+  name = "Runtime"
+  url = "/docs/runtime/"
+  weight = 40
+
+[[menu.main]]
+  name = "Data"
+  url = "/docs/data/"
+  weight = 50
+
+[[menu.main]]
+  name = "CLI"
+  url = "/docs/operations/cli/"
+  weight = 60
+
+[[menu.main]]
+  name = "Website"
+  url = "/"
+  weight = 70

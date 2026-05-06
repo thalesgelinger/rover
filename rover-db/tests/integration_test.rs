@@ -24,7 +24,8 @@ fn test_connect_and_insert() {
     let result: LuaResult<LuaTable> = lua
         .load(
             r#"
-        local db = rover.db.connect()
+        local db = rover.db.connect({ path = ":memory:" })
+        db.users:sql():raw("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER)"):exec()
         local result = db.users:insert({
             name = "Alice",
             age = 30
@@ -47,7 +48,7 @@ fn test_find_and_filters() {
     let sql: String = lua
         .load(
             r#"
-        local db = rover.db.connect()
+        local db = rover.db.connect({ path = ":memory:" })
 
         -- Build a query
         local query = db.users:find()
@@ -74,7 +75,7 @@ fn test_contains_filter() {
     let sql: String = lua
         .load(
             r#"
-        local db = rover.db.connect()
+        local db = rover.db.connect({ path = ":memory:" })
         local query = db.users:find():by_name_contains("ana")
         return query:inspect().candidate_sql
     "#,
@@ -92,7 +93,7 @@ fn test_in_list_filter() {
     let sql: String = lua
         .load(
             r#"
-        local db = rover.db.connect()
+        local db = rover.db.connect({ path = ":memory:" })
         local query = db.users:find():by_status_in_list({"active", "pending", "paid"})
         return query:inspect().candidate_sql
     "#,
@@ -113,7 +114,7 @@ fn test_between_filter() {
     let sql: String = lua
         .load(
             r#"
-        local db = rover.db.connect()
+        local db = rover.db.connect({ path = ":memory:" })
         local query = db.users:find():by_age_between({18, 65})
         return query:inspect().candidate_sql
     "#,
@@ -462,7 +463,8 @@ fn test_insert_and_query_roundtrip() {
     let count: i64 = lua
         .load(
             r#"
-        local db = rover.db.connect()
+        local db = rover.db.connect({ path = ":memory:" })
+        db.test_users:sql():raw("CREATE TABLE IF NOT EXISTS test_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, score INTEGER)"):exec()
 
         -- Insert test data
         db.test_users:insert({ name = "Test1", score = 100 })
@@ -487,7 +489,8 @@ fn test_first_returns_single_record() {
     let result: LuaTable = lua
         .load(
             r#"
-        local db = rover.db.connect()
+        local db = rover.db.connect({ path = ":memory:" })
+        db.first_test:sql():raw("CREATE TABLE IF NOT EXISTS first_test (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, value INTEGER)"):exec()
 
         -- Insert test data
         db.first_test:insert({ name = "First", value = 1 })

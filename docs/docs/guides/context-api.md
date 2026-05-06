@@ -4,151 +4,114 @@ sidebar_position: 2
 
 # Context API
 
-Access request data through the context object passed to your route handlers.
+`ctx` gives request data + request-scoped state.
 
-## Available Methods
+## Fields
 
-The context object (`ctx`) provides methods to access different parts of the HTTP request:
-
-### `ctx.method`
-
-Get the HTTP method of the request:
-
-```lua
-function api.echo.get(ctx)
-    return { method = ctx.method }  -- "GET"
-end
-```
-
-### `ctx.path`
-
-Get the request path:
+- `ctx.method`
+- `ctx.path`
+- `ctx.client_ip` (`ctx.ip` alias)
+- `ctx.client_proto` (`ctx.proto` alias)
 
 ```lua
 function api.echo.get(ctx)
-    return { path = ctx.path }  -- "/echo"
+  return {
+    method = ctx.method,
+    path = ctx.path,
+    ip = ctx.client_ip,
+    proto = ctx.client_proto,
+  }
 end
 ```
 
-### `ctx:headers()`
+## Request Accessors
 
-Access request headers:
-
-```lua
-function api.echo.get(ctx)
-    local headers = ctx:headers()
-    return {
-        user_agent = headers["user-agent"],
-        content_type = headers["content-type"]
-    }
-end
-```
-
-### `ctx:query()`
-
-Access query string parameters:
-
-```lua
-function api.search.get(ctx)
-    local query = ctx:query()
-    return {
-        page = query.page,
-        limit = query.limit
-    }
-end
-```
-
-Example request: `GET /search?page=1&limit=10`
-
-### `ctx:params()`
-
-Access URL path parameters:
+- `ctx:headers()` -> table
+- `ctx:query()` -> table
+- `ctx:params()` -> table
+- `ctx:body()` -> `BodyValue` (errors if no body)
+- `ctx:request_id()` -> unique request id string
 
 ```lua
 function api.users.p_id.get(ctx)
-    local params = ctx:params()
-    return {
-        user_id = params.id
-    }
+  local headers = ctx:headers()
+  local query = ctx:query()
+  local params = ctx:params()
+
+  return {
+    request_id = ctx:request_id(),
+    ua = headers["user-agent"],
+    page = query.page,
+    id = params.id,
+  }
 end
 ```
 
-Example request: `GET /users/123` → `params.id = "123"`
+## Request-scoped State
 
-### `ctx:body()`
+- `ctx:set(key, value)`
+- `ctx:get(key)`
+- `ctx:next()` (compat helper; returns `nil`)
 
-Access the request body (for POST, PUT, PATCH):
+```lua
+api.before = function(ctx)
+  ctx:set("start", os.clock())
+end
+
+api.after = function(ctx)
+  local start = ctx:get("start")
+  if start then
+    print("elapsed_ms", (os.clock() - start) * 1000)
+  end
+end
+```
+
+## BodyValue API
+
+From `local body = ctx:body()`:
+
+- `body:json()` -> parsed JSON
+- `body:raw()` -> parsed JSON (alias)
+- `body:text()` -> string
+- `body:as_string()` -> string
+- `body:echo()` -> string
+- `body:bytes()` -> numeric byte array
+- `body:expect(schema)` -> validated table via `rover.guard`
+
+JSON media-type rules:
+
+- `json/raw/expect` require `application/json` (or `+json`)
+- otherwise runtime returns `415 Unsupported Media Type`
 
 ```lua
 function api.users.post(ctx)
-    local body = ctx:body()
-    return {
-        received = body
-    }
+  local input = ctx:body():expect {
+    name = rover.guard:string():required(),
+    email = rover.guard:string():required(),
+  }
+  return api.json:status(201, input)
 end
 ```
 
-`ctx:body()` returns a BodyValue with helpers:
+## Multipart Helpers
 
-- `:json()` - parse JSON to Lua table
-- `:as_string()` - raw JSON string (zero-copy)
-- `:text()` - body as text
-- `:bytes()` - body as byte table
-- `:expect(schema)` - validate with `rover.guard`
+For `multipart/form-data` payloads:
 
-Content negotiation behavior:
-
-- Calling `ctx:body():json()` or `ctx:body():expect(...)` requires `Content-Type: application/json` (or `+json`); otherwise Rover returns `415 Unsupported Media Type`.
-- If the request `Accept` header does not allow the response media type, Rover returns `406 Not Acceptable`.
-
-Example validation:
+- `body:file(field_name)` -> first file or `nil`
+- `body:files(field_name)` -> file array
+- `body:form()` -> form fields table
+- `body:multipart()` -> `{ fields = ..., files = ... }`
 
 ```lua
-function api.users.post(ctx)
-    local user = ctx:body():expect {
-        name = rover.guard:string():required(),
-        email = rover.guard:string():required(),
-    }
+function api.upload.post(ctx)
+  local body = ctx:body()
+  local form = body:form()
+  local avatar = body:file("avatar")
 
-    return api.json(user)
+  return api.json {
+    username = form.username,
+    avatar_name = avatar and avatar.name,
+    avatar_size = avatar and avatar.size,
+  }
 end
 ```
-
-## Complete Example
-
-Here's a comprehensive example using multiple context methods:
-
-```lua
-local api = rover.server { }
-
-function api.echo.get(ctx)
-    return {
-        method = ctx.method,
-        path = ctx.path,
-        headers = ctx:headers()["user-agent"],
-        query = ctx:query().page
-    }
-end
-
-function api.echo.post(ctx)
-    return {
-        body = ctx:body(),
-        content_type = ctx:headers()["content-type"]
-    }
-end
-
-function api.users.p_id.posts.p_postId.get(ctx)
-    local params = ctx:params()
-    return {
-        user = params.id,
-        post = params.postId
-    }
-end
-
-return api
-```
-
-## Next Steps
-
-- [Response Builders](/docs/guides/response-builders) - Learn how to return structured responses
-- [Configuration](/docs/api-reference/configuration) - Configure your server

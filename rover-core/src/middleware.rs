@@ -1,5 +1,5 @@
 use anyhow::Result;
-use mlua::{Function, Lua, RegistryKey, Table, Value};
+use mlua::{Function, Lua, Table, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -100,4 +100,42 @@ pub fn merge_middleware_chains(
     }
 
     merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlua::Lua;
+
+    fn middleware(lua: &Lua, name: &str) -> MiddlewareHandler {
+        let func = lua.create_function(|_, ()| Ok(())).expect("create fn");
+        let key = Arc::new(lua.create_registry_value(func).expect("registry key"));
+        MiddlewareHandler {
+            name: name.to_string(),
+            handler: key,
+        }
+    }
+
+    #[test]
+    fn should_merge_middlewares_in_deterministic_order() {
+        let lua = Lua::new();
+
+        let global = MiddlewareChain {
+            before: vec![middleware(&lua, "global_before")],
+            after: vec![middleware(&lua, "global_after")],
+        };
+
+        let route = MiddlewareChain {
+            before: vec![middleware(&lua, "route_before")],
+            after: vec![middleware(&lua, "route_after")],
+        };
+
+        let merged = merge_middleware_chains(&global, &route);
+
+        let before_names: Vec<_> = merged.before.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(before_names, vec!["global_before", "route_before"]);
+
+        let after_names: Vec<_> = merged.after.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(after_names, vec!["route_after", "global_after"]);
+    }
 }

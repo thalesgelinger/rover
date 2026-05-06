@@ -26,8 +26,8 @@ impl Default for WebServerOptions {
 }
 
 pub fn serve_static(options: WebServerOptions) -> Result<()> {
-    let root = options.root_dir;
-    let mut files = collect_assets(&root)?;
+    let root = &options.root_dir;
+    let mut files = collect_assets(root)?;
     files.extend(collect_source_assets(
         &options.source_root,
         &options.source_files,
@@ -41,20 +41,45 @@ pub fn serve_static(options: WebServerOptions) -> Result<()> {
         error_handler: None,
     };
 
-    let config = ServerConfig {
+    let config = build_server_config(&options);
+
+    rover_server::run(lua, route_table, config, None);
+    Ok(())
+}
+
+fn build_server_config(options: &WebServerOptions) -> ServerConfig {
+    ServerConfig {
         port: options.port,
-        host: options.host,
+        host: options.host.clone(),
         log_level: "info".to_string(),
         docs: false,
-        body_size_limit: None,
+        body_size_limit: Some(1024 * 1024),
         cors_origin: None,
         cors_methods: "GET, HEAD".to_string(),
         cors_headers: "Content-Type".to_string(),
         cors_credentials: false,
-    };
-
-    rover_server::run(lua, route_table, config, None);
-    Ok(())
+        security_headers: true,
+        https_redirect: false,
+        strict_mode: true,
+        allow_public_bind: false,
+        allow_insecure_http: false,
+        allow_wildcard_cors_credentials: false,
+        allow_unbounded_body: false,
+        allow_insecure_security_header_overrides: false,
+        management_prefix: "/_rover".to_string(),
+        management_token: None,
+        allow_unauthenticated_management: false,
+        trusted_proxies: Vec::new(),
+        tls: None,
+        http2: false,
+        compress: Default::default(),
+        rate_limit: Default::default(),
+        load_shed: Default::default(),
+        readiness: Default::default(),
+        drain_timeout_secs: None,
+        permissions: Default::default(),
+        idempotency: Default::default(),
+    }
 }
 
 struct Asset {
@@ -190,4 +215,21 @@ fn build_routes(lua: &Lua, assets: Vec<Asset>) -> Result<Vec<Route>> {
     }
 
     Ok(routes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_build_server_config_with_safe_defaults() {
+        let options = WebServerOptions::default();
+        let config = build_server_config(&options);
+
+        assert!(config.compress.enabled);
+        assert!(!config.rate_limit.enabled);
+        assert_eq!(config.load_shed.max_inflight, Some(10000));
+        assert_eq!(config.load_shed.max_queue, Some(1000));
+        assert_eq!(config.drain_timeout_secs, None);
+    }
 }

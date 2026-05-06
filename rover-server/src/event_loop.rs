@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::mem;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,20 +18,56 @@ use slab::Slab;
 use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
+use crate::compression::{CompressionAlgorithm, compress, negotiate_encoding};
 use crate::connection::{Connection, ConnectionState};
 use crate::fast_router::{FastRouter, RouteMatch};
 use crate::http_task::{
     CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
+    extract_or_generate_request_id,
 };
+use crate::lifecycle::{LifecycleConfig, LifecycleEvent, LifecycleManager, LifecyclePhase};
 use crate::table_pool::LuaTablePool;
+use crate::to_json::ToJson;
 use crate::ws_frame::{self, WsOpcode};
 use crate::ws_handshake;
 use crate::ws_lua::{SharedConnections, SharedWsManager};
 use crate::ws_manager::WsManager;
-use crate::{Bytes, HttpMethod, Route, ServerConfig, WsRoute};
+use crate::{Bytes, HttpMethod, Route, ServerConfig, SseWriter, WsRoute, generate_sse_event_id};
 
 const LISTENER: Token = Token(0);
 const DEFAULT_COROUTINE_TIMEOUT_MS: u64 = 30000;
+const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 30;
+/// Response body for `/healthz` probe when healthy.
+///
+/// Body: `{"status":"ok"}`
+/// Status: 200 OK
+const HEALTHZ_OK_BODY: &[u8] = b"{\"status\":\"ok\"}";
+const DEFAULT_SECURITY_HEADERS: [(&str, &str); 3] = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+];
+
+fn hash_bytes(data: &[u8]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownState {
+    Running,
+    Draining,
+    Shutdown,
+}
+
+struct PendingSseChunk {
+    chunk: Option<Bytes>,
+    should_end: bool,
+}
 
 struct PendingCoroutine {
     thread: Thread,
@@ -39,9 +75,23 @@ struct PendingCoroutine {
     ctx_idx: usize,
 }
 
+#[derive(Debug, Clone)]
+struct BuiltinProbeResponse {
+    status: u16,
+    body: Bytes,
+    content_type: Option<&'static str>,
+    headers: HashMap<String, String>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::EventLoop;
+    use std::collections::HashMap;
+
+    use crate::Bytes;
+    use crate::compression::CompressionAlgorithm;
+    use mlua::{Lua, Value};
+
+    use super::{EventLoop, ServerConfig};
 
     #[test]
     fn should_accept_wildcard_accept_header() {
@@ -71,6 +121,996 @@ mod tests {
             "application/json"
         ));
     }
+
+    fn base_config() -> ServerConfig {
+        ServerConfig {
+            port: 4242,
+            host: "localhost".to_string(),
+            log_level: "nope".to_string(),
+            docs: false,
+            body_size_limit: Some(1024),
+            cors_origin: None,
+            cors_methods: "GET".to_string(),
+            cors_headers: "Content-Type".to_string(),
+            cors_credentials: false,
+            security_headers: true,
+            https_redirect: false,
+            strict_mode: true,
+            allow_public_bind: false,
+            allow_insecure_http: false,
+            allow_wildcard_cors_credentials: false,
+            allow_unbounded_body: false,
+            allow_insecure_security_header_overrides: false,
+            management_prefix: "/_rover".to_string(),
+            management_token: None,
+            allow_unauthenticated_management: false,
+            trusted_proxies: Vec::new(),
+            tls: None,
+            http2: true,
+            compress: crate::CompressionConfig::default(),
+            rate_limit: crate::RateLimitConfig::default(),
+            load_shed: crate::LoadShedConfig::default(),
+            readiness: crate::ReadinessConfig::default(),
+            drain_timeout_secs: None,
+            permissions: rover_types::PermissionsConfig::new(),
+            idempotency: crate::IdempotencyConfig::default(),
+        }
+    }
+
+    fn trusted_proxy_config() -> ServerConfig {
+        let mut config = base_config();
+        config.trusted_proxies = vec![crate::TrustedProxy::Cidr(crate::TrustedProxyCidr {
+            network: "10.0.0.0".parse().unwrap(),
+            prefix_len: 8,
+        })];
+        config
+    }
+
+    fn header_offsets_from_raw(raw: &[u8]) -> Vec<(usize, usize, usize, usize)> {
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        while cursor + 1 < raw.len() {
+            if raw[cursor] == b'\r' && raw[cursor + 1] == b'\n' {
+                break;
+            }
+
+            let line_start = cursor;
+            while cursor + 1 < raw.len() && !(raw[cursor] == b'\r' && raw[cursor + 1] == b'\n') {
+                cursor += 1;
+            }
+            let line_end = cursor;
+            let line = &raw[line_start..line_end];
+            if let Some(colon) = line.iter().position(|b| *b == b':') {
+                let name_len = colon;
+                let value_start = if line.get(colon + 1) == Some(&b' ') {
+                    line_start + colon + 2
+                } else {
+                    line_start + colon + 1
+                };
+                let value_len = line_end.saturating_sub(value_start);
+                out.push((line_start, name_len, value_start, value_len));
+            }
+
+            cursor += 2;
+        }
+        out
+    }
+
+    #[test]
+    fn should_apply_security_header_defaults() {
+        let mut headers = HashMap::new();
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("X-Content-Type-Options").map(String::as_str),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers.get("X-Frame-Options").map(String::as_str),
+            Some("DENY")
+        );
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("strict-origin-when-cross-origin")
+        );
+    }
+
+    #[test]
+    fn should_keep_safe_security_header_overrides() {
+        let mut headers = HashMap::new();
+        headers.insert("x-frame-options".to_string(), "SAMEORIGIN".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("x-frame-options").map(String::as_str),
+            Some("SAMEORIGIN")
+        );
+    }
+
+    #[test]
+    fn should_replace_unsafe_security_header_overrides_by_default() {
+        let mut headers = HashMap::new();
+        headers.insert("Referrer-Policy".to_string(), "unsafe-url".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("strict-origin-when-cross-origin")
+        );
+    }
+
+    #[test]
+    fn should_allow_unsafe_security_header_overrides_with_explicit_opt_out() {
+        let mut headers = HashMap::new();
+        headers.insert("Referrer-Policy".to_string(), "unsafe-url".to_string());
+
+        let mut config = base_config();
+        config.allow_insecure_security_header_overrides = true;
+        EventLoop::apply_default_security_headers(&config, &mut headers);
+
+        assert_eq!(
+            headers.get("Referrer-Policy").map(String::as_str),
+            Some("unsafe-url")
+        );
+    }
+
+    #[test]
+    fn should_parse_bearer_management_token() {
+        let token = EventLoop::bearer_token("Bearer secret-token");
+        assert_eq!(token, Some("secret-token"));
+    }
+
+    #[test]
+    fn should_not_parse_invalid_bearer_management_token() {
+        assert!(EventLoop::bearer_token("Basic abc").is_none());
+        assert!(EventLoop::bearer_token("Bearer ").is_none());
+    }
+
+    #[test]
+    fn should_detect_forwarded_header_names_case_insensitive() {
+        assert!(EventLoop::is_forwarded_header_name("Forwarded"));
+        assert!(EventLoop::is_forwarded_header_name("X-Forwarded-For"));
+        assert!(EventLoop::is_forwarded_header_name("x-forwarded-proto"));
+        assert!(!EventLoop::is_forwarded_header_name("Host"));
+    }
+
+    #[test]
+    fn should_strip_forwarded_headers_when_proxy_is_untrusted() {
+        let buf = b"forwarded: a\r\nx-forwarded-for: b\r\nhost: c\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> =
+            vec![(0, 9, 11, 1), (14, 15, 31, 1), (34, 4, 40, 1)];
+
+        let sanitized_untrusted = EventLoop::sanitize_header_offsets(buf, &headers, false);
+        assert_eq!(sanitized_untrusted.len(), 1);
+        assert_eq!(sanitized_untrusted[0], (34, 4, 40, 1));
+
+        let sanitized_trusted = EventLoop::sanitize_header_offsets(buf, &headers, true);
+        assert_eq!(sanitized_trusted.len(), 3);
+    }
+
+    #[test]
+    fn should_derive_client_context_from_forwarded_when_trusted() {
+        let raw = b"forwarded: for=203.0.113.10;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.10");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_derive_client_context_from_x_forwarded_headers_when_trusted() {
+        let raw = b"x-forwarded-for: 198.51.100.9, 198.51.100.10\r\nx-forwarded-proto: HTTPS\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_ignore_forwarded_headers_for_untrusted_source() {
+        let raw = b"x-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            false,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "10.0.0.8");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_ignore_malformed_forwarded_pairs_and_parse_valid_parts() {
+        let raw =
+            b"forwarded: by=proxy;broken;for=203.0.113.10;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.10");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_fallback_when_forwarded_values_are_malformed() {
+        let raw = b"forwarded: for=not-an-ip;proto=ws\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "10.0.0.8");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_use_first_valid_value_across_multiple_forwarded_headers() {
+        let raw = b"forwarded: for=bad-ip;proto=ws\r\nforwarded: for=203.0.113.10;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.10");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_use_first_x_forwarded_values_when_multiple_headers_conflict() {
+        let raw = b"x-forwarded-for: 198.51.100.9\r\nx-forwarded-for: 198.51.100.10\r\nx-forwarded-proto: https\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_prefer_forwarded_over_x_forwarded_when_values_conflict() {
+        let raw = b"forwarded: for=203.0.113.20;proto=https\r\nx-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.20");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_use_x_forwarded_ip_when_forwarded_has_no_for_parameter() {
+        let raw =
+            b"forwarded: proto=https\r\nx-forwarded-for: 198.51.100.9\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_use_x_forwarded_proto_when_forwarded_has_no_proto_parameter() {
+        let raw =
+            b"forwarded: for=203.0.113.20\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.20");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_use_x_forwarded_when_forwarded_is_malformed() {
+        let raw = b"forwarded: completely-bad-value\r\nx-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_ignore_x_forwarded_when_forwarded_has_valid_ip() {
+        let raw = b"forwarded: for=203.0.113.20\r\nx-forwarded-for: 198.51.100.9, 198.51.100.10\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.20");
+    }
+
+    #[test]
+    fn should_ignore_x_forwarded_proto_when_forwarded_has_valid_proto() {
+        let raw = b"forwarded: proto=https\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (_, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_proto, "https");
+    }
+
+    #[test]
+    fn should_handle_forwarded_and_x_forwarded_combinations_deterministically() {
+        // Case 1: Both Forwarded and X-Forwarded-* present with valid values
+        let raw1 = b"forwarded: for=203.0.113.20;proto=https\r\nx-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: http\r\nhost: example.com\r\n\r\n";
+        let headers1 = header_offsets_from_raw(raw1);
+        let (ip1, proto1) = EventLoop::derive_client_context(
+            raw1,
+            &headers1,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+        assert_eq!(ip1, "203.0.113.20");
+        assert_eq!(proto1, "https");
+
+        // Case 2: Only Forwarded present
+        let raw2 = b"forwarded: for=203.0.113.20;proto=https\r\nhost: example.com\r\n\r\n";
+        let headers2 = header_offsets_from_raw(raw2);
+        let (ip2, proto2) = EventLoop::derive_client_context(
+            raw2,
+            &headers2,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+        assert_eq!(ip2, "203.0.113.20");
+        assert_eq!(proto2, "https");
+
+        // Case 3: Only X-Forwarded-* present
+        let raw3 = b"x-forwarded-for: 198.51.100.9\r\nx-forwarded-proto: https\r\nhost: example.com\r\n\r\n";
+        let headers3 = header_offsets_from_raw(raw3);
+        let (ip3, proto3) = EventLoop::derive_client_context(
+            raw3,
+            &headers3,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+        assert_eq!(ip3, "198.51.100.9");
+        assert_eq!(proto3, "https");
+    }
+
+    #[test]
+    fn should_use_forwarded_first_ip_when_multiple_forwarded_entries() {
+        let raw = b"forwarded: for=203.0.113.20, for=203.0.113.21\r\nx-forwarded-for: 198.51.100.9\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        // First valid IP from Forwarded should be used
+        assert_eq!(client_ip, "203.0.113.20");
+    }
+
+    #[test]
+    fn should_use_source_ip_when_no_forwarded_headers_present() {
+        let raw = b"host: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "10.0.0.8");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_fallback_to_x_forwarded_for_ip_chain_when_forwarded_empty() {
+        let raw = b"forwarded: \r\nx-forwarded-for: 198.51.100.9, 198.51.100.10\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &base_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+    }
+
+    #[test]
+    fn should_reject_spoofed_x_forwarded_chain_from_untrusted_peer() {
+        let raw = b"x-forwarded-for: 198.51.100.99, 203.0.113.9\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, client_proto) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.0.0.8".parse().unwrap()),
+            true,
+            &trusted_proxy_config(),
+        );
+
+        assert_eq!(client_ip, "203.0.113.9");
+        assert_eq!(client_proto, "http");
+    }
+
+    #[test]
+    fn should_handle_trusted_proxy_chain_permutations() {
+        let raw = b"x-forwarded-for: 198.51.100.9, 10.1.1.1, 10.2.2.2\r\nhost: example.com\r\n\r\n";
+        let headers = header_offsets_from_raw(raw);
+
+        let (client_ip, _) = EventLoop::derive_client_context(
+            raw,
+            &headers,
+            Some("10.9.9.9".parse().unwrap()),
+            true,
+            &trusted_proxy_config(),
+        );
+
+        assert_eq!(client_ip, "198.51.100.9");
+    }
+
+    #[test]
+    fn should_serve_healthz_probe() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/healthz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Bytes::from_static(b"{\"status\":\"ok\"}"));
+        assert_eq!(response.content_type, Some("application/json"));
+    }
+
+    #[test]
+    fn should_serve_readyz_probe_when_running() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/readyz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("readyz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Bytes::from_static(b"{\"status\":\"ready\"}"));
+        assert_eq!(response.content_type, Some("application/json"));
+    }
+
+    #[test]
+    fn should_allow_head_for_probes() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Head,
+            "/healthz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, Some("application/json"));
+    }
+
+    #[test]
+    fn should_mark_readyz_not_ready_while_draining() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/readyz",
+            crate::LifecyclePhase::Draining,
+            &[],
+        )
+        .expect("readyz should be recognized");
+
+        assert_eq!(response.status, 503);
+        assert_eq!(
+            response.body,
+            Bytes::from_static(b"{\"status\":\"not_ready\"}")
+        );
+    }
+
+    #[test]
+    fn should_reject_non_get_methods_for_probes() {
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Post,
+            "/healthz",
+            crate::LifecyclePhase::Running,
+            &[],
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 405);
+        assert_eq!(
+            response.headers.get("Allow").map(String::as_str),
+            Some("GET, HEAD")
+        );
+    }
+
+    #[test]
+    fn should_mark_readyz_not_ready_when_dependency_fails() {
+        let failed_dependencies = vec!["database".to_string()];
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/readyz",
+            crate::LifecyclePhase::Running,
+            &failed_dependencies,
+        )
+        .expect("readyz should be recognized");
+
+        assert_eq!(response.status, 503);
+        let body = std::str::from_utf8(response.body.as_ref()).expect("utf8 body");
+        assert!(body.contains("\"status\":\"not_ready\""));
+        assert!(body.contains("\"code\":\"dependency_unavailable\""));
+        assert!(body.contains("\"dependency\":\"database\""));
+    }
+
+    #[test]
+    fn should_keep_healthz_ok_even_when_dependency_fails() {
+        let failed_dependencies = vec!["database".to_string()];
+        let response = EventLoop::builtin_probe_response(
+            crate::HttpMethod::Get,
+            "/healthz",
+            crate::LifecyclePhase::Draining,
+            &failed_dependencies,
+        )
+        .expect("healthz should be recognized");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, Bytes::from_static(b"{\"status\":\"ok\"}"));
+    }
+
+    #[test]
+    fn should_require_management_auth_by_default() {
+        let config = base_config();
+        assert!(!EventLoop::is_management_request_authorized(
+            &config,
+            None,
+            Some("anything")
+        ));
+    }
+
+    #[test]
+    fn should_authorize_management_with_configured_token() {
+        let mut config = base_config();
+        config.management_token = Some("secret-token".to_string());
+
+        assert!(EventLoop::is_management_request_authorized(
+            &config,
+            Some("Bearer secret-token"),
+            None
+        ));
+
+        assert!(EventLoop::is_management_request_authorized(
+            &config,
+            None,
+            Some("secret-token")
+        ));
+    }
+
+    #[test]
+    fn should_allow_unauthenticated_management_when_opted_out() {
+        let mut config = base_config();
+        config.allow_unauthenticated_management = true;
+        assert!(EventLoop::is_management_request_authorized(
+            &config, None, None
+        ));
+    }
+
+    #[test]
+    fn should_add_vary_header_when_missing() {
+        let mut headers = HashMap::new();
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(headers.get("Vary"), Some(&"Accept-Encoding".to_string()));
+    }
+
+    #[test]
+    fn should_append_to_existing_vary_header() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Origin".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"Origin, Accept-Encoding".to_string())
+        );
+    }
+
+    #[test]
+    fn should_not_duplicate_vary_header_value() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Accept-Encoding, Origin".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"Accept-Encoding, Origin".to_string())
+        );
+    }
+
+    #[test]
+    fn should_handle_existing_vary_header_case_insensitively() {
+        let mut headers = HashMap::new();
+        headers.insert("vary".to_string(), "Origin".to_string());
+
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+
+        assert_eq!(headers.len(), 1);
+        assert_eq!(
+            headers.get("vary"),
+            Some(&"Origin, Accept-Encoding".to_string())
+        );
+        assert!(!headers.contains_key("Vary"));
+    }
+
+    #[test]
+    fn should_not_duplicate_vary_values_case_insensitively() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "accept-encoding, Origin".to_string());
+
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"accept-encoding, Origin".to_string())
+        );
+    }
+
+    #[test]
+    fn should_detect_existing_content_encoding_header_case_insensitive() {
+        let mut headers = HashMap::new();
+        headers.insert("content-encoding".to_string(), "gzip".to_string());
+        assert!(EventLoop::has_content_encoding(&headers));
+
+        let mut headers = HashMap::new();
+        headers.insert("Content-Encoding".to_string(), "deflate".to_string());
+        assert!(EventLoop::has_content_encoding(&headers));
+    }
+
+    #[test]
+    fn should_not_detect_content_encoding_when_header_is_absent() {
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+        assert!(!EventLoop::has_content_encoding(&headers));
+    }
+
+    #[test]
+    fn should_detect_compressible_content_types() {
+        assert!(EventLoop::is_compressible(Some("text/html")));
+        assert!(EventLoop::is_compressible(Some("application/json")));
+        assert!(EventLoop::is_compressible(Some("application/javascript")));
+        assert!(EventLoop::is_compressible(Some("application/xml")));
+        assert!(EventLoop::is_compressible(Some("application/vnd.api+json")));
+        assert!(EventLoop::is_compressible(Some("application/atom+xml")));
+        assert!(!EventLoop::is_compressible(Some("text/event-stream")));
+        assert!(!EventLoop::is_compressible(Some("image/png")));
+        assert!(!EventLoop::is_compressible(Some("video/mp4")));
+        assert!(!EventLoop::is_compressible(None));
+    }
+
+    #[test]
+    fn should_compose_vary_header_preserving_original_key() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Origin".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        assert_eq!(
+            headers.get("Vary"),
+            Some(&"Origin, Accept-Encoding".to_string())
+        );
+    }
+
+    #[test]
+    fn should_detect_different_content_type_with_charset() {
+        assert!(EventLoop::is_compressible(Some(
+            "application/json;charset=utf-8"
+        )));
+        assert!(EventLoop::is_compressible(Some("text/html; charset=UTF-8")));
+        assert!(!EventLoop::is_compressible(Some(
+            "text/event-stream; charset=UTF-8"
+        )));
+    }
+
+    #[test]
+    fn should_reject_image_content_types() {
+        assert!(!EventLoop::is_compressible(Some("image/png")));
+        assert!(!EventLoop::is_compressible(Some("image/jpeg")));
+        assert!(!EventLoop::is_compressible(Some("image/gif")));
+        assert!(!EventLoop::is_compressible(Some("image/webp")));
+    }
+
+    #[test]
+    fn should_reject_audio_video_content_types() {
+        assert!(!EventLoop::is_compressible(Some("audio/mp3")));
+        assert!(!EventLoop::is_compressible(Some("video/mp4")));
+        assert!(!EventLoop::is_compressible(Some("video/webm")));
+    }
+
+    #[test]
+    fn should_security_headers_preserve_values_case_insensitive() {
+        let mut headers = HashMap::new();
+        headers.insert("x-frame-options".to_string(), "SAMEORIGIN".to_string());
+        headers.insert("X-Content-Type-OPTIONS".to_string(), "nosniff".to_string());
+
+        EventLoop::apply_default_security_headers(&base_config(), &mut headers);
+
+        assert_eq!(
+            headers.get("x-frame-options"),
+            Some(&"SAMEORIGIN".to_string())
+        );
+    }
+
+    #[test]
+    fn should_default_security_values_with_config_disabled() {
+        let mut config = base_config();
+        config.security_headers = false;
+        let mut headers = HashMap::new();
+
+        EventLoop::apply_default_security_headers(&config, &mut headers);
+
+        assert!(!headers.contains_key("X-Content-Type-Options"));
+        assert!(!headers.contains_key("X-Frame-Options"));
+    }
+
+    #[test]
+    fn should_vary_append_multiple_values() {
+        let mut headers = HashMap::new();
+        headers.insert("Vary".to_string(), "Accept".to_string());
+        EventLoop::add_vary_header(&mut headers, "Accept-Encoding");
+        EventLoop::add_vary_header(&mut headers, "Authorization");
+
+        let vary = headers.get("Vary").unwrap();
+        assert!(vary.contains("Accept"));
+        assert!(vary.contains("Accept-Encoding"));
+        assert!(vary.contains("Authorization"));
+    }
+
+    #[test]
+    fn should_parse_accept_encoding_from_header_buffer() {
+        let buf = b"accept-encoding: gzip, deflate\r\nhost: example.com\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 15, 17, 13)];
+        let result = EventLoop::negotiate_encoding_from_headers(
+            buf,
+            &headers,
+            &[CompressionAlgorithm::Gzip, CompressionAlgorithm::Deflate],
+        );
+        assert_eq!(result, Some(CompressionAlgorithm::Gzip));
+    }
+
+    #[test]
+    fn should_handle_encoding_negotiation_missing_header() {
+        let buf = b"host: example.com\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 4, 6, 11)];
+        let result = EventLoop::negotiate_encoding_from_headers(
+            buf,
+            &headers,
+            &[CompressionAlgorithm::Gzip, CompressionAlgorithm::Deflate],
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn should_negotiate_with_configured_algorithm_order() {
+        let buf = b"accept-encoding: gzip;q=0.8, deflate;q=0.8\r\nhost: example.com\r\n\r\n";
+        let headers: Vec<(usize, usize, usize, usize)> = vec![(0, 15, 17, 29)];
+        let result = EventLoop::negotiate_encoding_from_headers(
+            buf,
+            &headers,
+            &[CompressionAlgorithm::Deflate, CompressionAlgorithm::Gzip],
+        );
+
+        assert_eq!(result, Some(CompressionAlgorithm::Deflate));
+    }
+
+    #[test]
+    fn should_accept_all_media_types() {
+        assert!(EventLoop::accepts_content_type("*/*", "anything/really"));
+        assert!(EventLoop::accepts_content_type("*/*", "application/json"));
+        assert!(EventLoop::accepts_content_type("*/*", "text/html"));
+    }
+
+    #[test]
+    fn should_accept_application_json_suffix() {
+        assert!(EventLoop::accepts_content_type(
+            "application/json",
+            "application/json"
+        ));
+        assert!(EventLoop::accepts_content_type(
+            "application/vnd.api+json",
+            "application/vnd.api+json"
+        ));
+        assert!(!EventLoop::accepts_content_type(
+            "text/plain",
+            "application/vnd.api+json"
+        ));
+    }
+
+    #[test]
+    fn should_encode_sse_table_payload() {
+        let lua = Lua::new();
+        let payload = lua
+            .load(
+                r#"
+                return {
+                  event = "token",
+                  id = "evt-42",
+                  retry = 2500,
+                  data = { ok = true, value = 7 },
+                }
+                "#,
+            )
+            .eval::<Value>()
+            .expect("create SSE payload");
+
+        let mut frame = Vec::new();
+        EventLoop::write_sse_payload(&mut frame, payload).expect("encode SSE frame");
+
+        let text = String::from_utf8(frame).expect("utf8 frame");
+        assert!(text.contains("retry:2500\n\n"));
+        assert!(text.contains("id:evt-42\n"));
+        assert!(text.contains("event:token\n"));
+        assert!(text.contains("data:{"));
+        assert!(text.contains("\"ok\":true"));
+        assert!(text.contains("\"value\":7"));
+        assert!(text.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn should_encode_sse_string_payload_with_generated_id() {
+        let lua = Lua::new();
+        let mut frame = Vec::new();
+        EventLoop::write_sse_payload(
+            &mut frame,
+            Value::String(lua.create_string("hello").expect("create string")),
+        )
+        .expect("encode string SSE frame");
+
+        let text = String::from_utf8(frame).expect("utf8 frame");
+        assert!(text.starts_with("id:"));
+        assert!(text.contains("\ndata:hello\n\n"));
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn should_shutdown_state_have_correct_ordering() {
+        assert!((ShutdownState::Running as u8) < ShutdownState::Draining as u8);
+        assert!((ShutdownState::Draining as u8) < ShutdownState::Shutdown as u8);
+    }
+
+    #[test]
+    fn should_shutdown_state_be_copy() {
+        let state = ShutdownState::Running;
+        let copy = state;
+        assert_eq!(state, copy);
+    }
+
+    #[test]
+    fn should_shutdown_state_be_eq() {
+        assert_eq!(ShutdownState::Running, ShutdownState::Running);
+        assert_ne!(ShutdownState::Running, ShutdownState::Draining);
+        assert_ne!(ShutdownState::Draining, ShutdownState::Shutdown);
+    }
+
+    #[test]
+    fn should_shutdown_state_debug_include_state_name() {
+        assert!(format!("{:?}", ShutdownState::Running).contains("Running"));
+        assert!(format!("{:?}", ShutdownState::Draining).contains("Draining"));
+        assert!(format!("{:?}", ShutdownState::Shutdown).contains("Shutdown"));
+    }
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+
+    #[test]
+    fn should_hash_bytes_deterministically() {
+        let data1 = b"hello world";
+        let data2 = b"hello world";
+        assert_eq!(hash_bytes(data1), hash_bytes(data2));
+    }
+
+    #[test]
+    fn should_hash_different_bytes_differently() {
+        let data1 = b"hello world";
+        let data2 = b"hello universe";
+        assert_ne!(hash_bytes(data1), hash_bytes(data2));
+    }
+
+    #[test]
+    fn should_hash_empty_bytes() {
+        let hash = hash_bytes(b"");
+        assert_ne!(hash, 0);
+    }
 }
 
 pub struct EventLoop {
@@ -89,9 +1129,55 @@ pub struct EventLoop {
     ws_manager: SharedWsManager,
     /// Optional error handler function for custom error formatting
     error_handler: Option<Arc<RegistryKey>>,
+    /// Current shutdown state for graceful drain
+    shutdown_state: ShutdownState,
+    /// When draining started (for timeout)
+    drain_started: Option<Instant>,
+    /// Drain timeout duration
+    drain_timeout: Duration,
+    /// Lifecycle manager for server phases and hooks
+    lifecycle_manager: LifecycleManager,
 }
 
 impl EventLoop {
+    fn bearer_token(value: &str) -> Option<&str> {
+        let (scheme, token) = value.trim().split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("bearer") {
+            return None;
+        }
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        Some(token)
+    }
+
+    fn is_management_request_authorized(
+        config: &ServerConfig,
+        authorization_header: Option<&str>,
+        management_token_header: Option<&str>,
+    ) -> bool {
+        if config.allow_unauthenticated_management {
+            return true;
+        }
+
+        let expected = match config.management_token.as_deref() {
+            Some(token) => token,
+            None => return false,
+        };
+
+        if management_token_header
+            .map(str::trim)
+            .is_some_and(|provided| provided == expected)
+        {
+            return true;
+        }
+
+        authorization_header
+            .and_then(Self::bearer_token)
+            .is_some_and(|provided| provided == expected)
+    }
+
     fn get_header_value(
         buf: &[u8],
         headers: &[(usize, usize, usize, usize)],
@@ -106,6 +1192,218 @@ impl EventLoop {
             }
         }
         None
+    }
+
+    fn get_header_values<'a>(
+        buf: &'a [u8],
+        headers: &[(usize, usize, usize, usize)],
+        name: &str,
+    ) -> Vec<&'a str> {
+        let mut values = Vec::new();
+        for &(name_off, name_len, val_off, val_len) in headers {
+            let key = unsafe { std::str::from_utf8_unchecked(&buf[name_off..name_off + name_len]) };
+            if key.eq_ignore_ascii_case(name) {
+                let value =
+                    unsafe { std::str::from_utf8_unchecked(&buf[val_off..val_off + val_len]) };
+                values.push(value);
+            }
+        }
+        values
+    }
+
+    fn negotiate_encoding_from_headers(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+        configured_algorithms: &[CompressionAlgorithm],
+    ) -> Option<CompressionAlgorithm> {
+        Self::get_header_value(buf, headers, "accept-encoding")
+            .and_then(|ae| negotiate_encoding(&ae, configured_algorithms))
+    }
+
+    fn is_forwarded_header_name(name: &str) -> bool {
+        name.eq_ignore_ascii_case("forwarded")
+            || name
+                .get(..12)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("x-forwarded-"))
+    }
+
+    fn sanitize_header_offsets(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+        should_trust_forwarded: bool,
+    ) -> Vec<(u16, u8, u16, u16)> {
+        let mut sanitized = Vec::with_capacity(headers.len());
+        for &(name_off, name_len, val_off, val_len) in headers {
+            let header_name =
+                unsafe { std::str::from_utf8_unchecked(&buf[name_off..name_off + name_len]) };
+            if !should_trust_forwarded && Self::is_forwarded_header_name(header_name) {
+                continue;
+            }
+
+            sanitized.push((
+                name_off as u16,
+                name_len as u8,
+                val_off as u16,
+                val_len as u16,
+            ));
+        }
+
+        sanitized
+    }
+
+    fn parse_client_ip_token(value: &str) -> Option<String> {
+        let trimmed = value.trim().trim_matches('"');
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if let Some(ipv6) = trimmed
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']').map(|(host, _)| host))
+            && ipv6.parse::<IpAddr>().is_ok()
+        {
+            return Some(ipv6.to_string());
+        }
+
+        if trimmed.parse::<IpAddr>().is_ok() {
+            return Some(trimmed.to_string());
+        }
+
+        if let Some((host, port)) = trimmed.rsplit_once(':')
+            && !host.is_empty()
+            && port.chars().all(|ch| ch.is_ascii_digit())
+            && host.parse::<IpAddr>().is_ok()
+        {
+            return Some(host.to_string());
+        }
+
+        None
+    }
+
+    fn parse_client_proto_token(value: &str) -> Option<String> {
+        let proto = value.trim().trim_matches('"').to_ascii_lowercase();
+        match proto.as_str() {
+            "http" | "https" => Some(proto),
+            _ => None,
+        }
+    }
+
+    fn parse_forwarded_entry_client_ip(entry: &str) -> Option<IpAddr> {
+        for pair in entry.split(';') {
+            let Some((name, raw_value)) = pair.split_once('=') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("for") {
+                return Self::parse_client_ip_token(raw_value)?.parse().ok();
+            }
+        }
+        None
+    }
+
+    fn parse_forwarded_client_proto(value: &str) -> Option<String> {
+        let first_entry = value.split(',').next()?.trim();
+        for pair in first_entry.split(';') {
+            let Some((name, raw_value)) = pair.split_once('=') else {
+                continue;
+            };
+            if name.trim().eq_ignore_ascii_case("proto") {
+                return Self::parse_client_proto_token(raw_value);
+            }
+        }
+        None
+    }
+
+    fn choose_client_ip_from_chain(
+        client_ip_chain: &[IpAddr],
+        source_ip: Option<IpAddr>,
+        config: &ServerConfig,
+    ) -> Option<String> {
+        if client_ip_chain.is_empty() {
+            return None;
+        }
+
+        if source_ip.is_none() || config.trusted_proxies.is_empty() {
+            return client_ip_chain.first().map(ToString::to_string);
+        }
+
+        for ip in client_ip_chain.iter().rev() {
+            if !config.is_trusted_proxy_source(*ip) {
+                return Some(ip.to_string());
+            }
+        }
+
+        client_ip_chain.first().map(ToString::to_string)
+    }
+
+    fn derive_client_context(
+        buf: &[u8],
+        headers: &[(usize, usize, usize, usize)],
+        source_ip: Option<IpAddr>,
+        should_trust_forwarded: bool,
+        config: &ServerConfig,
+    ) -> (String, String) {
+        let fallback_ip = source_ip.map(|ip| ip.to_string()).unwrap_or_default();
+        let mut client_ip = String::new();
+        let mut client_proto = "http".to_string();
+
+        if should_trust_forwarded {
+            let forwarded_values = Self::get_header_values(buf, headers, "forwarded");
+            let mut forwarded_ip_chain = Vec::new();
+            for forwarded in forwarded_values {
+                for entry in forwarded.split(',') {
+                    if let Some(parsed_ip) = Self::parse_forwarded_entry_client_ip(entry.trim()) {
+                        forwarded_ip_chain.push(parsed_ip);
+                    }
+                }
+
+                if client_proto == "http"
+                    && let Some(parsed_proto) = Self::parse_forwarded_client_proto(forwarded)
+                {
+                    client_proto = parsed_proto;
+                }
+            }
+
+            if client_ip.is_empty() {
+                client_ip =
+                    Self::choose_client_ip_from_chain(&forwarded_ip_chain, source_ip, config)
+                        .unwrap_or_default();
+            }
+
+            if client_ip.is_empty() {
+                let xff_values = Self::get_header_values(buf, headers, "x-forwarded-for");
+                let mut xff_chain = Vec::new();
+                for value in xff_values {
+                    for token in value.split(',') {
+                        if let Some(parsed_ip) = Self::parse_client_ip_token(token)
+                            && let Ok(ip) = parsed_ip.parse::<IpAddr>()
+                        {
+                            xff_chain.push(ip);
+                        }
+                    }
+                }
+
+                client_ip = Self::choose_client_ip_from_chain(&xff_chain, source_ip, config)
+                    .unwrap_or_default();
+            }
+
+            if client_proto == "http" {
+                let xfp_values = Self::get_header_values(buf, headers, "x-forwarded-proto");
+                for value in xfp_values {
+                    if let Some(first) = value.split(',').next()
+                        && let Some(parsed_proto) = Self::parse_client_proto_token(first)
+                    {
+                        client_proto = parsed_proto;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if client_ip.is_empty() {
+            client_ip = fallback_ip;
+        }
+
+        (client_ip, client_proto)
     }
 
     fn accepts_content_type(accept: &str, content_type: &str) -> bool {
@@ -130,15 +1428,237 @@ impl EventLoop {
             if media == ct {
                 return true;
             }
-            if let Some((major, _)) = media.split_once('/') {
-                if media.ends_with("/*") && ct.starts_with(&format!("{}/", major)) {
-                    return true;
-                }
+            if let Some((major, _)) = media.split_once('/')
+                && media.ends_with("/*")
+                && ct.starts_with(&format!("{}/", major))
+            {
+                return true;
             }
         }
 
         false
     }
+
+    /// Generate built-in probe response for `/healthz` and `/readyz` endpoints.
+    ///
+    /// # Probe Contracts
+    ///
+    /// ## `/healthz` (Liveness Probe)
+    /// - **GET** or **HEAD**: Returns `200 OK` with body `{"status":"ok"}`
+    /// - Returns `405 Method Not Allowed` for other methods (with `Allow: GET, HEAD` header)
+    /// - Always healthy regardless of lifecycle phase or dependencies
+    ///
+    /// ## `/readyz` (Readiness Probe)
+    /// - **GET** or **HEAD**: Returns readiness state
+    ///   - **200 OK**: `{"status":"ready"}` when healthy and accepting connections
+    ///   - **503 Service Unavailable**: `{"status":"not_ready"}` when draining
+    ///   - **503 Service Unavailable**: `{"status":"not_ready","reasons":[{"code":"dependency_unavailable","dependency":"<name>"}]}` when dependencies fail
+    /// - Returns `405 Method Not Allowed` for other methods (with `Allow: GET, HEAD` header)
+    ///
+    /// # Returns
+    /// - `Some(BuiltinProbeResponse)` if the path is a recognized probe endpoint
+    /// - `None` if the path is not `/healthz` or `/readyz`
+    fn builtin_probe_response(
+        method: HttpMethod,
+        path: &str,
+        phase: LifecyclePhase,
+        failed_dependencies: &[String],
+    ) -> Option<BuiltinProbeResponse> {
+        if path != "/healthz" && path != "/readyz" {
+            return None;
+        }
+
+        if !matches!(method, HttpMethod::Get | HttpMethod::Head) {
+            let mut headers = HashMap::new();
+            headers.insert("Allow".to_string(), "GET, HEAD".to_string());
+            return Some(BuiltinProbeResponse {
+                status: 405,
+                body: Bytes::from_static(b"Method Not Allowed"),
+                content_type: Some("text/plain"),
+                headers,
+            });
+        }
+
+        let (status, body) = match path {
+            "/healthz" => (200, Bytes::from_static(HEALTHZ_OK_BODY)),
+            "/readyz" => {
+                let readiness = crate::readiness_probe_result(phase, failed_dependencies);
+                (readiness.status_code, readiness.body)
+            }
+            _ => return None,
+        };
+
+        Some(BuiltinProbeResponse {
+            status,
+            body,
+            content_type: Some("application/json"),
+            headers: HashMap::new(),
+        })
+    }
+
+    fn find_header_key_ci<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+        headers
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(name))
+            .map(String::as_str)
+    }
+
+    fn has_content_encoding(headers: &HashMap<String, String>) -> bool {
+        Self::find_header_key_ci(headers, "Content-Encoding").is_some()
+    }
+
+    fn is_safe_security_header_override(name: &str, value: &str) -> bool {
+        let value = value.trim().to_ascii_lowercase();
+        match name.to_ascii_lowercase().as_str() {
+            "x-content-type-options" => value == "nosniff",
+            "x-frame-options" => value == "deny" || value == "sameorigin",
+            "referrer-policy" => matches!(
+                value.as_str(),
+                "no-referrer" | "same-origin" | "strict-origin" | "strict-origin-when-cross-origin"
+            ),
+            _ => true,
+        }
+    }
+
+    fn apply_default_security_headers(
+        config: &ServerConfig,
+        headers: &mut HashMap<String, String>,
+    ) {
+        if !config.security_headers {
+            return;
+        }
+
+        for (name, default_value) in DEFAULT_SECURITY_HEADERS {
+            if let Some(existing_key) = Self::find_header_key_ci(headers, name).map(str::to_string)
+            {
+                let existing_value = headers
+                    .get(&existing_key)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+
+                if config.allow_insecure_security_header_overrides
+                    || Self::is_safe_security_header_override(name, existing_value)
+                {
+                    continue;
+                }
+
+                headers.insert(existing_key, default_value.to_string());
+                continue;
+            }
+
+            headers.insert(name.to_string(), default_value.to_string());
+        }
+    }
+
+    fn set_http_response(
+        &self,
+        conn: &mut Connection,
+        status: u16,
+        body: Bytes,
+        content_type: Option<&str>,
+        mut headers: HashMap<String, String>,
+        buf: Vec<u8>,
+        compression: Option<CompressionAlgorithm>,
+    ) {
+        Self::apply_default_security_headers(&self.config, &mut headers);
+
+        let is_compressible_type = Self::is_compressible(content_type);
+        let already_encoded = Self::has_content_encoding(&headers);
+
+        let (final_body, final_headers) = if let Some(algo) = compression {
+            const MIN_COMPRESS_SIZE: usize = 1024;
+            if !already_encoded && body.len() >= MIN_COMPRESS_SIZE && is_compressible_type {
+                let compressed = compress(&body, algo);
+                if compressed.len() < body.len() {
+                    let mut h = headers;
+                    h.insert("Content-Encoding".to_string(), algo.to_string());
+                    Self::add_vary_header(&mut h, "Accept-Encoding");
+                    if let Some(etag) = h.get("ETag") {
+                        let encoding_suffix = format!("-{}", algo);
+                        let new_etag = if etag.starts_with('"') && etag.ends_with('"') {
+                            format!("\"{}{}\"", &etag[1..etag.len() - 1], encoding_suffix)
+                        } else {
+                            format!("\"{}{}\"", etag, encoding_suffix)
+                        };
+                        h.insert("ETag".to_string(), new_etag);
+                    } else {
+                        let computed_etag = format!("\"{}\"", hash_bytes(&compressed));
+                        h.insert("ETag".to_string(), computed_etag);
+                    }
+                    (Bytes::from(compressed), h)
+                } else {
+                    let mut h = headers;
+                    if is_compressible_type || already_encoded {
+                        Self::add_vary_header(&mut h, "Accept-Encoding");
+                    }
+                    (body, h)
+                }
+            } else {
+                let mut h = headers;
+                if already_encoded {
+                    Self::add_vary_header(&mut h, "Accept-Encoding");
+                }
+                (body, h)
+            }
+        } else {
+            let mut h = headers;
+            if is_compressible_type || already_encoded {
+                Self::add_vary_header(&mut h, "Accept-Encoding");
+            }
+            (body, h)
+        };
+
+        if final_headers.is_empty() {
+            conn.set_response_bytes_with_buf(status, final_body, content_type, buf);
+            return;
+        }
+
+        conn.set_response_bytes_with_headers(
+            status,
+            final_body,
+            content_type,
+            Some(&final_headers),
+            buf,
+        );
+    }
+
+    fn is_compressible(content_type: Option<&str>) -> bool {
+        let ct = match content_type {
+            Some(t) => t,
+            None => return false,
+        };
+        let lower = ct.to_ascii_lowercase();
+        (lower.starts_with("text/") && !lower.starts_with("text/event-stream"))
+            || lower.starts_with("application/json")
+            || lower.starts_with("application/javascript")
+            || lower.starts_with("application/xml")
+            || lower.starts_with("application/atom+xml")
+            || lower.starts_with("application/rss+xml")
+            || lower.ends_with("+json")
+            || lower.ends_with("+xml")
+    }
+
+    fn add_vary_header(headers: &mut HashMap<String, String>, value: &str) {
+        if let Some(vary_key) = Self::find_header_key_ci(headers, "Vary").map(str::to_string) {
+            let existing = headers.get(&vary_key).cloned().unwrap_or_default();
+            let already_has_value = existing
+                .split(',')
+                .map(str::trim)
+                .any(|current| current.eq_ignore_ascii_case(value));
+
+            if !already_has_value {
+                let new_value = if existing.trim().is_empty() {
+                    value.to_string()
+                } else {
+                    format!("{}, {}", existing, value)
+                };
+                headers.insert(vary_key, new_value);
+            }
+        } else {
+            headers.insert("Vary".to_string(), value.to_string());
+        }
+    }
+
     pub fn new(
         lua: Lua,
         routes: Vec<Route>,
@@ -192,6 +1712,20 @@ impl EventLoop {
         let table_pool = LuaTablePool::new(1024);
         let buffer_pool = BufferPool::new();
 
+        let drain_timeout = config
+            .drain_timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(DEFAULT_DRAIN_TIMEOUT_SECS));
+
+        let lifecycle_config = LifecycleConfig {
+            enabled: true,
+            hook_timeout_secs: 30,
+            graceful_shutdown: true,
+            drain_timeout_secs: drain_timeout.as_secs(),
+            reload_on_signal: false,
+        };
+        let lifecycle_manager = LifecycleManager::with_config(lifecycle_config);
+
         Ok(Self {
             poll,
             listener,
@@ -207,21 +1741,196 @@ impl EventLoop {
             buffer_pool,
             ws_manager,
             error_handler,
+            shutdown_state: ShutdownState::Running,
+            drain_started: None,
+            drain_timeout,
+            lifecycle_manager,
         })
+    }
+
+    fn setup_signal_handler(_poll: &Poll) -> Result<crossbeam_channel::Receiver<()>> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+
+        #[cfg(unix)]
+        {
+            use signal_hook::consts::signal;
+            use signal_hook::iterator::Signals;
+
+            let mut signals = Signals::new([signal::SIGTERM, signal::SIGINT])?;
+            let tx_clone = tx.clone();
+
+            std::thread::spawn(move || {
+                for sig in signals.forever() {
+                    if sig == signal::SIGTERM || sig == signal::SIGINT {
+                        let _ = tx_clone.try_send(());
+                    }
+                }
+            });
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = tx;
+        }
+
+        Ok(rx)
+    }
+
+    fn handle_signal(&mut self) -> Result<bool> {
+        match self.shutdown_state {
+            ShutdownState::Running => {
+                if self.config.log_level != "nope" {
+                    info!("Received shutdown signal, draining connections...");
+                }
+                self.lifecycle_manager.request_shutdown();
+                self.lifecycle_manager
+                    .execute_hooks(&self.lua, LifecycleEvent::ShutdownRequested)?;
+                self.lifecycle_manager
+                    .transition_to(LifecyclePhase::Draining);
+                self.lifecycle_manager
+                    .execute_hooks(&self.lua, LifecycleEvent::Draining)?;
+                self.shutdown_state = ShutdownState::Draining;
+                self.drain_started = Some(Instant::now());
+                let _ = self.poll.registry().deregister(&mut self.listener);
+                self.prepare_connections_for_shutdown();
+                Ok(false)
+            }
+            ShutdownState::Draining => Ok(false),
+            ShutdownState::Shutdown => Ok(true),
+        }
+    }
+
+    fn prepare_connections_for_shutdown(&mut self) {
+        let mut close_now = Vec::new();
+        let mut flush_pending = Vec::new();
+
+        {
+            let mut conns = self.connections.borrow_mut();
+            for (idx, conn) in conns.iter_mut() {
+                let should_flush = matches!(
+                    conn.state,
+                    ConnectionState::Writing
+                        | ConnectionState::StreamingHeaders
+                        | ConnectionState::StreamingBody
+                );
+
+                if conn.prepare_for_shutdown() {
+                    close_now.push(idx);
+                } else if should_flush {
+                    flush_pending.push(idx);
+                }
+            }
+        }
+
+        for idx in flush_pending {
+            let mut conns = self.connections.borrow_mut();
+            if let Some(conn) = conns.get_mut(idx) {
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+        }
+
+        for idx in close_now {
+            self.close_connection(idx);
+        }
+    }
+
+    fn close_connection(&mut self, conn_idx: usize) {
+        self.recycle_write_buf(conn_idx);
+
+        let mut conns = self.connections.borrow_mut();
+        if !conns.contains(conn_idx) {
+            return;
+        }
+
+        let mut conn = conns.remove(conn_idx);
+        let _ = self.poll.registry().deregister(&mut conn.socket);
+    }
+
+    fn is_drain_complete(&self) -> bool {
+        let conns = self.connections.borrow();
+        conns.is_empty() && self.yielded_coroutines.is_empty()
     }
 
     pub fn run(&mut self) -> Result<()> {
         let mut events = Events::with_capacity(1024);
 
+        // Execute startup hooks
+        self.lifecycle_manager
+            .execute_hooks(&self.lua, LifecycleEvent::Startup)?;
+        self.lifecycle_manager
+            .transition_to(LifecyclePhase::Running);
+        self.lifecycle_manager
+            .execute_hooks(&self.lua, LifecycleEvent::Ready)?;
+
+        let signal_rx = Self::setup_signal_handler(&self.poll)?;
+
         loop {
-            let poll_timeout = self.next_poll_timeout().or(Some(Duration::from_millis(50)));
+            let poll_timeout = match self.shutdown_state {
+                ShutdownState::Running => {
+                    self.next_poll_timeout().or(Some(Duration::from_millis(50)))
+                }
+                ShutdownState::Draining => {
+                    if self.is_drain_complete() {
+                        if self.config.log_level != "nope" {
+                            info!("All connections drained, shutting down");
+                        }
+                        self.shutdown_state = ShutdownState::Shutdown;
+                        self.lifecycle_manager
+                            .transition_to(LifecyclePhase::ShuttingDown);
+                    } else if let Some(started) = self.drain_started
+                        && started.elapsed() >= self.drain_timeout
+                    {
+                        if self.config.log_level != "nope" {
+                            let conns = self.connections.borrow();
+                            let active_count = conns.len();
+                            let yielded_count = self.yielded_coroutines.len();
+                            info!(
+                                "Drain timeout reached ({} connections, {} yielded coroutines remaining)",
+                                active_count, yielded_count
+                            );
+                        }
+                        self.shutdown_state = ShutdownState::Shutdown;
+                        self.lifecycle_manager
+                            .transition_to(LifecyclePhase::ShuttingDown);
+                    }
+                    Some(Duration::from_millis(50))
+                }
+                ShutdownState::Shutdown => {
+                    if self.config.log_level != "nope" {
+                        info!("Server shutdown complete");
+                    }
+                    // Execute shutdown hooks before returning
+                    self.lifecycle_manager
+                        .execute_hooks(&self.lua, LifecycleEvent::ShutdownComplete)?;
+                    self.lifecycle_manager
+                        .transition_to(LifecyclePhase::Shutdown);
+                    return Ok(());
+                }
+            };
+
             self.poll.poll(&mut events, poll_timeout)?;
 
             for event in events.iter() {
                 match event.token() {
-                    LISTENER => self.accept_connections()?,
+                    LISTENER => {
+                        if self.shutdown_state == ShutdownState::Running
+                            && self
+                                .lifecycle_manager
+                                .current_phase()
+                                .can_accept_connections()
+                        {
+                            self.accept_connections()?;
+                        }
+                    }
                     token => self.handle_connection(token, event)?,
                 }
+            }
+
+            if self.shutdown_state == ShutdownState::Running
+                && signal_rx.try_recv().is_ok()
+                && self.handle_signal()?
+            {
+                return Ok(());
             }
 
             self.tick_lua_scheduler();
@@ -248,6 +1957,113 @@ impl EventLoop {
         } else {
             Some(next_wake.duration_since(now))
         }
+    }
+
+    fn sse_value_to_string(value: Value) -> mlua::Result<String> {
+        match value {
+            Value::Nil => Ok(String::new()),
+            Value::String(s) => Ok(s.to_str()?.to_string()),
+            Value::Integer(i) => Ok(i.to_string()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Boolean(b) => Ok(b.to_string()),
+            Value::Table(table) => table.to_json_string(),
+            other => Err(mlua::Error::RuntimeError(format!(
+                "unsupported SSE data value: {:?}",
+                other
+            ))),
+        }
+    }
+
+    fn write_sse_payload(frame: &mut Vec<u8>, value: Value) -> mlua::Result<()> {
+        match value {
+            Value::String(s) => {
+                let id = generate_sse_event_id();
+                let data = s.to_str()?;
+                SseWriter::format_event(frame, None, &data, Some(&id));
+                Ok(())
+            }
+            Value::Table(table) => {
+                let event = match table.get::<Value>("event")? {
+                    Value::Nil => None,
+                    Value::String(name) => Some(name.to_str()?.to_string()),
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "SSE event name must be string, got {:?}",
+                            other
+                        )));
+                    }
+                };
+
+                let id = match table.get::<Value>("id")? {
+                    Value::Nil => Some(generate_sse_event_id()),
+                    Value::String(id) => Some(id.to_str()?.to_string()),
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "SSE id must be string, got {:?}",
+                            other
+                        )));
+                    }
+                };
+
+                if let Some(retry_ms) = table.get::<Option<u32>>("retry")? {
+                    SseWriter::format_retry(frame, retry_ms);
+                }
+
+                if let Some(comment) = table.get::<Option<String>>("comment")? {
+                    SseWriter::format_comment(frame, &comment);
+                }
+
+                let data = Self::sse_value_to_string(table.get::<Value>("data")?)?;
+                SseWriter::format_event(frame, event.as_deref(), &data, id.as_deref());
+                Ok(())
+            }
+            other => Err(mlua::Error::RuntimeError(format!(
+                "SSE producer must return string, table, or nil, got {:?}",
+                other
+            ))),
+        }
+    }
+
+    fn poll_sse_chunk(&self, conn_idx: usize) -> Result<Option<PendingSseChunk>> {
+        let (event_producer, retry_pending, retry_ms) = {
+            let conns = self.connections.borrow();
+            let Some(conn) = conns.get(conn_idx) else {
+                return Ok(None);
+            };
+
+            if conn.sse_data.is_none() || !matches!(conn.state, ConnectionState::StreamingBody) {
+                return Ok(None);
+            }
+
+            if !conn.stream_chunks.is_empty() || conn.stream_final_sent {
+                return Ok(None);
+            }
+
+            let sse = conn.sse_data.as_ref().unwrap();
+            (
+                Arc::clone(&sse.event_producer),
+                sse.retry_pending,
+                sse.retry_ms,
+            )
+        };
+
+        let mut frame = Vec::with_capacity(256);
+        if retry_pending && retry_ms > 0 {
+            SseWriter::format_retry(&mut frame, retry_ms);
+        }
+
+        let producer: Function = self.lua.registry_value(&event_producer)?;
+        let value = producer.call::<Value>(())?;
+        let should_end = matches!(value, Value::Nil);
+
+        if !should_end {
+            Self::write_sse_payload(&mut frame, value)?;
+        }
+
+        Ok(Some(PendingSseChunk {
+            chunk: (!frame.is_empty()).then(|| Bytes::from(frame)),
+            should_end,
+        }))
     }
 
     fn tick_lua_scheduler(&mut self) {
@@ -332,11 +2148,11 @@ impl EventLoop {
         // Check if this is a WebSocket connection
         {
             let conns = self.connections.borrow();
-            if let Some(conn) = conns.get(conn_idx) {
-                if conn.is_websocket() {
-                    drop(conns);
-                    return self.handle_ws_event(conn_idx, event);
-                }
+            if let Some(conn) = conns.get(conn_idx)
+                && conn.is_websocket()
+            {
+                drop(conns);
+                return self.handle_ws_event(conn_idx, event);
             }
         }
 
@@ -371,9 +2187,154 @@ impl EventLoop {
                         (false, true, false, false)
                     }
                 },
+                ConnectionState::StreamingHeaders if event.is_writable() => {
+                    match conn.try_write_stream() {
+                        Ok(true) => {
+                            // Headers written, transition to streaming body
+                            // The stream will call the producer to get chunks
+                            (false, false, false, false)
+                        }
+                        Ok(false) => (false, false, false, false),
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            (false, true, false, false)
+                        }
+                    }
+                }
+                ConnectionState::StreamingBody if event.is_writable() => {
+                    match conn.try_write_stream() {
+                        Ok(true) => {
+                            // Streaming complete
+                            if conn.keep_alive {
+                                conn.reset();
+                                (false, false, true, false)
+                            } else {
+                                conn.state = ConnectionState::Closed;
+                                (false, true, false, false)
+                            }
+                        }
+                        Ok(false) => (false, false, false, false),
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            (false, true, false, false)
+                        }
+                    }
+                }
                 _ => (false, false, false, false),
             }
         };
+
+        // Handle streaming - produce chunks after headers are written
+        let streaming_conn_idx = {
+            let conns = self.connections.borrow();
+            if matches!(
+                conns.get(conn_idx).map(|c| &c.state),
+                Some(ConnectionState::StreamingBody)
+            ) {
+                Some(conn_idx)
+            } else {
+                None
+            }
+        };
+
+        if let Some(idx) = streaming_conn_idx {
+            // Call the chunk producer to get more chunks
+            let chunks_to_write = {
+                let conns = self.connections.borrow();
+                let conn = &conns[idx];
+                if let Some(ref producer_key) = conn.stream_producer {
+                    let producer: mlua::Function = self.lua.registry_value(producer_key)?;
+                    let mut chunks = Vec::new();
+
+                    // Call producer in a loop until it returns nil or we hit a limit
+                    // This produces chunks with backpressure-safe handling
+                    loop {
+                        let result = producer.call::<mlua::Value>(())?;
+                        match result {
+                            mlua::Value::String(s) => {
+                                let bytes = s.as_bytes();
+                                chunks.push(Bytes::copy_from_slice(&bytes));
+                            }
+                            mlua::Value::Nil => {
+                                // End of stream
+                                break;
+                            }
+                            _ => {
+                                // Invalid return, treat as end
+                                break;
+                            }
+                        }
+                    }
+                    Some(chunks)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(chunks) = chunks_to_write {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[idx];
+                for chunk in chunks {
+                    conn.queue_stream_chunk(chunk);
+                }
+            }
+
+            // Queue final chunk if producer finished
+            {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[idx];
+                conn.queue_stream_end();
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+        }
+
+        let sse_conn_idx = {
+            let conns = self.connections.borrow();
+            if matches!(
+                conns.get(conn_idx).map(|c| &c.state),
+                Some(ConnectionState::StreamingBody)
+            ) && conns
+                .get(conn_idx)
+                .and_then(|c| c.sse_data.as_ref())
+                .is_some()
+            {
+                Some(conn_idx)
+            } else {
+                None
+            }
+        };
+
+        if let Some(idx) = sse_conn_idx {
+            match self.poll_sse_chunk(idx) {
+                Ok(Some(pending)) => {
+                    let mut conns = self.connections.borrow_mut();
+                    if let Some(conn) = conns.get_mut(idx) {
+                        if let Some(ref mut sse) = conn.sse_data {
+                            sse.retry_pending = false;
+                            sse.last_write = Some(Instant::now());
+                        }
+                        if let Some(chunk) = pending.chunk {
+                            conn.queue_stream_chunk(chunk);
+                        }
+                        if pending.should_end {
+                            conn.queue_stream_end();
+                            conn.sse_data = None;
+                        }
+                        let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("SSE producer error for connection {}: {}", idx, e);
+                    let mut conns = self.connections.borrow_mut();
+                    if let Some(conn) = conns.get_mut(idx) {
+                        conn.queue_stream_end();
+                        conn.sse_data = None;
+                        let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    }
+                }
+            }
+        }
 
         // Handle WS upgrade completion (101 fully written)
         if is_ws_upgrade_complete {
@@ -389,10 +2350,7 @@ impl EventLoop {
         };
 
         if should_close || is_closed_state {
-            self.recycle_write_buf(conn_idx);
-            let mut conns = self.connections.borrow_mut();
-            let mut conn = conns.remove(conn_idx);
-            let _ = self.poll.registry().deregister(&mut conn.socket);
+            self.close_connection(conn_idx);
             return Ok(());
         }
 
@@ -401,7 +2359,7 @@ impl EventLoop {
             let mut conns = self.connections.borrow_mut();
             if let Some(conn) = conns.get_mut(conn_idx) {
                 conn.reset();
-                let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+                let _ = conn.reregister(self.poll.registry(), Interest::READABLE);
             }
         }
 
@@ -445,6 +2403,10 @@ impl EventLoop {
         };
         let (path_off, path_len) = conn.path_offset.unwrap_or((0, 0));
         let keep_alive = conn.keep_alive;
+        let source_ip = conn.socket.peer_addr().ok().map(|addr| addr.ip());
+        let should_trust_forwarded = source_ip
+            .map(|ip| self.config.is_trusted_proxy_source(ip))
+            .unwrap_or(false);
 
         // ── Check for WebSocket upgrade ──
         let has_upgrade =
@@ -467,21 +2429,63 @@ impl EventLoop {
         }
 
         // ── Regular HTTP path ──
-        if self.config.docs && path == "/docs" && self.openapi_spec.is_some() {
+        if self.config.docs
+            && path == self.config.management_docs_path()
+            && self.openapi_spec.is_some()
+        {
+            let authorization =
+                Self::get_header_value(buf_ref, &conn.header_offsets, "authorization");
+            let management_token =
+                Self::get_header_value(buf_ref, &conn.header_offsets, "x-rover-management-token");
+            let is_authorized = Self::is_management_request_authorized(
+                &self.config,
+                authorization.as_deref(),
+                management_token.as_deref(),
+            );
+
+            if !is_authorized {
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+                let buf = self.buffer_pool.get_response_buf();
+                let body =
+                    Bytes::from_static(b"{\"error\":\"Management endpoint requires auth token\"}");
+                self.set_http_response(
+                    conn,
+                    401,
+                    body,
+                    Some("application/json"),
+                    HashMap::new(),
+                    buf,
+                    None,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                return Ok(());
+            }
+
             let html = rover_openapi::scalar_html(self.openapi_spec.as_ref().unwrap());
             drop(conns);
             let mut conns = self.connections.borrow_mut();
             let conn = &mut conns[conn_idx];
             conn.keep_alive = keep_alive;
             let buf = self.buffer_pool.get_response_buf();
-            conn.set_response_with_buf(200, html.as_bytes(), Some("text/html"), buf);
-            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            self.set_http_response(
+                conn,
+                200,
+                Bytes::copy_from_slice(html.as_bytes()),
+                Some("text/html"),
+                HashMap::new(),
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
             return Ok(());
         }
 
         // CORS preflight handling before method parsing (OPTIONS may be auto-handled)
-        if method.eq_ignore_ascii_case("options") {
-            if let (Some(cors_origin), Some(origin), Some(_acr_method)) = (
+        if method.eq_ignore_ascii_case("options")
+            && let (Some(cors_origin), Some(origin), Some(_acr_method)) = (
                 self.config.cors_origin.as_ref(),
                 Self::get_header_value(buf_ref, &conn.header_offsets, "origin"),
                 Self::get_header_value(
@@ -489,43 +2493,45 @@ impl EventLoop {
                     &conn.header_offsets,
                     "access-control-request-method",
                 ),
-            ) {
-                drop(conns);
-                let mut conns = self.connections.borrow_mut();
-                let conn = &mut conns[conn_idx];
-                conn.keep_alive = keep_alive;
-                let mut headers = HashMap::new();
-                let allow_origin = if cors_origin == "*" {
-                    "*".to_string()
-                } else {
-                    origin
-                };
-                headers.insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+            )
+        {
+            drop(conns);
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.keep_alive = keep_alive;
+            let mut headers = HashMap::new();
+            let allow_origin = if cors_origin == "*" {
+                "*".to_string()
+            } else {
+                origin
+            };
+            headers.insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+            headers.insert(
+                "Access-Control-Allow-Methods".to_string(),
+                self.config.cors_methods.clone(),
+            );
+            headers.insert(
+                "Access-Control-Allow-Headers".to_string(),
+                self.config.cors_headers.clone(),
+            );
+            if self.config.cors_credentials {
                 headers.insert(
-                    "Access-Control-Allow-Methods".to_string(),
-                    self.config.cors_methods.clone(),
+                    "Access-Control-Allow-Credentials".to_string(),
+                    "true".to_string(),
                 );
-                headers.insert(
-                    "Access-Control-Allow-Headers".to_string(),
-                    self.config.cors_headers.clone(),
-                );
-                if self.config.cors_credentials {
-                    headers.insert(
-                        "Access-Control-Allow-Credentials".to_string(),
-                        "true".to_string(),
-                    );
-                }
-                let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_bytes_with_headers(
-                    204,
-                    Bytes::new(),
-                    Some("text/plain"),
-                    Some(&headers),
-                    buf,
-                );
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
-                return Ok(());
             }
+            let buf = self.buffer_pool.get_response_buf();
+            self.set_http_response(
+                conn,
+                204,
+                Bytes::new(),
+                Some("text/plain"),
+                headers,
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            return Ok(());
         }
 
         let http_method = match HttpMethod::from_str(method) {
@@ -541,11 +2547,48 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(400, error_msg.as_bytes(), Some("text/plain"), buf);
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                self.set_http_response(
+                    conn,
+                    400,
+                    Bytes::from(error_msg.into_bytes()),
+                    Some("text/plain"),
+                    HashMap::new(),
+                    buf,
+                    None,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
         };
+
+        if let Some(probe_response) = Self::builtin_probe_response(
+            http_method,
+            path,
+            self.lifecycle_manager.current_phase(),
+            &self.config.readiness.failed_dependencies(),
+        ) {
+            drop(conns);
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.keep_alive = keep_alive;
+            let body = if http_method == HttpMethod::Head {
+                Bytes::new()
+            } else {
+                probe_response.body
+            };
+            let buf = self.buffer_pool.get_response_buf();
+            self.set_http_response(
+                conn,
+                probe_response.status,
+                body,
+                probe_response.content_type,
+                probe_response.headers,
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            return Ok(());
+        }
 
         let path_owned = path.to_string();
         let (handler, params, is_head_request) =
@@ -570,14 +2613,16 @@ impl EventLoop {
                             .join(", ");
                         headers.insert("Allow".to_string(), allow);
                         let buf = self.buffer_pool.get_response_buf();
-                        conn.set_response_bytes_with_headers(
+                        self.set_http_response(
+                            conn,
                             204,
                             Bytes::new(),
                             Some("text/plain"),
-                            Some(&headers),
+                            headers,
                             buf,
+                            None,
                         );
-                        let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                        let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                         return Ok(());
                     }
 
@@ -593,14 +2638,16 @@ impl EventLoop {
                         .join(", ");
                     headers.insert("Allow".to_string(), allow);
                     let buf = self.buffer_pool.get_response_buf();
-                    conn.set_response_bytes_with_headers(
+                    self.set_http_response(
+                        conn,
                         405,
                         Bytes::from_static(b"Method Not Allowed"),
                         Some("text/plain"),
-                        Some(&headers),
+                        headers,
                         buf,
+                        None,
                     );
-                    let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                     return Ok(());
                 }
                 RouteMatch::NotFound => {
@@ -609,8 +2656,16 @@ impl EventLoop {
                     let conn = &mut conns[conn_idx];
                     conn.keep_alive = keep_alive;
                     let buf = self.buffer_pool.get_response_buf();
-                    conn.set_response_with_buf(404, b"Route not found", Some("text/plain"), buf);
-                    let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                    self.set_http_response(
+                        conn,
+                        404,
+                        Bytes::from_static(b"Route not found"),
+                        Some("text/plain"),
+                        HashMap::new(),
+                        buf,
+                        None,
+                    );
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                     return Ok(());
                 }
             };
@@ -682,17 +2737,25 @@ impl EventLoop {
             Vec::new()
         };
 
-        let mut header_offsets = Vec::with_capacity(conn.header_offsets.len());
-        for &(name_off, name_len, val_off, val_len) in conn.header_offsets.iter() {
-            header_offsets.push((
-                name_off as u16,
-                name_len as u8,
-                val_off as u16,
-                val_len as u16,
-            ));
-        }
+        let header_offsets =
+            Self::sanitize_header_offsets(buf_ref, &conn.header_offsets, should_trust_forwarded);
+        let (client_ip, client_proto) = Self::derive_client_context(
+            buf_ref,
+            &conn.header_offsets,
+            source_ip,
+            should_trust_forwarded,
+            &self.config,
+        );
 
         let accept_header = Self::get_header_value(buf_ref, &conn.header_offsets, "accept");
+        let accept_encoding = Self::negotiate_encoding_from_headers(
+            buf_ref,
+            &conn.header_offsets,
+            &self.config.compress.algorithms,
+        );
+
+        // Generate or extract request ID for correlation
+        let request_id = extract_or_generate_request_id(buf_ref, &conn.header_offsets);
 
         let (body_off, body_len) = conn
             .body
@@ -700,26 +2763,21 @@ impl EventLoop {
             .unwrap_or((0, 0));
 
         // Check body size limit if configured
-        if let Some(max_size) = self.config.body_size_limit {
-            if (body_len as usize) > max_size {
-                drop(conns);
-                let mut conns = self.connections.borrow_mut();
-                let conn = &mut conns[conn_idx];
-                conn.keep_alive = keep_alive;
-                let buf = self.buffer_pool.get_response_buf();
-                let error_body = format!(
-                    "{{\"error\":\"Request body too large: {} bytes exceeds limit of {} bytes\"}}",
-                    body_len, max_size
-                );
-                conn.set_response_with_buf(
-                    413,
-                    error_body.as_bytes(),
-                    Some("application/json"),
-                    buf,
-                );
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
-                return Ok(());
-            }
+        if let Some(max_size) = self.config.body_size_limit
+            && (body_len as usize) > max_size
+        {
+            drop(conns);
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.keep_alive = keep_alive;
+            let buf = self.buffer_pool.get_response_buf();
+            let error_body = format!(
+                "{{\"error\":\"Request body too large: {} bytes exceeds limit of {} bytes\"}}",
+                body_len, max_size
+            );
+            conn.set_response_with_buf(413, error_body.as_bytes(), Some("application/json"), buf);
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            return Ok(());
         }
 
         // Drop the borrow before calling into Lua
@@ -739,6 +2797,9 @@ impl EventLoop {
             header_offsets,
             query_offsets,
             &params,
+            request_id,
+            client_ip,
+            client_proto,
             started_at,
             &mut self.thread_pool,
             &mut self.request_pool,
@@ -757,18 +2818,22 @@ impl EventLoop {
                 conn.keep_alive = keep_alive;
                 let body = if is_head_request { Bytes::new() } else { body };
 
-                if let (Some(accept), Some(ct)) = (accept_header.as_deref(), content_type) {
-                    if status < 400 && !Self::accepts_content_type(accept, ct) {
-                        let resp_buf = self.buffer_pool.get_response_buf();
-                        conn.set_response_with_buf(
-                            406,
-                            b"Not Acceptable",
-                            Some("text/plain"),
-                            resp_buf,
-                        );
-                        let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
-                        return Ok(());
-                    }
+                if let (Some(accept), Some(ct)) = (accept_header.as_deref(), content_type)
+                    && status < 400
+                    && !Self::accepts_content_type(accept, ct)
+                {
+                    let resp_buf = self.buffer_pool.get_response_buf();
+                    self.set_http_response(
+                        conn,
+                        406,
+                        Bytes::from_static(b"Not Acceptable"),
+                        Some("text/plain"),
+                        HashMap::new(),
+                        resp_buf,
+                        None,
+                    );
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+                    return Ok(());
                 }
 
                 let buf = self.buffer_pool.get_response_buf();
@@ -790,19 +2855,107 @@ impl EventLoop {
                         );
                     }
                 }
+                self.set_http_response(
+                    conn,
+                    status,
+                    body,
+                    content_type,
+                    response_headers,
+                    buf,
+                    accept_encoding,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+            Ok(CoroutineResponse::Streaming {
+                status,
+                content_type,
+                headers,
+                chunk_producer,
+            }) => {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
 
-                if response_headers.is_empty() {
-                    conn.set_response_bytes_with_buf(status, body, content_type, buf);
-                } else {
-                    conn.set_response_bytes_with_headers(
-                        status,
-                        body,
-                        content_type,
-                        Some(&response_headers),
-                        buf,
-                    );
+                let mut response_headers = headers.unwrap_or_default();
+
+                // CORS headers for streaming
+                if let (Some(cors_origin), Some(origin)) =
+                    (self.config.cors_origin.as_ref(), origin_header.as_ref())
+                {
+                    let allow_origin = if cors_origin == "*" {
+                        "*".to_string()
+                    } else {
+                        origin.clone()
+                    };
+                    response_headers
+                        .insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+                    if self.config.cors_credentials {
+                        response_headers.insert(
+                            "Access-Control-Allow-Credentials".to_string(),
+                            "true".to_string(),
+                        );
+                    }
                 }
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+
+                // Set up streaming response with chunked transfer encoding headers
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_streaming_headers(status, &content_type, Some(&response_headers), buf);
+                conn.stream_producer = Some(Arc::clone(&chunk_producer));
+
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
+            }
+            Ok(CoroutineResponse::Sse {
+                status,
+                headers,
+                event_producer,
+                retry_ms,
+            }) => {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                conn.keep_alive = keep_alive;
+
+                let mut response_headers = headers.unwrap_or_default();
+                response_headers
+                    .entry("Cache-Control".to_string())
+                    .or_insert_with(|| "no-cache".to_string());
+                response_headers
+                    .entry("X-Accel-Buffering".to_string())
+                    .or_insert_with(|| "no".to_string());
+
+                if let (Some(cors_origin), Some(origin)) =
+                    (self.config.cors_origin.as_ref(), origin_header.as_ref())
+                {
+                    let allow_origin = if cors_origin == "*" {
+                        "*".to_string()
+                    } else {
+                        origin.clone()
+                    };
+                    response_headers
+                        .insert("Access-Control-Allow-Origin".to_string(), allow_origin);
+                    if self.config.cors_credentials {
+                        response_headers.insert(
+                            "Access-Control-Allow-Credentials".to_string(),
+                            "true".to_string(),
+                        );
+                    }
+                }
+
+                let buf = self.buffer_pool.get_response_buf();
+                conn.set_streaming_headers(
+                    status,
+                    "text/event-stream",
+                    Some(&response_headers),
+                    buf,
+                );
+                conn.sse_data = Some(Box::new(crate::connection::SseConnectionData {
+                    event_producer,
+                    retry_ms: retry_ms.unwrap_or(0),
+                    retry_pending: retry_ms.unwrap_or(0) > 0,
+                    keepalive_ms: 0,
+                    last_write: None,
+                }));
+
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
             }
             Ok(CoroutineResponse::Yielded { thread, ctx_idx }) => {
                 let mut conns = self.connections.borrow_mut();
@@ -822,15 +2975,21 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(500, b"Internal server error", Some("text/plain"), buf);
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                self.set_http_response(
+                    conn,
+                    500,
+                    Bytes::from_static(b"Internal server error"),
+                    Some("text/plain"),
+                    HashMap::new(),
+                    buf,
+                    None,
+                );
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
             }
         }
 
         Ok(())
     }
-
-    // ── WebSocket upgrade handling ──
 
     fn handle_ws_upgrade(&mut self, conn_idx: usize, path: &str, keep_alive: bool) -> Result<()> {
         // Match against WS router
@@ -841,13 +3000,16 @@ impl EventLoop {
                 let conn = &mut conns[conn_idx];
                 conn.keep_alive = keep_alive;
                 let buf = self.buffer_pool.get_response_buf();
-                conn.set_response_with_buf(
+                self.set_http_response(
+                    conn,
                     404,
-                    b"WebSocket route not found",
+                    Bytes::from_static(b"WebSocket route not found"),
                     Some("text/plain"),
+                    HashMap::new(),
                     buf,
+                    None,
                 );
-                let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                 return Ok(());
             }
         };
@@ -870,13 +3032,16 @@ impl EventLoop {
                     let conn = &mut conns[conn_idx];
                     conn.keep_alive = false;
                     let buf = self.buffer_pool.get_response_buf();
-                    conn.set_response_with_buf(
+                    self.set_http_response(
+                        conn,
                         e.status_code(),
-                        e.message().as_bytes(),
+                        Bytes::copy_from_slice(e.message().as_bytes()),
                         Some("text/plain"),
+                        HashMap::new(),
                         buf,
+                        None,
                     );
-                    let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                    let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                     return Ok(());
                 }
             }
@@ -896,7 +3061,7 @@ impl EventLoop {
             conn.body_pos = 0;
             conn.state = ConnectionState::Writing;
             conn.pending_ws_upgrade = Some(endpoint_idx);
-            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
         }
 
         info!(
@@ -920,12 +3085,15 @@ impl EventLoop {
         let (
             buf,
             header_offsets,
+            header_offsets_raw,
             query_offsets,
             params,
             path_off,
             path_len,
             method_off,
             method_len,
+            source_ip,
+            should_trust_forwarded,
         ) = {
             let conns = self.connections.borrow();
             let conn = &conns[conn_idx];
@@ -939,6 +3107,11 @@ impl EventLoop {
                 .iter()
                 .map(|&(no, nl, vo, vl)| (no as u16, nl as u8, vo as u16, vl as u16))
                 .collect();
+            let header_offsets_raw = conn.header_offsets.clone();
+            let source_ip = conn.socket.peer_addr().ok().map(|addr| addr.ip());
+            let should_trust_forwarded = source_ip
+                .map(|ip| self.config.is_trusted_proxy_source(ip))
+                .unwrap_or(false);
             let (po, pl) = conn.path_offset.unwrap_or((0, 0));
             let (mo, ml) = conn.method_offset.unwrap_or((0, 0));
             let query_offsets = {
@@ -1005,21 +3178,34 @@ impl EventLoop {
             (
                 buf,
                 header_offsets,
+                header_offsets_raw,
                 query_offsets,
                 Vec::new(),
                 po as u16,
                 pl as u16,
                 mo as u16,
                 ml as u8,
+                source_ip,
+                should_trust_forwarded,
             )
         };
+
+        // Generate request ID for WebSocket connection
+        let ws_request_id = extract_or_generate_request_id(&buf, &header_offsets_raw);
+        let (client_ip, client_proto) = Self::derive_client_context(
+            &buf,
+            &header_offsets_raw,
+            source_ip,
+            should_trust_forwarded,
+            &self.config,
+        );
 
         // Upgrade the connection
         {
             let mut conns = self.connections.borrow_mut();
             let conn = &mut conns[conn_idx];
             conn.upgrade_to_ws(endpoint_idx);
-            let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+            let _ = conn.reregister(self.poll.registry(), Interest::READABLE);
         }
 
         // Track the connection
@@ -1047,6 +3233,9 @@ impl EventLoop {
                 header_offsets,
                 query_offsets,
                 &params,
+                ws_request_id.clone(),
+                client_ip.clone(),
+                client_proto.clone(),
             )?;
 
             drop(mgr);
@@ -1064,10 +3253,10 @@ impl EventLoop {
                     if !matches!(state_value, Value::Nil) {
                         let state_key = self.lua.create_registry_value(state_value)?;
                         let mut conns = self.connections.borrow_mut();
-                        if let Some(conn) = conns.get_mut(conn_idx) {
-                            if let Some(ref mut ws) = conn.ws_data {
-                                ws.state_key = Some(state_key);
-                            }
+                        if let Some(conn) = conns.get_mut(conn_idx)
+                            && let Some(ref mut ws) = conn.ws_data
+                        {
+                            ws.state_key = Some(state_key);
                         }
                     }
                     self.thread_pool.release(thread);
@@ -1183,27 +3372,27 @@ impl EventLoop {
                     } else {
                         // Start of fragmented message
                         let mut conns = self.connections.borrow_mut();
-                        if let Some(conn) = conns.get_mut(conn_idx) {
-                            if let Some(ref mut ws) = conn.ws_data {
-                                ws.fragment_opcode = Some(opcode);
-                                ws.fragment_buf = Some(payload);
-                            }
+                        if let Some(conn) = conns.get_mut(conn_idx)
+                            && let Some(ref mut ws) = conn.ws_data
+                        {
+                            ws.fragment_opcode = Some(opcode);
+                            ws.fragment_buf = Some(payload);
                         }
                     }
                 }
                 WsOpcode::Continuation => {
                     let mut conns = self.connections.borrow_mut();
-                    if let Some(conn) = conns.get_mut(conn_idx) {
-                        if let Some(ref mut ws) = conn.ws_data {
-                            if let Some(ref mut frag) = ws.fragment_buf {
-                                frag.extend_from_slice(&payload);
-                            }
-                            if fin {
-                                let assembled = ws.fragment_buf.take().unwrap_or_default();
-                                ws.fragment_opcode = None;
-                                drop(conns);
-                                self.dispatch_ws_message(conn_idx, &assembled)?;
-                            }
+                    if let Some(conn) = conns.get_mut(conn_idx)
+                        && let Some(ref mut ws) = conn.ws_data
+                    {
+                        if let Some(ref mut frag) = ws.fragment_buf {
+                            frag.extend_from_slice(&payload);
+                        }
+                        if fin {
+                            let assembled = ws.fragment_buf.take().unwrap_or_default();
+                            ws.fragment_opcode = None;
+                            drop(conns);
+                            self.dispatch_ws_message(conn_idx, &assembled)?;
                         }
                     }
                 }
@@ -1217,7 +3406,7 @@ impl EventLoop {
                     if let Some(conn) = conns.get_mut(conn_idx) {
                         conn.queue_ws_frame(frame);
                         let _ = conn.reregister(
-                            &self.poll.registry(),
+                            self.poll.registry(),
                             Interest::READABLE | Interest::WRITABLE,
                         );
                     }
@@ -1254,7 +3443,7 @@ impl EventLoop {
                             }
                             conn.queue_ws_frame(frame);
                             conn.state = ConnectionState::WsClosed;
-                            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+                            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
                         }
                     }
 
@@ -1267,18 +3456,17 @@ impl EventLoop {
         // If there are frames queued for writing, register for WRITABLE too
         {
             let conns = self.connections.borrow();
-            if let Some(conn) = conns.get(conn_idx) {
-                if let Some(ref ws) = conn.ws_data {
-                    if !ws.write_queue.is_empty() {
-                        drop(conns);
-                        let mut conns = self.connections.borrow_mut();
-                        if let Some(conn) = conns.get_mut(conn_idx) {
-                            let _ = conn.reregister(
-                                &self.poll.registry(),
-                                Interest::READABLE | Interest::WRITABLE,
-                            );
-                        }
-                    }
+            if let Some(conn) = conns.get(conn_idx)
+                && let Some(ref ws) = conn.ws_data
+                && !ws.write_queue.is_empty()
+            {
+                drop(conns);
+                let mut conns = self.connections.borrow_mut();
+                if let Some(conn) = conns.get_mut(conn_idx) {
+                    let _ = conn.reregister(
+                        self.poll.registry(),
+                        Interest::READABLE | Interest::WRITABLE,
+                    );
                 }
             }
         }
@@ -1316,7 +3504,7 @@ impl EventLoop {
                 // Queue empty, only listen for reads
                 let mut conns = self.connections.borrow_mut();
                 if let Some(conn) = conns.get_mut(conn_idx) {
-                    let _ = conn.reregister(&self.poll.registry(), Interest::READABLE);
+                    let _ = conn.reregister(self.poll.registry(), Interest::READABLE);
                 }
             }
         }
@@ -1435,14 +3623,14 @@ impl EventLoop {
                 if !matches!(new_state, Value::Nil) {
                     let state_key = self.lua.create_registry_value(new_state)?;
                     let mut conns = self.connections.borrow_mut();
-                    if let Some(conn) = conns.get_mut(conn_idx) {
-                        if let Some(ref mut ws) = conn.ws_data {
-                            // Remove old state key
-                            if let Some(old_key) = ws.state_key.take() {
-                                self.lua.remove_registry_value(old_key)?;
-                            }
-                            ws.state_key = Some(state_key);
+                    if let Some(conn) = conns.get_mut(conn_idx)
+                        && let Some(ref mut ws) = conn.ws_data
+                    {
+                        // Remove old state key
+                        if let Some(old_key) = ws.state_key.take() {
+                            self.lua.remove_registry_value(old_key)?;
                         }
+                        ws.state_key = Some(state_key);
                     }
                 }
                 self.thread_pool.release(thread);
@@ -1526,12 +3714,11 @@ impl EventLoop {
         // Remove state from Lua registry
         {
             let mut conns = self.connections.borrow_mut();
-            if let Some(conn) = conns.get_mut(conn_idx) {
-                if let Some(ref mut ws) = conn.ws_data {
-                    if let Some(state_key) = ws.state_key.take() {
-                        let _ = self.lua.remove_registry_value(state_key);
-                    }
-                }
+            if let Some(conn) = conns.get_mut(conn_idx)
+                && let Some(ref mut ws) = conn.ws_data
+                && let Some(state_key) = ws.state_key.take()
+            {
+                let _ = self.lua.remove_registry_value(state_key);
             }
         }
 
@@ -1583,8 +3770,16 @@ impl EventLoop {
             conn.thread = None;
             conn.state = ConnectionState::Writing;
             let buf = self.buffer_pool.get_response_buf();
-            conn.set_response_with_buf(500, b"Coroutine timeout", Some("text/plain"), buf);
-            let _ = conn.reregister(&self.poll.registry(), Interest::WRITABLE);
+            self.set_http_response(
+                conn,
+                500,
+                Bytes::from_static(b"Coroutine timeout"),
+                Some("text/plain"),
+                HashMap::new(),
+                buf,
+                None,
+            );
+            let _ = conn.reregister(self.poll.registry(), Interest::WRITABLE);
         }
 
         Ok(())
@@ -1612,7 +3807,7 @@ impl EventLoop {
         for idx in pending {
             if let Some(conn) = conns.get_mut(idx) {
                 let _ = conn.reregister(
-                    &self.poll.registry(),
+                    self.poll.registry(),
                     Interest::READABLE | Interest::WRITABLE,
                 );
             }
@@ -1628,11 +3823,8 @@ impl EventLoop {
                 continue;
             }
 
-            match pending.thread.status() {
-                ThreadStatus::Resumable => {
-                    to_resume.push(conn_idx);
-                }
-                _ => {}
+            if pending.thread.status() == ThreadStatus::Resumable {
+                to_resume.push(conn_idx);
             }
         }
 

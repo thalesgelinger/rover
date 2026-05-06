@@ -5,6 +5,8 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
+use crate::security::{PathValidationError, validate_path};
+
 thread_local! {
     static CURRENT_INPUT: RefCell<Option<LuaAnyUserData>> = RefCell::new(None);
     static CURRENT_OUTPUT: RefCell<Option<LuaAnyUserData>> = RefCell::new(None);
@@ -508,6 +510,14 @@ impl LuaUserData for TempFile {
 
 impl SyncFile {
     fn open(path: String, mode: Option<String>) -> LuaResult<Self> {
+        // Validate path to prevent directory traversal attacks
+        if let Err(e) = validate_path(&path) {
+            return Err(LuaError::RuntimeError(format!(
+                "Path validation failed: {}",
+                e
+            )));
+        }
+
         let mode = mode.unwrap_or_else(|| "r".to_string());
         let path_buf = PathBuf::from(&path);
 
@@ -1077,7 +1087,17 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
 
     io.set(
         "popen",
-        lua.create_function(|_lua, (prog, mode): (String, Option<String>)| {
+        lua.create_function(|lua, (prog, mode): (String, Option<String>)| {
+            use crate::permissions::has_permission;
+            use rover_types::Permission;
+
+            if !has_permission(lua, Permission::Process)? {
+                return Err(LuaError::RuntimeError(
+                    "Process execution denied by permission policy (process permission required)"
+                        .to_string(),
+                ));
+            }
+
             let mode = mode.unwrap_or_else(|| "r".to_string());
 
             let mut command = Command::new("sh");

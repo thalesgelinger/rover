@@ -1,19 +1,209 @@
 use anyhow::{Result, anyhow};
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, MultiValue, ObjectLike, Table, Value};
 use rover_openapi::generate_spec;
 use rover_parser::analyze;
+use rover_server::store::{NamespacedStore, SharedStore, StoreBackendType, StoreValue};
 use rover_server::to_json::ToJson;
 use rover_server::{
-    Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig, WsRoute,
+    Bytes, HttpMethod, MiddlewareChain, Route, RouteTable, RoverResponse, ServerConfig,
+    SseResponse, WsRoute,
 };
 use rover_types::ValidationErrors;
 use rover_ui::SharedSignalRuntime;
 use rover_ui::scheduler::SharedScheduler;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use crate::html::{get_rover_html, render_template_with_components};
 use crate::{app_type::AppType, auto_table::AutoTable};
+
+#[derive(Clone)]
+struct IdempotencyEntry {
+    expires_at: Instant,
+    fingerprint: u64,
+    response: RoverResponse,
+}
+
+#[derive(Clone)]
+struct IdempotencyStoreContext {
+    store: NamespacedStore,
+}
+
+fn to_rover_response(value: Value) -> mlua::Result<RoverResponse> {
+    match value {
+        Value::UserData(ud) => {
+            if let Ok(response) = ud.borrow::<RoverResponse>() {
+                Ok(response.clone())
+            } else {
+                Ok(RoverResponse::text(
+                    500,
+                    Bytes::from_static(b"Invalid userdata type"),
+                    None,
+                ))
+            }
+        }
+        Value::String(s) => {
+            let body = s.to_str()?.to_string();
+            Ok(RoverResponse::text(200, Bytes::from(body), None))
+        }
+        Value::Table(table) => {
+            let json = table.to_json_string().map_err(|e| {
+                mlua::Error::RuntimeError(format!("JSON serialization failed: {}", e))
+            })?;
+            Ok(RoverResponse::json(200, Bytes::from(json), None))
+        }
+        Value::Integer(i) => Ok(RoverResponse::text(200, Bytes::from(i.to_string()), None)),
+        Value::Number(n) => Ok(RoverResponse::text(200, Bytes::from(n.to_string()), None)),
+        Value::Boolean(b) => Ok(RoverResponse::text(200, Bytes::from(b.to_string()), None)),
+        Value::Nil => Ok(RoverResponse::empty(204)),
+        Value::Error(e) => Ok(RoverResponse::text(500, Bytes::from(e.to_string()), None)),
+        _ => Ok(RoverResponse::text(
+            500,
+            Bytes::from_static(b"Unsupported return type"),
+            None,
+        )),
+    }
+}
+
+fn content_type_to_static(content_type: &str) -> &'static str {
+    match content_type {
+        "application/json" => "application/json",
+        "text/plain" => "text/plain",
+        "text/html" => "text/html",
+        "application/octet-stream" => "application/octet-stream",
+        other => Box::leak(other.to_string().into_boxed_str()),
+    }
+}
+
+fn encode_idempotency_entry(entry: &IdempotencyEntry) -> mlua::Result<Vec<u8>> {
+    let json = serde_json::json!({
+        "fingerprint": entry.fingerprint,
+        "status": entry.response.status,
+        "body": entry.response.body.as_ref(),
+        "content_type": entry.response.content_type,
+        "headers": entry.response.headers,
+    });
+
+    serde_json::to_vec(&json)
+        .map_err(|e| mlua::Error::RuntimeError(format!("idempotency encode error: {}", e)))
+}
+
+fn decode_idempotency_entry(payload: &[u8], ttl: Duration) -> mlua::Result<IdempotencyEntry> {
+    let value: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| mlua::Error::RuntimeError(format!("idempotency decode error: {}", e)))?;
+
+    let fingerprint = value
+        .get("fingerprint")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("idempotency payload missing fingerprint".to_string())
+        })?;
+
+    let status = value
+        .get("status")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("idempotency payload missing status".to_string())
+        })? as u16;
+
+    let body: Vec<u8> = serde_json::from_value(value.get("body").cloned().ok_or_else(|| {
+        mlua::Error::RuntimeError("idempotency payload missing body".to_string())
+    })?)
+    .map_err(|e| {
+        mlua::Error::RuntimeError(format!("idempotency payload body decode error: {}", e))
+    })?;
+
+    let content_type = value
+        .get("content_type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("idempotency payload missing content_type".to_string())
+        })?;
+
+    let headers = match value.get("headers") {
+        Some(v) if !v.is_null() => Some(
+            serde_json::from_value::<HashMap<String, String>>(v.clone()).map_err(|e| {
+                mlua::Error::RuntimeError(format!(
+                    "idempotency payload headers decode error: {}",
+                    e
+                ))
+            })?,
+        ),
+        _ => None,
+    };
+
+    Ok(IdempotencyEntry {
+        expires_at: Instant::now() + ttl,
+        fingerprint,
+        response: RoverResponse {
+            status,
+            body: Bytes::from(body),
+            content_type: content_type_to_static(content_type),
+            headers,
+        },
+    })
+}
+
+fn load_idempotency_entry(
+    lua: &Lua,
+    key: &str,
+    ttl: Duration,
+) -> mlua::Result<Option<IdempotencyEntry>> {
+    if let Some(ctx) = lua.app_data_ref::<IdempotencyStoreContext>() {
+        match ctx.store.get(key).map_err(|e| {
+            mlua::Error::RuntimeError(format!("idempotency store read failed: {}", e))
+        })? {
+            Some(StoreValue::Bytes(payload)) => decode_idempotency_entry(&payload, ttl).map(Some),
+            Some(StoreValue::String(payload)) => {
+                decode_idempotency_entry(payload.as_bytes(), ttl).map(Some)
+            }
+            Some(_) => Ok(None),
+            None => Ok(None),
+        }
+    } else {
+        let now = Instant::now();
+        let mut store = idempotency_store().lock().map_err(|_| {
+            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
+        })?;
+        store.retain(|_, entry| entry.expires_at > now);
+        Ok(store.get(key).cloned())
+    }
+}
+
+fn save_idempotency_entry(
+    lua: &Lua,
+    key: &str,
+    entry: IdempotencyEntry,
+    ttl: Duration,
+) -> mlua::Result<()> {
+    if let Some(ctx) = lua.app_data_ref::<IdempotencyStoreContext>() {
+        let payload = encode_idempotency_entry(&entry)?;
+        ctx.store
+            .set(key, StoreValue::Bytes(payload), Some(ttl))
+            .map_err(|e| {
+                mlua::Error::RuntimeError(format!("idempotency store write failed: {}", e))
+            })
+    } else {
+        let mut store = idempotency_store().lock().map_err(|_| {
+            mlua::Error::RuntimeError("idempotency storage lock poisoned".to_string())
+        })?;
+        store.insert(key.to_string(), entry);
+        Ok(())
+    }
+}
+
+static IDEMPOTENCY_STORE: OnceLock<Mutex<HashMap<String, IdempotencyEntry>>> = OnceLock::new();
+static IDEMPOTENCY_ROUTE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn idempotency_store() -> &'static Mutex<HashMap<String, IdempotencyEntry>> {
+    IDEMPOTENCY_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub trait AppServer {
     fn create_server(&self, config: Table) -> Result<Table>;
@@ -336,6 +526,180 @@ impl AppServer for Lua {
         let no_content_fn = self.create_function(|_lua, _: Table| Ok(RoverResponse::empty(204)))?;
         server.set("no_content", no_content_fn)?;
 
+        let idempotent_fn = self.create_function(|lua, args: MultiValue| {
+                fn context_headers(lua: &Lua, ctx: &Value) -> mlua::Result<Table> {
+                    match ctx {
+                        Value::UserData(ud) => ud.call_method("headers", ()),
+                        Value::Table(table) => {
+                            let headers_fn: mlua::Function = table.get("headers")?;
+                            headers_fn.call(table.clone())
+                        }
+                        _ => lua.create_table(),
+                    }
+                }
+
+                fn context_body(ctx: &Value) -> Option<String> {
+                    match ctx {
+                        Value::UserData(ud) => {
+                            let body_value: Value = ud.call_method("body", ()).ok()?;
+                            match body_value {
+                                Value::UserData(body_ud) => {
+                                    body_ud.call_method::<String>("as_string", ()).ok()
+                                }
+                                Value::Table(body_table) => {
+                                    let as_string: mlua::Function =
+                                        body_table.get("as_string").ok()?;
+                                    as_string.call(body_table).ok()
+                                }
+                                _ => None,
+                            }
+                        }
+                        Value::Table(table) => {
+                            let body_fn: mlua::Function = table.get("body").ok()?;
+                            let body_value: Value = body_fn.call(table.clone()).ok()?;
+                            match body_value {
+                                Value::UserData(body_ud) => {
+                                    body_ud.call_method::<String>("as_string", ()).ok()
+                                }
+                                Value::Table(body_table) => {
+                                    let as_string: mlua::Function =
+                                        body_table.get("as_string").ok()?;
+                                    as_string.call(body_table).ok()
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+
+                fn context_method(ctx: &Value) -> Option<String> {
+                    match ctx {
+                        Value::UserData(ud) => match ud.get::<Value>("method").ok()? {
+                            Value::String(s) => Some(s.to_str().ok()?.to_string()),
+                            Value::Integer(i) => Some(i.to_string()),
+                            Value::Number(n) => Some(n.to_string()),
+                            _ => None,
+                        },
+                        Value::Table(table) => match table.get::<Value>("method").ok()? {
+                            Value::String(s) => Some(s.to_str().ok()?.to_string()),
+                            Value::Integer(i) => Some(i.to_string()),
+                            Value::Number(n) => Some(n.to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+
+                fn compute_fingerprint(method: &str, route_identity: &str, body: &str) -> u64 {
+                    let mut hasher = DefaultHasher::new();
+                    method.hash(&mut hasher);
+                    route_identity.hash(&mut hasher);
+                    body.hash(&mut hasher);
+                    hasher.finish()
+                }
+
+                let values = args.into_vec();
+                let (config, handler) = match values.as_slice() {
+                    [Value::Function(handler)] => (None, handler.clone()),
+                    [Value::Table(config), Value::Function(handler)] => {
+                        (Some(config.clone()), handler.clone())
+                    }
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "api.idempotent() expects (handler) or (config, handler)".to_string(),
+                        ));
+                    }
+                };
+
+                let header_name = if let Some(config) = &config {
+                    config
+                        .get::<Option<String>>("header")?
+                        .unwrap_or_else(|| "Idempotency-Key".to_string())
+                } else {
+                    "Idempotency-Key".to_string()
+                };
+
+                let ttl_ms = if let Some(config) = &config {
+                    config.get::<Option<u64>>("ttl_ms")?.unwrap_or(300_000)
+                } else {
+                    300_000
+                };
+                let ttl = Duration::from_millis(ttl_ms);
+
+                let route_scope = format!(
+                    "route:{}",
+                    IDEMPOTENCY_ROUTE_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let wrapped = lua.create_function(move |lua, ctx: Value| {
+                    let headers = context_headers(lua, &ctx)?;
+                    let mut idempotency_key: Option<String> = None;
+                    for pair in headers.pairs::<String, Value>() {
+                        let (key, value) = pair?;
+                        if key.eq_ignore_ascii_case(&header_name) {
+                            match value {
+                                Value::String(s) => {
+                                    let candidate = s.to_str()?.trim().to_string();
+                                    if !candidate.is_empty() {
+                                        idempotency_key = Some(candidate);
+                                    }
+                                }
+                                Value::Integer(i) => {
+                                    idempotency_key = Some(i.to_string());
+                                }
+                                Value::Number(n) => {
+                                    idempotency_key = Some(n.to_string());
+                                }
+                                _ => {}
+                            }
+                            break;
+                        }
+                    }
+
+                    let Some(idempotency_key) = idempotency_key else {
+                        return handler.call::<Value>(ctx);
+                    };
+
+                    let method = context_method(&ctx).unwrap_or_default();
+                    let body = context_body(&ctx).unwrap_or_default();
+                    let fingerprint = compute_fingerprint(&method, &route_scope, &body);
+                    let store_key = format!("{}:{}", route_scope, idempotency_key);
+
+                    if let Some(entry) = load_idempotency_entry(lua, &store_key, ttl)? {
+                        if entry.fingerprint != fingerprint {
+                            let conflict = RoverResponse::json(
+                                409,
+                                Bytes::from_static(
+                                    br#"{"error":"Idempotency key already used with different payload"}"#,
+                                ),
+                                None,
+                            );
+                            return lua.create_userdata(conflict).map(Value::UserData);
+                        }
+                        return lua.create_userdata(entry.response).map(Value::UserData);
+                    }
+
+                    let result: Value = handler.call(ctx.clone())?;
+                    let response = to_rover_response(result)?;
+
+                    save_idempotency_entry(
+                        lua,
+                        &store_key,
+                        IdempotencyEntry {
+                            expires_at: Instant::now() + ttl,
+                            fingerprint,
+                            response: response.clone(),
+                        },
+                        ttl,
+                    )?;
+
+                    lua.create_userdata(response).map(Value::UserData)
+                })?;
+
+                Ok(wrapped)
+            })?;
+        server.set("idempotent", idempotent_fn)?;
+
         let raw_helper = self.create_table()?;
 
         let raw_call = self.create_function(|_lua, body: mlua::String| {
@@ -364,6 +728,125 @@ impl AppServer for Lua {
         let _ = raw_helper.set_metatable(Some(raw_meta));
         server.set("raw", raw_helper)?;
 
+        // Streaming response API
+        // api.stream(status, content_type, chunk_producer) -> StreamingResponse
+        // chunk_producer is a function that returns strings (chunks) or nil (end of stream)
+        let stream_fn = self.create_function(
+            |lua,
+             (_self, status_code, content_type, chunk_producer): (
+                Table,
+                u16,
+                String,
+                mlua::Function,
+            )| {
+                use rover_server::StreamingResponse;
+                use std::sync::Arc;
+
+                let producer_key = lua.create_registry_value(chunk_producer)?;
+                Ok(StreamingResponse::new(
+                    status_code,
+                    content_type,
+                    None,
+                    Arc::new(producer_key),
+                ))
+            },
+        )?;
+        server.set("stream", stream_fn)?;
+
+        // Stream with headers: api.stream_with_headers(status, content_type, headers, chunk_producer)
+        let stream_with_headers_fn = self.create_function(
+            |lua,
+             (_self, status_code, content_type, headers, chunk_producer): (
+                Table,
+                u16,
+                String,
+                Table,
+                mlua::Function,
+            )| {
+                use rover_server::StreamingResponse;
+                use std::sync::Arc;
+
+                let mut response_headers = std::collections::HashMap::new();
+                for pair in headers.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    response_headers.insert(key, value);
+                }
+
+                let producer_key = lua.create_registry_value(chunk_producer)?;
+                Ok(StreamingResponse::new(
+                    status_code,
+                    content_type,
+                    Some(response_headers),
+                    Arc::new(producer_key),
+                ))
+            },
+        )?;
+        server.set("stream_with_headers", stream_with_headers_fn)?;
+
+        let sse_helper = self.create_table()?;
+
+        let sse_call = self.create_function(
+            |lua, (_self, event_producer, retry_ms): (Table, mlua::Function, Option<u32>)| {
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    200,
+                    None,
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+
+        let sse_status_fn = self.create_function(
+            |lua,
+             (_self, status_code, event_producer, retry_ms): (
+                Table,
+                u16,
+                mlua::Function,
+                Option<u32>,
+            )| {
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    status_code,
+                    None,
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+        sse_helper.set("status", sse_status_fn)?;
+
+        let sse_with_headers_fn = self.create_function(
+            |lua,
+             (_self, status_code, headers, event_producer, retry_ms): (
+                Table,
+                u16,
+                Table,
+                mlua::Function,
+                Option<u32>,
+            )| {
+                let mut response_headers = std::collections::HashMap::new();
+                for pair in headers.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    response_headers.insert(key, value);
+                }
+
+                let producer_key = lua.create_registry_value(event_producer)?;
+                Ok(SseResponse::new(
+                    status_code,
+                    Some(response_headers),
+                    Arc::new(producer_key),
+                    retry_ms,
+                ))
+            },
+        )?;
+        sse_helper.set("with_headers", sse_with_headers_fn)?;
+
+        let sse_meta = self.create_table()?;
+        sse_meta.set("__call", sse_call)?;
+        let _ = sse_helper.set_metatable(Some(sse_meta));
+        server.set("sse", sse_helper)?;
+
         Ok(server)
     }
 }
@@ -388,6 +871,25 @@ impl Server for Table {
 
         let runtime = lua.app_data_ref::<SharedSignalRuntime>().map(|r| r.clone());
         let scheduler = lua.app_data_ref::<SharedScheduler>().map(|s| s.clone());
+        let idempotency_store = match config.idempotency.backend {
+            StoreBackendType::InMemory => SharedStore::memory(),
+            StoreBackendType::Sqlite => {
+                let path =
+                    config.idempotency.sqlite_path.as_deref().ok_or_else(|| {
+                        anyhow!("idempotency backend 'sqlite' requires sqlite_path")
+                    })?;
+                SharedStore::sqlite(path).map_err(|e| {
+                    anyhow!(
+                        "failed to initialize idempotency sqlite store at '{}': {}",
+                        path,
+                        e
+                    )
+                })?
+            }
+        };
+        let idempotency_store_context = IdempotencyStoreContext {
+            store: idempotency_store.namespace_strict("idempotency"),
+        };
 
         let server_lua = lua.clone();
         if let Some(runtime) = runtime {
@@ -396,14 +898,192 @@ impl Server for Table {
         if let Some(scheduler) = scheduler {
             server_lua.set_app_data(scheduler);
         }
+        server_lua.set_app_data(idempotency_store_context);
 
         rover_server::run(server_lua, routes, config, openapi_spec);
         Ok(())
     }
 
     fn get_routes(&self, lua: &Lua) -> Result<RouteTable> {
-        // Collect global middlewares first
-        let global_middlewares = crate::middleware::collect_global_middlewares(lua, self)?;
+        fn create_static_mount_handler(
+            lua: &Lua,
+            mount_dir: PathBuf,
+            mount_param_name: String,
+            cache_control: Option<String>,
+        ) -> Result<mlua::Function> {
+            let handler = lua.create_function(move |lua, ctx: Value| {
+                let (params_table, headers_table): (Table, Table) = match ctx {
+                    Value::UserData(ud) => {
+                        let params: Table = ud.call_method("params", ())?;
+                        let headers: Table = ud.call_method("headers", ())?;
+                        (params, headers)
+                    }
+                    Value::Table(t) => {
+                        let params_fn: mlua::Function = t.get("params")?;
+                        let headers_fn: mlua::Function = t.get("headers")?;
+                        let params: Table = params_fn.call(())?;
+                        let headers: Table = headers_fn.call(())?;
+                        (params, headers)
+                    }
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "static mount handler expected request context, got {:?}",
+                            other
+                        )));
+                    }
+                };
+
+                let mounted_path = params_table
+                    .get::<Option<String>>(mount_param_name.as_str())?
+                    .unwrap_or_default();
+
+                let mut request_headers = HashMap::new();
+                for pair in headers_table.pairs::<String, String>() {
+                    let (key, value) = pair?;
+                    request_headers.insert(key, value);
+                }
+
+                let request_headers_ref = if request_headers.is_empty() {
+                    None
+                } else {
+                    Some(&request_headers)
+                };
+
+                let custom_headers = cache_control.as_ref().map(|cache| {
+                    let mut headers = HashMap::new();
+                    headers.insert("Cache-Control".to_string(), cache.clone());
+                    headers
+                });
+
+                let response = rover_server::serve_static_file(
+                    mount_dir.as_path(),
+                    &mounted_path,
+                    request_headers_ref,
+                    custom_headers,
+                );
+
+                lua.create_userdata(response).map(Value::UserData)
+            })?;
+
+            Ok(handler)
+        }
+
+        fn extract_static_mount_route(
+            lua: &Lua,
+            table: &Table,
+            current_path: &str,
+            routes: &mut Vec<Route>,
+        ) -> Result<()> {
+            let mount_config = match table.raw_get::<Value>("__rover_static_mount")? {
+                Value::Table(config) => config,
+                Value::Nil => return Ok(()),
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid static mount at '{}': expected table config",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+            };
+
+            let mount_dir = match mount_config.get::<Value>("dir")? {
+                Value::String(s) => s.to_str()?.trim().to_string(),
+                Value::Nil => {
+                    return Err(anyhow!(
+                        "Missing 'dir' in static mount at '{}'",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid 'dir' in static mount at '{}': expected string",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+            };
+
+            if mount_dir.is_empty() {
+                return Err(anyhow!(
+                    "Invalid static mount at '{}': 'dir' cannot be empty",
+                    if current_path.is_empty() {
+                        "/"
+                    } else {
+                        current_path
+                    }
+                ));
+            }
+
+            let mount_base = if current_path.is_empty() {
+                "/"
+            } else {
+                current_path
+            };
+            let cache_control = match mount_config.get::<Value>("cache")? {
+                Value::Nil => None,
+                Value::String(s) => {
+                    let value = s.to_str()?.trim().to_string();
+                    if value.is_empty() {
+                        return Err(anyhow!(
+                            "Invalid 'cache' in static mount at '{}': value cannot be empty",
+                            if current_path.is_empty() {
+                                "/"
+                            } else {
+                                current_path
+                            }
+                        ));
+                    }
+                    Some(value)
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid 'cache' in static mount at '{}': expected string",
+                        if current_path.is_empty() {
+                            "/"
+                        } else {
+                            current_path
+                        }
+                    ));
+                }
+            };
+            let mount_param_name = "__rover_mount_path".to_string();
+            let pattern = if mount_base == "/" {
+                format!("/{{*{}}}", mount_param_name)
+            } else {
+                format!(
+                    "{}/{{*{}}}",
+                    mount_base.trim_end_matches('/'),
+                    mount_param_name
+                )
+            };
+            let handler = create_static_mount_handler(
+                lua,
+                PathBuf::from(mount_dir),
+                mount_param_name.clone(),
+                cache_control,
+            )?;
+
+            routes.push(Route {
+                method: HttpMethod::Get,
+                pattern: Bytes::from(pattern),
+                param_names: vec![mount_param_name],
+                handler,
+                is_static: false,
+                middlewares: MiddlewareChain::default(),
+            });
+
+            Ok(())
+        }
 
         fn extract_recursive(
             lua: &Lua,
@@ -412,8 +1092,16 @@ impl Server for Table {
             param_names: &mut Vec<String>,
             routes: &mut Vec<Route>,
             ws_routes: &mut Vec<WsRoute>,
-            global_middlewares: &crate::middleware::MiddlewareChain,
+            inherited_middlewares: &crate::middleware::MiddlewareChain,
         ) -> Result<()> {
+            let local_middlewares = crate::middleware::extract_middlewares(lua, table)?;
+            let scope_middlewares = crate::middleware::merge_middleware_chains(
+                inherited_middlewares,
+                &local_middlewares,
+            );
+
+            extract_static_mount_route(lua, table, current_path, routes)?;
+
             for pair in table.pairs::<Value, Value>() {
                 let (key, value) = pair?;
 
@@ -432,6 +1120,10 @@ impl Server for Table {
                         || key_str_val == "error"
                         || key_str_val == "no_content"
                         || key_str_val == "raw"
+                        || key_str_val == "stream"
+                        || key_str_val == "stream_with_headers"
+                        || key_str_val == "sse"
+                        || key_str_val == "idempotent"
                         || (is_root
                             && (key_str_val == "before"
                                 || key_str_val == "after"
@@ -444,6 +1136,10 @@ impl Server for Table {
                 match (key, value) {
                     (Value::String(key_str), Value::Function(func)) => {
                         let key_string = key_str.to_str()?.to_string();
+
+                        if key_string == "static" {
+                            continue;
+                        }
 
                         let path = if current_path.is_empty() {
                             "/"
@@ -467,18 +1163,11 @@ impl Server for Table {
                             )
                         })?;
 
-                        // Extract route-specific middlewares and merge with global
-                        let route_middlewares = crate::middleware::extract_middlewares(lua, table)?;
-                        let merged_middlewares = crate::middleware::merge_middleware_chains(
-                            global_middlewares,
-                            &route_middlewares,
-                        );
-
                         // Create wrapped handler that executes middleware chain
-                        let wrapped_handler = if merged_middlewares.is_empty() {
+                        let wrapped_handler = if scope_middlewares.is_empty() {
                             func.clone()
                         } else {
-                            create_middleware_wrapper(lua, &func, &merged_middlewares)?
+                            create_middleware_wrapper(lua, &func, &scope_middlewares)?
                         };
 
                         let route = Route {
@@ -531,7 +1220,7 @@ impl Server for Table {
                             param_names,
                             routes,
                             ws_routes,
-                            global_middlewares,
+                            &scope_middlewares,
                         )?;
 
                         // Remove param name after recursion
@@ -679,6 +1368,7 @@ impl Server for Table {
         let mut routes = Vec::new();
         let mut ws_routes = Vec::new();
         let mut param_names = Vec::new();
+        let root_middlewares = MiddlewareChain::default();
         extract_recursive(
             lua,
             self,
@@ -686,7 +1376,7 @@ impl Server for Table {
             &mut param_names,
             &mut routes,
             &mut ws_routes,
-            &global_middlewares,
+            &root_middlewares,
         )?;
 
         // Sort routes: static routes first (for exact-match priority)
@@ -708,5 +1398,1022 @@ impl Server for Table {
             ws_routes,
             error_handler,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppServer, Server};
+    use mlua::{Lua, Table, Value};
+    use rover_server::{HttpMethod, RoverResponse, SseResponse};
+    use std::fs;
+    use std::thread::sleep;
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    fn create_ctx(lua: &Lua, headers: &[(&str, &str)]) -> mlua::Result<Table> {
+        let ctx = lua.create_table()?;
+        let state = lua.create_table()?;
+        let headers_table = lua.create_table()?;
+
+        for (k, v) in headers {
+            headers_table.set(*k, *v)?;
+        }
+
+        let headers_clone = headers_table.clone();
+        ctx.set(
+            "headers",
+            lua.create_function(move |_lua, _self: Table| Ok(headers_clone.clone()))?,
+        )?;
+
+        let state_set = state.clone();
+        ctx.set(
+            "set",
+            lua.create_function(move |_lua, (_self, key, value): (Table, String, Value)| {
+                state_set.set(key, value)?;
+                Ok(())
+            })?,
+        )?;
+
+        let state_get = state.clone();
+        ctx.set(
+            "get",
+            lua.create_function(move |_lua, (_self, key): (Table, String)| {
+                state_get.get::<Value>(key)
+            })?,
+        )?;
+
+        Ok(ctx)
+    }
+
+    fn create_ctx_with_body(
+        lua: &Lua,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> mlua::Result<Table> {
+        let ctx = create_ctx(lua, headers)?;
+        let body_text = body.to_string();
+        ctx.set(
+            "body",
+            lua.create_function(move |lua, _self: Table| {
+                let body_ud = lua.create_table()?;
+                let text = body_text.clone();
+                body_ud.set(
+                    "as_string",
+                    lua.create_function(move |_lua, _inner: Table| Ok(text.clone()))?,
+                )?;
+                Ok(body_ud)
+            })?,
+        )?;
+        Ok(ctx)
+    }
+
+    fn parse_response(value: Value) -> (u16, String) {
+        let response_ud = value
+            .as_userdata()
+            .expect("middleware wrapper must return RoverResponse userdata");
+        let response = response_ud
+            .borrow::<RoverResponse>()
+            .expect("response userdata must be RoverResponse");
+        let body = std::str::from_utf8(&response.body)
+            .expect("response body must be utf-8")
+            .to_string();
+        (response.status, body)
+    }
+
+    fn parse_response_headers(value: Value) -> Option<std::collections::HashMap<String, String>> {
+        let response_ud = value
+            .as_userdata()
+            .expect("route must return RoverResponse userdata");
+        let response = response_ud
+            .borrow::<RoverResponse>()
+            .expect("response userdata must be RoverResponse");
+        response.headers.clone()
+    }
+
+    #[test]
+    fn should_support_single_static_mount() {
+        let temp = tempdir().expect("create temp dir");
+        let static_dir = temp.path().join("public");
+        fs::create_dir_all(&static_dir).expect("create static dir");
+        fs::write(static_dir.join("app.js"), "console.log('ok');").expect("write static file");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = static_dir
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            api.assets.static {{ dir = "{}" }}
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua.load(&script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/assets/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "app.js")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+        let (status, body) = parse_response(value);
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "console.log('ok');");
+    }
+
+    #[test]
+    fn should_support_multiple_static_mounts() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            api.assets.static { dir = "public" }
+            api.uploads.static { dir = "uploads" }
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+
+        let patterns: Vec<String> = routes
+            .routes
+            .iter()
+            .filter(|r| r.method == HttpMethod::Get)
+            .map(|r| std::str::from_utf8(r.pattern.as_ref()).unwrap().to_string())
+            .collect();
+
+        assert!(patterns.contains(&"/assets/{*__rover_mount_path}".to_string()));
+        assert!(patterns.contains(&"/uploads/{*__rover_mount_path}".to_string()));
+    }
+
+    #[test]
+    fn should_map_static_cache_option_to_cache_control_header() {
+        let temp = tempdir().expect("create temp dir");
+        let static_dir = temp.path().join("public");
+        fs::create_dir_all(&static_dir).expect("create static dir");
+        fs::write(static_dir.join("app.js"), "console.log('ok');").expect("write static file");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = static_dir
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            api.assets.static {{ dir = "{}", cache = "public, max-age=60" }}
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua.load(&script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/assets/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "app.js")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+        let headers = parse_response_headers(value).expect("response headers");
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"public, max-age=60".to_string())
+        );
+    }
+
+    #[test]
+    fn should_apply_group_middlewares_to_nested_routes() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            function api.before.global(ctx)
+              ctx:set("request_scope", "global")
+            end
+
+            function api.admin.before.authn(ctx)
+              if not ctx:headers().Authorization then
+                return api:error(401, "Unauthorized: missing Authorization header")
+              end
+              ctx:set("role", "admin")
+            end
+
+            function api.admin.users.get(ctx)
+              return api.json {
+                scope = ctx:get("request_scope"),
+                role = ctx:get("role"),
+              }
+            end
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/admin/users")
+            })
+            .expect("route /admin/users must exist");
+
+        let missing_auth_ctx = create_ctx(&lua, &[]).expect("create ctx without auth");
+        let deny = route
+            .handler
+            .call::<Value>(missing_auth_ctx)
+            .expect("call route without auth");
+        let (deny_status, deny_body) = parse_response(deny);
+        assert_eq!(deny_status, 401);
+        assert!(deny_body.contains("Unauthorized: missing Authorization header"));
+
+        let allowed_ctx =
+            create_ctx(&lua, &[("Authorization", "Bearer test")]).expect("create ctx with auth");
+        let ok = route
+            .handler
+            .call::<Value>(allowed_ctx)
+            .expect("call route with auth");
+        let (ok_status, ok_body) = parse_response(ok);
+        assert_eq!(ok_status, 200);
+        assert!(ok_body.contains("\"scope\":\"global\""));
+        assert!(ok_body.contains("\"role\":\"admin\""));
+    }
+
+    #[test]
+    fn should_build_sse_response_from_helper() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            function api.events.get(ctx)
+              return api.sse(function()
+                return {
+                  event = "tick",
+                  data = { ok = true },
+                }
+              end, 1500)
+            end
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/events")
+            })
+            .expect("route /events must exist");
+
+        let ctx = create_ctx(&lua, &[]).expect("create ctx");
+        let value = route.handler.call::<Value>(ctx).expect("call SSE route");
+        let sse = value
+            .as_userdata()
+            .expect("SSE helper must return userdata")
+            .borrow::<SseResponse>()
+            .expect("userdata must be SseResponse");
+
+        assert_eq!(sse.status, 200);
+        assert_eq!(sse.retry_ms, Some(1500));
+    }
+
+    #[test]
+    fn should_support_rover_docs_static_assets_example_dsl() {
+        let temp = tempdir().expect("create temp dir");
+        let assets_dir = temp.path().join("public/assets");
+        fs::create_dir_all(&assets_dir).expect("create assets dir");
+        fs::write(assets_dir.join("site.css"), "body { color: blue; }").expect("write css");
+        fs::write(assets_dir.join("app.js"), "console.log('ok');").expect("write js");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = assets_dir
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("public/assets")
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            
+            -- Static mount with cache settings (as used in rover-docs example)
+            api.assets.static {{
+                dir = "{}",
+                cache = "public, max-age=31536000, immutable"
+            }}
+            
+            -- Route precedence: API over static
+            function api.assets.health.get(ctx)
+                return {{
+                    status = "healthy",
+                    timestamp = os.time()
+                }}
+            end
+            
+            -- Dynamic route also takes precedence
+            function api.assets.p_id.get(ctx)
+                return {{
+                    file_id = ctx:params().id,
+                    requested_path = ctx.path
+                }}
+            end
+            
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua
+            .load(&script)
+            .eval()
+            .expect("load static-assets example app");
+        let routes = app.get_routes(&lua).expect("get routes");
+
+        // Should have static mount route
+        let static_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/assets/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        // Should have API routes that take precedence
+        let _health_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/assets/health")
+            })
+            .expect("health route must exist");
+
+        let _dynamic_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/assets/{id}")
+            })
+            .expect("dynamic route must exist");
+
+        // Test static file serving
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "site.css")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = static_route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+
+        let (status, body) = parse_response(value.clone());
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "body { color: blue; }");
+
+        let headers = parse_response_headers(value).expect("headers must exist");
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"public, max-age=31536000, immutable".to_string())
+        );
+        assert!(headers.contains_key("ETag"));
+    }
+
+    #[test]
+    fn should_support_rover_docs_uploads_demo_dsl() {
+        let temp = tempdir().expect("create temp dir");
+        let uploads_dir = temp.path().join("uploads");
+        fs::create_dir_all(&uploads_dir).expect("create uploads dir");
+
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let dir_lua = uploads_dir
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+
+        let script = format!(
+            r#"
+            local api = rover.server {{}}
+            
+            -- Static mount for uploaded files (no cache)
+            api.uploads.static {{
+                dir = "{}",
+                cache = "private, max-age=0, must-revalidate"
+            }}
+            
+            -- File metadata endpoint (takes precedence over static)
+            function api.uploads.p_filename.get(ctx)
+                local filename = ctx:params().filename:gsub("[\\\\/]", "_")
+                return {{
+                    filename = filename,
+                    requested = true
+                }}
+            end
+            
+            -- File delete endpoint
+            function api.uploads.p_filename.delete(ctx)
+                return api.json:status(200, {{ message = "deleted" }})
+            end
+            
+            return api
+        "#,
+            dir_lua
+        );
+
+        let app: Table = lua
+            .load(&script)
+            .eval()
+            .expect("load uploads-demo example app");
+        let routes = app.get_routes(&lua).expect("get routes");
+
+        // Should have static mount route
+        let static_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok()
+                        == Some("/uploads/{*__rover_mount_path}")
+            })
+            .expect("static mount route must exist");
+
+        // Should have GET metadata route (takes precedence over static)
+        let meta_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Get
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/uploads/{filename}")
+            })
+            .expect("metadata route must exist");
+
+        // Should have DELETE route
+        let delete_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Delete
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/uploads/{filename}")
+            })
+            .expect("delete route must exist");
+
+        // Create a test file for static serving test
+        fs::write(uploads_dir.join("test.txt"), "test content").expect("write test file");
+
+        // Test static mount serves file with correct cache headers
+        let ctx = lua.create_table().expect("create ctx table");
+        let params = lua.create_table().expect("create params");
+        params
+            .set("__rover_mount_path", "test.txt")
+            .expect("set path param");
+        ctx.set(
+            "params",
+            lua.create_function(move |_lua, ()| Ok(params.clone()))
+                .expect("create params fn"),
+        )
+        .expect("set params fn");
+        ctx.set(
+            "headers",
+            lua.create_function(|lua, ()| lua.create_table())
+                .expect("create headers fn"),
+        )
+        .expect("set headers fn");
+
+        let value = static_route
+            .handler
+            .call::<Value>(Value::Table(ctx))
+            .expect("call static mount route");
+
+        let headers = parse_response_headers(value).expect("headers must exist");
+        assert_eq!(
+            headers.get("Cache-Control"),
+            Some(&"private, max-age=0, must-revalidate".to_string())
+        );
+
+        // Verify both routes exist and have correct methods
+        assert_eq!(meta_route.method, HttpMethod::Get);
+        assert_eq!(delete_route.method, HttpMethod::Delete);
+    }
+
+    #[test]
+    fn should_replay_response_for_duplicate_idempotency_key() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local counter = 0
+
+            api.orders.post = api.idempotent(function(ctx)
+                counter = counter + 1
+                return api.json { counter = counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first_ctx = create_ctx(&lua, &[("Idempotency-Key", "abc-123")]).expect("first ctx");
+        let first = route
+            .handler
+            .call::<Value>(Value::Table(first_ctx))
+            .expect("first call");
+        let (_, first_body) = parse_response(first);
+
+        let second_ctx = create_ctx(&lua, &[("Idempotency-Key", "abc-123")]).expect("second ctx");
+        let second = route
+            .handler
+            .call::<Value>(Value::Table(second_ctx))
+            .expect("second call");
+        let (_, second_body) = parse_response(second);
+
+        assert_eq!(first_body, "{\"counter\":1}");
+        assert_eq!(second_body, "{\"counter\":1}");
+    }
+
+    #[test]
+    fn should_replay_plain_table_response_for_duplicate_idempotency_key() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local counter = 0
+
+            api.orders.post = api.idempotent(function(ctx)
+                counter = counter + 1
+                return { counter = counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "plain-table-1")]).expect("first ctx"),
+            ))
+            .expect("first call");
+        let (_, first_body) = parse_response(first);
+
+        let second = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "plain-table-1")]).expect("second ctx"),
+            ))
+            .expect("second call");
+        let (_, second_body) = parse_response(second);
+
+        assert_eq!(first_body, "{\"counter\":1}");
+        assert_eq!(second_body, "{\"counter\":1}");
+    }
+
+    #[test]
+    fn should_reject_reused_key_with_different_payload() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            api.orders.post = api.idempotent(function(ctx)
+                return api.json { ok = true }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first_ctx = create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-1")], "{\"a\":1}")
+            .expect("first ctx");
+        route
+            .handler
+            .call::<Value>(Value::Table(first_ctx))
+            .expect("first call");
+
+        let second_ctx = create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-1")], "{\"a\":2}")
+            .expect("second ctx");
+        let conflict = route
+            .handler
+            .call::<Value>(Value::Table(second_ctx))
+            .expect("second call");
+        let (status, body) = parse_response(conflict);
+
+        assert_eq!(status, 409);
+        assert!(body.contains("Idempotency key already used with different payload"));
+    }
+
+    #[test]
+    fn should_reject_reused_key_with_different_method() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+
+            api.orders.post = api.idempotent(function(ctx)
+                return api.json { ok = true }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first_ctx =
+            create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-method")], "{\"a\":1}")
+                .expect("first ctx");
+        first_ctx.set("method", "POST").expect("set first method");
+        route
+            .handler
+            .call::<Value>(Value::Table(first_ctx))
+            .expect("first call");
+
+        let second_ctx =
+            create_ctx_with_body(&lua, &[("Idempotency-Key", "reuse-method")], "{\"a\":1}")
+                .expect("second ctx");
+        second_ctx.set("method", "PUT").expect("set second method");
+        let conflict = route
+            .handler
+            .call::<Value>(Value::Table(second_ctx))
+            .expect("second call");
+        let (status, body) = parse_response(conflict);
+
+        assert_eq!(status, 409);
+        assert!(body.contains("Idempotency key already used with different payload"));
+    }
+
+    #[test]
+    fn should_honor_custom_idempotency_header_per_route() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local orders_counter = 0
+            local payments_counter = 0
+
+            api.orders.post = api.idempotent({ header = "X-Orders-Key" }, function(ctx)
+                orders_counter = orders_counter + 1
+                return api.json { counter = orders_counter }
+            end)
+
+            api.payments.post = api.idempotent({ header = "X-Payments-Key" }, function(ctx)
+                payments_counter = payments_counter + 1
+                return api.json { counter = payments_counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let orders_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+        let payments_route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/payments")
+            })
+            .expect("route /payments must exist");
+
+        let orders_first = orders_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Orders-Key", "orders-1")]).expect("orders first ctx"),
+            ))
+            .expect("orders first call");
+        let (_, orders_first_body) = parse_response(orders_first);
+
+        let orders_second = orders_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Orders-Key", "orders-1")]).expect("orders second ctx"),
+            ))
+            .expect("orders second call");
+        let (_, orders_second_body) = parse_response(orders_second);
+
+        let payments_first = payments_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Payments-Key", "payments-1")]).expect("payments first ctx"),
+            ))
+            .expect("payments first call");
+        let (_, payments_first_body) = parse_response(payments_first);
+
+        let payments_second = payments_route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("X-Payments-Key", "payments-1")]).expect("payments second ctx"),
+            ))
+            .expect("payments second call");
+        let (_, payments_second_body) = parse_response(payments_second);
+
+        assert_eq!(orders_first_body, "{\"counter\":1}");
+        assert_eq!(orders_second_body, "{\"counter\":1}");
+        assert_eq!(payments_first_body, "{\"counter\":1}");
+        assert_eq!(payments_second_body, "{\"counter\":1}");
+    }
+
+    #[test]
+    fn should_expire_idempotency_entry_with_custom_ttl() {
+        let lua = Lua::new();
+        let rover = lua.create_table().expect("create rover table");
+        rover
+            .set(
+                "server",
+                lua.create_function(|lua, opts: Table| Ok(lua.create_server(opts)?))
+                    .expect("create server fn"),
+            )
+            .expect("set rover.server");
+        lua.globals().set("rover", rover).expect("set global rover");
+
+        let script = r#"
+            local api = rover.server {}
+            local counter = 0
+
+            api.orders.post = api.idempotent({ ttl_ms = 5 }, function(ctx)
+                counter = counter + 1
+                return api.json { counter = counter }
+            end)
+
+            return api
+        "#;
+
+        let app: Table = lua.load(script).eval().expect("load app");
+        let routes = app.get_routes(&lua).expect("get routes");
+        let route = routes
+            .routes
+            .iter()
+            .find(|r| {
+                r.method == HttpMethod::Post
+                    && std::str::from_utf8(r.pattern.as_ref()).ok() == Some("/orders")
+            })
+            .expect("route /orders must exist");
+
+        let first = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "ttl-1")]).expect("first ctx"),
+            ))
+            .expect("first call");
+        let (_, first_body) = parse_response(first);
+
+        sleep(Duration::from_millis(15));
+
+        let second = route
+            .handler
+            .call::<Value>(Value::Table(
+                create_ctx(&lua, &[("Idempotency-Key", "ttl-1")]).expect("second ctx"),
+            ))
+            .expect("second call");
+        let (_, second_body) = parse_response(second);
+
+        assert_eq!(first_body, "{\"counter\":1}");
+        assert_eq!(second_body, "{\"counter\":2}");
     }
 }

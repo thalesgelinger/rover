@@ -40,7 +40,7 @@ return api
 Run it:
 
 ```bash
-./target/release/rover app.lua
+./target/release/rover run app.lua
 ```
 
 Your server is now running at `http://localhost:4242`!

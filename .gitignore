@@ -9,3 +9,5 @@ docs/.cache-loader/
 docs/.env
 
 *.sqlite
+# CocoIndex Code (ccc)
+/.cocoindex_code/

@@ -1,6 +1,8 @@
 pub mod app;
 pub mod coroutine;
 pub mod events;
+pub mod job_pool;
+pub mod jobs;
 pub mod lua;
 pub mod platform;
 pub mod scheduler;
@@ -11,6 +13,8 @@ pub mod ui;
 use std::rc::Rc;
 
 // Re-export key types
+pub use job_pool::{JobPool, SharedJobPool};
+pub use jobs::{JobManager, register_jobs_module};
 pub use lua::register_ui_module;
 pub use scheduler::SharedScheduler;
 

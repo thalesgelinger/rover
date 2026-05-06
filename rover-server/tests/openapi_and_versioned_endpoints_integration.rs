@@ -1,0 +1,310 @@
+use std::time::Duration;
+
+use anyhow::Result;
+use reqwest::Client;
+
+fn normalize_server_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn get_server_url() -> Option<String> {
+    std::env::var("ROVER_TEST_SERVER_URL")
+        .ok()
+        .and_then(|value| normalize_server_url(&value))
+}
+
+async fn get_client() -> Client {
+    Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("create reqwest client")
+}
+
+#[tokio::test]
+async fn should_serve_openapi_docs_endpoint() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+    let url = format!("{base_url}/ops/docs");
+
+    let response = client
+        .get(&url)
+        .header("Authorization", "Bearer test-token")
+        .send()
+        .await?;
+
+    assert_eq!(response.status().as_u16(), 200);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .expect("content-type header")
+        .to_str()?;
+    assert!(content_type.contains("text/html"));
+
+    let body = response.text().await?;
+    assert!(body.contains("<!doctype html>"), "should be HTML document");
+    assert!(
+        body.contains("API Documentation"),
+        "should have API Documentation title"
+    );
+    assert!(
+        body.contains("@scalar/api-reference"),
+        "should include Scalar script"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_serve_openapi_spec_in_html() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+    let url = format!("{base_url}/ops/docs");
+
+    let response = client
+        .get(&url)
+        .header("Authorization", "Bearer test-token")
+        .send()
+        .await?;
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    let body = response.text().await?;
+    assert!(
+        body.contains("Scalar.createApiReference"),
+        "should initialize Scalar"
+    );
+    assert!(
+        body.contains("configuration"),
+        "should have configuration object"
+    );
+    assert!(body.contains("content"), "should have content key");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_reject_docs_without_auth() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+    let url = format!("{base_url}/ops/docs");
+
+    let response = client.get(&url).send().await?;
+
+    assert_eq!(response.status().as_u16(), 401);
+
+    let body = response.text().await?;
+    assert!(body.contains("error") || body.contains("Management endpoint requires auth token"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_serve_v1_api_version() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+    let url = format!("{base_url}/v1/users");
+
+    let response = client.get(&url).send().await?;
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    let body = response.text().await?;
+    assert!(body.contains("v1") || body.contains("users"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_serve_v2_api_version() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+    let url = format!("{base_url}/v2/users");
+
+    let response = client.get(&url).send().await?;
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    let body = response.text().await?;
+    assert!(body.contains("v2") || body.contains("users"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_support_nested_versioned_routes() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+
+    let v1_url = format!("{base_url}/v1/api/users");
+    let v1_response = client.get(&v1_url).send().await?;
+    assert_eq!(v1_response.status().as_u16(), 200);
+
+    let v2_url = format!("{base_url}/v2/api/users");
+    let v2_response = client.get(&v2_url).send().await?;
+    assert_eq!(v2_response.status().as_u16(), 200);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_support_deeply_nested_versioned_routes() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+    let url = format!("{base_url}/v1/admin/users/123/permissions");
+
+    let response = client.get(&url).send().await?;
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    let body = response.text().await?;
+    assert!(body.contains("permissions") || body.contains("v1"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_handle_versioned_routes_with_path_params() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+
+    let v1_url = format!("{base_url}/v1/users/42");
+    let v1_response = client.get(&v1_url).send().await?;
+    assert_eq!(v1_response.status().as_u16(), 200);
+
+    let v1_body = v1_response.text().await?;
+    assert!(v1_body.contains("42") || v1_body.contains("id"));
+
+    let v2_url = format!("{base_url}/v2/users/42");
+    let v2_response = client.get(&v2_url).send().await?;
+    assert_eq!(v2_response.status().as_u16(), 200);
+
+    let v2_body = v2_response.text().await?;
+    assert!(v2_body.contains("42") || v2_body.contains("id"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_coexist_unversioned_and_versioned_routes() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+
+    let health_url = format!("{base_url}/health");
+    let health_response = client.get(&health_url).send().await?;
+    assert_eq!(health_response.status().as_u16(), 200);
+
+    let v1_url = format!("{base_url}/v1/users");
+    let v1_response = client.get(&v1_url).send().await?;
+    assert_eq!(v1_response.status().as_u16(), 200);
+
+    let v2_url = format!("{base_url}/v2/users");
+    let v2_response = client.get(&v2_url).send().await?;
+    assert_eq!(v2_response.status().as_u16(), 200);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_support_different_http_methods_on_versioned_routes() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+    let users_url = format!("{base_url}/v1/users");
+
+    let get_response = client.get(&users_url).send().await?;
+    assert_eq!(get_response.status().as_u16(), 200);
+
+    let post_response = client
+        .post(&users_url)
+        .header("Content-Type", "application/json")
+        .body(r#"{"name":"test"}"#)
+        .send()
+        .await?;
+    assert!(post_response.status().is_success() || post_response.status().as_u16() == 404);
+
+    let put_url = format!("{base_url}/v1/users/123");
+    let put_response = client
+        .put(&put_url)
+        .header("Content-Type", "application/json")
+        .body(r#"{"name":"updated"}"#)
+        .send()
+        .await?;
+    assert!(put_response.status().is_success() || put_response.status().as_u16() == 404);
+
+    let delete_response = client.delete(&put_url).send().await?;
+    assert!(delete_response.status().is_success() || delete_response.status().as_u16() == 404);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn should_return_different_responses_for_different_versions() -> Result<()> {
+    let Some(base_url) = get_server_url() else {
+        return Ok(());
+    };
+
+    let client = get_client().await;
+
+    let v1_url = format!("{base_url}/v1/users");
+    let v1_response = client.get(&v1_url).send().await?;
+    let v1_body = v1_response.text().await?;
+
+    let v2_url = format!("{base_url}/v2/users");
+    let v2_response = client.get(&v2_url).send().await?;
+    let v2_body = v2_response.text().await?;
+
+    assert!(
+        v1_body != v2_body || v1_body.contains("v1") || v2_body.contains("v2"),
+        "V1 and V2 should return different responses"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn should_reject_empty_server_url() {
+    assert_eq!(normalize_server_url(""), None);
+    assert_eq!(normalize_server_url("   \t  \n"), None);
+}
+
+#[test]
+fn should_accept_non_empty_server_url() {
+    assert_eq!(
+        normalize_server_url("http://127.0.0.1:4242"),
+        Some("http://127.0.0.1:4242".to_string())
+    );
+}

@@ -28,10 +28,8 @@ fn serialize_table(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Resu
 
     let first_key: Value = table.raw_get(1)?;
 
-    if !matches!(first_key, Value::Nil) {
-        if try_serialize_as_array(table, buf, depth).is_ok() {
-            return Ok(());
-        }
+    if !matches!(first_key, Value::Nil) && try_serialize_as_array(table, buf, depth).is_ok() {
+        return Ok(());
     }
 
     serialize_object_direct(table, buf, depth)
@@ -40,9 +38,8 @@ fn serialize_table(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Resu
 fn try_serialize_as_array(table: &Table, buf: &mut Vec<u8>, depth: usize) -> mlua::Result<()> {
     let first_key: Value = table.raw_get(1)?;
 
-    match first_key {
-        Value::Nil => return Err(mlua::Error::RuntimeError("Not an array".to_string())),
-        _ => {}
+    if let Value::Nil = first_key {
+        return Err(mlua::Error::RuntimeError("Not an array".to_string()));
     }
 
     let mut i = 1;
@@ -84,12 +81,11 @@ fn serialize_object_direct(table: &Table, buf: &mut Vec<u8>, depth: usize) -> ml
         let (key, value) = pair?;
 
         // Skip internal rover markers (performance optimization - no serialization)
-        if let Value::String(ref s) = key {
-            if let Ok(key_str) = s.to_str() {
-                if key_str.starts_with("__rover_") {
-                    continue;
-                }
-            }
+        if let Value::String(ref s) = key
+            && let Ok(key_str) = s.to_str()
+            && key_str.starts_with("__rover_")
+        {
+            continue;
         }
 
         if !first {
@@ -285,12 +281,12 @@ mod tests {
         let table = lua.create_table().unwrap();
         table.set("flag", true).unwrap();
         table.set("count", 0).unwrap();
-        table.set("ratio", 3.14).unwrap();
+        table.set("ratio", 3.15).unwrap();
 
         let json = table.to_json_string().unwrap();
         assert!(json.contains("\"flag\":true"));
         assert!(json.contains("\"count\":0"));
-        assert!(json.contains("\"ratio\":3.14"));
+        assert!(json.contains("\"ratio\":3.15"));
     }
 
     #[test]

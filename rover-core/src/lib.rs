@@ -1,5 +1,6 @@
 mod app_type;
 mod auto_table;
+pub mod cookie;
 mod env;
 mod error_reporter;
 pub mod guard;
@@ -7,7 +8,10 @@ pub mod html;
 pub mod http;
 pub mod io;
 pub mod middleware;
+pub mod permissions;
+pub mod security;
 pub mod server;
+pub mod session;
 pub mod template;
 pub mod ws_client;
 
@@ -15,6 +19,7 @@ use env::{create_config_module, create_env_module, load_dotenv};
 use html::create_html_module;
 use http::create_http_module;
 use io::create_io_module;
+use permissions::PermissionsConfig;
 use rover_auth::create_auth_module;
 use rover_db::create_db_module;
 use rover_ui::platform::{
@@ -75,6 +80,10 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     // Initialize UI runtime config with TUI as default (needed for server/scripts)
     let runtime_config = UiRuntimeConfig::new(UiTarget::Tui);
     lua.set_app_data(runtime_config);
+
+    // Initialize permissions config with defaults
+    let permissions_config = PermissionsConfig::new();
+    lua.set_app_data(permissions_config);
 
     // Initialize viewport signals with defaults
     let viewport_signals = ViewportSignals {
@@ -152,9 +161,17 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
     let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
 
+    // Add rover.cookie module
+    let cookie_module = cookie::create_cookie_module(&lua)?;
+    rover.set("cookie", cookie_module)?;
+
     // Add rover.auth JWT module
     let auth_module = create_auth_module(&lua)?;
     rover.set("auth", auth_module)?;
+
+    // Add rover.session module
+    let session_module = session::create_session_module(&lua)?;
+    rover.set("session", session_module)?;
 
     // Override global io module with async version
     let io_module = io::create_io_module(&lua)?;
@@ -260,8 +277,12 @@ pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     rover.set("env", env_module)?;
 
     // Add rover.config module for loading config files
-    let config_module = create_config_module(lua)?;
+    let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
+
+    // Add rover.cookie module
+    let cookie_module = cookie::create_cookie_module(&lua)?;
+    rover.set("cookie", cookie_module)?;
 
     // Add rover.auth JWT module
     let auth_module = create_auth_module(lua)?;
@@ -469,12 +490,20 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     let config_module = create_config_module(&lua)?;
     rover.set("config", config_module)?;
 
+    // Add rover.cookie module
+    let cookie_module = cookie::create_cookie_module(&lua)?;
+    rover.set("cookie", cookie_module)?;
+
     // Add rover.auth JWT module
     let auth_module = create_auth_module(&lua)?;
     rover.set("auth", auth_module)?;
 
-    // Override global io module
-    let io_module = io::create_io_module(&lua)?;
+    // Add rover.session module
+    let session_module = session::create_session_module(&lua)?;
+    rover.set("session", session_module)?;
+
+    // Override global io module with async version
+    let io_module = create_io_module(&lua)?;
     lua.globals().set("io", io_module)?;
 
     // Load debug module

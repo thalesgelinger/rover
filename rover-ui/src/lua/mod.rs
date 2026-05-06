@@ -4,13 +4,14 @@ pub mod helpers;
 pub mod metamethods;
 pub mod signal;
 pub mod utils;
+use crate::jobs;
 use crate::task;
 
-use crate::platform::UiTarget;
-use crate::platform::ViewportSignals;
+use crate::platform::{UiCapability, ViewportSignals};
 use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
 use mlua::{Function, Lua, Result, Table, UserData, Value};
+use rover_types::{AuthReason, DeniedError};
 use signal::LuaSignal;
 
 /// Marker for delayed coroutine execution
@@ -92,13 +93,12 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     // Register task module (rover.task(fn), rover.task.cancel(), etc.)
     task::register_task_module(lua, rover_table)?;
 
-    // rover.spawn(fn) - create and start a background task immediately
-    let spawn_fn = lua.create_function(|lua, func: Function| {
-        let task_ud = task::create_task(lua, func)?;
-        task::start_task(lua, &task_ud)?;
-        Ok(task_ud)
-    })?;
-    rover_table.set("spawn", spawn_fn)?;
+    // Get scheduler for jobs module
+    let scheduler = crate::lua::helpers::get_scheduler(lua)?;
+
+    // Register jobs module with bounded concurrency support
+    // This provides: rover.jobs, rover.job, rover.spawn
+    jobs::register_jobs_module(lua, rover_table, scheduler.clone())?;
 
     // rover.interval(ms, fn) - run fn immediately, then every ms
     let interval_fn = lua.create_function(|lua, (delay_ms, callback): (u64, Function)| {
@@ -119,9 +119,19 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
             .eval()?;
 
         let interval_task_fn: Function = interval_factory.call((delay_ms, callback))?;
-        let task_ud = task::create_task(lua, interval_task_fn)?;
-        task::start_task(lua, &task_ud)?;
-        Ok(task_ud)
+
+        // Use the jobs system for bounded concurrency via the global rover table
+        let rover_table: Table = lua.globals().get("rover")?;
+        let job_ud = if let Ok(jobs_fn) = rover_table.get::<Function>("job") {
+            jobs_fn.call(interval_task_fn)?
+        } else {
+            // Fallback to old task system if jobs not available
+            let task_ud = task::create_task(lua, interval_task_fn)?;
+            task::start_task(lua, &task_ud)?;
+            task_ud
+        };
+
+        Ok(job_ud)
     })?;
     rover_table.set("interval", interval_fn)?;
 
@@ -167,7 +177,7 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
     lua.globals().set("_rover_ui_create_mod", create_mod)?;
     rover_table.set("ui", lua_ui)?;
 
-    if crate::lua::helpers::get_target(lua)? == UiTarget::Tui {
+    if crate::lua::helpers::has_capability(lua, UiCapability::TuiNamespace)? {
         let tui_module = create_tui_module(lua)?;
         rover_table.set("tui", tui_module)?;
     }
@@ -184,11 +194,11 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
         "rover.tui",
         lua.create_function(|lua, _name: Value| {
             let target = crate::lua::helpers::get_target(lua)?;
-            if target != UiTarget::Tui {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "require(\"rover.tui\") requires target=tui, got {}",
-                    target.as_str()
-                )));
+            if !crate::lua::helpers::has_capability(lua, UiCapability::TuiNamespace)? {
+                let err =
+                    DeniedError::capability(UiCapability::TuiNamespace.as_str(), target.as_str());
+                err.emit();
+                return Err(mlua::Error::RuntimeError(err.user_message()));
             }
 
             let rover_table: Table = lua.globals().get("rover")?;
@@ -210,4 +220,141 @@ fn create_tui_module(lua: &Lua) -> Result<Table> {
     lua.load(include_str!("tui/module.lua"))
         .set_name("rover_tui_module.lua")
         .eval()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::register_ui_module;
+    use crate::platform::{
+        DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiCapability, UiRuntimeConfig, UiTarget,
+        ViewportSignals,
+    };
+    use crate::scheduler::{Scheduler, SharedScheduler};
+    use crate::signal::{SignalRuntime, SignalValue};
+    use crate::ui::registry::UiRegistry;
+    use mlua::{Lua, Value};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn setup_lua(runtime_config: UiRuntimeConfig) -> Lua {
+        let lua = Lua::new();
+        let runtime = Rc::new(SignalRuntime::new());
+        let registry = Rc::new(RefCell::new(UiRegistry::new()));
+        let scheduler: SharedScheduler = Rc::new(RefCell::new(Scheduler::new()));
+        let viewport_signals = ViewportSignals {
+            width: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_WIDTH as i64)),
+            height: runtime.create_signal(SignalValue::Int(DEFAULT_VIEWPORT_HEIGHT as i64)),
+        };
+
+        lua.set_app_data(runtime);
+        lua.set_app_data(registry);
+        lua.set_app_data(scheduler);
+        lua.set_app_data(runtime_config);
+        lua.set_app_data(viewport_signals);
+
+        let rover = lua.create_table().expect("create rover table");
+        register_ui_module(&lua, &rover).expect("register ui module");
+        lua.globals().set("rover", rover).expect("set global rover");
+        lua
+    }
+
+    #[test]
+    fn should_deny_tui_namespace_on_web_by_default() {
+        let lua = setup_lua(UiRuntimeConfig::new(UiTarget::Web));
+
+        let (ok, err): (bool, String) = lua
+            .load(
+                r#"
+                local ok, err = pcall(function()
+                    require("rover.tui")
+                end)
+                return ok, tostring(err)
+            "#,
+            )
+            .eval()
+            .expect("lua eval");
+
+        assert!(!ok);
+        assert!(err.contains("denied by capability policy"));
+    }
+
+    #[test]
+    fn should_allow_tui_namespace_when_explicitly_allowed() {
+        let config =
+            UiRuntimeConfig::new(UiTarget::Web).allow_capability(UiCapability::TuiNamespace);
+        let lua = setup_lua(config);
+
+        let module_type: String = lua
+            .load(
+                r#"
+                local mod = require("rover.tui")
+                return type(mod)
+            "#,
+            )
+            .eval()
+            .expect("lua eval");
+
+        assert_eq!(module_type, "table");
+    }
+
+    #[test]
+    fn should_deny_tui_namespace_when_explicitly_denied_on_tui_target() {
+        let config =
+            UiRuntimeConfig::new(UiTarget::Tui).deny_capability(UiCapability::TuiNamespace);
+        let lua = setup_lua(config);
+
+        let tui_global_is_nil: bool = lua
+            .load("return rover.tui == nil")
+            .eval()
+            .expect("lua eval");
+        assert!(tui_global_is_nil);
+
+        let result: Value = lua
+            .load(
+                r#"
+                local ok, err = pcall(function()
+                    require("rover.tui")
+                end)
+                if ok then
+                    return true
+                end
+                return tostring(err)
+            "#,
+            )
+            .eval()
+            .expect("lua eval");
+
+        match result {
+            Value::Boolean(ok) => assert!(!ok),
+            Value::String(err) => assert!(
+                err.to_str()
+                    .expect("err str")
+                    .contains("denied by capability policy")
+            ),
+            _ => panic!("unexpected result"),
+        }
+    }
+
+    #[test]
+    fn should_prioritize_deny_over_allow() {
+        let config = UiRuntimeConfig::new(UiTarget::Tui)
+            .allow_capability(UiCapability::TuiNamespace)
+            .deny_capability(UiCapability::TuiNamespace);
+        let lua = setup_lua(config);
+
+        let (ok, err): (bool, String) = lua
+            .load(
+                r#"
+                local ok, err = pcall(function()
+                    require("rover.tui")
+                end)
+                return ok, tostring(err)
+            "#,
+            )
+            .eval()
+            .expect("lua eval");
+
+        assert!(!ok);
+        assert!(err.contains("denied by capability policy"));
+    }
 }

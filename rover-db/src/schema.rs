@@ -217,7 +217,10 @@ mod tests {
     #[test]
     fn test_infer_sql_type() {
         assert_eq!(infer_sql_type(&LuaValue::Integer(42)), "INTEGER");
-        assert_eq!(infer_sql_type(&LuaValue::Number(3.14)), "REAL");
+        assert_eq!(
+            infer_sql_type(&LuaValue::Number(std::f64::consts::PI)),
+            "REAL"
+        );
         assert_eq!(infer_sql_type(&LuaValue::Boolean(true)), "INTEGER");
     }
 

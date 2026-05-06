@@ -534,7 +534,7 @@ mod tests {
             .unwrap();
 
         assert!(!ok);
-        assert!(err.contains("require(\"rover.tui\") requires target=tui"));
+        assert!(err.contains("denied by capability policy"));
 
         let is_nil: bool = app.lua.load("return rover.tui == nil").eval().unwrap();
         assert!(is_nil);

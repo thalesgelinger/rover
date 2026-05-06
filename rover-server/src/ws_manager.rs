@@ -53,6 +53,12 @@ pub struct WsManager {
     pub current_endpoint_idx: u16,
 }
 
+impl Default for WsManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WsManager {
     pub fn new() -> Self {
         let mut frame_bufs = Vec::with_capacity(FRAME_BUF_POOL_SIZE);
@@ -88,10 +94,10 @@ impl WsManager {
 
     /// Remove a WS connection from endpoint tracking.
     pub fn remove_connection(&mut self, endpoint_idx: u16, conn_idx: usize) {
-        if let Some(conns) = self.endpoint_connections.get_mut(endpoint_idx as usize) {
-            if let Some(pos) = conns.iter().position(|&c| c == conn_idx) {
-                conns.swap_remove(pos);
-            }
+        if let Some(conns) = self.endpoint_connections.get_mut(endpoint_idx as usize)
+            && let Some(pos) = conns.iter().position(|&c| c == conn_idx)
+        {
+            conns.swap_remove(pos);
         }
     }
 
@@ -117,23 +123,23 @@ impl WsManager {
 
     /// Unsubscribe a connection from a specific topic.
     pub fn unsubscribe(&mut self, conn_idx: usize, topic_idx: u16) {
-        if let Some(state) = self.topics.get_mut(topic_idx as usize) {
-            if let Some(pos) = state.members.iter().position(|&c| c == conn_idx) {
-                state.members.swap_remove(pos);
-            }
+        if let Some(state) = self.topics.get_mut(topic_idx as usize)
+            && let Some(pos) = state.members.iter().position(|&c| c == conn_idx)
+        {
+            state.members.swap_remove(pos);
         }
     }
 
     /// Unsubscribe a connection from ALL its topics. Called during disconnect.
     pub fn unsubscribe_all(&mut self, conn_idx: usize, connections: &Slab<Connection>) {
-        if let Some(conn) = connections.get(conn_idx) {
-            if let Some(ref ws) = conn.ws_data {
-                for &topic_idx in ws.subscriptions.iter() {
-                    if let Some(state) = self.topics.get_mut(topic_idx as usize) {
-                        if let Some(pos) = state.members.iter().position(|&c| c == conn_idx) {
-                            state.members.swap_remove(pos);
-                        }
-                    }
+        if let Some(conn) = connections.get(conn_idx)
+            && let Some(ref ws) = conn.ws_data
+        {
+            for &topic_idx in ws.subscriptions.iter() {
+                if let Some(state) = self.topics.get_mut(topic_idx as usize)
+                    && let Some(pos) = state.members.iter().position(|&c| c == conn_idx)
+                {
+                    state.members.swap_remove(pos);
                 }
             }
         }
@@ -339,5 +345,99 @@ mod tests {
         let mgr = WsManager::new();
         // No endpoints registered
         assert_eq!(mgr.get_endpoint_connections(99), &[] as &[usize]);
+    }
+
+    #[test]
+    fn test_subscribe_multiple_connections_same_topic() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        mgr.subscribe(1, "room:test");
+        mgr.subscribe(2, "room:test");
+        mgr.subscribe(3, "room:test");
+
+        let members = mgr.get_topic_members("room:test").unwrap();
+        assert_eq!(members, &[1, 2, 3]);
+    }
+
+    #[test]
+    fn test_subscribe_after_unsubscribe_reuses_topic_index() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        let topic_idx1 = mgr.subscribe(1, "room:test");
+
+        mgr.unsubscribe(1, topic_idx1);
+
+        let topic_idx2 = mgr.subscribe(2, "room:test");
+        assert_eq!(topic_idx1, topic_idx2);
+
+        let members = mgr.get_topic_members("room:test").unwrap();
+        assert_eq!(members, &[2]);
+    }
+
+    #[test]
+    fn test_multiple_endpoints_isolate_connections() {
+        let mut mgr = WsManager::new();
+        let lua = mlua::Lua::new();
+
+        let key1 = lua.create_registry_value(true).unwrap();
+        let _idx0 = mgr.register_endpoint(WsEndpointConfig {
+            join_handler: None,
+            leave_handler: None,
+            event_handlers: AHashMap::new(),
+            ws_table_key: key1,
+        });
+
+        let key2 = lua.create_registry_value(true).unwrap();
+        let _idx1 = mgr.register_endpoint(WsEndpointConfig {
+            join_handler: None,
+            leave_handler: None,
+            event_handlers: AHashMap::new(),
+            ws_table_key: key2,
+        });
+
+        mgr.add_connection(0, 10);
+        mgr.add_connection(0, 20);
+        mgr.add_connection(1, 30);
+
+        assert_eq!(mgr.get_endpoint_connections(0), &[10, 20]);
+        assert_eq!(mgr.get_endpoint_connections(1), &[30]);
+    }
+
+    #[test]
+    fn test_frame_buf_pool_returns_cleared_buffer() {
+        let mut mgr = WsManager::new();
+
+        let mut buf = mgr.get_frame_buf();
+        buf.extend_from_slice(b"test data");
+        mgr.return_frame_buf(buf);
+
+        let buf = mgr.frame_bufs.last().unwrap();
+        assert!(buf.is_empty(), "returned buffer should be cleared");
+    }
+
+    #[test]
+    fn test_topic_name_preserved() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        mgr.subscribe(1, "room:general");
+        mgr.subscribe(2, "room:random");
+
+        assert!(mgr.get_topic_members("room:general").is_some());
+        assert!(mgr.get_topic_members("room:random").is_some());
+        assert!(mgr.get_topic_members("room:nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_topic_members_empty_after_all_unsubscribe() {
+        let mut mgr = setup_manager_with_endpoint();
+
+        let topic_idx = mgr.subscribe(1, "room:test");
+        mgr.subscribe(2, "room:test");
+
+        mgr.unsubscribe(1, topic_idx);
+        mgr.unsubscribe(2, topic_idx);
+
+        let members = mgr.get_topic_members("room:test").unwrap();
+        assert_eq!(members.len(), 0);
     }
 }
