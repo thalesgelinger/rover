@@ -30,6 +30,7 @@ local api = rover.server {
     max_queue = 100,
   },
   drain_timeout_secs = 30,
+  http2 = false,
 }
 
 local sessions = rover.session.new {

@@ -12,23 +12,19 @@ pub mod permissions;
 pub mod security;
 pub mod server;
 pub mod session;
+mod surface;
 pub mod template;
 pub mod ws_client;
 
-use env::{create_config_module, create_env_module, load_dotenv};
-use html::create_html_module;
-use http::create_http_module;
-use io::create_io_module;
+use env::load_dotenv;
 use permissions::PermissionsConfig;
-use rover_auth::create_auth_module;
-use rover_db::create_db_module;
 use rover_ui::platform::{
     DEFAULT_VIEWPORT_HEIGHT, DEFAULT_VIEWPORT_WIDTH, UiRuntimeConfig, UiTarget, ViewportSignals,
 };
 use rover_ui::scheduler::{Scheduler, SharedScheduler};
 use rover_ui::signal::SignalValue;
-use rover_ui::{SharedSignalRuntime, SignalRuntime, register_ui_module, ui::UiRegistry};
-use server::{AppServer, Server};
+use rover_ui::{SharedSignalRuntime, SignalRuntime, ui::UiRegistry};
+use server::Server;
 use std::cell::RefCell;
 
 use anyhow::Result;
@@ -66,10 +62,7 @@ impl RuntimeBootstrap {
         set_lua_args(&lua, args, source.argv0)?;
         initialize_runtime_app_data(&lua)?;
 
-        let rover = lua.create_table()?;
-        register_server_factory(&lua, &rover)?;
-        register_core_modules(&lua, &rover)?;
-        register_ui_module(&lua, &rover)?;
+        let rover = surface::install_rover_surface(&lua)?;
         lua.globals().set("rover", rover)?;
         let _ = lua.load("_G.migration = rover.db.migration").eval::<()>();
 
@@ -117,109 +110,13 @@ fn initialize_runtime_app_data(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
-fn register_server_factory(lua: &Lua, rover: &Table) -> mlua::Result<()> {
-    rover.set(
-        "server",
-        lua.create_function(|lua, opts: Table| {
-            let server = lua.create_server(opts)?;
-            Ok(server)
-        })?,
-    )
-}
-
-fn register_core_modules(lua: &Lua, rover: &Table) -> mlua::Result<()> {
-    let guard: Table = lua
-        .load(include_str!("guard.lua"))
-        .set_name("guard.lua")
-        .eval()?;
-    let guard_meta = lua.create_table()?;
-    guard_meta.set("__index", guard.clone())?;
-    guard_meta.set(
-        "__call",
-        lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{ValidationErrors, validate_table};
-
-            let data_table = match data {
-                Value::Table(ref t) => t.clone(),
-                _ => {
-                    return Err(mlua::Error::RuntimeError(
-                        "First argument must be a table".to_string(),
-                    ));
-                }
-            };
-
-            let schema_table = match schema {
-                Value::Table(ref t) => t.clone(),
-                _ => {
-                    return Err(mlua::Error::RuntimeError(
-                        "Second argument must be a table".to_string(),
-                    ));
-                }
-            };
-
-            match validate_table(lua, &data_table, &schema_table, "") {
-                Ok(validated) => Ok(validated),
-                Err(errors) => {
-                    let validation_errors = ValidationErrors::new(errors);
-                    Err(mlua::Error::ExternalError(std::sync::Arc::new(
-                        validation_errors,
-                    )))
-                }
-            }
-        })?,
-    )?;
-    let _ = guard.set_metatable(Some(guard_meta));
-    rover.set("guard", guard)?;
-
-    let env_module = create_env_module(lua)?;
-    rover.set("env", env_module)?;
-
-    let config_module = create_config_module(lua)?;
-    rover.set("config", config_module)?;
-
-    let cookie_module = cookie::create_cookie_module(lua)?;
-    rover.set("cookie", cookie_module)?;
-
-    let auth_module = create_auth_module(lua)?;
-    rover.set("auth", auth_module)?;
-
-    let session_module = session::create_session_module(lua)?;
-    rover.set("session", session_module)?;
-
-    let io_module = io::create_io_module(lua)?;
-    lua.globals().set("io", io_module)?;
-
-    let debug_module: Table = lua
-        .load(include_str!("debug.lua"))
-        .set_name("debug.lua")
-        .eval()?;
-    lua.globals().set("debug", debug_module)?;
-
-    let http_module = http::create_http_module(lua)?;
-    rover.set("http", http_module)?;
-
-    rover.set(
-        "ws_client",
-        lua.create_function(|lua, (url, opts): (String, Option<Table>)| {
-            ws_client::create_ws_client(lua, url, opts)
-        })?,
-    )?;
-
-    let html_module = create_html_module(lua)?;
-    rover.set("html", html_module)?;
-
-    let db_module = create_db_module(lua)?;
-    rover.set("db", db_module)?;
-
-    Ok(())
-}
-
 fn evaluate_app(lua: &Lua, source: &str, source_name: &str, verbose: bool) -> Result<Value> {
     match lua.load(source).set_name(source_name).eval() {
         Ok(app) => Ok(app),
         Err(err) => {
             let error_str = err.to_string();
-            let (error_info, stack_trace) = error_reporter::parse_lua_error(&error_str, source_name);
+            let (error_info, stack_trace) =
+                error_reporter::parse_lua_error(&error_str, source_name);
 
             if verbose {
                 error_reporter::display_error_with_stack(&error_info, stack_trace.as_deref());
@@ -288,103 +185,7 @@ pub fn run(path: &str, args: &[String], verbose: bool) -> Result<()> {
 /// This is useful when using a custom renderer with rover_ui::App
 pub fn register_extra_modules(lua: &Lua) -> Result<()> {
     let rover: Table = lua.globals().get("rover")?;
-
-    // Add rover.env environment variables module
-    let env_module = create_env_module(lua)?;
-    rover.set("env", env_module)?;
-
-    // Add rover.config module for loading config files
-    let config_module = create_config_module(&lua)?;
-    rover.set("config", config_module)?;
-
-    // Add rover.cookie module
-    let cookie_module = cookie::create_cookie_module(&lua)?;
-    rover.set("cookie", cookie_module)?;
-
-    // Add rover.auth JWT module
-    let auth_module = create_auth_module(lua)?;
-    rover.set("auth", auth_module)?;
-
-    // Add HTTP client module
-    let http_module = create_http_module(lua)?;
-    rover.set("http", http_module)?;
-
-    // Add WebSocket client module
-    rover.set(
-        "ws_client",
-        lua.create_function(|lua, (url, opts): (String, Option<Table>)| {
-            ws_client::create_ws_client(lua, url, opts)
-        })?,
-    )?;
-
-    // Add rover.html global templating function
-    let html_module = create_html_module(lua)?;
-    rover.set("html", html_module)?;
-
-    // Add rover.db database module
-    let db_module = create_db_module(lua)?;
-    rover.set("db", db_module)?;
-
-    // Override global io module with async version
-    let io_module = create_io_module(lua)?;
-    lua.globals().set("io", io_module)?;
-
-    // Load debug module from embedded Lua file
-    let debug_module: Table = lua
-        .load(include_str!("debug.lua"))
-        .set_name("debug.lua")
-        .eval()?;
-    lua.globals().set("debug", debug_module)?;
-
-    // Load guard from embedded Lua file
-    let guard: Table = lua
-        .load(include_str!("guard.lua"))
-        .set_name("guard.lua")
-        .eval()?;
-
-    // Add __call metamethod for rover.guard(data, schema)
-    let guard_meta = lua.create_table()?;
-    guard_meta.set("__index", guard.clone())?;
-    guard_meta.set(
-        "__call",
-        lua.create_function(|lua, (data, schema): (Value, Value)| {
-            use crate::guard::{ValidationErrors, validate_table};
-
-            // Extract the table from data
-            let data_table = match data {
-                Value::Table(ref t) => t.clone(),
-                _ => {
-                    return Err(mlua::Error::RuntimeError(
-                        "First argument must be a table".to_string(),
-                    ));
-                }
-            };
-
-            // Extract the table from schema
-            let schema_table = match schema {
-                Value::Table(ref t) => t.clone(),
-                _ => {
-                    return Err(mlua::Error::RuntimeError(
-                        "Second argument must be a table".to_string(),
-                    ));
-                }
-            };
-
-            match validate_table(lua, &data_table, &schema_table, "") {
-                Ok(validated) => Ok(validated),
-                Err(errors) => {
-                    // Return ValidationErrors that formats nicely when converted to string
-                    let validation_errors = ValidationErrors::new(errors);
-                    Err(mlua::Error::ExternalError(std::sync::Arc::new(
-                        validation_errors,
-                    )))
-                }
-            }
-        })?,
-    )?;
-    let _ = guard.set_metatable(Some(guard_meta));
-    rover.set("guard", guard)?;
-
+    surface::install_extra_modules(lua, &rover)?;
     Ok(())
 }
 
@@ -467,5 +268,54 @@ mod tests {
         };
         let runtime = RuntimeBootstrap::new(&[], &source).unwrap();
         runtime.execute(&source, false).unwrap();
+    }
+
+    #[test]
+    fn should_install_runtime_root_and_server_surface() {
+        let lua = Lua::new();
+        initialize_runtime_app_data(&lua).unwrap();
+
+        let rover = surface::install_rover_surface(&lua).unwrap();
+        lua.globals().set("rover", rover.clone()).unwrap();
+
+        for key in [
+            "server",
+            "guard",
+            "db",
+            "http",
+            "html",
+            "session",
+            "auth",
+            "config",
+            "env",
+            "cookie",
+            "ws_client",
+            "ui",
+        ] {
+            let value = rover.get::<Value>(key).unwrap();
+            assert!(
+                !matches!(value, Value::Nil),
+                "expected rover.{} to be installed",
+                key
+            );
+        }
+
+        let script = r#"
+            local api = rover.server {}
+            assert(api.json)
+            assert(api.text)
+            assert(api.html)
+            assert(api.redirect)
+            assert(api.error)
+            assert(api.no_content)
+            assert(api.raw)
+            assert(api.stream)
+            assert(api.stream_with_headers)
+            assert(api.sse)
+            assert(api.idempotent)
+            return true
+        "#;
+        let result: bool = lua.load(script).eval().unwrap();
+        assert!(result);
     }
 }

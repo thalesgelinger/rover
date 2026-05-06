@@ -1,4 +1,6 @@
-local api = rover.server {}
+local api = rover.server {
+	http2 = false,
+}
 
 local count = 0
 
