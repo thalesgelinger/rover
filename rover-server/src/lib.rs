@@ -424,7 +424,7 @@ pub struct ServerConfig {
     pub allow_unauthenticated_management: bool,
     pub trusted_proxies: Vec<TrustedProxy>,
     pub tls: Option<TlsConfig>,
-    /// Enable HTTP/2 support (requires TLS). Default: true
+    /// Enable HTTP/2 support (requires TLS). Default: false
     ///
     /// When enabled with TLS, ALPN will advertise "h2" and "http/1.1" protocols.
     /// When disabled, ALPN will advertise only "http/1.1".
@@ -1275,7 +1275,7 @@ impl FromLua for ServerConfig {
                 };
 
                 let http2 = match config.get::<Value>("http2")? {
-                    Value::Nil => true,
+                    Value::Nil => false,
                     Value::Boolean(b) => b,
                     _ => Err(anyhow!("http2 should be a boolean"))?,
                 };
@@ -1478,15 +1478,13 @@ mod tests {
 
     #[test]
     fn should_use_secure_defaults() {
-        // Test that defaults are secure: http2 enabled requires TLS in strict mode
-        // so we expect validation to fail in this config
+        // Test that defaults are secure and startup-valid in strict mode.
+        // HTTP/2 now defaults to disabled unless explicitly enabled with TLS.
         let lua = Lua::new();
         let value: Value = lua.load("{}").eval().expect("lua eval");
-        let err = ServerConfig::from_lua(value, &lua).expect_err("must fail with secure defaults");
-        assert!(
-            err.to_string().contains("HTTP/2 requires TLS"),
-            "Expected HTTP/2 TLS requirement error"
-        );
+        let config = ServerConfig::from_lua(value, &lua).expect("secure defaults should parse");
+        assert!(!config.http2);
+        assert!(config.validate_startup().is_ok());
     }
 
     #[test]
@@ -1568,9 +1566,9 @@ mod tests {
     }
 
     #[test]
-    fn should_default_http2_enabled() {
+    fn should_default_http2_disabled() {
         let config = config_from_lua("{ strict_mode = false }");
-        assert!(config.http2);
+        assert!(!config.http2);
         assert!(config.validate_startup().is_ok());
     }
 
