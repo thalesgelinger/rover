@@ -124,32 +124,14 @@ impl Backend {
                 return;
             }
 
-            // Perform the actual analysis with type inference
-            use rover_parser::AnalyzeOptions;
-            let db_schema = load_db_schema();
-            let db_intent = analyze_db_intent(&text);
-            let mut model = analyze_with_options(
-                &text,
-                AnalyzeOptions {
-                    type_inference: true,
-                },
-            );
-            model.warnings = db_warnings_from_intent(&db_intent, &db_schema);
+            let state = analyze_document_state(text.clone());
             {
                 let mut docs = documents.write().await;
-                docs.insert(
-                    uri_clone.clone(),
-                    DocumentState {
-                        text: text.clone(),
-                        model: model.clone(),
-                        db_schema,
-                        db_intent,
-                    },
-                );
+                docs.insert(uri_clone.clone(), state.clone());
             }
 
             // Publish diagnostics
-            let diagnostics = diagnostics_from_model(&model);
+            let diagnostics = diagnostics_from_model(&state.model);
             client
                 .publish_diagnostics(uri_clone, diagnostics, None)
                 .await;
@@ -158,29 +140,12 @@ impl Backend {
 
     /// Update document immediately without debouncing (for did_open)
     async fn update_document_immediate(&self, uri: Url, text: String) {
-        use rover_parser::AnalyzeOptions;
-        let db_schema = load_db_schema();
-        let db_intent = analyze_db_intent(&text);
-        let mut model = analyze_with_options(
-            &text,
-            AnalyzeOptions {
-                type_inference: true,
-            },
-        );
-        model.warnings = db_warnings_from_intent(&db_intent, &db_schema);
+        let state = analyze_document_state(text);
         {
             let mut docs = self.documents.write().await;
-            docs.insert(
-                uri.clone(),
-                DocumentState {
-                    text: text.clone(),
-                    model: model.clone(),
-                    db_schema,
-                    db_intent,
-                },
-            );
+            docs.insert(uri.clone(), state.clone());
         }
-        self.publish_diagnostics(&uri, &model).await;
+        self.publish_diagnostics(&uri, &state.model).await;
     }
 
     async fn publish_diagnostics(&self, uri: &Url, model: &SemanticModel) {
@@ -204,6 +169,27 @@ impl Backend {
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, None)
             .await;
+    }
+}
+
+fn analyze_document_state(text: String) -> DocumentState {
+    use rover_parser::AnalyzeOptions;
+
+    let db_schema = load_db_schema();
+    let db_intent = analyze_db_intent(&text);
+    let mut model = analyze_with_options(
+        &text,
+        AnalyzeOptions {
+            type_inference: true,
+        },
+    );
+    model.warnings = db_warnings_from_intent(&db_intent, &db_schema);
+
+    DocumentState {
+        text,
+        model,
+        db_schema,
+        db_intent,
     }
 }
 
