@@ -138,6 +138,7 @@ Run from repo root unless noted.
 - Make minimal, scoped edits; do not refactor unrelated code.
 - Preserve existing crate boundaries and public API unless task requires change.
 - No released versions yet: API deprecations do not need backward-compatibility handling for now.
+- For any Rover Lua changes, ask user to confirm simplicity direction before broad edits; primary goal is extreme simplicity for humans and token efficiency for LLMs, informed by diverse ecosystems.
 - When changing the Lua API, update `docs/` in the same work so docs stay in sync with available features.
 - If touching multiple crates, validate with targeted package tests first.
 - Prefer targeted checks before full workspace runs for faster loops.
