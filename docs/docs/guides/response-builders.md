@@ -4,158 +4,121 @@ sidebar_position: 3
 
 # Response Builders
 
-Rover provides ergonomic response builders with optimal performance for returning different types of HTTP responses.
+All response builders currently available on `api = rover.server {}`.
 
-:::info Performance
-All builders use pre-serialization for near-zero overhead (~182k req/s)
-:::
-
-## JSON Responses
-
-Return JSON data with the `api.json` builder:
+## JSON
 
 ```lua
--- 200 OK with JSON
-function api.users.get(ctx)
-    return api.json { users = {...} }
-end
-
--- Custom status code
-function api.users.post(ctx)
-    return api.json:status(201, { id = 123 })
-end
+return api.json { ok = true }
+return api.json:status(201, { id = 1 })
 ```
 
-### Fast Path: Plain Tables
+Plain table returns are auto-converted to JSON `200`.
 
-For convenience, you can return plain Lua tables, which are automatically converted to JSON:
+## Text
 
 ```lua
-function api.simple.get(ctx)
-    return { message = "Hello" }  -- Automatic JSON, 200 OK
-end
+return api.text("OK")
+return api.text:status(503, "unavailable")
 ```
 
-## Text Responses
-
-Return plain text with the `api.text` builder:
+## HTML
 
 ```lua
--- 200 OK with text/plain
-function api.health.get(ctx)
-    return api.text("OK")
-end
-
--- Custom status code
-function api:error.get(ctx)
-    return api.text:status(503, "Service Unavailable")
-end
+return api.html("<h1>Hello</h1>")
+return api.html({ title = "Home" })[[<h1>{{ title }}</h1>]]
+return api.html:status(404, "<h1>Not Found</h1>")
 ```
 
-## HTML Responses
-
-Return HTML with the `api.html` builder:
+## Redirect
 
 ```lua
--- 200 OK with text/html
-function api.home.get(ctx)
-    return api.html("<h1>Welcome</h1>")
-end
-
--- Template rendering with data
-function api.page.get(ctx)
-    return api.html({ title = "Home" }) [[<h1>{{ title }}</h1>]]
-end
-
--- Custom status code (404)
-function api.notfound.get(ctx)
-    return api.html:status(404, "<h1>Not Found</h1>")
-end
+return api.redirect("/new")
+return api.redirect:permanent("/new")
+return api.redirect:status(307, "/tmp")
 ```
 
-## Redirects
-
-Redirect to another URL with the `api.redirect` builder:
+## Error
 
 ```lua
--- 302 Found (temporary redirect)
-function api.old.get(ctx)
-    return api.redirect("/new")
-end
-
--- 301 Moved Permanently
-function api.legacy.get(ctx)
-    return api.redirect:permanent("/new-url")
-end
-
--- Custom redirect status
-function api.temp.get(ctx)
-    return api.redirect:status(307, "/temporary")
-end
+return api:error(401, "Unauthorized")
 ```
 
-## Error Responses
-
-Return error responses with the `api:error` builder:
-
-```lua
-function api.protected.get(ctx)
-    local auth = ctx:headers()["Authorization"]
-    if not auth then
-        return api:error(401, "Unauthorized")
-    end
-    return api.json { data = "secret" }
-end
-```
-
-This returns a JSON response like:
+Returns JSON shape:
 
 ```json
-{
-  "error": "Unauthorized"
-}
+{"error":"Unauthorized"}
 ```
 
 ## No Content
 
-Return a 204 No Content response:
+```lua
+return api.no_content()
+```
+
+## Raw
 
 ```lua
-function api.items.p_id.delete(ctx)
-    local id = ctx:params().id
-    -- Delete the item...
-    return api.no_content()
+return api.raw("raw-bytes")
+return api.raw:status(201, "created")
+```
+
+## Stream
+
+`api.stream(status, content_type, producer)`
+
+```lua
+function api.logs.get(ctx)
+  local i = 0
+  return api.stream(200, "text/plain", function()
+    i = i + 1
+    if i > 5 then return nil end
+    return "line " .. i .. "\n"
+  end)
 end
 ```
 
-## Raw Responses
+`producer` returns `string` chunks, then `nil` to finish.
 
-Return raw bytes with no automatic content-type:
+## Stream With Headers
+
+`api.stream_with_headers(status, content_type, headers, producer)`
 
 ```lua
-function api.binary.get(ctx)
-    return api.raw("raw-bytes")
-end
-
-function api.binary.post(ctx)
-    return api.raw:status(201, "created")
-end
+return api.stream_with_headers(200, "text/plain", {
+  ["Cache-Control"] = "no-store",
+}, function()
+  return nil
+end)
 ```
+
+## SSE
+
+```lua
+return api.sse(function(writer)
+  return {
+    event = "tick",
+    data = { now = os.time() },
+  }
+end, 1000)
+```
+
+Also:
+
+- `api.sse:status(status, producer, retry_ms?)`
+- `api.sse:with_headers(status, headers, producer, retry_ms?)`
 
 ## Summary
 
-| Builder | Default Status | Content-Type | Example |
-|---------|---------------|--------------|---------|
-| `api.json` | 200 | `application/json` | `api.json { data = "..." }` |
-| `api.text` | 200 | `text/plain` | `api.text("Hello")` |
-| `api.html` | 200 | `text/html` | `api.html("<h1>Hi</h1>")` |
-| `api.redirect` | 302 | - | `api.redirect("/path")` |
-| `api:error` | Custom | `application/json` | `api:error(401, "msg")` |
-| `api.no_content` | 204 | - | `api.no_content()` |
-| `api.raw` | 200 | - | `api.raw("raw-bytes")` |
-| Plain table | 200 | `application/json` | `{ message = "..." }` |
-
-## Next Steps
-
-- [Configuration](/docs/api-reference/configuration) - Configure server options
-- [Route Patterns](/docs/api-reference/route-patterns) - Learn about routing
+| Builder | Default Status | Content-Type |
+|---|---:|---|
+| `api.json` | 200 | `application/json` |
+| `api.text` | 200 | `text/plain` |
+| `api.html` | 200 | `text/html` |
+| `api.redirect` | 302 | - |
+| `api:error` | custom | `application/json` |
+| `api.no_content` | 204 | - |
+| `api.raw` | 200 | - |
+| `api.stream` | custom | custom |
+| `api.stream_with_headers` | custom | custom |
+| `api.sse` | 200 | `text/event-stream` |

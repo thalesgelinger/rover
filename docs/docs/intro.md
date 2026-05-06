@@ -21,7 +21,7 @@ Build and run:
 
 ```bash
 cargo build --release
-./target/release/rover your_app.lua
+./target/release/rover run your_app.lua
 ```
 
 ## Hello World
@@ -38,7 +38,7 @@ end
 return api
 ```
 
-Run it and visit `http://localhost:4242/hello` to see your API in action!
+Run it with `rover run app.lua` and visit `http://localhost:4242/hello`.
 
 ## Next Steps
 
