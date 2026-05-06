@@ -102,6 +102,97 @@ pub fn create_db_module(lua: &Lua) -> LuaResult<LuaTable> {
     Ok(db)
 }
 
+enum ExecutorCommand {
+    Query { sql: String, mode: String },
+    Insert {
+        sql: String,
+        table_name: String,
+        data: LuaValue,
+    },
+    Update { sql: String },
+    Delete { sql: String },
+    Raw {
+        sql: String,
+        params: Option<LuaTable>,
+    },
+}
+
+fn string_arg(args: &[LuaValue], idx: usize) -> LuaResult<String> {
+    match args.get(idx) {
+        Some(LuaValue::String(s)) => Ok(s.to_str()?.to_string()),
+        _ => Ok(String::new()),
+    }
+}
+
+fn parse_executor_command(args: &[LuaValue]) -> LuaResult<ExecutorCommand> {
+    if args.is_empty() {
+        return Err(LuaError::RuntimeError(
+            "Executor requires at least one argument".to_string(),
+        ));
+    }
+
+    let operation = match &args[0] {
+        LuaValue::String(s) => s.to_str()?.to_string(),
+        _ => {
+            return Err(LuaError::RuntimeError(
+                "First argument must be operation type string".to_string(),
+            ));
+        }
+    };
+
+    let sql = string_arg(args, 1)?;
+
+    match operation.as_str() {
+        "query" | "select" => {
+            let mode = match args.get(2) {
+                Some(LuaValue::String(s)) => s.to_str()?.to_string(),
+                _ => "all".to_string(),
+            };
+            Ok(ExecutorCommand::Query { sql, mode })
+        }
+        "insert" => {
+            let table_name = string_arg(args, 2)?;
+            let data = args.get(3).cloned().unwrap_or(LuaValue::Nil);
+            Ok(ExecutorCommand::Insert {
+                sql,
+                table_name,
+                data,
+            })
+        }
+        "update" => Ok(ExecutorCommand::Update { sql }),
+        "delete" => Ok(ExecutorCommand::Delete { sql }),
+        "raw" => {
+            let params = match args.get(2) {
+                Some(LuaValue::Table(t)) => Some(t.clone()),
+                _ => None,
+            };
+            Ok(ExecutorCommand::Raw { sql, params })
+        }
+        _ => Err(LuaError::RuntimeError(format!(
+            "Unknown operation: {}",
+            operation
+        ))),
+    }
+}
+
+fn execute_command(
+    lua: &Lua,
+    executor: &Arc<QueryExecutor>,
+    command: ExecutorCommand,
+) -> LuaResult<LuaValue> {
+    match command {
+        ExecutorCommand::Query { sql, mode } => executor.execute_query(lua, &sql, &mode),
+        ExecutorCommand::Insert {
+            sql,
+            table_name,
+            data,
+        } => executor.execute_insert(lua, &sql, &table_name, data),
+        ExecutorCommand::Update { sql } => executor.execute_update(&sql),
+        ExecutorCommand::Delete { sql } => executor.execute_delete(&sql),
+        ExecutorCommand::Raw { sql, params } => executor.execute_raw(lua, &sql, params),
+    }
+}
+
 /// Create the executor function for database operations
 fn create_executor(lua: &Lua, db_path: String) -> LuaResult<LuaFunction> {
     // Create the actual connection
@@ -115,81 +206,9 @@ fn create_executor(lua: &Lua, db_path: String) -> LuaResult<LuaFunction> {
     let executor = Arc::new(executor);
 
     lua.create_function(move |lua, args: LuaMultiValue| {
-        // Extract operation type and SQL from args
         let args_vec: Vec<LuaValue> = args.into_iter().collect();
-
-        if args_vec.is_empty() {
-            return Err(LuaError::RuntimeError(
-                "Executor requires at least one argument".to_string(),
-            ));
-        }
-
-        let operation = match &args_vec[0] {
-            LuaValue::String(s) => s.to_str()?.to_string(),
-            _ => {
-                return Err(LuaError::RuntimeError(
-                    "First argument must be operation type string".to_string(),
-                ));
-            }
-        };
-
-        let sql = if args_vec.len() > 1 {
-            match &args_vec[1] {
-                LuaValue::String(s) => s.to_str()?.to_string(),
-                _ => String::new(),
-            }
-        } else {
-            String::new()
-        };
-
-        match operation.as_str() {
-            "query" | "select" => {
-                let mode = if args_vec.len() > 2 {
-                    match &args_vec[2] {
-                        LuaValue::String(s) => s.to_str()?.to_string(),
-                        _ => "all".to_string(),
-                    }
-                } else {
-                    "all".to_string()
-                };
-                executor.execute_query(lua, &sql, &mode)
-            }
-            "insert" => {
-                let table_name = if args_vec.len() > 2 {
-                    match &args_vec[2] {
-                        LuaValue::String(s) => s.to_str()?.to_string(),
-                        _ => String::new(),
-                    }
-                } else {
-                    String::new()
-                };
-
-                let data = if args_vec.len() > 3 {
-                    args_vec[3].clone()
-                } else {
-                    LuaValue::Nil
-                };
-
-                executor.execute_insert(lua, &sql, &table_name, data)
-            }
-            "update" => executor.execute_update(&sql),
-            "delete" => executor.execute_delete(&sql),
-            "raw" => {
-                let params = if args_vec.len() > 2 {
-                    match &args_vec[2] {
-                        LuaValue::Table(t) => Some(t.clone()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                executor.execute_raw(lua, &sql, params)
-            }
-            _ => Err(LuaError::RuntimeError(format!(
-                "Unknown operation: {}",
-                operation
-            ))),
-        }
+        let command = parse_executor_command(&args_vec)?;
+        execute_command(lua, &executor, command)
     })
 }
 
