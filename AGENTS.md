@@ -137,6 +137,7 @@ Run from repo root unless noted.
 ## Agent Working Rules for this Repo
 - Make minimal, scoped edits; do not refactor unrelated code.
 - Preserve existing crate boundaries and public API unless task requires change.
+- No released versions yet: API deprecations do not need backward-compatibility handling for now.
 - When changing the Lua API, update `docs/` in the same work so docs stay in sync with available features.
 - If touching multiple crates, validate with targeted package tests first.
 - Prefer targeted checks before full workspace runs for faster loops.
