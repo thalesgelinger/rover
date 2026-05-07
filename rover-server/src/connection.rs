@@ -7,7 +7,7 @@ use mio::{Interest, Registry, Token};
 use mlua::{RegistryKey, Thread};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use smallvec::SmallVec;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{IoSlice, Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -132,6 +132,12 @@ pub struct SseConnectionData {
 pub struct H2ConnectionData {
     pub preface_read: bool,
     pub hpack: HpackCodec,
+    pub streams: HashMap<u32, H2StreamData>,
+}
+
+pub struct H2StreamData {
+    pub headers: Vec<(String, String)>,
+    pub body: BytesMut,
 }
 
 pub enum ConnectionStream {

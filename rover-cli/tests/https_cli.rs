@@ -22,19 +22,41 @@ fn free_port() -> u16 {
 
 #[test]
 fn should_serve_https_request_from_cli() {
-    let body = run_https_cli(false, &[]);
+    let body = run_https_cli(false, &[], "/hello");
     assert_eq!(body, "{\"message\":\"https ok\"}");
 }
 
 #[test]
 fn should_serve_http2_request_from_cli() {
-    let body = run_https_cli(true, &["--http2", "-w", "\n%{http_version}"]);
+    let body = run_https_cli(true, &["--http2", "-w", "\n%{http_version}"], "/hello");
     let (body, version) = body.rsplit_once('\n').expect("version marker");
     assert_eq!(body, "{\"message\":\"https ok\"}");
     assert_eq!(version, "2");
 }
 
-fn run_https_cli(http2: bool, curl_args: &[&str]) -> String {
+#[test]
+fn should_serve_http2_post_body_from_cli() {
+    let body = run_https_cli(
+        true,
+        &[
+            "--http2",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: text/plain",
+            "--data",
+            "hello h2",
+            "-w",
+            "\n%{http_version}",
+        ],
+        "/echo",
+    );
+    let (body, version) = body.rsplit_once('\n').expect("version marker");
+    assert_eq!(body, "{\"body\":\"hello h2\"}");
+    assert_eq!(version, "2");
+}
+
+fn run_https_cli(http2: bool, curl_args: &[&str], path: &str) -> String {
     let dir = unique_test_dir("https");
     fs::create_dir_all(&dir).expect("mkdir");
 
@@ -64,7 +86,7 @@ fn run_https_cli(http2: bool, curl_args: &[&str]) -> String {
         let mut curl = Command::new("curl");
         curl.arg("-skf")
             .args(curl_args)
-            .arg(format!("https://127.0.0.1:{}/hello", port));
+            .arg(format!("https://127.0.0.1:{}{}", port, path));
         let output = curl.output().expect("curl");
 
         if output.status.success() {

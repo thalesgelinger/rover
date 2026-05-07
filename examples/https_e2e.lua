@@ -18,4 +18,10 @@ function api.hello.get(ctx)
 	}
 end
 
+function api.echo.post(ctx)
+	return api.json {
+		body = ctx:body():text(),
+	}
+end
+
 return api

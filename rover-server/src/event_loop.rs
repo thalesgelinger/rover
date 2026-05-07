@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
 use crate::compression::{CompressionAlgorithm, compress, negotiate_encoding};
-use crate::connection::{Connection, ConnectionState, H2ConnectionData};
+use crate::connection::{Connection, ConnectionState, H2ConnectionData, H2StreamData};
 use crate::fast_router::{FastRouter, RouteMatch};
 use crate::h2::{
     self, CLIENT_PREFACE, ERROR_PROTOCOL_ERROR, Frame, FrameType, SETTINGS_ENABLE_CONNECT_PROTOCOL,
@@ -2407,6 +2407,9 @@ impl EventLoop {
             FrameType::Headers if frame.is_end_headers() => {
                 self.handle_h2_headers(conn_idx, frame)?;
             }
+            FrameType::Data => {
+                self.handle_h2_data(conn_idx, frame)?;
+            }
             _ => {
                 let mut conns = self.connections.borrow_mut();
                 let conn = &mut conns[conn_idx];
@@ -2430,8 +2433,69 @@ impl EventLoop {
 
         let method = h2_header(&headers, ":method").unwrap_or("GET");
         let path = h2_header(&headers, ":path").unwrap_or("/");
-        let response = self.execute_h2_unary(method, path, &headers)?;
 
+        if !frame.is_end_stream() {
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.h2_data
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?
+                .streams
+                .insert(
+                    frame.stream_id,
+                    H2StreamData {
+                        headers,
+                        body: bytes::BytesMut::new(),
+                    },
+                );
+            return Ok(());
+        }
+
+        let response = self.execute_h2_unary(method, path, &headers, Bytes::new())?;
+        self.write_h2_unary_response(conn_idx, frame.stream_id, response)
+    }
+
+    fn handle_h2_data(&mut self, conn_idx: usize, frame: Frame) -> Result<()> {
+        let request = {
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            let h2_data = conn
+                .h2_data
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?;
+            let Some(stream) = h2_data.streams.get_mut(&frame.stream_id) else {
+                let goaway = h2::goaway_frame(0, ERROR_PROTOCOL_ERROR);
+                h2::encode_frame(&goaway, &mut conn.write_buf)?;
+                return Ok(());
+            };
+            stream.body.extend_from_slice(&frame.payload);
+            if frame.is_end_stream() {
+                h2_data.streams.remove(&frame.stream_id)
+            } else {
+                None
+            }
+        };
+
+        if let Some(request) = request {
+            let method = h2_header(&request.headers, ":method").unwrap_or("GET");
+            let path = h2_header(&request.headers, ":path").unwrap_or("/");
+            let response =
+                self.execute_h2_unary(method, path, &request.headers, request.body.freeze())?;
+            self.write_h2_unary_response(conn_idx, frame.stream_id, response)?;
+        }
+
+        Ok(())
+    }
+
+    fn write_h2_unary_response(
+        &mut self,
+        conn_idx: usize,
+        stream_id: u32,
+        response: std::result::Result<
+            (u16, Bytes, Option<&'static str>, HashMap<String, String>),
+            u16,
+        >,
+    ) -> Result<()> {
         let mut conns = self.connections.borrow_mut();
         let conn = &mut conns[conn_idx];
         match response {
@@ -2458,10 +2522,10 @@ impl EventLoop {
                     .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?
                     .hpack
                     .encode(&refs);
-                let headers = h2::headers_frame(frame.stream_id, block, true, body.is_empty());
+                let headers = h2::headers_frame(stream_id, block, true, body.is_empty());
                 h2::encode_frame(&headers, &mut conn.write_buf)?;
                 if !body.is_empty() {
-                    let data = h2::data_frame(frame.stream_id, body, true);
+                    let data = h2::data_frame(stream_id, body, true);
                     h2::encode_frame(&data, &mut conn.write_buf)?;
                 }
             }
@@ -2473,7 +2537,7 @@ impl EventLoop {
                     .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?
                     .hpack
                     .encode(&[(b":status".as_slice(), status_text.as_bytes())]);
-                let headers = h2::headers_frame(frame.stream_id, block, true, true);
+                let headers = h2::headers_frame(stream_id, block, true, true);
                 h2::encode_frame(&headers, &mut conn.write_buf)?;
             }
         }
@@ -2486,6 +2550,7 @@ impl EventLoop {
         method: &str,
         full_path: &str,
         headers: &[(String, String)],
+        body: Bytes,
     ) -> Result<std::result::Result<(u16, Bytes, Option<&'static str>, HashMap<String, String>), u16>>
     {
         let (path, query_str) = if let Some(pos) = full_path.find('?') {
@@ -2515,7 +2580,10 @@ impl EventLoop {
             }
         }
         write!(raw, "\r\n").unwrap();
-        let buf = Bytes::from(raw.into_bytes());
+        let body_off = raw.len();
+        let mut raw = raw.into_bytes();
+        raw.extend_from_slice(&body);
+        let buf = Bytes::from(raw);
         let method_off = 0u16;
         let method_len = method.len() as u8;
         let path_off = method.len() as u16 + 1;
@@ -2537,8 +2605,8 @@ impl EventLoop {
             method_len,
             path_off,
             path_len,
-            0,
-            0,
+            body_off as u32,
+            body.len() as u32,
             header_offsets,
             query_offsets,
             &params,
