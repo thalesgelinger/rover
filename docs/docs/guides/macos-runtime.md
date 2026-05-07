@@ -35,8 +35,4 @@ Run:
 rover run examples/macos_counter.lua --platform macos
 ```
 
-Build unsigned `.app` scaffold:
-
-```bash
-rover build examples/macos_counter.lua --target macos
-```
+Build/package support is intentionally deferred while the native dev loop stabilizes.

@@ -6,7 +6,6 @@ use std::path::PathBuf;
 
 /// Supported build targets (Deno-compatible)
 pub const SUPPORTED_TARGETS: &[&str] = &[
-    "macos",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
@@ -71,20 +70,6 @@ pub fn run_build(options: BuildOptions) -> Result<()> {
     // Step 3: Serialize bundle
     let bundle_lua = serialize_bundle(&bundle);
 
-    if target == "macos" {
-        let output_name = options.output.unwrap_or_else(|| {
-            let stem = options
-                .entrypoint
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy();
-            PathBuf::from(format!("{}.app", stem))
-        });
-        create_macos_app(&bundle_lua, &output_name)?;
-        println!("{}", format!("✅ Built: {}", output_name.display()).green());
-        return Ok(());
-    }
-
     // Step 4: Select runtime
     let runtime_path = find_runtime(&target, features)?;
 
@@ -109,68 +94,6 @@ pub fn run_build(options: BuildOptions) -> Result<()> {
 
     println!("{}", format!("✅ Built: {}", output_name.display()).green());
     println!("   Run with: ./{} <args>", output_name.display());
-
-    Ok(())
-}
-
-fn create_macos_app(bundle: &str, output: &PathBuf) -> Result<()> {
-    let contents = output.join("Contents");
-    let macos = contents.join("MacOS");
-    let resources = contents.join("Resources");
-
-    if output.exists() {
-        fs::remove_dir_all(output).context("Failed to replace existing .app")?;
-    }
-
-    fs::create_dir_all(&macos).context("Failed to create .app MacOS directory")?;
-    fs::create_dir_all(&resources).context("Failed to create .app Resources directory")?;
-
-    let name = output
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>{name}</string>
-  <key>CFBundleIdentifier</key><string>dev.rover.{name}</string>
-  <key>CFBundleName</key><string>{name}</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>0.1.0</string>
-</dict>
-</plist>
-"#
-    );
-    fs::write(contents.join("Info.plist"), plist).context("Failed to write Info.plist")?;
-    fs::write(resources.join("bundle.lua"), bundle).context("Failed to write macOS bundle")?;
-
-    let host = rover_macos::build_host().context("Failed to build macOS host")?;
-    let dylib = host
-        .parent()
-        .unwrap_or(std::path::Path::new("target/debug"))
-        .join("librover_macos.dylib");
-    if !dylib.exists() {
-        return Err(anyhow::anyhow!(
-            "missing macOS runtime library: {}",
-            dylib.display()
-        ));
-    }
-
-    let launcher = macos.join(&name);
-    fs::copy(&host, &launcher).context("Failed to copy macOS host")?;
-    fs::copy(&dylib, macos.join("librover_macos.dylib"))
-        .context("Failed to copy macOS runtime library")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&launcher)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&launcher, perms)?;
-    }
 
     Ok(())
 }
