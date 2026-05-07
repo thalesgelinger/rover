@@ -213,6 +213,31 @@ impl StubRenderer {
                     }
                     self.log(&format!("{}}}", indent_str));
                 }
+                UiNode::MacosWindow {
+                    title,
+                    width,
+                    height,
+                    children,
+                } => {
+                    self.log(&format!(
+                        "{}MacosWindow(id={:?}, title=\"{}\", width={}, height={}) {{",
+                        indent_str, node_id, title, width, height
+                    ));
+                    for &child_id in children {
+                        self.print_node(registry, child_id, indent + 1);
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
+                UiNode::MacosScrollView { children } => {
+                    self.log(&format!(
+                        "{}MacosScrollView(id={:?}) {{",
+                        indent_str, node_id
+                    ));
+                    for &child_id in children {
+                        self.print_node(registry, child_id, indent + 1);
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
             }
         }
     }
@@ -370,6 +395,20 @@ impl Renderer for StubRenderer {
                     }
                     UiNode::List { children, .. } => {
                         self.log(&format!("  Updated List(id={:?}) {{", node_id));
+                        for &child_id in children {
+                            self.print_node(registry, child_id, 3);
+                        }
+                        self.log("  }");
+                    }
+                    UiNode::MacosWindow { children, .. } => {
+                        self.log(&format!("  Updated MacosWindow(id={:?}) {{", node_id));
+                        for &child_id in children {
+                            self.print_node(registry, child_id, 3);
+                        }
+                        self.log("  }");
+                    }
+                    UiNode::MacosScrollView { children } => {
+                        self.log(&format!("  Updated MacosScrollView(id={:?}) {{", node_id));
                         for &child_id in children {
                             self.print_node(registry, child_id, 3);
                         }

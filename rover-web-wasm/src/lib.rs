@@ -108,7 +108,10 @@ impl WebRenderer {
                     body
                 )
             }
-            UiNode::View { children } | UiNode::List { children, .. } => {
+            UiNode::View { children }
+            | UiNode::List { children, .. }
+            | UiNode::MacosWindow { children, .. }
+            | UiNode::MacosScrollView { children } => {
                 let body = self.render_children(registry, children);
                 format!("<div{}>{}</div>", style_attr(registry, node_id, &[]), body)
             }

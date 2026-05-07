@@ -29,10 +29,25 @@ pub fn run_file(
         Some(Platform::Stub) => run_with_stub(file, args),
         Some(Platform::Tui) => run_with_tui(file, args),
         Some(Platform::Web) => run_with_web(file, args),
+        Some(Platform::Macos) => run_with_macos(file, args),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
         }
+    }
+}
+
+fn run_with_macos(file: PathBuf, args: Vec<String>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        println!("Starting rover macOS UI runtime");
+        rover_macos::launch_file(&file, &args)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = args;
+        Err(anyhow::anyhow!("macOS UI runtime only runs on macOS"))
     }
 }
 

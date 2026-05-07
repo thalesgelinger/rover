@@ -6,6 +6,7 @@ use std::collections::HashSet;
 pub enum UiTarget {
     Tui,
     Web,
+    Macos,
     Mobile,
     Unknown,
 }
@@ -15,6 +16,7 @@ impl UiTarget {
         match self {
             UiTarget::Tui => "tui",
             UiTarget::Web => "web",
+            UiTarget::Macos => "macos",
             UiTarget::Mobile => "mobile",
             UiTarget::Unknown => "unknown",
         }
@@ -25,18 +27,21 @@ impl UiTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UiCapability {
     TuiNamespace,
+    MacosNamespace,
 }
 
 impl UiCapability {
     pub fn as_str(self) -> &'static str {
         match self {
             UiCapability::TuiNamespace => "tui_namespace",
+            UiCapability::MacosNamespace => "macos_namespace",
         }
     }
 
     fn allowed_by_default(self, target: UiTarget) -> bool {
         match self {
             UiCapability::TuiNamespace => target == UiTarget::Tui,
+            UiCapability::MacosNamespace => target == UiTarget::Macos,
         }
     }
 }

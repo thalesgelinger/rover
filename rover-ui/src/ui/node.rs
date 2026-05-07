@@ -138,6 +138,15 @@ pub enum UiNode {
         items_effect: EffectId,
         children: Vec<NodeId>,
     },
+    MacosWindow {
+        title: String,
+        width: u16,
+        height: u16,
+        children: Vec<NodeId>,
+    },
+    MacosScrollView {
+        children: Vec<NodeId>,
+    },
 }
 
 /// Text content can be static or reactive

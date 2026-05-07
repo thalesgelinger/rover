@@ -49,6 +49,19 @@ fn ensure_tui_target(lua: &mlua::Lua) -> mlua::Result<()> {
     )))
 }
 
+fn ensure_macos_target(lua: &mlua::Lua) -> mlua::Result<()> {
+    let target = crate::lua::helpers::get_target(lua)?;
+    if crate::lua::helpers::has_capability(lua, crate::platform::UiCapability::MacosNamespace)? {
+        return Ok(());
+    }
+
+    Err(mlua::Error::RuntimeError(format!(
+        "macOS node constructor denied by capability policy (capability={}, target={})",
+        crate::platform::UiCapability::MacosNamespace.as_str(),
+        target.as_str()
+    )))
+}
+
 impl UserData for LuaUi {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_function("text", |lua, props: Table| {
@@ -414,6 +427,51 @@ impl UserData for LuaUi {
             if let Some(effect_id) = on_key {
                 registry_rc.borrow_mut().attach_effect(node_id, effect_id);
             }
+
+            Ok(LuaNode::new(node_id))
+        });
+
+        methods.add_function("__macos_window", |lua, props: Table| {
+            ensure_macos_target(lua)?;
+            let registry_rc = get_registry_rc(lua)?;
+
+            let title = match props.get::<Value>("title")? {
+                Value::String(s) => s.to_str()?.to_string(),
+                Value::Nil => "Rover".to_string(),
+                value => value.to_string()?,
+            };
+            let width = match props.get::<Value>("width")? {
+                Value::Integer(n) => n.clamp(1, u16::MAX as i64) as u16,
+                Value::Number(n) => n.clamp(1.0, u16::MAX as f64) as u16,
+                _ => 900,
+            };
+            let height = match props.get::<Value>("height")? {
+                Value::Integer(n) => n.clamp(1, u16::MAX as i64) as u16,
+                Value::Number(n) => n.clamp(1.0, u16::MAX as f64) as u16,
+                _ => 640,
+            };
+            let children = extract_children(lua, &props)?;
+
+            let node = UiNode::MacosWindow {
+                title,
+                width,
+                height,
+                children,
+            };
+            let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
+
+            Ok(LuaNode::new(node_id))
+        });
+
+        methods.add_function("__macos_scroll_view", |lua, props: Table| {
+            ensure_macos_target(lua)?;
+            let registry_rc = get_registry_rc(lua)?;
+            let children = extract_children(lua, &props)?;
+
+            let node = UiNode::MacosScrollView { children };
+            let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
             Ok(LuaNode::new(node_id))
         });
@@ -1028,7 +1086,9 @@ fn list_child_ids(node: &UiNode) -> Vec<super::node::NodeId> {
         | UiNode::Row { children }
         | UiNode::View { children }
         | UiNode::Stack { children }
-        | UiNode::List { children, .. } => children.clone(),
+        | UiNode::List { children, .. }
+        | UiNode::MacosWindow { children, .. }
+        | UiNode::MacosScrollView { children } => children.clone(),
         UiNode::Conditional { child, .. }
         | UiNode::KeyArea { child, .. }
         | UiNode::FullScreen { child, .. } => child.iter().copied().collect(),

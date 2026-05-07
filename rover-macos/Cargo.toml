@@ -1,0 +1,12 @@
+[package]
+name = "rover-macos"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+anyhow = "1.0.100"
+mlua = { version = "0.11.5", features = ["anyhow", "vendored", "luajit52"] }
+rover_ui = { path = "../rover-ui" }

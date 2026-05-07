@@ -11,7 +11,7 @@ use crate::platform::{UiCapability, ViewportSignals};
 use crate::{signal::SignalValue, ui::ui::LuaUi};
 use derived::LuaDerived;
 use mlua::{Function, Lua, Result, Table, UserData, Value};
-use rover_types::{AuthReason, DeniedError};
+use rover_types::DeniedError;
 use signal::LuaSignal;
 
 /// Marker for delayed coroutine execution
@@ -177,7 +177,13 @@ pub fn register_ui_module(lua: &Lua, rover_table: &Table) -> Result<()> {
         rover_table.set("tui", tui_module)?;
     }
 
+    if crate::lua::helpers::has_capability(lua, UiCapability::MacosNamespace)? {
+        let macos_module = create_macos_module(lua)?;
+        rover_table.set("macos", macos_module)?;
+    }
+
     register_tui_preload_module(lua)?;
+    register_macos_preload_module(lua)?;
 
     Ok(())
 }
@@ -193,7 +199,10 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
                 let err =
                     DeniedError::capability(UiCapability::TuiNamespace.as_str(), target.as_str());
                 err.emit();
-                return Err(mlua::Error::RuntimeError(err.user_message()));
+                return Err(mlua::Error::RuntimeError(format!(
+                    "TUI namespace denied by capability policy: {}",
+                    err.user_message()
+                )));
             }
 
             let rover_table: Table = lua.globals().get("rover")?;
@@ -214,6 +223,44 @@ fn register_tui_preload_module(lua: &Lua) -> Result<()> {
 fn create_tui_module(lua: &Lua) -> Result<Table> {
     lua.load(include_str!("tui/module.lua"))
         .set_name("rover_tui_module.lua")
+        .eval()
+}
+
+fn register_macos_preload_module(lua: &Lua) -> Result<()> {
+    let package: Table = lua.globals().get("package")?;
+    let preload: Table = package.get("preload")?;
+    preload.set(
+        "rover.macos",
+        lua.create_function(|lua, _name: Value| {
+            let target = crate::lua::helpers::get_target(lua)?;
+            if !crate::lua::helpers::has_capability(lua, UiCapability::MacosNamespace)? {
+                let err =
+                    DeniedError::capability(UiCapability::MacosNamespace.as_str(), target.as_str());
+                err.emit();
+                return Err(mlua::Error::RuntimeError(format!(
+                    "macOS namespace denied by capability policy: {}",
+                    err.user_message()
+                )));
+            }
+
+            let rover_table: Table = lua.globals().get("rover")?;
+            match rover_table.get::<Value>("macos")? {
+                Value::Table(module) => Ok(module),
+                _ => {
+                    let module = create_macos_module(lua)?;
+                    rover_table.set("macos", module.clone())?;
+                    Ok(module)
+                }
+            }
+        })?,
+    )?;
+
+    Ok(())
+}
+
+fn create_macos_module(lua: &Lua) -> Result<Table> {
+    lua.load(include_str!("macos/module.lua"))
+        .set_name("rover_macos_module.lua")
         .eval()
 }
 
@@ -271,6 +318,44 @@ mod tests {
 
         assert!(!ok);
         assert!(err.contains("denied by capability policy"));
+    }
+
+    #[test]
+    fn should_deny_macos_namespace_on_web_by_default() {
+        let lua = setup_lua(UiRuntimeConfig::new(UiTarget::Web));
+
+        let (ok, err): (bool, String) = lua
+            .load(
+                r#"
+                local ok, err = pcall(function()
+                    require("rover.macos")
+                end)
+                return ok, tostring(err)
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert!(!ok);
+        assert!(err.contains("macos_namespace"));
+    }
+
+    #[test]
+    fn should_allow_macos_namespace_on_macos_target() {
+        let lua = setup_lua(UiRuntimeConfig::new(UiTarget::Macos));
+
+        let (global_type, required_type): (String, String) = lua
+            .load(
+                r#"
+                local macos = require("rover.macos")
+                return type(rover.macos.window), type(macos.scroll_view)
+            "#,
+            )
+            .eval()
+            .unwrap();
+
+        assert_eq!(global_type, "function");
+        assert_eq!(required_type, "function");
     }
 
     #[test]

@@ -2617,6 +2617,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rover-macos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mlua",
+ "rover_ui",
+]
+
+[[package]]
 name = "rover-openapi"
 version = "0.1.0"
 dependencies = [
@@ -2674,6 +2683,7 @@ dependencies = [
  "mlua",
  "rcgen",
  "rover-lsp",
+ "rover-macos",
  "rover-parser",
  "rover-web",
  "rover_bundler",
