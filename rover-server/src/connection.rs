@@ -1,12 +1,15 @@
 use crate::Bytes;
+use crate::h2::HpackCodec;
 use crate::ws_frame;
 use bytes::BytesMut;
 use mio::net::TcpStream;
 use mio::{Interest, Registry, Token};
 use mlua::{RegistryKey, Thread};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use smallvec::SmallVec;
 use std::collections::VecDeque;
 use std::io::{IoSlice, Read, Write};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -125,8 +128,77 @@ pub struct SseConnectionData {
     pub last_write: Option<Instant>,
 }
 
+#[derive(Default)]
+pub struct H2ConnectionData {
+    pub preface_read: bool,
+    pub hpack: HpackCodec,
+}
+
+pub enum ConnectionStream {
+    Plain(TcpStream),
+    Tls(Box<StreamOwned<ServerConnection, TcpStream>>),
+}
+
+impl ConnectionStream {
+    fn socket(&self) -> &TcpStream {
+        match self {
+            Self::Plain(socket) => socket,
+            Self::Tls(stream) => &stream.sock,
+        }
+    }
+
+    pub(crate) fn socket_mut(&mut self) -> &mut TcpStream {
+        match self {
+            Self::Plain(socket) => socket,
+            Self::Tls(stream) => &mut stream.sock,
+        }
+    }
+
+    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket().peer_addr()
+    }
+}
+
+impl Read for ConnectionStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(socket) => socket.read(buf),
+            Self::Tls(stream) => stream.read(buf),
+        }
+    }
+}
+
+impl Write for ConnectionStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(socket) => socket.write(buf),
+            Self::Tls(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(socket) => socket.flush(),
+            Self::Tls(stream) => stream.flush(),
+        }
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(socket) => socket.write_vectored(bufs),
+            Self::Tls(stream) => {
+                if let Some(first) = bufs.iter().find(|buf| !buf.is_empty()) {
+                    stream.write(first)
+                } else {
+                    Ok(0)
+                }
+            }
+        }
+    }
+}
+
 pub struct Connection {
-    pub socket: TcpStream,
+    pub stream: ConnectionStream,
     pub token: Token,
     pub state: ConnectionState,
 
@@ -169,12 +241,30 @@ pub struct Connection {
     pub stream_final_sent: bool,
     /// Registry key for chunk producer function (Lua)
     pub stream_producer: Option<Arc<mlua::RegistryKey>>,
+    /// HTTP/2 connection state, initialized after ALPN selects h2.
+    pub h2_data: Option<Box<H2ConnectionData>>,
 }
 
 impl Connection {
     pub fn new(socket: TcpStream, token: Token) -> Self {
+        Self::from_stream(ConnectionStream::Plain(socket), token)
+    }
+
+    pub fn new_tls(
+        socket: TcpStream,
+        token: Token,
+        config: Arc<ServerConfig>,
+    ) -> anyhow::Result<Self> {
+        let server = ServerConnection::new(config)?;
+        Ok(Self::from_stream(
+            ConnectionStream::Tls(Box::new(StreamOwned::new(server, socket))),
+            token,
+        ))
+    }
+
+    fn from_stream(stream: ConnectionStream, token: Token) -> Self {
         Self {
-            socket,
+            stream,
             token,
             state: ConnectionState::Reading,
             read_buf: BytesMut::with_capacity(READ_BUF_SIZE * 2),
@@ -201,11 +291,27 @@ impl Connection {
             stream_chunk_pos: 0,
             stream_final_sent: false,
             stream_producer: None,
+            h2_data: None,
         }
     }
 
+    pub fn selected_alpn_protocol(&self) -> Option<&[u8]> {
+        match &self.stream {
+            ConnectionStream::Plain(_) => None,
+            ConnectionStream::Tls(stream) => stream.conn.alpn_protocol(),
+        }
+    }
+
+    pub fn is_tls(&self) -> bool {
+        matches!(self.stream, ConnectionStream::Tls(_))
+    }
+
     pub fn reregister(&mut self, registry: &Registry, interest: Interest) -> std::io::Result<()> {
-        registry.reregister(&mut self.socket, self.token, interest)
+        registry.reregister(self.stream.socket_mut(), self.token, interest)
+    }
+
+    pub fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.stream.peer_addr()
     }
 
     pub fn method_str(&self) -> Option<&str> {
@@ -236,7 +342,7 @@ impl Connection {
         }
 
         loop {
-            match self.socket.read(&mut self.read_buf[self.read_pos..]) {
+            match self.stream.read(&mut self.read_buf[self.read_pos..]) {
                 Ok(0) => {
                     self.state = ConnectionState::Closed;
                     return Ok(false);
@@ -256,7 +362,7 @@ impl Connection {
         }
     }
 
-    fn try_parse(&mut self) -> std::io::Result<bool> {
+    pub(crate) fn try_parse(&mut self) -> std::io::Result<bool> {
         if !self.headers_complete {
             let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
             let mut req = httparse::Request::new(&mut headers);
@@ -402,7 +508,7 @@ impl Connection {
                 IoSlice::new(&self.body_buf[self.body_pos..]),
             ];
 
-            match self.socket.write_vectored(&slices) {
+            match self.stream.write_vectored(&slices) {
                 Ok(0) => {
                     self.state = ConnectionState::Closed;
                     return Ok(false);
@@ -433,7 +539,7 @@ impl Connection {
 
         // Finish writing headers if needed
         while self.write_pos < self.write_buf.len() {
-            match self.socket.write(&self.write_buf[self.write_pos..]) {
+            match self.stream.write(&self.write_buf[self.write_pos..]) {
                 Ok(0) => {
                     self.state = ConnectionState::Closed;
                     return Ok(false);
@@ -450,7 +556,7 @@ impl Connection {
 
         // Finish writing body if needed
         while self.body_pos < self.body_buf.len() {
-            match self.socket.write(&self.body_buf[self.body_pos..]) {
+            match self.stream.write(&self.body_buf[self.body_pos..]) {
                 Ok(0) => {
                     self.state = ConnectionState::Closed;
                     return Ok(false);
@@ -611,6 +717,7 @@ impl Connection {
         self.stream_chunk_pos = 0;
         self.stream_final_sent = false;
         self.stream_producer = None;
+        self.h2_data = None;
     }
 
     /// Prepare this connection for server shutdown.
@@ -727,7 +834,7 @@ impl Connection {
         // Phase 1: Write headers
         if matches!(self.state, ConnectionState::StreamingHeaders) {
             while self.write_pos < self.write_buf.len() {
-                match self.socket.write(&self.write_buf[self.write_pos..]) {
+                match self.stream.write(&self.write_buf[self.write_pos..]) {
                     Ok(0) => {
                         self.state = ConnectionState::Closed;
                         return Ok(false);
@@ -756,7 +863,7 @@ impl Connection {
                     continue;
                 }
 
-                match self.socket.write(remaining) {
+                match self.stream.write(remaining) {
                     Ok(0) => {
                         self.state = ConnectionState::Closed;
                         return Ok(false);
@@ -842,7 +949,7 @@ impl Connection {
 
         let mut total = 0;
         loop {
-            match self.socket.read(&mut self.read_buf[self.read_pos..]) {
+            match self.stream.read(&mut self.read_buf[self.read_pos..]) {
                 Ok(0) => return Ok(total),
                 Ok(n) => {
                     self.read_pos += n;
@@ -880,7 +987,7 @@ impl Connection {
                 continue;
             }
 
-            match self.socket.write(remaining) {
+            match self.stream.write(remaining) {
                 Ok(0) => {
                     self.state = ConnectionState::Closed;
                     return Ok(false);

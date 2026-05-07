@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Read, Write};
 use std::mem;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use bytes::Buf;
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use mlua::{Function, Lua, RegistryKey, Thread, ThreadStatus, Value};
@@ -19,11 +20,14 @@ use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
 use crate::compression::{CompressionAlgorithm, compress, negotiate_encoding};
-use crate::connection::{Connection, ConnectionState};
+use crate::connection::{Connection, ConnectionState, H2ConnectionData};
 use crate::fast_router::{FastRouter, RouteMatch};
+use crate::h2::{
+    self, CLIENT_PREFACE, ERROR_PROTOCOL_ERROR, Frame, FrameType, SETTINGS_ENABLE_CONNECT_PROTOCOL,
+};
 use crate::http_task::{
     CoroutineResponse, RequestContextPool, ThreadPool, execute_handler_coroutine,
-    extract_or_generate_request_id,
+    extract_or_generate_request_id, generate_request_id,
 };
 use crate::lifecycle::{LifecycleConfig, LifecycleEvent, LifecycleManager, LifecyclePhase};
 use crate::table_pool::LuaTablePool;
@@ -146,7 +150,7 @@ mod tests {
             allow_unauthenticated_management: false,
             trusted_proxies: Vec::new(),
             tls: None,
-            http2: true,
+            http2: false,
             compress: crate::CompressionConfig::default(),
             rate_limit: crate::RateLimitConfig::default(),
             load_shed: crate::LoadShedConfig::default(),
@@ -1113,6 +1117,90 @@ mod hash_tests {
     }
 }
 
+fn h2_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn h2_header_offsets(
+    buf: &[u8],
+    header_start: usize,
+    headers: &[(String, String)],
+) -> Vec<(u16, u8, u16, u16)> {
+    let mut offsets = Vec::new();
+    let mut cursor = header_start;
+    for (name, value) in headers {
+        if name.starts_with(':') {
+            continue;
+        }
+        if cursor >= buf.len() {
+            break;
+        }
+        let name_off = cursor as u16;
+        cursor += name.len() + 2;
+        let value_off = cursor as u16;
+        cursor += value.len() + 2;
+        offsets.push((name_off, name.len() as u8, value_off, value.len() as u16));
+    }
+    offsets
+}
+
+fn h2_query_offsets(
+    buf: &[u8],
+    path_off: usize,
+    full_path: &str,
+    query_str: Option<&str>,
+) -> Vec<(u16, u8, u16, u16)> {
+    let Some(qs) = query_str else {
+        return Vec::new();
+    };
+    let Some(q_pos) = full_path.as_bytes().iter().position(|&b| b == b'?') else {
+        return Vec::new();
+    };
+    let qs_start_abs = path_off + q_pos + 1;
+    if qs_start_abs >= buf.len() {
+        return Vec::new();
+    }
+
+    let mut offsets = Vec::new();
+    let mut pos = 0usize;
+    while pos < qs.len() {
+        let key_start = pos as u16;
+        while pos < qs.len() && qs.as_bytes()[pos] != b'=' && qs.as_bytes()[pos] != b'&' {
+            pos += 1;
+        }
+        let key_len = (pos - key_start as usize) as u8;
+        if pos >= qs.len() || qs.as_bytes()[pos] == b'&' {
+            if key_len > 0 {
+                offsets.push((
+                    (qs_start_abs + key_start as usize) as u16,
+                    key_len,
+                    (qs_start_abs + key_start as usize) as u16,
+                    key_len as u16,
+                ));
+            }
+            pos += 1;
+            continue;
+        }
+
+        pos += 1;
+        let val_start = pos as u16;
+        while pos < qs.len() && qs.as_bytes()[pos] != b'&' {
+            pos += 1;
+        }
+        offsets.push((
+            (qs_start_abs + key_start as usize) as u16,
+            key_len,
+            (qs_start_abs + val_start as usize) as u16,
+            (pos - val_start as usize) as u16,
+        ));
+        pos += 1;
+    }
+    offsets
+}
+
 pub struct EventLoop {
     poll: Poll,
     listener: TcpListener,
@@ -1137,6 +1225,7 @@ pub struct EventLoop {
     drain_timeout: Duration,
     /// Lifecycle manager for server phases and hooks
     lifecycle_manager: LifecycleManager,
+    tls_config: Option<Arc<rustls::ServerConfig>>,
 }
 
 impl EventLoop {
@@ -1726,6 +1815,14 @@ impl EventLoop {
         };
         let lifecycle_manager = LifecycleManager::with_config(lifecycle_config);
 
+        let tls_config = match config.tls.as_ref() {
+            Some(tls) => {
+                let reloader = crate::TlsCertReloader::new(tls)?;
+                Some(reloader.rustls_server_config(&config.desired_alpn_protocols())?)
+            }
+            None => None,
+        };
+
         Ok(Self {
             poll,
             listener,
@@ -1745,6 +1842,7 @@ impl EventLoop {
             drain_started: None,
             drain_timeout,
             lifecycle_manager,
+            tls_config,
         })
     }
 
@@ -1843,7 +1941,7 @@ impl EventLoop {
         }
 
         let mut conn = conns.remove(conn_idx);
-        let _ = self.poll.registry().deregister(&mut conn.socket);
+        let _ = self.poll.registry().deregister(conn.stream.socket_mut());
     }
 
     fn is_drain_complete(&self) -> bool {
@@ -2127,7 +2225,12 @@ impl EventLoop {
                         .registry()
                         .register(&mut socket, token, Interest::READABLE)?;
 
-                    entry.insert(Connection::new(socket, token));
+                    let connection = if let Some(tls_config) = self.tls_config.as_ref() {
+                        Connection::new_tls(socket, token, Arc::clone(tls_config))?
+                    } else {
+                        Connection::new(socket, token)
+                    };
+                    entry.insert(connection);
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     break;
@@ -2138,11 +2241,354 @@ impl EventLoop {
         Ok(())
     }
 
+    fn handle_h2_or_negotiated_http1(
+        &mut self,
+        conn_idx: usize,
+        event: &mio::event::Event,
+    ) -> Result<bool> {
+        let mut process_http1 = false;
+        let mut close = false;
+
+        {
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+
+            if event.is_writable() && conn.h2_data.is_some() && !conn.write_buf.is_empty() {
+                while conn.write_pos < conn.write_buf.len() {
+                    match conn.stream.write(&conn.write_buf[conn.write_pos..]) {
+                        Ok(0) => {
+                            conn.state = ConnectionState::Closed;
+                            close = true;
+                            break;
+                        }
+                        Ok(n) => conn.write_pos += n,
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            close = true;
+                            break;
+                        }
+                    }
+                }
+                if conn.write_pos >= conn.write_buf.len() {
+                    conn.write_buf.clear();
+                    conn.write_pos = 0;
+                }
+            }
+
+            if event.is_readable() {
+                if conn.read_buf.len() < conn.read_pos + 1024 {
+                    conn.read_buf.resize(conn.read_pos + 4096, 0);
+                }
+
+                loop {
+                    match conn.stream.read(&mut conn.read_buf[conn.read_pos..]) {
+                        Ok(0) => {
+                            conn.state = ConnectionState::Closed;
+                            close = true;
+                            break;
+                        }
+                        Ok(n) => conn.read_pos += n,
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            conn.state = ConnectionState::Closed;
+                            close = true;
+                            break;
+                        }
+                    }
+                }
+
+                match conn.selected_alpn_protocol() {
+                    Some(protocol) if protocol == b"h2" => {
+                        if conn.h2_data.is_none() {
+                            conn.h2_data = Some(Box::new(H2ConnectionData::default()));
+                        }
+                    }
+                    Some(_) => {
+                        process_http1 = conn.try_parse().unwrap_or(false);
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        if close {
+            self.connections.borrow_mut().remove(conn_idx);
+            return Ok(true);
+        }
+
+        if process_http1 {
+            self.start_request_coroutine(conn_idx)?;
+            return Ok(true);
+        }
+
+        let frames = {
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            if conn.h2_data.is_none() {
+                return Ok(false);
+            }
+            Self::drain_h2_frames(conn)?
+        };
+
+        for frame in frames {
+            self.handle_h2_frame(conn_idx, frame)?;
+        }
+
+        let mut conns = self.connections.borrow_mut();
+        if let Some(conn) = conns.get_mut(conn_idx)
+            && !conn.write_buf.is_empty()
+        {
+            let _ = conn.reregister(
+                self.poll.registry(),
+                Interest::READABLE | Interest::WRITABLE,
+            );
+        }
+
+        Ok(true)
+    }
+
+    fn drain_h2_frames(conn: &mut Connection) -> Result<Vec<Frame>> {
+        let mut frames = Vec::new();
+        let Some(h2_data) = conn.h2_data.as_mut() else {
+            return Ok(frames);
+        };
+
+        if !h2_data.preface_read {
+            if conn.read_pos < CLIENT_PREFACE.len() {
+                return Ok(frames);
+            }
+            if &conn.read_buf[..CLIENT_PREFACE.len()] != CLIENT_PREFACE {
+                return Err(anyhow::anyhow!("invalid HTTP/2 client preface"));
+            }
+            conn.read_buf.advance(CLIENT_PREFACE.len());
+            conn.read_pos -= CLIENT_PREFACE.len();
+            h2_data.preface_read = true;
+
+            let settings = h2::settings_frame(&[(SETTINGS_ENABLE_CONNECT_PROTOCOL, 1)]);
+            h2::encode_frame(&settings, &mut conn.write_buf)?;
+        }
+
+        let mut buf = conn.read_buf.split_to(conn.read_pos);
+        conn.read_pos = 0;
+        while let Some(frame) = h2::decode_frame(&mut buf)? {
+            frames.push(frame);
+        }
+        conn.read_pos = buf.len();
+        conn.read_buf = buf;
+
+        Ok(frames)
+    }
+
+    fn handle_h2_frame(&mut self, conn_idx: usize, frame: Frame) -> Result<()> {
+        match frame.frame_type {
+            FrameType::Settings => {
+                let ack = !frame.is_ack();
+                h2::decode_settings(&frame)?;
+                if ack {
+                    let mut conns = self.connections.borrow_mut();
+                    let conn = &mut conns[conn_idx];
+                    let ack = h2::settings_ack_frame();
+                    h2::encode_frame(&ack, &mut conn.write_buf)?;
+                }
+            }
+            FrameType::Ping => {
+                if !frame.is_ack() {
+                    let opaque = h2::decode_ping(&frame)?;
+                    let mut conns = self.connections.borrow_mut();
+                    let conn = &mut conns[conn_idx];
+                    let pong = h2::ping_frame(opaque, true);
+                    h2::encode_frame(&pong, &mut conn.write_buf)?;
+                }
+            }
+            FrameType::WindowUpdate => {
+                let _ = h2::decode_window_update(&frame)?;
+            }
+            FrameType::Headers if frame.is_end_headers() => {
+                self.handle_h2_headers(conn_idx, frame)?;
+            }
+            _ => {
+                let mut conns = self.connections.borrow_mut();
+                let conn = &mut conns[conn_idx];
+                let goaway = h2::goaway_frame(0, ERROR_PROTOCOL_ERROR);
+                h2::encode_frame(&goaway, &mut conn.write_buf)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_h2_headers(&mut self, conn_idx: usize, frame: Frame) -> Result<()> {
+        let headers = {
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.h2_data
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?
+                .hpack
+                .decode(&frame.payload)?
+        };
+
+        let method = h2_header(&headers, ":method").unwrap_or("GET");
+        let path = h2_header(&headers, ":path").unwrap_or("/");
+        let response = self.execute_h2_unary(method, path, &headers)?;
+
+        let mut conns = self.connections.borrow_mut();
+        let conn = &mut conns[conn_idx];
+        match response {
+            Ok((status, body, content_type, extra_headers)) => {
+                let status_text = status.to_string();
+                let content_len = body.len().to_string();
+                let mut owned = vec![
+                    (b":status".to_vec(), status_text.into_bytes()),
+                    (b"content-length".to_vec(), content_len.into_bytes()),
+                ];
+                if let Some(content_type) = content_type {
+                    owned.push((b"content-type".to_vec(), content_type.as_bytes().to_vec()));
+                }
+                for (name, value) in extra_headers {
+                    owned.push((name.into_bytes(), value.into_bytes()));
+                }
+                let refs: Vec<(&[u8], &[u8])> = owned
+                    .iter()
+                    .map(|(name, value)| (name.as_slice(), value.as_slice()))
+                    .collect();
+                let block = conn
+                    .h2_data
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?
+                    .hpack
+                    .encode(&refs);
+                let headers = h2::headers_frame(frame.stream_id, block, true, body.is_empty());
+                h2::encode_frame(&headers, &mut conn.write_buf)?;
+                if !body.is_empty() {
+                    let data = h2::data_frame(frame.stream_id, body, true);
+                    h2::encode_frame(&data, &mut conn.write_buf)?;
+                }
+            }
+            Err(status) => {
+                let status_text = status.to_string();
+                let block = conn
+                    .h2_data
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?
+                    .hpack
+                    .encode(&[(b":status".as_slice(), status_text.as_bytes())]);
+                let headers = h2::headers_frame(frame.stream_id, block, true, true);
+                h2::encode_frame(&headers, &mut conn.write_buf)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn execute_h2_unary(
+        &mut self,
+        method: &str,
+        full_path: &str,
+        headers: &[(String, String)],
+    ) -> Result<std::result::Result<(u16, Bytes, Option<&'static str>, HashMap<String, String>), u16>>
+    {
+        let (path, query_str) = if let Some(pos) = full_path.find('?') {
+            (&full_path[..pos], Some(full_path[pos + 1..].to_string()))
+        } else {
+            (full_path, None)
+        };
+        let Some(http_method) = HttpMethod::from_str(method) else {
+            return Ok(Err(400));
+        };
+        let (handler, params, is_head_request) = match self.router.match_route(http_method, path) {
+            RouteMatch::Found {
+                handler,
+                params,
+                is_head,
+            } => (handler, params, is_head),
+            RouteMatch::MethodNotAllowed { .. } => return Ok(Err(405)),
+            RouteMatch::NotFound => return Ok(Err(404)),
+        };
+
+        let mut raw = String::new();
+        use std::fmt::Write as _;
+        write!(raw, "{} {} HTTP/2\r\n", method, full_path).unwrap();
+        for (name, value) in headers {
+            if !name.starts_with(':') {
+                write!(raw, "{}: {}\r\n", name, value).unwrap();
+            }
+        }
+        write!(raw, "\r\n").unwrap();
+        let buf = Bytes::from(raw.into_bytes());
+        let method_off = 0u16;
+        let method_len = method.len() as u8;
+        let path_off = method.len() as u16 + 1;
+        let path_len = full_path.len() as u16;
+        let header_offsets =
+            h2_header_offsets(&buf, method.len() + 1 + full_path.len() + 8, headers);
+        let query_offsets =
+            h2_query_offsets(&buf, path_off as usize, full_path, query_str.as_deref());
+
+        let request_id = h2_header(headers, "x-request-id")
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .map(str::to_string)
+            .unwrap_or_else(generate_request_id);
+        match execute_handler_coroutine(
+            &self.lua,
+            &handler,
+            buf,
+            method_off,
+            method_len,
+            path_off,
+            path_len,
+            0,
+            0,
+            header_offsets,
+            query_offsets,
+            &params,
+            request_id,
+            "unknown".to_string(),
+            "https".to_string(),
+            Instant::now(),
+            &mut self.thread_pool,
+            &mut self.request_pool,
+            &self.table_pool,
+            &mut self.buffer_pool,
+            self.error_handler.as_ref(),
+        ) {
+            Ok(CoroutineResponse::Ready {
+                status,
+                body,
+                content_type,
+                headers,
+            }) => Ok(Ok((
+                status,
+                if is_head_request { Bytes::new() } else { body },
+                content_type,
+                headers.unwrap_or_default(),
+            ))),
+            Ok(_) => Ok(Err(501)),
+            Err(_) => Ok(Err(500)),
+        }
+    }
+
     fn handle_connection(&mut self, token: Token, event: &mio::event::Event) -> Result<()> {
         let conn_idx = token.0 - 1;
 
         if !self.connections.borrow().contains(conn_idx) {
             return Ok(());
+        }
+
+        if self.config.http2 {
+            let should_try_h2 = {
+                let conns = self.connections.borrow();
+                let conn = &conns[conn_idx];
+                conn.h2_data.is_some()
+                    || matches!(conn.selected_alpn_protocol(), Some(protocol) if protocol == b"h2")
+                    || (conn.is_tls()
+                        && conn.selected_alpn_protocol().is_none()
+                        && event.is_readable())
+            };
+
+            if should_try_h2 && self.handle_h2_or_negotiated_http1(conn_idx, event)? {
+                return Ok(());
+            }
         }
 
         // Check if this is a WebSocket connection
@@ -2403,7 +2849,7 @@ impl EventLoop {
         };
         let (path_off, path_len) = conn.path_offset.unwrap_or((0, 0));
         let keep_alive = conn.keep_alive;
-        let source_ip = conn.socket.peer_addr().ok().map(|addr| addr.ip());
+        let source_ip = conn.peer_addr().ok().map(|addr| addr.ip());
         let should_trust_forwarded = source_ip
             .map(|ip| self.config.is_trusted_proxy_source(ip))
             .unwrap_or(false);
@@ -3108,7 +3554,7 @@ impl EventLoop {
                 .map(|&(no, nl, vo, vl)| (no as u16, nl as u8, vo as u16, vl as u16))
                 .collect();
             let header_offsets_raw = conn.header_offsets.clone();
-            let source_ip = conn.socket.peer_addr().ok().map(|addr| addr.ip());
+            let source_ip = conn.peer_addr().ok().map(|addr| addr.ip());
             let should_trust_forwarded = source_ip
                 .map(|ip| self.config.is_trusted_proxy_source(ip))
                 .unwrap_or(false);
@@ -3727,7 +4173,7 @@ impl EventLoop {
             let mut conns = self.connections.borrow_mut();
             if conns.contains(conn_idx) {
                 let mut conn = conns.remove(conn_idx);
-                let _ = self.poll.registry().deregister(&mut conn.socket);
+                let _ = self.poll.registry().deregister(conn.stream.socket_mut());
             }
         }
 

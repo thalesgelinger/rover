@@ -4,6 +4,7 @@ mod connection;
 pub mod direct_json_parser;
 mod event_loop;
 pub mod fast_router;
+pub mod h2;
 mod http_server;
 pub mod http_task;
 pub mod lifecycle;
@@ -1370,9 +1371,7 @@ pub fn run(
                 config.desired_alpn_protocols()
             );
             if config.http2 {
-                info!(
-                    "ℹ️ HTTP/2 is config-enabled; current event-loop backend serves HTTP/1.1 while transport migration is in progress"
-                );
+                info!("ℹ️ HTTP/2 enabled via ALPN h2");
             }
         }
     }

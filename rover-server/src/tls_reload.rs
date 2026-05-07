@@ -1,9 +1,12 @@
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow};
+use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use crate::TlsConfig;
 
@@ -77,6 +80,11 @@ impl TlsCertReloader {
             .map_err(|_| anyhow!("tls material lock poisoned"))
     }
 
+    pub fn rustls_server_config(&self, alpn_protocols: &[&str]) -> Result<Arc<ServerConfig>> {
+        self.current_material()?
+            .rustls_server_config(alpn_protocols)
+    }
+
     fn load_material(cert_file: &Path, key_file: &Path) -> Result<TlsMaterial> {
         let cert_pem = fs::read(cert_file)
             .with_context(|| format!("failed to read tls cert file {}", cert_file.display()))?;
@@ -119,6 +127,44 @@ impl TlsCertReloader {
     }
 }
 
+impl TlsMaterial {
+    pub fn rustls_server_config(&self, alpn_protocols: &[&str]) -> Result<Arc<ServerConfig>> {
+        let certs = parse_certificates(&self.cert_pem)?;
+        let key = parse_private_key(&self.key_pem)?;
+
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| anyhow!("failed to build rustls server config: {}", e))?;
+        config.alpn_protocols = alpn_protocols
+            .iter()
+            .map(|protocol| protocol.as_bytes().to_vec())
+            .collect();
+
+        Ok(Arc::new(config))
+    }
+}
+
+fn parse_certificates(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>> {
+    let mut reader = BufReader::new(pem);
+    let certs = rustls_pemfile::certs(&mut reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| anyhow!("failed to parse tls.cert_file: {}", e))?;
+    if certs.is_empty() {
+        return Err(anyhow!(
+            "tls.cert_file must contain at least one certificate"
+        ));
+    }
+    Ok(certs)
+}
+
+fn parse_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>> {
+    let mut reader = BufReader::new(pem);
+    rustls_pemfile::private_key(&mut reader)
+        .map_err(|e| anyhow!("failed to parse tls.key_file: {}", e))?
+        .ok_or_else(|| anyhow!("tls.key_file must contain a private key"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -127,6 +173,7 @@ mod tests {
 
     use super::TlsCertReloader;
     use crate::TlsConfig;
+    use rcgen::generate_simple_self_signed;
 
     fn fixture_pem(content: &str, marker: &str) -> String {
         format!(
@@ -171,6 +218,35 @@ mod tests {
         let key_text = String::from_utf8_lossy(&snapshot.key_pem);
         assert!(cert_text.contains("new-cert"));
         assert!(key_text.contains("new-key"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn should_build_rustls_config_with_alpn_protocols() {
+        let dir = unique_test_dir("tls_rustls_config");
+        fs::create_dir_all(&dir).expect("mkdir");
+
+        let cert = generate_simple_self_signed(["localhost".to_string()]).expect("cert");
+        let cert_file = dir.join("cert.pem");
+        let key_file = dir.join("key.pem");
+        fs::write(&cert_file, cert.cert.pem()).expect("cert write");
+        fs::write(&key_file, cert.key_pair.serialize_pem()).expect("key write");
+
+        let reloader = TlsCertReloader::new(&TlsConfig {
+            cert_file: cert_file.to_string_lossy().to_string(),
+            key_file: key_file.to_string_lossy().to_string(),
+            reload_interval_secs: 1,
+        })
+        .expect("reloader");
+
+        let config = reloader
+            .rustls_server_config(&["h2", "http/1.1"])
+            .expect("rustls config");
+        assert_eq!(
+            config.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
