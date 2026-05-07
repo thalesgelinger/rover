@@ -56,6 +56,26 @@ fn should_serve_http2_post_body_from_cli() {
     assert_eq!(version, "2");
 }
 
+#[test]
+fn should_serve_http2_stream_from_cli() {
+    let body = run_https_cli(
+        true,
+        &["--http2", "-w", "\n%{http_version}"],
+        "/flow/chunks",
+    );
+    let (body, version) = body.rsplit_once('\n').expect("version marker");
+    assert_eq!(body, "one:two");
+    assert_eq!(version, "2");
+}
+
+#[test]
+fn should_serve_http2_sse_from_cli() {
+    let body = run_https_cli(true, &["--http2", "-w", "\n%{http_version}"], "/events");
+    let (body, version) = body.rsplit_once('\n').expect("version marker");
+    assert_eq!(body, "id:1\nevent:ready\ndata:h2 sse\n\n");
+    assert_eq!(version, "2");
+}
+
 fn run_https_cli(http2: bool, curl_args: &[&str], path: &str) -> String {
     let dir = unique_test_dir("https");
     fs::create_dir_all(&dir).expect("mkdir");
@@ -82,7 +102,7 @@ fn run_https_cli(http2: bool, curl_args: &[&str], path: &str) -> String {
         .expect("spawn rover");
 
     let mut body = None;
-    for _ in 0..20 {
+    for _ in 0..80 {
         let mut curl = Command::new("curl");
         curl.arg("-skf")
             .args(curl_args)

@@ -1201,6 +1201,37 @@ fn h2_query_offsets(
     offsets
 }
 
+fn collect_h2_stream_body(producer: &Function) -> mlua::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    for _ in 0..1024 {
+        match producer.call::<Value>(())? {
+            Value::Nil => return Ok(body),
+            Value::String(s) => body.extend_from_slice(&s.as_bytes()),
+            other => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "stream producer must return string or nil, got {:?}",
+                    other
+                )));
+            }
+        }
+    }
+    Err(mlua::Error::RuntimeError(
+        "stream producer exceeded 1024 chunks".to_string(),
+    ))
+}
+
+fn collect_h2_sse_body(producer: &Function, body: &mut Vec<u8>) -> mlua::Result<()> {
+    for _ in 0..1024 {
+        match producer.call::<Value>(())? {
+            Value::Nil => return Ok(()),
+            value => EventLoop::write_sse_payload(body, value)?,
+        }
+    }
+    Err(mlua::Error::RuntimeError(
+        "SSE producer exceeded 1024 events".to_string(),
+    ))
+}
+
 pub struct EventLoop {
     poll: Poll,
     listener: TcpListener,
@@ -2491,10 +2522,7 @@ impl EventLoop {
         &mut self,
         conn_idx: usize,
         stream_id: u32,
-        response: std::result::Result<
-            (u16, Bytes, Option<&'static str>, HashMap<String, String>),
-            u16,
-        >,
+        response: std::result::Result<(u16, Bytes, Option<String>, HashMap<String, String>), u16>,
     ) -> Result<()> {
         let mut conns = self.connections.borrow_mut();
         let conn = &mut conns[conn_idx];
@@ -2510,7 +2538,7 @@ impl EventLoop {
                     owned.push((b"content-type".to_vec(), content_type.as_bytes().to_vec()));
                 }
                 for (name, value) in extra_headers {
-                    owned.push((name.into_bytes(), value.into_bytes()));
+                    owned.push((name.to_ascii_lowercase().into_bytes(), value.into_bytes()));
                 }
                 let refs: Vec<(&[u8], &[u8])> = owned
                     .iter()
@@ -2551,7 +2579,7 @@ impl EventLoop {
         full_path: &str,
         headers: &[(String, String)],
         body: Bytes,
-    ) -> Result<std::result::Result<(u16, Bytes, Option<&'static str>, HashMap<String, String>), u16>>
+    ) -> Result<std::result::Result<(u16, Bytes, Option<String>, HashMap<String, String>), u16>>
     {
         let (path, query_str) = if let Some(pos) = full_path.find('?') {
             (&full_path[..pos], Some(full_path[pos + 1..].to_string()))
@@ -2628,10 +2656,49 @@ impl EventLoop {
             }) => Ok(Ok((
                 status,
                 if is_head_request { Bytes::new() } else { body },
-                content_type,
+                content_type.map(str::to_string),
                 headers.unwrap_or_default(),
             ))),
-            Ok(_) => Ok(Err(501)),
+            Ok(CoroutineResponse::Streaming {
+                status,
+                content_type,
+                headers,
+                chunk_producer,
+            }) => {
+                let producer: Function = self.lua.registry_value(&chunk_producer)?;
+                let body = collect_h2_stream_body(&producer)?;
+                Ok(Ok((
+                    status,
+                    Bytes::from(body),
+                    Some(content_type),
+                    headers.unwrap_or_default(),
+                )))
+            }
+            Ok(CoroutineResponse::Sse {
+                status,
+                headers,
+                event_producer,
+                retry_ms,
+            }) => {
+                let producer: Function = self.lua.registry_value(&event_producer)?;
+                let mut body = Vec::new();
+                if let Some(retry_ms) = retry_ms {
+                    SseWriter::format_retry(&mut body, retry_ms);
+                }
+                collect_h2_sse_body(&producer, &mut body)?;
+
+                let mut headers = headers.unwrap_or_default();
+                headers
+                    .entry("Cache-Control".to_string())
+                    .or_insert_with(|| "no-cache".to_string());
+                Ok(Ok((
+                    status,
+                    Bytes::from(body),
+                    Some("text/event-stream".to_string()),
+                    headers,
+                )))
+            }
+            Ok(CoroutineResponse::Yielded { .. }) => Ok(Err(501)),
             Err(_) => Ok(Err(500)),
         }
     }

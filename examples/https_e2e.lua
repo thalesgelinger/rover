@@ -24,4 +24,28 @@ function api.echo.post(ctx)
 	}
 end
 
+function api.flow.chunks.get(ctx)
+	local chunks = { "one", ":", "two" }
+	local i = 0
+	return api:stream(200, "text/plain", function()
+		i = i + 1
+		return chunks[i]
+	end)
+end
+
+function api.events.get(ctx)
+	local sent = false
+	return api.sse(function()
+		if sent then
+			return nil
+		end
+		sent = true
+		return {
+			event = "ready",
+			data = "h2 sse",
+			id = "1",
+		}
+	end)
+end
+
 return api
