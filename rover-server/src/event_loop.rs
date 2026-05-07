@@ -2342,6 +2342,7 @@ impl EventLoop {
         }
 
         if event.is_writable() {
+            self.poll_h2_ws_frames(conn_idx)?;
             self.poll_h2_response_streams(conn_idx)?;
         }
 
@@ -2374,6 +2375,34 @@ impl EventLoop {
         }
 
         Ok(true)
+    }
+
+    fn poll_h2_ws_frames(&mut self, conn_idx: usize) -> Result<()> {
+        let mut conns = self.connections.borrow_mut();
+        let Some(conn) = conns.get_mut(conn_idx) else {
+            return Ok(());
+        };
+        if !conn.write_buf.is_empty() {
+            return Ok(());
+        }
+        let Some(ws) = conn.ws_data.as_mut() else {
+            return Ok(());
+        };
+        let Some(stream_id) = ws.h2_stream_id else {
+            return Ok(());
+        };
+        let Some(frame) = ws.write_queue.pop_front() else {
+            return Ok(());
+        };
+
+        ws.write_pos = 0;
+        let data = h2::data_frame(stream_id, frame, false);
+        h2::encode_frame(&data, &mut conn.write_buf)?;
+        let _ = conn.reregister(
+            self.poll.registry(),
+            Interest::READABLE | Interest::WRITABLE,
+        );
+        Ok(())
     }
 
     fn poll_h2_response_streams(&mut self, conn_idx: usize) -> Result<()> {
@@ -2558,6 +2587,12 @@ impl EventLoop {
         let method = h2_header(&headers, ":method").unwrap_or("GET");
         let path = h2_header(&headers, ":path").unwrap_or("/");
 
+        if method.eq_ignore_ascii_case("CONNECT")
+            && h2_header(&headers, ":protocol").is_some_and(|value| value == "websocket")
+        {
+            return self.handle_h2_ws_connect(conn_idx, frame.stream_id, path, &headers);
+        }
+
         if !frame.is_end_stream() {
             let mut conns = self.connections.borrow_mut();
             let conn = &mut conns[conn_idx];
@@ -2579,7 +2614,172 @@ impl EventLoop {
         self.write_h2_unary_response(conn_idx, frame.stream_id, response)
     }
 
+    fn handle_h2_ws_connect(
+        &mut self,
+        conn_idx: usize,
+        stream_id: u32,
+        path: &str,
+        headers: &[(String, String)],
+    ) -> Result<()> {
+        let (path_only, query_str) = if let Some(pos) = path.find('?') {
+            (&path[..pos], Some(path[pos + 1..].to_string()))
+        } else {
+            (path, None)
+        };
+        let Some((endpoint_idx, params)) = self.router.match_ws_route(path_only) else {
+            return self.write_h2_unary_response(conn_idx, stream_id, H2HandlerOutput::Status(404));
+        };
+
+        let mut raw = String::new();
+        use std::fmt::Write as _;
+        write!(raw, "CONNECT {} HTTP/2\r\n", path).unwrap();
+        for (name, value) in headers {
+            if !name.starts_with(':') {
+                write!(raw, "{}: {}\r\n", name, value).unwrap();
+            }
+        }
+        write!(raw, "\r\n").unwrap();
+        let buf = Bytes::from(raw.into_bytes());
+        let method_off = 0u16;
+        let method_len = "CONNECT".len() as u8;
+        let path_off = "CONNECT".len() as u16 + 1;
+        let path_len = path.len() as u16;
+        let header_offsets = h2_header_offsets(&buf, "CONNECT".len() + 1 + path.len() + 8, headers);
+        let query_offsets = h2_query_offsets(&buf, path_off as usize, path, query_str.as_deref());
+        let request_id = h2_header(headers, "x-request-id")
+            .filter(|value| !value.is_empty() && value.len() <= 256)
+            .map(str::to_string)
+            .unwrap_or_else(generate_request_id);
+
+        {
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            conn.upgrade_to_h2_ws(endpoint_idx, stream_id);
+        }
+
+        self.ws_manager
+            .borrow_mut()
+            .add_connection(endpoint_idx, conn_idx);
+
+        let status = {
+            let mut conns = self.connections.borrow_mut();
+            let conn = &mut conns[conn_idx];
+            let block = conn
+                .h2_data
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?
+                .hpack
+                .encode(&[(b":status".as_slice(), b"200".as_slice())]);
+            let response = h2::headers_frame(stream_id, block, true, false);
+            h2::encode_frame(&response, &mut conn.write_buf)?;
+            let _ = conn.reregister(
+                self.poll.registry(),
+                Interest::READABLE | Interest::WRITABLE,
+            );
+            200u16
+        };
+
+        if status == 200 {
+            self.run_h2_ws_join(
+                conn_idx,
+                endpoint_idx,
+                buf,
+                method_off,
+                method_len,
+                path_off,
+                path_len,
+                header_offsets,
+                query_offsets,
+                params,
+                request_id,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_h2_ws_join(
+        &mut self,
+        conn_idx: usize,
+        endpoint_idx: u16,
+        buf: Bytes,
+        method_off: u16,
+        method_len: u8,
+        path_off: u16,
+        path_len: u16,
+        header_offsets: Vec<(u16, u8, u16, u16)>,
+        query_offsets: Vec<(u16, u8, u16, u16)>,
+        params: Vec<(Bytes, Bytes)>,
+        request_id: String,
+    ) -> Result<()> {
+        let mgr = self.ws_manager.borrow();
+        let endpoint = &mgr.endpoints[endpoint_idx as usize];
+        let Some(ref join_key) = endpoint.join_handler else {
+            return Ok(());
+        };
+        let join_fn: Function = self.lua.registry_value(join_key)?;
+        drop(mgr);
+
+        let (ctx, ctx_idx) = self.request_pool.acquire(
+            &self.lua,
+            buf,
+            method_off,
+            method_len,
+            path_off,
+            path_len,
+            0,
+            0,
+            header_offsets,
+            query_offsets,
+            &params,
+            request_id,
+            "unknown".to_string(),
+            "https".to_string(),
+        )?;
+
+        self.ws_manager
+            .borrow_mut()
+            .set_context(conn_idx, endpoint_idx);
+
+        let thread = self.thread_pool.acquire(&self.lua, &join_fn)?;
+        match thread.resume::<Value>(ctx) {
+            Ok(state_value) => {
+                if !matches!(state_value, Value::Nil) {
+                    let state_key = self.lua.create_registry_value(state_value)?;
+                    let mut conns = self.connections.borrow_mut();
+                    if let Some(conn) = conns.get_mut(conn_idx)
+                        && let Some(ref mut ws) = conn.ws_data
+                    {
+                        ws.state_key = Some(state_key);
+                    }
+                }
+                self.thread_pool.release(thread);
+            }
+            Err(e) => {
+                warn!("H2 WS join handler error: {}", e);
+                self.thread_pool.release(thread);
+            }
+        }
+
+        self.request_pool.release(ctx_idx);
+        self.reregister_ws_writers();
+        Ok(())
+    }
+
     fn handle_h2_data(&mut self, conn_idx: usize, frame: Frame) -> Result<()> {
+        let is_h2_ws = {
+            let conns = self.connections.borrow();
+            conns
+                .get(conn_idx)
+                .and_then(|conn| conn.ws_data.as_ref())
+                .and_then(|ws| ws.h2_stream_id)
+                == Some(frame.stream_id)
+        };
+        if is_h2_ws {
+            return self.handle_h2_ws_data(conn_idx, frame);
+        }
+
         let request = {
             let mut conns = self.connections.borrow_mut();
             let conn = &mut conns[conn_idx];
@@ -2608,6 +2808,149 @@ impl EventLoop {
             self.write_h2_unary_response(conn_idx, frame.stream_id, response)?;
         }
 
+        Ok(())
+    }
+
+    fn handle_h2_ws_data(&mut self, conn_idx: usize, frame: Frame) -> Result<()> {
+        let messages = {
+            let mut conns = self.connections.borrow_mut();
+            let Some(conn) = conns.get_mut(conn_idx) else {
+                return Ok(());
+            };
+            let Some(ws) = conn.ws_data.as_mut() else {
+                return Ok(());
+            };
+            ws.h2_data_buf.extend_from_slice(&frame.payload);
+
+            let mut messages = Vec::new();
+            loop {
+                let frame_result = ws_frame::try_parse_frame(&ws.h2_data_buf).map(|h| {
+                    (
+                        h.fin,
+                        h.opcode,
+                        h.masked,
+                        h.mask,
+                        h.payload_offset,
+                        h.payload_len,
+                        h.total_frame_len,
+                    )
+                });
+                let Some((fin, opcode, masked, mask, payload_offset, payload_len, total_frame_len)) =
+                    frame_result
+                else {
+                    break;
+                };
+                if masked && payload_len > 0 {
+                    ws_frame::unmask_payload_in_place(
+                        &mut ws.h2_data_buf[payload_offset..payload_offset + payload_len],
+                        mask,
+                    );
+                }
+                let payload = ws.h2_data_buf[payload_offset..payload_offset + payload_len].to_vec();
+                ws.h2_data_buf.drain(..total_frame_len);
+
+                match opcode {
+                    WsOpcode::Text | WsOpcode::Binary if fin => messages.push(payload),
+                    WsOpcode::Text | WsOpcode::Binary => {
+                        ws.fragment_opcode = Some(opcode);
+                        ws.fragment_buf = Some(payload);
+                    }
+                    WsOpcode::Continuation => {
+                        if let Some(ref mut frag) = ws.fragment_buf {
+                            frag.extend_from_slice(&payload);
+                        }
+                        if fin {
+                            messages.push(ws.fragment_buf.take().unwrap_or_default());
+                            ws.fragment_opcode = None;
+                        }
+                    }
+                    WsOpcode::Ping => {
+                        let mut frame_buf = self.ws_manager.borrow_mut().get_frame_buf();
+                        ws_frame::write_pong_frame(&mut frame_buf, &payload);
+                        ws.write_queue.push_back(Bytes::from(frame_buf));
+                    }
+                    WsOpcode::Pong => {}
+                    WsOpcode::Close => {
+                        let mut frame_buf = self.ws_manager.borrow_mut().get_frame_buf();
+                        ws_frame::write_close_frame(&mut frame_buf, 1000, "");
+                        ws.write_queue.push_back(Bytes::from(frame_buf));
+                    }
+                }
+            }
+            messages
+        };
+
+        for message in messages {
+            self.dispatch_ws_message(conn_idx, &message)?;
+        }
+        if frame.is_end_stream() {
+            self.handle_h2_ws_disconnect(conn_idx)?;
+        }
+        self.reregister_ws_writers();
+        Ok(())
+    }
+
+    fn handle_h2_ws_disconnect(&mut self, conn_idx: usize) -> Result<()> {
+        let endpoint_idx = {
+            let conns = self.connections.borrow();
+            conns
+                .get(conn_idx)
+                .and_then(|conn| conn.ws_data.as_ref())
+                .map(|ws| ws.endpoint_idx)
+        };
+        let Some(endpoint_idx) = endpoint_idx else {
+            return Ok(());
+        };
+
+        self.ws_manager
+            .borrow_mut()
+            .set_context(conn_idx, endpoint_idx);
+
+        let leave_fn: Option<Function> = {
+            let mgr = self.ws_manager.borrow();
+            mgr.endpoints
+                .get(endpoint_idx as usize)
+                .and_then(|ep| ep.leave_handler.as_ref())
+                .and_then(|key| self.lua.registry_value(key).ok())
+        };
+
+        if let Some(leave_fn) = leave_fn {
+            let state_value = {
+                let conns = self.connections.borrow();
+                conns
+                    .get(conn_idx)
+                    .and_then(|conn| conn.ws_data.as_ref())
+                    .and_then(|ws| ws.state_key.as_ref())
+                    .and_then(|key| self.lua.registry_value(key).ok())
+                    .unwrap_or(Value::Nil)
+            };
+            let thread = self.thread_pool.acquire(&self.lua, &leave_fn)?;
+            match thread.resume::<Value>(state_value) {
+                Ok(_) => self.thread_pool.release(thread),
+                Err(e) => {
+                    warn!("H2 WS leave handler error: {}", e);
+                    self.thread_pool.release(thread);
+                }
+            }
+        }
+
+        {
+            let conns = self.connections.borrow();
+            self.ws_manager
+                .borrow_mut()
+                .unsubscribe_all(conn_idx, &conns);
+        }
+        self.ws_manager
+            .borrow_mut()
+            .remove_connection(endpoint_idx, conn_idx);
+
+        let mut conns = self.connections.borrow_mut();
+        if let Some(conn) = conns.get_mut(conn_idx)
+            && let Some(mut ws) = conn.ws_data.take()
+            && let Some(state_key) = ws.state_key.take()
+        {
+            let _ = self.lua.remove_registry_value(state_key);
+        }
         Ok(())
     }
 

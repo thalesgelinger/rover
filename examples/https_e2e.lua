@@ -48,4 +48,15 @@ function api.events.get(ctx)
 	end)
 end
 
+function api.echo.ws(ws)
+	function ws.join(ctx)
+		ws.send.welcome { message = "h2 ws ready" }
+		return {}
+	end
+
+	function ws.listen.echo(msg, ctx, state)
+		ws.send.echo { text = msg.text }
+	end
+end
+
 return api

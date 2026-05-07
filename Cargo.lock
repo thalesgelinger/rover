@@ -2670,6 +2670,7 @@ dependencies = [
  "clap 4.5.53",
  "colored",
  "flate2",
+ "hpack",
  "mlua",
  "rcgen",
  "rover-lsp",

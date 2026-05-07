@@ -26,6 +26,7 @@ flate2 = "1.1"
 tar = "0.4"
 
 [dev-dependencies]
+hpack = "0.3"
 rcgen = "0.13"
 
 [[bin]]

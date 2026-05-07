@@ -112,6 +112,10 @@ pub struct WsConnectionData {
     pub close_sent: bool,
     /// Opcode of the first fragment (for continuation frames)
     pub fragment_opcode: Option<ws_frame::WsOpcode>,
+    /// HTTP/2 stream id when WebSocket runs through Extended CONNECT.
+    pub h2_stream_id: Option<u32>,
+    /// Accumulates WebSocket frames carried inside HTTP/2 DATA frames.
+    pub h2_data_buf: Vec<u8>,
 }
 
 /// SSE-specific per-connection data. Only allocated after SSE endpoint starts.
@@ -953,9 +957,27 @@ impl Connection {
             subscriptions: SmallVec::new(),
             close_sent: false,
             fragment_opcode: None,
+            h2_stream_id: None,
+            h2_data_buf: Vec::new(),
         }));
 
         self.state = ConnectionState::WsActive;
+    }
+
+    /// Initialize WebSocket state for an HTTP/2 Extended CONNECT stream.
+    pub fn upgrade_to_h2_ws(&mut self, endpoint_idx: u16, stream_id: u32) {
+        self.ws_data = Some(Box::new(WsConnectionData {
+            endpoint_idx,
+            state_key: None,
+            write_queue: VecDeque::with_capacity(8),
+            write_pos: 0,
+            fragment_buf: None,
+            subscriptions: SmallVec::new(),
+            close_sent: false,
+            fragment_opcode: None,
+            h2_stream_id: Some(stream_id),
+            h2_data_buf: Vec::new(),
+        }));
     }
 
     /// Read data from the socket into read_buf for WebSocket frame parsing.
