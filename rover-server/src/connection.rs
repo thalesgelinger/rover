@@ -133,11 +133,23 @@ pub struct H2ConnectionData {
     pub preface_read: bool,
     pub hpack: HpackCodec,
     pub streams: HashMap<u32, H2StreamData>,
+    pub response_streams: HashMap<u32, H2ResponseStream>,
 }
 
 pub struct H2StreamData {
     pub headers: Vec<(String, String)>,
     pub body: BytesMut,
+}
+
+pub enum H2ResponseStream {
+    Stream {
+        producer: Arc<RegistryKey>,
+    },
+    Sse {
+        producer: Arc<RegistryKey>,
+        retry_pending: bool,
+        retry_ms: u32,
+    },
 }
 
 pub enum ConnectionStream {

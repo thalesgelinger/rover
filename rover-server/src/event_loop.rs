@@ -20,7 +20,9 @@ use tracing::{debug, info, warn};
 
 use crate::buffer_pool::BufferPool;
 use crate::compression::{CompressionAlgorithm, compress, negotiate_encoding};
-use crate::connection::{Connection, ConnectionState, H2ConnectionData, H2StreamData};
+use crate::connection::{
+    Connection, ConnectionState, H2ConnectionData, H2ResponseStream, H2StreamData,
+};
 use crate::fast_router::{FastRouter, RouteMatch};
 use crate::h2::{
     self, CLIENT_PREFACE, ERROR_PROTOCOL_ERROR, Frame, FrameType, SETTINGS_ENABLE_CONNECT_PROTOCOL,
@@ -1201,35 +1203,26 @@ fn h2_query_offsets(
     offsets
 }
 
-fn collect_h2_stream_body(producer: &Function) -> mlua::Result<Vec<u8>> {
-    let mut body = Vec::new();
-    for _ in 0..1024 {
-        match producer.call::<Value>(())? {
-            Value::Nil => return Ok(body),
-            Value::String(s) => body.extend_from_slice(&s.as_bytes()),
-            other => {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "stream producer must return string or nil, got {:?}",
-                    other
-                )));
-            }
-        }
-    }
-    Err(mlua::Error::RuntimeError(
-        "stream producer exceeded 1024 chunks".to_string(),
-    ))
-}
-
-fn collect_h2_sse_body(producer: &Function, body: &mut Vec<u8>) -> mlua::Result<()> {
-    for _ in 0..1024 {
-        match producer.call::<Value>(())? {
-            Value::Nil => return Ok(()),
-            value => EventLoop::write_sse_payload(body, value)?,
-        }
-    }
-    Err(mlua::Error::RuntimeError(
-        "SSE producer exceeded 1024 events".to_string(),
-    ))
+enum H2HandlerOutput {
+    Ready {
+        status: u16,
+        body: Bytes,
+        content_type: Option<String>,
+        headers: HashMap<String, String>,
+    },
+    Stream {
+        status: u16,
+        content_type: String,
+        headers: HashMap<String, String>,
+        producer: Arc<RegistryKey>,
+    },
+    Sse {
+        status: u16,
+        headers: HashMap<String, String>,
+        producer: Arc<RegistryKey>,
+        retry_ms: Option<u32>,
+    },
+    Status(u16),
 }
 
 pub struct EventLoop {
@@ -2348,6 +2341,10 @@ impl EventLoop {
             return Ok(true);
         }
 
+        if event.is_writable() {
+            self.poll_h2_response_streams(conn_idx)?;
+        }
+
         if process_http1 {
             self.start_request_coroutine(conn_idx)?;
             return Ok(true);
@@ -2377,6 +2374,102 @@ impl EventLoop {
         }
 
         Ok(true)
+    }
+
+    fn poll_h2_response_streams(&mut self, conn_idx: usize) -> Result<()> {
+        let stream_ids = {
+            let conns = self.connections.borrow();
+            let Some(conn) = conns.get(conn_idx) else {
+                return Ok(());
+            };
+            let Some(h2_data) = conn.h2_data.as_ref() else {
+                return Ok(());
+            };
+            if !conn.write_buf.is_empty() {
+                return Ok(());
+            }
+            h2_data.response_streams.keys().copied().collect::<Vec<_>>()
+        };
+
+        for stream_id in stream_ids {
+            let data = {
+                let conns = self.connections.borrow();
+                let Some(conn) = conns.get(conn_idx) else {
+                    return Ok(());
+                };
+                let Some(h2_data) = conn.h2_data.as_ref() else {
+                    return Ok(());
+                };
+                let Some(response_stream) = h2_data.response_streams.get(&stream_id) else {
+                    continue;
+                };
+                match response_stream {
+                    H2ResponseStream::Stream { producer } => {
+                        let producer: Function = self.lua.registry_value(producer)?;
+                        match producer.call::<Value>(())? {
+                            Value::Nil => None,
+                            Value::String(s) => Some(Bytes::copy_from_slice(&s.as_bytes())),
+                            other => {
+                                return Err(anyhow::anyhow!(
+                                    "stream producer must return string or nil, got {:?}",
+                                    other
+                                ));
+                            }
+                        }
+                    }
+                    H2ResponseStream::Sse {
+                        producer,
+                        retry_pending,
+                        retry_ms,
+                    } => {
+                        if *retry_pending {
+                            let mut body = Vec::new();
+                            SseWriter::format_retry(&mut body, *retry_ms);
+                            Some(Bytes::from(body))
+                        } else {
+                            let producer: Function = self.lua.registry_value(producer)?;
+                            match producer.call::<Value>(())? {
+                                Value::Nil => None,
+                                value => {
+                                    let mut body = Vec::new();
+                                    Self::write_sse_payload(&mut body, value)?;
+                                    Some(Bytes::from(body))
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            let mut conns = self.connections.borrow_mut();
+            let Some(conn) = conns.get_mut(conn_idx) else {
+                return Ok(());
+            };
+            if let Some(data) = data {
+                if let Some(H2ResponseStream::Sse { retry_pending, .. }) = conn
+                    .h2_data
+                    .as_mut()
+                    .and_then(|h2_data| h2_data.response_streams.get_mut(&stream_id))
+                {
+                    *retry_pending = false;
+                }
+                let frame = h2::data_frame(stream_id, data, false);
+                h2::encode_frame(&frame, &mut conn.write_buf)?;
+            } else {
+                if let Some(h2_data) = conn.h2_data.as_mut() {
+                    h2_data.response_streams.remove(&stream_id);
+                }
+                let frame = h2::data_frame(stream_id, Bytes::new(), true);
+                h2::encode_frame(&frame, &mut conn.write_buf)?;
+            }
+            let _ = conn.reregister(
+                self.poll.registry(),
+                Interest::READABLE | Interest::WRITABLE,
+            );
+            break;
+        }
+
+        Ok(())
     }
 
     fn drain_h2_frames(conn: &mut Connection) -> Result<Vec<Frame>> {
@@ -2522,12 +2615,17 @@ impl EventLoop {
         &mut self,
         conn_idx: usize,
         stream_id: u32,
-        response: std::result::Result<(u16, Bytes, Option<String>, HashMap<String, String>), u16>,
+        response: H2HandlerOutput,
     ) -> Result<()> {
         let mut conns = self.connections.borrow_mut();
         let conn = &mut conns[conn_idx];
         match response {
-            Ok((status, body, content_type, extra_headers)) => {
+            H2HandlerOutput::Ready {
+                status,
+                body,
+                content_type,
+                headers: extra_headers,
+            } => {
                 let status_text = status.to_string();
                 let content_len = body.len().to_string();
                 let mut owned = vec![
@@ -2557,7 +2655,71 @@ impl EventLoop {
                     h2::encode_frame(&data, &mut conn.write_buf)?;
                 }
             }
-            Err(status) => {
+            H2HandlerOutput::Stream {
+                status,
+                content_type,
+                headers: extra_headers,
+                producer,
+            } => {
+                let status_text = status.to_string();
+                let mut owned = vec![(b":status".to_vec(), status_text.into_bytes())];
+                owned.push((b"content-type".to_vec(), content_type.as_bytes().to_vec()));
+                for (name, value) in extra_headers {
+                    owned.push((name.to_ascii_lowercase().into_bytes(), value.into_bytes()));
+                }
+                let refs: Vec<(&[u8], &[u8])> = owned
+                    .iter()
+                    .map(|(name, value)| (name.as_slice(), value.as_slice()))
+                    .collect();
+                let h2_data = conn
+                    .h2_data
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?;
+                let block = h2_data.hpack.encode(&refs);
+                let headers = h2::headers_frame(stream_id, block, true, false);
+                h2::encode_frame(&headers, &mut conn.write_buf)?;
+                h2_data
+                    .response_streams
+                    .insert(stream_id, H2ResponseStream::Stream { producer });
+            }
+            H2HandlerOutput::Sse {
+                status,
+                mut headers,
+                producer,
+                retry_ms,
+            } => {
+                headers
+                    .entry("cache-control".to_string())
+                    .or_insert_with(|| "no-cache".to_string());
+                let status_text = status.to_string();
+                let mut owned = vec![
+                    (b":status".to_vec(), status_text.into_bytes()),
+                    (b"content-type".to_vec(), b"text/event-stream".to_vec()),
+                ];
+                for (name, value) in headers {
+                    owned.push((name.to_ascii_lowercase().into_bytes(), value.into_bytes()));
+                }
+                let refs: Vec<(&[u8], &[u8])> = owned
+                    .iter()
+                    .map(|(name, value)| (name.as_slice(), value.as_slice()))
+                    .collect();
+                let h2_data = conn
+                    .h2_data
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("missing h2 state"))?;
+                let block = h2_data.hpack.encode(&refs);
+                let headers = h2::headers_frame(stream_id, block, true, false);
+                h2::encode_frame(&headers, &mut conn.write_buf)?;
+                h2_data.response_streams.insert(
+                    stream_id,
+                    H2ResponseStream::Sse {
+                        producer,
+                        retry_pending: retry_ms.is_some(),
+                        retry_ms: retry_ms.unwrap_or(0),
+                    },
+                );
+            }
+            H2HandlerOutput::Status(status) => {
                 let status_text = status.to_string();
                 let block = conn
                     .h2_data
@@ -2579,15 +2741,14 @@ impl EventLoop {
         full_path: &str,
         headers: &[(String, String)],
         body: Bytes,
-    ) -> Result<std::result::Result<(u16, Bytes, Option<String>, HashMap<String, String>), u16>>
-    {
+    ) -> Result<H2HandlerOutput> {
         let (path, query_str) = if let Some(pos) = full_path.find('?') {
             (&full_path[..pos], Some(full_path[pos + 1..].to_string()))
         } else {
             (full_path, None)
         };
         let Some(http_method) = HttpMethod::from_str(method) else {
-            return Ok(Err(400));
+            return Ok(H2HandlerOutput::Status(400));
         };
         let (handler, params, is_head_request) = match self.router.match_route(http_method, path) {
             RouteMatch::Found {
@@ -2595,8 +2756,8 @@ impl EventLoop {
                 params,
                 is_head,
             } => (handler, params, is_head),
-            RouteMatch::MethodNotAllowed { .. } => return Ok(Err(405)),
-            RouteMatch::NotFound => return Ok(Err(404)),
+            RouteMatch::MethodNotAllowed { .. } => return Ok(H2HandlerOutput::Status(405)),
+            RouteMatch::NotFound => return Ok(H2HandlerOutput::Status(404)),
         };
 
         let mut raw = String::new();
@@ -2653,53 +2814,36 @@ impl EventLoop {
                 body,
                 content_type,
                 headers,
-            }) => Ok(Ok((
+            }) => Ok(H2HandlerOutput::Ready {
                 status,
-                if is_head_request { Bytes::new() } else { body },
-                content_type.map(str::to_string),
-                headers.unwrap_or_default(),
-            ))),
+                body: if is_head_request { Bytes::new() } else { body },
+                content_type: content_type.map(str::to_string),
+                headers: headers.unwrap_or_default(),
+            }),
             Ok(CoroutineResponse::Streaming {
                 status,
                 content_type,
                 headers,
                 chunk_producer,
-            }) => {
-                let producer: Function = self.lua.registry_value(&chunk_producer)?;
-                let body = collect_h2_stream_body(&producer)?;
-                Ok(Ok((
-                    status,
-                    Bytes::from(body),
-                    Some(content_type),
-                    headers.unwrap_or_default(),
-                )))
-            }
+            }) => Ok(H2HandlerOutput::Stream {
+                status,
+                content_type,
+                headers: headers.unwrap_or_default(),
+                producer: chunk_producer,
+            }),
             Ok(CoroutineResponse::Sse {
                 status,
                 headers,
                 event_producer,
                 retry_ms,
-            }) => {
-                let producer: Function = self.lua.registry_value(&event_producer)?;
-                let mut body = Vec::new();
-                if let Some(retry_ms) = retry_ms {
-                    SseWriter::format_retry(&mut body, retry_ms);
-                }
-                collect_h2_sse_body(&producer, &mut body)?;
-
-                let mut headers = headers.unwrap_or_default();
-                headers
-                    .entry("Cache-Control".to_string())
-                    .or_insert_with(|| "no-cache".to_string());
-                Ok(Ok((
-                    status,
-                    Bytes::from(body),
-                    Some("text/event-stream".to_string()),
-                    headers,
-                )))
-            }
-            Ok(CoroutineResponse::Yielded { .. }) => Ok(Err(501)),
-            Err(_) => Ok(Err(500)),
+            }) => Ok(H2HandlerOutput::Sse {
+                status,
+                headers: headers.unwrap_or_default(),
+                producer: event_producer,
+                retry_ms,
+            }),
+            Ok(CoroutineResponse::Yielded { .. }) => Ok(H2HandlerOutput::Status(501)),
+            Err(_) => Ok(H2HandlerOutput::Status(500)),
         }
     }
 
