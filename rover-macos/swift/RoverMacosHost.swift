@@ -49,8 +49,15 @@ func rover_macos_dispatch_submit(_ runtime: RoverRuntime?, _ id: UInt32, _ value
 @_silgen_name("rover_macos_dispatch_toggle")
 func rover_macos_dispatch_toggle(_ runtime: RoverRuntime?, _ id: UInt32, _ checked: Bool) -> Int32
 
+@_silgen_name("rover_macos_set_viewport")
+func rover_macos_set_viewport(_ runtime: RoverRuntime?, _ width: UInt16, _ height: UInt16) -> Int32
+
 @_silgen_name("rover_macos_last_error")
 func rover_macos_last_error(_ runtime: RoverRuntime?) -> UnsafePointer<CChar>?
+
+final class RoverContainerView: NSView {
+    override var isFlipped: Bool { true }
+}
 
 final class RoverButton: NSButton {
     var nodeID: UInt32 = 0
@@ -117,6 +124,14 @@ final class RoverMacosHost: NSObject, NSApplicationDelegate, NSTextFieldDelegate
         NSApp.terminate(nil)
     }
 
+    func windowDidResize(_ notification: Notification) {
+        guard let content = window?.contentView else { return }
+        let width = UInt16(max(1, min(content.bounds.width, CGFloat(UInt16.max))))
+        let height = UInt16(max(1, min(content.bounds.height, CGFloat(UInt16.max))))
+        _ = rover_macos_set_viewport(runtime, width, height)
+        tick()
+    }
+
     func createView(nodeID: UInt32, kind: Int32) -> RoverNativeView? {
         let view: NSView
         switch kind {
@@ -127,11 +142,12 @@ final class RoverMacosHost: NSObject, NSApplicationDelegate, NSTextFieldDelegate
                 backing: .buffered,
                 defer: false
             )
+            window.contentView = RoverContainerView(frame: NSRect(x: 0, y: 0, width: 900, height: 640))
             window.delegate = self
             window.center()
             window.makeKeyAndOrderFront(nil)
             self.window = window
-            view = window.contentView ?? NSView()
+            view = window.contentView ?? RoverContainerView()
         case 4:
             let text = NSTextField(labelWithString: "")
             text.lineBreakMode = .byWordWrapping
@@ -157,7 +173,7 @@ final class RoverMacosHost: NSObject, NSApplicationDelegate, NSTextFieldDelegate
             scroll.hasHorizontalScroller = false
             view = scroll
         default:
-            view = NSView()
+            view = RoverContainerView()
         }
         views[nodeID] = view
         return Unmanaged.passUnretained(view).toOpaque()
