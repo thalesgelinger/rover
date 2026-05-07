@@ -6,11 +6,11 @@ function rover.render()
 
   return macos.window {
     title = "Rover Counter",
-    width = 900,
+    width = 300,
     height = 640,
 
     ui.column {
-      mod = ui.mod:padding(24):gap(12),
+      style = { padding = 24, gap = 12 },
       ui.text { "Count: " .. count },
       ui.button {
         label = "Increment",
