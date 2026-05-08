@@ -1,5 +1,5 @@
 use crate::abi::{HostCallbacks, NativeViewHandle, NativeViewKind};
-use crate::layout::{LayoutMap, compute_layout};
+use crate::layout::{LayoutMap, Rect, compute_layout};
 use rover_ui::platform::UiTarget;
 use rover_ui::ui::{NodeId, Renderer, UiNode, UiRegistry};
 use std::collections::HashSet;
@@ -194,18 +194,33 @@ impl MacosRenderer {
     }
 
     fn apply_layout(&self, registry: &UiRegistry, node_id: NodeId) {
-        if let (Some(handle), Some(rect), Some(set_frame)) = (
-            self.handle(node_id),
-            self.layout.get(node_id),
-            self.callbacks.set_frame,
-        ) {
-            set_frame(handle, rect.x, rect.y, rect.width, rect.height);
+        self.apply_layout_relative_to(registry, node_id, None);
+    }
+
+    fn apply_layout_relative_to(
+        &self,
+        registry: &UiRegistry,
+        node_id: NodeId,
+        parent_rect: Option<Rect>,
+    ) {
+        let Some(node) = registry.get_node(node_id) else {
+            return;
+        };
+        let Some(rect) = self.layout.get(node_id) else {
+            return;
+        };
+
+        if !matches!(node, UiNode::MacosWindow { .. }) {
+            if let (Some(handle), Some(set_frame)) =
+                (self.handle(node_id), self.callbacks.set_frame)
+            {
+                let frame = rect.relative_to(parent_rect.unwrap_or_default());
+                set_frame(handle, frame.x, frame.y, frame.width, frame.height);
+            }
         }
 
-        if let Some(node) = registry.get_node(node_id) {
-            for child in children_for_node(node) {
-                self.apply_layout(registry, child);
-            }
+        for child in children_for_node(node) {
+            self.apply_layout_relative_to(registry, child, Some(rect));
         }
     }
 }

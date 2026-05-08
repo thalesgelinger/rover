@@ -77,6 +77,10 @@ impl MacosRuntime {
         self.app
             .renderer()
             .set_viewport_size(width as f32, height as f32);
+        let root = self.app.registry().borrow().root();
+        if let Some(root) = root {
+            self.app.registry().borrow_mut().mark_dirty(root);
+        }
     }
 }
 

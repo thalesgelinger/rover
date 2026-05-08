@@ -7,7 +7,7 @@ function rover.render()
   return macos.window {
     title = "Rover Counter",
     width = 300,
-    height = 640,
+    height = 300,
 
     ui.column {
       style = { padding = 24, gap = 12 },
@@ -19,9 +19,16 @@ function rover.render()
         end,
       },
       macos.scroll_view {
+        style = { height = 100, width = "full" },
         ui.column {
           ui.text { "Native AppKit scroll area" },
           ui.text { "Rover computes layout in px" },
+          ui.text { "Row 3" },
+          ui.text { "Row 4" },
+          ui.text { "Row 5" },
+          ui.text { "Row 6" },
+          ui.text { "Row 7" },
+          ui.text { "Row 8" },
         },
       },
     },

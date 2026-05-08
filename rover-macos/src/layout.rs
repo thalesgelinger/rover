@@ -9,6 +9,17 @@ pub struct Rect {
     pub height: f32,
 }
 
+impl Rect {
+    pub fn relative_to(self, parent: Rect) -> Self {
+        Self {
+            x: self.x - parent.x,
+            y: self.y - parent.y,
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
 pub struct LayoutMap {
     entries: Vec<Option<Rect>>,
 }
@@ -288,5 +299,31 @@ mod tests {
 
         assert_eq!(layout.get(first).unwrap().y, 0.0);
         assert_eq!(layout.get(second).unwrap().y, 20.0);
+    }
+
+    #[test]
+    fn converts_absolute_rect_to_parent_relative_frame() {
+        let parent = Rect {
+            x: 24.0,
+            y: 62.0,
+            width: 252.0,
+            height: 100.0,
+        };
+        let child = Rect {
+            x: 24.0,
+            y: 62.0,
+            width: 252.0,
+            height: 80.0,
+        };
+
+        assert_eq!(
+            child.relative_to(parent),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 252.0,
+                height: 80.0,
+            }
+        );
     }
 }
