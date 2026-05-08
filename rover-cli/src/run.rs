@@ -20,20 +20,148 @@ pub fn run_file(
     file: PathBuf,
     yolo: bool,
     platform: Option<Platform>,
+    device: bool,
+    device_id: Option<String>,
     args: Vec<String>,
 ) -> Result<()> {
     pre_run_db_analysis(&file, yolo)?;
 
     match platform {
+        Some(platform) if platform != Platform::Ios && (device || device_id.is_some()) => Err(
+            anyhow::anyhow!("--device and --device-id are only supported with --platform ios"),
+        ),
         None => rover_core::run(file.to_str().unwrap(), &args, false),
         Some(Platform::Stub) => run_with_stub(file, args),
         Some(Platform::Tui) => run_with_tui(file, args),
         Some(Platform::Web) => run_with_web(file, args),
         Some(Platform::Macos) => run_with_macos(file, args),
+        Some(Platform::Ios) => run_with_ios(file, args, device, device_id),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
         }
+    }
+}
+
+fn run_with_ios(
+    file: PathBuf,
+    args: Vec<String>,
+    device: bool,
+    device_id: Option<String>,
+) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        println!("Starting rover iOS UI runtime");
+        let mut options = load_ios_run_options(&file)?;
+        options.destination = if device || device_id.is_some() {
+            if options.team_id.is_none() {
+                return Err(anyhow::anyhow!(
+                    "iOS device run needs ios.team_id in rover.lua or ROVER_IOS_TEAM_ID"
+                ));
+            }
+            rover_ios::IosDestination::Device { id: device_id }
+        } else {
+            rover_ios::IosDestination::Simulator
+        };
+        rover_ios::launch_file(&file, &args, options)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (file, args, device, device_id);
+        Err(anyhow::anyhow!("iOS UI runtime only runs on macOS"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn load_ios_run_options(file: &PathBuf) -> Result<rover_ios::IosRunOptions> {
+    let mut options = rover_ios::IosRunOptions::default();
+    options.app_name = file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("Rover")
+        .to_string();
+    options.bundle_id = default_ios_bundle_id(&options.app_name);
+
+    if let Some(config) = load_rover_lua_config()? {
+        if let Some(name) = config.name {
+            options.app_name = name;
+            options.bundle_id = default_ios_bundle_id(&options.app_name);
+        }
+        if let Some(ios) = config.ios {
+            if let Some(bundle_id) = ios.bundle_id {
+                options.bundle_id = bundle_id;
+            }
+            options.team_id = ios.team_id;
+        }
+    }
+
+    if let Ok(team_id) = std::env::var("ROVER_IOS_TEAM_ID") {
+        if !team_id.is_empty() {
+            options.team_id = Some(team_id);
+        }
+    }
+
+    Ok(options)
+}
+
+#[cfg(target_os = "macos")]
+struct RoverLuaConfig {
+    name: Option<String>,
+    ios: Option<RoverLuaIosConfig>,
+}
+
+#[cfg(target_os = "macos")]
+struct RoverLuaIosConfig {
+    bundle_id: Option<String>,
+    team_id: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn load_rover_lua_config() -> Result<Option<RoverLuaConfig>> {
+    let path = PathBuf::from("rover.lua");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let lua = mlua::Lua::new();
+    let table: mlua::Table = lua
+        .load(&content)
+        .set_name("rover.lua")
+        .eval()
+        .map_err(|e| anyhow::anyhow!("Failed to parse rover.lua: {}", e))?;
+
+    let ios = match table.get::<Option<mlua::Table>>("ios")? {
+        Some(ios) => Some(RoverLuaIosConfig {
+            bundle_id: ios.get::<Option<String>>("bundle_id")?,
+            team_id: ios.get::<Option<String>>("team_id")?,
+        }),
+        None => None,
+    };
+
+    Ok(Some(RoverLuaConfig {
+        name: table.get::<Option<String>>("name")?,
+        ios,
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn default_ios_bundle_id(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if (ch == '-' || ch == '_' || ch == ' ') && !out.ends_with('.') {
+            out.push('.');
+        }
+    }
+    let out = out.trim_matches('.');
+    if out.is_empty() {
+        "lu.rover.generated.rover".to_string()
+    } else {
+        format!("lu.rover.generated.{out}")
     }
 }
 

@@ -47,6 +47,12 @@ pub enum Commands {
         /// Target platform
         #[arg(long, short)]
         platform: Option<Platform>,
+        /// Run on a physical device when supported
+        #[arg(long)]
+        device: bool,
+        /// Device UDID when supported
+        #[arg(long)]
+        device_id: Option<String>,
         /// Program args
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

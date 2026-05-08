@@ -54,8 +54,10 @@ fn main() -> Result<()> {
             file,
             yolo,
             platform,
+            device,
+            device_id,
             args,
-        } => run_file(file, yolo, platform, args),
+        } => run_file(file, yolo, platform, device, device_id, args),
         Commands::Build { file, out, target } => run_build_cmd(file, out, target),
     }
 }

@@ -2700,6 +2700,7 @@ dependencies = [
  "hpack",
  "mlua",
  "rcgen",
+ "rover-ios",
  "rover-lsp",
  "rover-macos",
  "rover-parser",
