@@ -319,8 +319,8 @@ fn collect_focusable_nodes(registry: &UiRegistry, node_id: NodeId, out: &mut Vec
         | UiNode::View { children }
         | UiNode::Stack { children }
         | UiNode::List { children, .. }
-        | UiNode::MacosWindow { children, .. }
-        | UiNode::MacosScrollView { children } => {
+        | UiNode::ScrollView { children }
+        | UiNode::MacosWindow { children, .. } => {
             let children = children.clone();
             for child_id in children {
                 collect_focusable_nodes(registry, child_id, out);

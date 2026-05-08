@@ -18,17 +18,11 @@ function rover.render()
           count.val = count.val + 1
         end,
       },
-      macos.scroll_view {
+      ui.scroll_view {
         style = { height = 100, width = "full" },
         ui.column {
           ui.text { "Native AppKit scroll area" },
           ui.text { "Rover computes layout in px" },
-          ui.text { "Row 3" },
-          ui.text { "Row 4" },
-          ui.text { "Row 5" },
-          ui.text { "Row 6" },
-          ui.text { "Row 7" },
-          ui.text { "Row 8" },
         },
       },
     },

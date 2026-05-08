@@ -331,6 +331,17 @@ impl UserData for LuaUi {
             Ok(LuaNode::new(node_id))
         });
 
+        methods.add_function("scroll_view", |lua, props: Table| {
+            let registry_rc = get_registry_rc(lua)?;
+            let children = extract_children(lua, &props)?;
+
+            let node = UiNode::ScrollView { children };
+            let node_id = registry_rc.borrow_mut().create_node(node);
+            apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
+
+            Ok(LuaNode::new(node_id))
+        });
+
         // Internal TUI-only constructor (exposed via rover.tui.scroll_box)
         methods.add_function("__tui_scroll_box", |lua, props: Table| {
             ensure_tui_target(lua)?;
@@ -469,7 +480,7 @@ impl UserData for LuaUi {
             let registry_rc = get_registry_rc(lua)?;
             let children = extract_children(lua, &props)?;
 
-            let node = UiNode::MacosScrollView { children };
+            let node = UiNode::ScrollView { children };
             let node_id = registry_rc.borrow_mut().create_node(node);
             apply_mod_to_node(lua, registry_rc.clone(), &props, node_id)?;
 
@@ -1087,8 +1098,8 @@ fn list_child_ids(node: &UiNode) -> Vec<super::node::NodeId> {
         | UiNode::View { children }
         | UiNode::Stack { children }
         | UiNode::List { children, .. }
-        | UiNode::MacosWindow { children, .. }
-        | UiNode::MacosScrollView { children } => children.clone(),
+        | UiNode::ScrollView { children }
+        | UiNode::MacosWindow { children, .. } => children.clone(),
         UiNode::Conditional { child, .. }
         | UiNode::KeyArea { child, .. }
         | UiNode::FullScreen { child, .. } => child.iter().copied().collect(),

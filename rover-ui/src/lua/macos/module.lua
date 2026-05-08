@@ -9,7 +9,7 @@ end
 
 function M.scroll_view(props)
   props = props or {}
-  return ui.__macos_scroll_view(props)
+  return ui.scroll_view(props)
 end
 
 return M

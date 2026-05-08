@@ -111,8 +111,8 @@ fn compute_node(
         | UiNode::View { children }
         | UiNode::Stack { children }
         | UiNode::List { children, .. }
-        | UiNode::MacosWindow { children, .. }
-        | UiNode::MacosScrollView { children } => {
+        | UiNode::ScrollView { children }
+        | UiNode::MacosWindow { children, .. } => {
             layout_column(registry, node_id, children, available, padding, gap, layout)
         }
         UiNode::ScrollBox { child, .. }

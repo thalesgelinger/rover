@@ -323,7 +323,7 @@ fn kind_for_node(node: &UiNode) -> NativeViewKind {
         UiNode::Image { .. } => NativeViewKind::Image,
         UiNode::Row { .. } => NativeViewKind::Row,
         UiNode::MacosWindow { .. } => NativeViewKind::Window,
-        UiNode::MacosScrollView { .. } | UiNode::ScrollBox { .. } => NativeViewKind::ScrollView,
+        UiNode::ScrollView { .. } | UiNode::ScrollBox { .. } => NativeViewKind::ScrollView,
         _ => NativeViewKind::Column,
     }
 }
@@ -335,8 +335,8 @@ fn children_for_node(node: &UiNode) -> Vec<NodeId> {
         | UiNode::View { children }
         | UiNode::Stack { children }
         | UiNode::List { children, .. }
-        | UiNode::MacosWindow { children, .. }
-        | UiNode::MacosScrollView { children } => children.clone(),
+        | UiNode::ScrollView { children }
+        | UiNode::MacosWindow { children, .. } => children.clone(),
         UiNode::ScrollBox { child, .. }
         | UiNode::FullScreen { child, .. }
         | UiNode::Conditional { child, .. }

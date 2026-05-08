@@ -450,8 +450,8 @@ impl TuiRenderer {
             | UiNode::View { children }
             | UiNode::Stack { children }
             | UiNode::List { children, .. }
-            | UiNode::MacosWindow { children, .. }
-            | UiNode::MacosScrollView { children } => flatten_list_nodes(registry, children),
+            | UiNode::ScrollView { children }
+            | UiNode::MacosWindow { children, .. } => flatten_list_nodes(registry, children),
             UiNode::ScrollBox { child, .. } => child.iter().copied().collect(),
             UiNode::Conditional { child, .. } => {
                 let raw: Vec<NodeId> = child.iter().copied().collect();
