@@ -26,6 +26,8 @@ cargo build --release
 ./target/release/rover run path/to/app.lua -p web
 ```
 
+For non-web runtime development with `cargo run -p rover_cli`, use `ROVER_WEB_SKIP_AUTO_BUILD=1` to skip web asset auto-build. See the macOS runtime guide for details.
+
 ## Your First Rover App
 
 Create a simple API server:

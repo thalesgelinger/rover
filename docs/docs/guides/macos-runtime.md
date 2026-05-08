@@ -35,4 +35,18 @@ Run:
 rover run examples/macos_counter.lua --platform macos
 ```
 
+During local `rover_cli` development, skip the web runtime asset build when you are only testing macOS:
+
+```bash
+ROVER_WEB_SKIP_AUTO_BUILD=1 cargo run -p rover_cli -- run examples/macos_counter.lua --platform macos
+```
+
+`cargo run -p rover_cli` builds the CLI first. The CLI build script prepares embedded web assets by default, even when the command runs the macOS target. `ROVER_WEB_SKIP_AUTO_BUILD=1` writes placeholder web assets instead, so macOS iteration does not require the web/WASM toolchain.
+
+If you already have built web assets, point the build script at them instead:
+
+```bash
+ROVER_WEB_ASSETS_TAR_GZ=/absolute/path/to/rover_web_assets.tar.gz cargo run -p rover_cli -- run examples/macos_counter.lua --platform macos
+```
+
 Build/package support is intentionally deferred while the native dev loop stabilizes.
