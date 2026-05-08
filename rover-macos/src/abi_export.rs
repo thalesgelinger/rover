@@ -1,6 +1,6 @@
 use crate::abi::{
-    AppendChildFn, CreateViewFn, HostCallbacks, RemoveViewFn, SetBoolFn, SetFrameFn, SetTextFn,
-    SetWindowFn, StopAppFn,
+    AppendChildFn, CreateViewFn, HostCallbacks, RemoveViewFn, SetBoolFn, SetFrameFn, SetStyleFn,
+    SetTextFn, SetWindowFn, StopAppFn,
 };
 use crate::runtime::MacosRuntime;
 use std::ffi::{CStr, CString, c_char};
@@ -47,6 +47,7 @@ pub unsafe extern "C" fn rover_macos_init_with_callbacks(
     set_frame: Option<SetFrameFn>,
     set_text: Option<SetTextFn>,
     set_bool: Option<SetBoolFn>,
+    set_style: Option<SetStyleFn>,
     set_window: Option<SetWindowFn>,
     stop_app: Option<StopAppFn>,
 ) -> *mut FfiRuntime {
@@ -58,6 +59,7 @@ pub unsafe extern "C" fn rover_macos_init_with_callbacks(
             set_frame,
             set_text,
             set_bool,
+            set_style,
             set_window,
             stop_app,
         })

@@ -1,7 +1,7 @@
 use crate::abi::{HostCallbacks, NativeViewHandle, NativeViewKind};
 use crate::layout::{LayoutMap, Rect, compute_layout};
 use rover_ui::platform::UiTarget;
-use rover_ui::ui::{NodeId, Renderer, UiNode, UiRegistry};
+use rover_ui::ui::{NodeId, Renderer, StyleOp, UiNode, UiRegistry};
 use std::collections::HashSet;
 use std::ffi::c_void;
 
@@ -210,6 +210,10 @@ impl MacosRenderer {
             return;
         };
 
+        if let Some(handle) = self.handle(node_id) {
+            self.apply_style(registry, node_id, handle);
+        }
+
         if !matches!(node, UiNode::MacosWindow { .. }) {
             if let (Some(handle), Some(set_frame)) =
                 (self.handle(node_id), self.callbacks.set_frame)
@@ -222,6 +226,40 @@ impl MacosRenderer {
         for child in children_for_node(node) {
             self.apply_layout_relative_to(registry, child, Some(rect));
         }
+    }
+
+    fn apply_style(&self, registry: &UiRegistry, node_id: NodeId, handle: NativeViewHandle) {
+        let Some(set_style) = self.callbacks.set_style else {
+            return;
+        };
+        let Some(style) = registry.get_node_style(node_id) else {
+            return;
+        };
+
+        let mut bg = "";
+        let mut border = "";
+        let mut border_width = 0.0;
+
+        for op in &style.ops {
+            match op {
+                StyleOp::BgColor(value) => bg = value,
+                StyleOp::BorderColor(value) => border = value,
+                StyleOp::BorderWidth(value) => border_width = *value as f32,
+                StyleOp::Padding(_) => {}
+            }
+        }
+
+        let text = style.color.as_deref().unwrap_or("");
+        set_style(
+            handle,
+            bg.as_ptr().cast(),
+            bg.len(),
+            border.as_ptr().cast(),
+            border.len(),
+            border_width,
+            text.as_ptr().cast(),
+            text.len(),
+        );
     }
 }
 

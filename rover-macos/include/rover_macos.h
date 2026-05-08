@@ -27,6 +27,7 @@ typedef void (*RoverRemoveViewFn)(RoverNativeView view);
 typedef void (*RoverSetFrameFn)(RoverNativeView view, float x, float y, float width, float height);
 typedef void (*RoverSetTextFn)(RoverNativeView view, const char *ptr, uintptr_t len);
 typedef void (*RoverSetBoolFn)(RoverNativeView view, bool value);
+typedef void (*RoverSetStyleFn)(RoverNativeView view, const char *bg_ptr, uintptr_t bg_len, const char *border_ptr, uintptr_t border_len, float border_width, const char *text_ptr, uintptr_t text_len);
 typedef void (*RoverSetWindowFn)(RoverNativeView view, const char *title, uintptr_t len, float width, float height);
 typedef void (*RoverStopAppFn)(void);
 
@@ -37,6 +38,7 @@ typedef struct RoverHostCallbacks {
   RoverSetFrameFn set_frame;
   RoverSetTextFn set_text;
   RoverSetBoolFn set_bool;
+  RoverSetStyleFn set_style;
   RoverSetWindowFn set_window;
   RoverStopAppFn stop_app;
 } RoverHostCallbacks;
@@ -49,6 +51,7 @@ RoverMacosRuntime rover_macos_init_with_callbacks(
   RoverSetFrameFn set_frame,
   RoverSetTextFn set_text,
   RoverSetBoolFn set_bool,
+  RoverSetStyleFn set_style,
   RoverSetWindowFn set_window,
   RoverStopAppFn stop_app
 );

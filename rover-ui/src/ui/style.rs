@@ -69,13 +69,13 @@ impl NodeStyle {
         if let Some(v) = to_u16(get_alias(table, &["padding"])?) {
             style.ops.push(StyleOp::Padding(v));
         }
-        if let Some(v) = to_string(get_alias(table, &["backgroundColor", "bg_color"])?) {
+        if let Some(v) = to_string(get_alias(table, &["bg_color"])?) {
             style.ops.push(StyleOp::BgColor(v));
         }
-        if let Some(v) = to_string(get_alias(table, &["borderColor", "border_color"])?) {
+        if let Some(v) = to_string(get_alias(table, &["border_color"])?) {
             style.ops.push(StyleOp::BorderColor(v));
         }
-        if let Some(v) = to_u16(get_alias(table, &["borderWidth", "border_width"])?) {
+        if let Some(v) = to_u16(get_alias(table, &["border_width"])?) {
             style.ops.push(StyleOp::BorderWidth(v));
         }
 
@@ -111,10 +111,7 @@ impl NodeStyle {
 
         style.width = parse_size_opt(get_alias(table, &["width"])?);
         style.height = parse_size_opt(get_alias(table, &["height"])?);
-        style.color = to_string(get_alias(
-            table,
-            &["color", "textColor", "fg_color", "text_color"],
-        )?);
+        style.color = to_string(get_alias(table, &["color", "fg_color", "text_color"])?);
 
         if let Some(pos) = to_string(get_alias(table, &["position"])?) {
             style.position = match pos.as_str() {
@@ -129,10 +126,10 @@ impl NodeStyle {
         style.right = to_i32(get_alias(table, &["right"])?);
         style.bottom = to_i32(get_alias(table, &["bottom"])?);
 
-        style.grow = to_f64(get_alias(table, &["grow", "flexGrow"])?);
+        style.grow = to_f64(get_alias(table, &["grow", "flex_grow"])?);
         style.gap = to_u16(get_alias(table, &["gap"])?);
-        style.justify = to_string(get_alias(table, &["justify", "justifyContent"])?);
-        style.align = to_string(get_alias(table, &["align", "alignItems"])?);
+        style.justify = to_string(get_alias(table, &["justify", "justify_content"])?);
+        style.align = to_string(get_alias(table, &["align", "align_items"])?);
         style.horizontal =
             to_string(get_alias(table, &["horizontal"])?).or_else(|| style.justify.clone());
         style.vertical =

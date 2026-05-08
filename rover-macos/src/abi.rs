@@ -24,6 +24,16 @@ pub type SetFrameFn =
     extern "C" fn(view: NativeViewHandle, x: f32, y: f32, width: f32, height: f32);
 pub type SetTextFn = extern "C" fn(view: NativeViewHandle, ptr: *const c_char, len: usize);
 pub type SetBoolFn = extern "C" fn(view: NativeViewHandle, value: bool);
+pub type SetStyleFn = extern "C" fn(
+    view: NativeViewHandle,
+    bg_ptr: *const c_char,
+    bg_len: usize,
+    border_ptr: *const c_char,
+    border_len: usize,
+    border_width: f32,
+    text_ptr: *const c_char,
+    text_len: usize,
+);
 pub type SetWindowFn = extern "C" fn(
     view: NativeViewHandle,
     title: *const c_char,
@@ -42,6 +52,7 @@ pub struct HostCallbacks {
     pub set_frame: Option<SetFrameFn>,
     pub set_text: Option<SetTextFn>,
     pub set_bool: Option<SetBoolFn>,
+    pub set_style: Option<SetStyleFn>,
     pub set_window: Option<SetWindowFn>,
     pub stop_app: Option<StopAppFn>,
 }
