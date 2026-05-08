@@ -140,6 +140,7 @@ Run from repo root unless noted.
 - No released versions yet: API deprecations do not need backward-compatibility handling for now.
 - For any Rover Lua changes, ask user to confirm simplicity direction before broad edits; primary goal is extreme simplicity for humans and token efficiency for LLMs, informed by diverse ecosystems.
 - When changing the Lua API, update `docs/` in the same work so docs stay in sync with available features.
+- For all Lua API changes, update `rover-parser` and `rover-lsp` in the same work to keep autocomplete and language tooling in sync with new features.
 - If touching multiple crates, validate with targeted package tests first.
 - Prefer targeted checks before full workspace runs for faster loops.
 - Do not add new dependencies without clear need.
