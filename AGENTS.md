@@ -13,11 +13,22 @@ Purpose: fast, safe defaults for agentic edits in this repo.
   - rover-types
   - rover-db
   - rover-ui
+  - rover-apple
   - rover-runtime
   - rover-bundler
   - rover-tui
   - rover-openapi
 - Docs app in `docs/` (Docusaurus + TypeScript).
+
+## Renderer Contract
+- `rover-ui` owns shared UI nodes, signals, events, style data, dirty-node tracking, and the `Renderer` trait.
+- A renderer is a platform crate that implements `rover_ui::ui::Renderer` for one target and mutates platform-native views from `mount`, `update`, `node_added`, and `node_removed`.
+- Renderers must create one native/platform view per `NodeId` where practical and mutate existing views on dirty updates; do not rebuild whole trees unless unavoidable.
+- Renderers report their target with `UiTarget` so Lua namespace capability gates stay correct.
+- Shared components belong in `rover.ui`; platform-only components belong behind explicit platform namespaces and capabilities.
+- Apple renderers share low-level ABI/layout/style primitives through `rover-apple`; AppKit/UIKit host code stays in `rover-macos`/`rover-ios`.
+- Apple bridges use typed C ABI callbacks with raw native handles, `NodeId` integers, `ptr + len` strings, typed style values, and no JSON transport.
+- Apple hosts should be event/timer-driven using `next_wake_ms`; avoid idle 60fps loops unless animation support requires it later.
 
 ## Build / Check / Lint / Test
 Run from repo root unless noted.

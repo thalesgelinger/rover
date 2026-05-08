@@ -7,6 +7,8 @@
 - Shared scroll containers use `rover.ui.scroll_view`.
 - Children use positional Lua table entries, not `child = ...`.
 - Layout is px-based and computed by Rover, then applied to native AppKit views.
+- macOS shares Apple renderer ABI/layout primitives with iOS through `rover-apple`.
+- The native bridge uses typed callbacks and raw view handles, not JSON.
 
 ```lua
 local ui = rover.ui
