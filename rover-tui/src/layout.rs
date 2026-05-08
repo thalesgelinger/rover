@@ -120,7 +120,10 @@ pub fn compute_layout(
             (width, height)
         }
 
-        UiNode::Column { children } | UiNode::View { children } => {
+        UiNode::Column { children }
+        | UiNode::View { children }
+        | UiNode::ScrollView { children }
+        | UiNode::MacosWindow { children, .. } => {
             let children = flatten_list_nodes(registry, children);
             let mut total_height: u16 = 0;
             let mut max_width: u16 = 0;
@@ -801,7 +804,9 @@ fn child_nodes(registry: &UiRegistry, node_id: NodeId) -> Vec<NodeId> {
         | UiNode::Row { children }
         | UiNode::View { children }
         | UiNode::Stack { children }
-        | UiNode::List { children, .. } => children.clone(),
+        | UiNode::List { children, .. }
+        | UiNode::ScrollView { children }
+        | UiNode::MacosWindow { children, .. } => children.clone(),
         UiNode::ScrollBox {
             child: Some(child),
             stick_bottom: _,
@@ -913,11 +918,13 @@ pub fn node_content(node: &UiNode) -> Option<String> {
         | UiNode::Row { .. }
         | UiNode::View { .. }
         | UiNode::ScrollBox { .. }
+        | UiNode::ScrollView { .. }
         | UiNode::Stack { .. }
         | UiNode::FullScreen { .. }
         | UiNode::Conditional { .. }
         | UiNode::KeyArea { .. }
         | UiNode::List { .. }
+        | UiNode::MacosWindow { .. }
         | UiNode::Image { .. } => None,
     }
 }

@@ -63,6 +63,7 @@ ru.view {
 ```
 
 - Order matters for wrapper ops (`bg_color`, `padding`, `border_*`).
+- Style table keys are snake_case, for example `bg_color`, `border_color`, `border_width`, `text_color`, `flex_grow`, `justify_content`, and `align_items`.
 - You can extend globally:
 
 ```lua

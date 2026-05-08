@@ -103,14 +103,21 @@ pub fn create_db_module(lua: &Lua) -> LuaResult<LuaTable> {
 }
 
 enum ExecutorCommand {
-    Query { sql: String, mode: String },
+    Query {
+        sql: String,
+        mode: String,
+    },
     Insert {
         sql: String,
         table_name: String,
         data: LuaValue,
     },
-    Update { sql: String },
-    Delete { sql: String },
+    Update {
+        sql: String,
+    },
+    Delete {
+        sql: String,
+    },
     Raw {
         sql: String,
         params: Option<LuaTable>,

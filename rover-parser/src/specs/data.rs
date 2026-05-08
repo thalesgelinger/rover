@@ -282,6 +282,7 @@ pub(super) fn build_specs() -> Vec<ApiSpec> {
                 api_member!("ws_client" => "rover_ws_client_constructor", "Create a WebSocket client.", method),
                 api_member!("ui" => "any", "UI namespace.", field),
                 api_member!("tui" => "any", "Terminal UI namespace.", field),
+                api_member!("macos" => "any", "macOS native UI namespace.", field),
                 api_member!("signal" => "rover_signal_constructor", "Create a reactive signal.", method),
                 api_member!("derive" => "rover_derive", "Create a derived reactive value.", method)
             ]

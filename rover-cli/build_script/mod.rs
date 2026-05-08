@@ -27,6 +27,13 @@ pub fn run() {
         return;
     }
 
+    if env::var(SKIP_AUTO_BUILD_ENV).is_ok() {
+        println!("cargo:warning=rover-cli build.rs: using placeholder web assets");
+        archive::write_placeholder_archive(&out_tar)
+            .expect("failed to write placeholder web assets");
+        return;
+    }
+
     println!("cargo:warning=rover-cli build.rs: auto-building rover-web-wasm");
     if let Err(err) = web_wasm::auto_build_archive(&out_tar) {
         panic!("web assets auto-build failed: {err}");

@@ -115,6 +115,13 @@ impl StubRenderer {
                     }
                     self.log(&format!("{}}}", indent_str));
                 }
+                UiNode::ScrollView { children } => {
+                    self.log(&format!("{}ScrollView(id={:?}) {{", indent_str, node_id));
+                    for &child_id in children {
+                        self.print_node(registry, child_id, indent + 1);
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
                 UiNode::Stack { children } => {
                     self.log(&format!("{}Stack(id={:?}) {{", indent_str, node_id));
                     for &child_id in children {
@@ -213,6 +220,21 @@ impl StubRenderer {
                     }
                     self.log(&format!("{}}}", indent_str));
                 }
+                UiNode::MacosWindow {
+                    title,
+                    width,
+                    height,
+                    children,
+                } => {
+                    self.log(&format!(
+                        "{}MacosWindow(id={:?}, title=\"{}\", width={}, height={}) {{",
+                        indent_str, node_id, title, width, height
+                    ));
+                    for &child_id in children {
+                        self.print_node(registry, child_id, indent + 1);
+                    }
+                    self.log(&format!("{}}}", indent_str));
+                }
             }
         }
     }
@@ -303,6 +325,13 @@ impl Renderer for StubRenderer {
                         }
                         self.log("  }");
                     }
+                    UiNode::ScrollView { children } => {
+                        self.log(&format!("  Updated ScrollView(id={:?}) {{", node_id));
+                        for &child_id in children {
+                            self.print_node(registry, child_id, 3);
+                        }
+                        self.log("  }");
+                    }
                     UiNode::Stack { .. } => {
                         self.log(&format!("  Updated Stack(id={:?})", node_id));
                     }
@@ -370,6 +399,13 @@ impl Renderer for StubRenderer {
                     }
                     UiNode::List { children, .. } => {
                         self.log(&format!("  Updated List(id={:?}) {{", node_id));
+                        for &child_id in children {
+                            self.print_node(registry, child_id, 3);
+                        }
+                        self.log("  }");
+                    }
+                    UiNode::MacosWindow { children, .. } => {
+                        self.log(&format!("  Updated MacosWindow(id={:?}) {{", node_id));
                         for &child_id in children {
                             self.print_node(registry, child_id, 3);
                         }

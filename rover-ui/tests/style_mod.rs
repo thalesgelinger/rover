@@ -12,7 +12,7 @@ fn test_style_object_is_supported() {
             r#"
             local ui = rover.ui
             local node = ui.view {
-                style = { backgroundColor = "surface" },
+                style = { bg_color = "surface" },
                 ui.text { "x" }
             }
             rover.render = function() return node end
@@ -38,7 +38,7 @@ fn test_reactive_style_updates_style() {
 
             function rover.render()
                 return ui.view {
-                    style = { backgroundColor = _G.bg },
+                    style = { bg_color = _G.bg },
                     ui.text { "x" },
                 }
             end

@@ -23,6 +23,19 @@ pub fn write_runtime_archive(
     finish_archive(tar)
 }
 
+pub fn write_placeholder_archive(out_path: &Path) -> std::io::Result<()> {
+    let file = fs::File::create(out_path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    append_str(&mut tar, "index.html", embedded::runtime_index_html())?;
+    append_str(&mut tar, "loader.js", embedded::runtime_loader_js())?;
+    append_str(&mut tar, "rover_web_wasm.js", "")?;
+    append_str(&mut tar, "rover_web_wasm.wasm", "")?;
+
+    finish_archive(tar)
+}
+
 fn finish_archive(tar: Builder<GzEncoder<fs::File>>) -> std::io::Result<()> {
     let encoder = tar.into_inner()?;
     let mut file = encoder.finish()?;

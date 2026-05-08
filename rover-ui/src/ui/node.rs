@@ -103,6 +103,9 @@ pub enum UiNode {
         child: Option<NodeId>,
         stick_bottom: bool,
     },
+    ScrollView {
+        children: Vec<NodeId>,
+    },
     Stack {
         children: Vec<NodeId>,
     },
@@ -136,6 +139,12 @@ pub enum UiNode {
     },
     List {
         items_effect: EffectId,
+        children: Vec<NodeId>,
+    },
+    MacosWindow {
+        title: String,
+        width: u16,
+        height: u16,
         children: Vec<NodeId>,
     },
 }
