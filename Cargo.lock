@@ -2607,6 +2607,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rover-ios"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mlua",
+ "rover-apple",
+ "rover_ui",
+]
+
+[[package]]
 name = "rover-lsp"
 version = "0.1.0"
 dependencies = [

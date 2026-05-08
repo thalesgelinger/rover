@@ -1,0 +1,294 @@
+use crate::abi::HostCallbacks;
+use crate::renderer::IosRenderer;
+use anyhow::{Context, Result};
+use rover_ui::app::App;
+use rover_ui::events::UiEvent;
+use rover_ui::ui::NodeId;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Instant;
+
+pub struct IosRuntime {
+    app: App<IosRenderer>,
+}
+
+impl IosRuntime {
+    pub fn new(callbacks: HostCallbacks) -> mlua::Result<Self> {
+        let renderer = IosRenderer::new(callbacks);
+        let app = App::new(renderer)?;
+        Ok(Self { app })
+    }
+
+    pub fn load_lua(&mut self, source: &str) -> mlua::Result<()> {
+        self.app.run_script(source)?;
+        self.app.mount()
+    }
+
+    pub fn tick(&mut self) -> mlua::Result<bool> {
+        self.app.tick()
+    }
+
+    pub fn next_wake_ms(&self) -> i32 {
+        self.app
+            .next_wake_time()
+            .map(|wake| {
+                let now = Instant::now();
+                if wake <= now {
+                    0
+                } else {
+                    wake.saturating_duration_since(now)
+                        .as_millis()
+                        .min(i32::MAX as u128) as i32
+                }
+            })
+            .unwrap_or(-1)
+    }
+
+    pub fn dispatch_click(&mut self, id: u32) {
+        self.app.push_event(UiEvent::Click {
+            node_id: NodeId::from_u32(id),
+        });
+    }
+
+    pub fn dispatch_input(&mut self, id: u32, value: String) {
+        self.app.push_event(UiEvent::Change {
+            node_id: NodeId::from_u32(id),
+            value,
+        });
+    }
+
+    pub fn dispatch_submit(&mut self, id: u32, value: String) {
+        self.app.push_event(UiEvent::Submit {
+            node_id: NodeId::from_u32(id),
+            value,
+        });
+    }
+
+    pub fn dispatch_toggle(&mut self, id: u32, checked: bool) {
+        self.app.push_event(UiEvent::Toggle {
+            node_id: NodeId::from_u32(id),
+            checked,
+        });
+    }
+
+    pub fn set_viewport(&mut self, width: u16, height: u16) {
+        self.app.set_viewport_size(width, height);
+        self.app
+            .renderer()
+            .set_viewport_size(width as f32, height as f32);
+        let root = self.app.registry().borrow().root();
+        if let Some(root) = root {
+            self.app.registry().borrow_mut().mark_dirty(root);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum IosDestination {
+    Simulator,
+    Device { id: Option<String> },
+}
+
+#[derive(Debug, Clone)]
+pub struct IosRunOptions {
+    pub destination: IosDestination,
+    pub app_name: String,
+    pub bundle_id: String,
+    pub team_id: Option<String>,
+}
+
+impl Default for IosRunOptions {
+    fn default() -> Self {
+        Self {
+            destination: IosDestination::Simulator,
+            app_name: "Rover".to_string(),
+            bundle_id: "lu.rover.generated.rover".to_string(),
+            team_id: None,
+        }
+    }
+}
+
+pub fn run_file(file: &Path, _args: &[String]) -> Result<()> {
+    let source = fs::read_to_string(file)?;
+    let mut runtime = IosRuntime::new(HostCallbacks::default())?;
+    runtime.load_lua(&source)?;
+    runtime.tick()?;
+    println!("iOS runtime mounted. UIKit host bridge scaffold ready.");
+    Ok(())
+}
+
+pub fn launch_file(file: &Path, args: &[String], options: IosRunOptions) -> Result<()> {
+    let project = IosProject::prepare(file, &options)?;
+    project.build_runtime()?;
+    project.write_template()?;
+    project.apply_plugins_scaffold()?;
+    project.build_and_run(args, &options)
+}
+
+struct IosProject {
+    root: PathBuf,
+    source_file: PathBuf,
+    runtime_lib: PathBuf,
+}
+
+impl IosProject {
+    fn prepare(file: &Path, _options: &IosRunOptions) -> Result<Self> {
+        let workspace = std::env::current_dir()?;
+        let root = workspace.join(".rover/ios");
+        let runtime_lib = workspace.join("target/ios/librover_ios.a");
+        Ok(Self {
+            root,
+            source_file: file.canonicalize()?,
+            runtime_lib,
+        })
+    }
+
+    fn build_runtime(&self) -> Result<()> {
+        let Some(parent) = self.runtime_lib.parent() else {
+            return Err(anyhow::anyhow!("failed to resolve iOS runtime output dir"));
+        };
+        fs::create_dir_all(parent)?;
+
+        let target = simulator_target();
+        ensure_rust_target(target)?;
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "rover-ios",
+                "--target",
+                target,
+                "--target-dir",
+                "target/ios-build",
+            ])
+            .status()
+            .context("failed to build rover-ios runtime")?;
+        if !status.success() {
+            return Err(anyhow::anyhow!("failed to build rover-ios runtime"));
+        }
+
+        let built = PathBuf::from("target/ios-build")
+            .join(target)
+            .join("debug")
+            .join("librover_ios.a");
+        fs::copy(&built, &self.runtime_lib).with_context(|| {
+            format!(
+                "failed to copy iOS runtime from {} to {}",
+                built.display(),
+                self.runtime_lib.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    fn write_template(&self) -> Result<()> {
+        let app_dir = self.root.join("RoverIosHost");
+        fs::create_dir_all(&app_dir)?;
+        fs::write(app_dir.join("RoverIosHost.swift"), IOS_HOST_SWIFT)?;
+        fs::write(app_dir.join("Info.plist"), INFO_PLIST)?;
+        fs::copy(&self.source_file, app_dir.join("bundle.lua"))?;
+        fs::write(self.root.join("README.md"), GENERATED_README)?;
+        Ok(())
+    }
+
+    fn apply_plugins_scaffold(&self) -> Result<()> {
+        let plugins = PathBuf::from("native/ios/plugins");
+        if plugins.exists() {
+            println!(
+                "native iOS plugins found at {}; apply support scaffolded, diff replay pending",
+                plugins.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn build_and_run(&self, _args: &[String], options: &IosRunOptions) -> Result<()> {
+        write_project_file(&self.root, &self.runtime_lib, options)?;
+        let destination = match &options.destination {
+            IosDestination::Simulator => "platform=iOS Simulator,name=iPhone 15".to_string(),
+            IosDestination::Device { id: Some(id) } => format!("id={id}"),
+            IosDestination::Device { id: None } => "generic/platform=iOS".to_string(),
+        };
+
+        let status = Command::new("xcodebuild")
+            .arg("-project")
+            .arg(self.root.join("RoverIosHost.xcodeproj"))
+            .arg("-scheme")
+            .arg("RoverIosHost")
+            .arg("-destination")
+            .arg(destination)
+            .arg("build")
+            .status()
+            .context("failed to run xcodebuild for iOS host")?;
+
+        if !status.success() {
+            return Err(anyhow::anyhow!(
+                "iOS host build failed with status {status}"
+            ));
+        }
+
+        println!("Built iOS host at {}", self.root.display());
+        Ok(())
+    }
+}
+
+fn simulator_target() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    return "aarch64-apple-ios-sim";
+    #[cfg(target_arch = "x86_64")]
+    return "x86_64-apple-ios";
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    "aarch64-apple-ios-sim"
+}
+
+fn ensure_rust_target(target: &str) -> Result<()> {
+    let status = Command::new("rustup")
+        .args(["target", "add", target])
+        .status()
+        .context("failed to run rustup target add")?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("failed to install Rust target {target}"));
+    }
+    Ok(())
+}
+
+fn write_project_file(root: &Path, runtime_lib: &Path, options: &IosRunOptions) -> Result<()> {
+    let project_dir = root.join("RoverIosHost.xcodeproj");
+    fs::create_dir_all(&project_dir)?;
+    let team = options.team_id.as_deref().unwrap_or("");
+    let pbxproj = PROJECT_PBXPROJ
+        .replace("__BUNDLE_ID__", &options.bundle_id)
+        .replace("__TEAM_ID__", team)
+        .replace("__APP_NAME__", &options.app_name)
+        .replace("__RUNTIME_LIB__", &runtime_lib.display().to_string());
+    fs::write(project_dir.join("project.pbxproj"), pbxproj)?;
+    Ok(())
+}
+
+const GENERATED_README: &str = r#"# Generated Rover iOS Project
+
+This directory is managed by Rover.
+
+Edit it when exploring native changes, then capture managed native plugins with:
+
+```bash
+rover capture -p ios <name>
+```
+"#;
+
+const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <false/>
+  </dict>
+</dict>
+</plist>
+"#;
+
+const IOS_HOST_SWIFT: &str = include_str!("../template/RoverIosHost.swift");
+const PROJECT_PBXPROJ: &str = include_str!("../template/project.pbxproj");
