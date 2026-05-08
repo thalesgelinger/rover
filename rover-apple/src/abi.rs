@@ -93,7 +93,14 @@ pub type RemoveViewFn = extern "C" fn(view: AppleViewHandle);
 pub type SetFrameFn = extern "C" fn(view: AppleViewHandle, x: f32, y: f32, width: f32, height: f32);
 pub type SetTextFn = extern "C" fn(view: AppleViewHandle, ptr: *const c_char, len: usize);
 pub type SetBoolFn = extern "C" fn(view: AppleViewHandle, value: bool);
-pub type SetStyleFn = extern "C" fn(view: AppleViewHandle, style: AppleStyle);
+pub type SetStyleFn = extern "C" fn(
+    view: AppleViewHandle,
+    flags: u32,
+    bg_rgba: u32,
+    border_rgba: u32,
+    text_rgba: u32,
+    border_width: u16,
+);
 pub type SetWindowFn =
     extern "C" fn(view: AppleViewHandle, title: *const c_char, len: usize, width: f32, height: f32);
 pub type StopAppFn = extern "C" fn();

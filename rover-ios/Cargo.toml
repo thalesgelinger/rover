@@ -8,6 +8,11 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 anyhow = "1.0.100"
-mlua = { version = "0.11.5", features = ["anyhow", "vendored", "luajit52"] }
 rover-apple = { path = "../rover-apple" }
 rover_ui = { path = "../rover-ui" }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+mlua = { version = "0.11.5", default-features = false, features = ["anyhow", "vendored", "lua54"] }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+mlua = { version = "0.11.5", default-features = false, features = ["anyhow", "vendored", "luajit52"] }

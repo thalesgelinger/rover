@@ -217,7 +217,15 @@ impl IosRenderer {
             return;
         };
 
-        set_style(handle, AppleStyle::from_node_style(style));
+        let style = AppleStyle::from_node_style(style);
+        set_style(
+            handle,
+            style.flags,
+            style.bg_rgba,
+            style.border_rgba,
+            style.text_rgba,
+            style.border_width,
+        );
     }
 }
 

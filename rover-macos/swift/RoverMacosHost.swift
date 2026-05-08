@@ -10,17 +10,9 @@ typealias RoverRemoveViewFn = @convention(c) (RoverNativeView?) -> Void
 typealias RoverSetFrameFn = @convention(c) (RoverNativeView?, Float, Float, Float, Float) -> Void
 typealias RoverSetTextFn = @convention(c) (RoverNativeView?, UnsafePointer<CChar>?, Int) -> Void
 typealias RoverSetBoolFn = @convention(c) (RoverNativeView?, Bool) -> Void
-typealias RoverSetStyleFn = @convention(c) (RoverNativeView?, RoverAppleStyle) -> Void
+typealias RoverSetStyleFn = @convention(c) (RoverNativeView?, UInt32, UInt32, UInt32, UInt32, UInt16) -> Void
 typealias RoverSetWindowFn = @convention(c) (RoverNativeView?, UnsafePointer<CChar>?, Int, Float, Float) -> Void
 typealias RoverStopAppFn = @convention(c) () -> Void
-
-struct RoverAppleStyle {
-    let flags: UInt32
-    let bgRgba: UInt32
-    let borderRgba: UInt32
-    let textRgba: UInt32
-    let borderWidth: UInt16
-}
 
 @_silgen_name("rover_macos_init_with_callbacks")
 func rover_macos_init_with_callbacks(
@@ -231,24 +223,24 @@ final class RoverMacosHost: NSObject, NSApplicationDelegate, NSTextFieldDelegate
         }
     }
 
-    func setStyle(view: RoverNativeView?, style: RoverAppleStyle) {
+    func setStyle(view: RoverNativeView?, flags: UInt32, bgRgba: UInt32, borderRgba: UInt32, textRgba: UInt32, borderWidth: UInt16) {
         guard let view else { return }
         let nsView = Unmanaged<NSView>.fromOpaque(view).takeUnretainedValue()
 
-        if style.flags & 1 != 0 {
+        if flags & 1 != 0 {
             nsView.wantsLayer = true
-            nsView.layer?.backgroundColor = color(style.bgRgba).cgColor
+            nsView.layer?.backgroundColor = color(bgRgba).cgColor
         }
-        if style.flags & 2 != 0 {
+        if flags & 2 != 0 {
             nsView.wantsLayer = true
-            nsView.layer?.borderColor = color(style.borderRgba).cgColor
+            nsView.layer?.borderColor = color(borderRgba).cgColor
         }
-        if style.flags & 8 != 0 {
+        if flags & 8 != 0 {
             nsView.wantsLayer = true
-            nsView.layer?.borderWidth = CGFloat(style.borderWidth)
+            nsView.layer?.borderWidth = CGFloat(borderWidth)
         }
-        if style.flags & 4 != 0 {
-            let text = color(style.textRgba)
+        if flags & 4 != 0 {
+            let text = color(textRgba)
             if let field = nsView as? NSTextField {
                 field.textColor = text
             } else if let button = nsView as? NSButton {
@@ -350,8 +342,8 @@ func roverSetBool(view: RoverNativeView?, value: Bool) {
     RoverMacosHost.shared.setBool(view: view, value: value)
 }
 
-func roverSetStyle(view: RoverNativeView?, style: RoverAppleStyle) {
-    RoverMacosHost.shared.setStyle(view: view, style: style)
+func roverSetStyle(view: RoverNativeView?, flags: UInt32, bgRgba: UInt32, borderRgba: UInt32, textRgba: UInt32, borderWidth: UInt16) {
+    RoverMacosHost.shared.setStyle(view: view, flags: flags, bgRgba: bgRgba, borderRgba: borderRgba, textRgba: textRgba, borderWidth: borderWidth)
 }
 
 func roverSetWindow(view: RoverNativeView?, title: UnsafePointer<CChar>?, len: Int, width: Float, height: Float) {

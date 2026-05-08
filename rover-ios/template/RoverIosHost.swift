@@ -9,17 +9,9 @@ typealias RoverRemoveViewFn = @convention(c) (RoverNativeView?) -> Void
 typealias RoverSetFrameFn = @convention(c) (RoverNativeView?, Float, Float, Float, Float) -> Void
 typealias RoverSetTextFn = @convention(c) (RoverNativeView?, UnsafePointer<CChar>?, Int) -> Void
 typealias RoverSetBoolFn = @convention(c) (RoverNativeView?, Bool) -> Void
-typealias RoverSetStyleFn = @convention(c) (RoverNativeView?, RoverAppleStyle) -> Void
+typealias RoverSetStyleFn = @convention(c) (RoverNativeView?, UInt32, UInt32, UInt32, UInt32, UInt16) -> Void
 typealias RoverSetWindowFn = @convention(c) (RoverNativeView?, UnsafePointer<CChar>?, Int, Float, Float) -> Void
 typealias RoverStopAppFn = @convention(c) () -> Void
-
-struct RoverAppleStyle {
-    let flags: UInt32
-    let bgRgba: UInt32
-    let borderRgba: UInt32
-    let textRgba: UInt32
-    let borderWidth: UInt16
-}
 
 @_silgen_name("rover_ios_init_with_callbacks")
 func rover_ios_init_with_callbacks(
@@ -187,7 +179,8 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
 
     func setText(view: RoverNativeView?, ptr: UnsafePointer<CChar>?, len: Int) {
         guard let view, let ptr else { return }
-        let buffer = UnsafeBufferPointer(start: ptr, count: len)
+        let bytes = UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self)
+        let buffer = UnsafeBufferPointer(start: bytes, count: len)
         let value = String(decoding: buffer, as: UTF8.self)
         let uiView = Unmanaged<UIView>.fromOpaque(view).takeUnretainedValue()
         if let label = uiView as? UILabel {
@@ -207,14 +200,14 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
         }
     }
 
-    func setStyle(view: RoverNativeView?, style: RoverAppleStyle) {
+    func setStyle(view: RoverNativeView?, flags: UInt32, bgRgba: UInt32, borderRgba: UInt32, textRgba: UInt32, borderWidth: UInt16) {
         guard let view else { return }
         let uiView = Unmanaged<UIView>.fromOpaque(view).takeUnretainedValue()
-        if style.flags & 1 != 0 { uiView.backgroundColor = color(style.bgRgba) }
-        if style.flags & 2 != 0 { uiView.layer.borderColor = color(style.borderRgba).cgColor }
-        if style.flags & 8 != 0 { uiView.layer.borderWidth = CGFloat(style.borderWidth) }
-        if style.flags & 4 != 0 {
-            let text = color(style.textRgba)
+        if flags & 1 != 0 { uiView.backgroundColor = color(bgRgba) }
+        if flags & 2 != 0 { uiView.layer.borderColor = color(borderRgba).cgColor }
+        if flags & 8 != 0 { uiView.layer.borderWidth = CGFloat(borderWidth) }
+        if flags & 4 != 0 {
+            let text = color(textRgba)
             if let label = uiView as? UILabel {
                 label.textColor = text
             } else if let button = uiView as? UIButton {
@@ -233,19 +226,13 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
     }
 
     @objc private func inputChanged(_ sender: RoverTextField) {
-        let value = sender.text ?? ""
-        value.withUTF8 { buffer in
-            _ = rover_ios_dispatch_input(runtime, sender.nodeID, buffer.baseAddress, buffer.count)
-        }
+        dispatchText(sender.text ?? "", nodeID: sender.nodeID, submit: false)
         tick()
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         guard let input = textField as? RoverTextField else { return true }
-        let value = input.text ?? ""
-        value.withUTF8 { buffer in
-            _ = rover_ios_dispatch_submit(runtime, input.nodeID, buffer.baseAddress, buffer.count)
-        }
+        dispatchText(input.text ?? "", nodeID: input.nodeID, submit: true)
         input.resignFirstResponder()
         tick()
         return true
@@ -260,6 +247,30 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
         let code = rover_ios_tick(runtime)
         if code != 0 { fatalError(lastError()) }
         scheduleNextWake()
+    }
+
+    private func dispatchText(_ value: String, nodeID: UInt32, submit: Bool) {
+        let sent = value.utf8.withContiguousStorageIfAvailable { buffer -> Bool in
+            guard let base = buffer.baseAddress else { return false }
+            base.withMemoryRebound(to: CChar.self, capacity: buffer.count) { ptr in
+                if submit {
+                    _ = rover_ios_dispatch_submit(runtime, nodeID, ptr, buffer.count)
+                } else {
+                    _ = rover_ios_dispatch_input(runtime, nodeID, ptr, buffer.count)
+                }
+            }
+            return true
+        } ?? false
+
+        if !sent {
+            value.withCString { ptr in
+                if submit {
+                    _ = rover_ios_dispatch_submit(runtime, nodeID, ptr, strlen(ptr))
+                } else {
+                    _ = rover_ios_dispatch_input(runtime, nodeID, ptr, strlen(ptr))
+                }
+            }
+        }
     }
 
     private func scheduleNextWake() {
@@ -351,8 +362,8 @@ func roverSetBool(view: RoverNativeView?, value: Bool) {
     RoverIosHost.shared.setBool(view: view, value: value)
 }
 
-func roverSetStyle(view: RoverNativeView?, style: RoverAppleStyle) {
-    RoverIosHost.shared.setStyle(view: view, style: style)
+func roverSetStyle(view: RoverNativeView?, flags: UInt32, bgRgba: UInt32, borderRgba: UInt32, textRgba: UInt32, borderWidth: UInt16) {
+    RoverIosHost.shared.setStyle(view: view, flags: flags, bgRgba: bgRgba, borderRgba: borderRgba, textRgba: textRgba, borderWidth: borderWidth)
 }
 
 func roverSetWindow(view: RoverNativeView?, title: UnsafePointer<CChar>?, len: Int, width: Float, height: Float) {

@@ -130,6 +130,7 @@ struct IosProject {
     root: PathBuf,
     source_file: PathBuf,
     runtime_lib: PathBuf,
+    lua_lib: PathBuf,
 }
 
 impl IosProject {
@@ -137,10 +138,12 @@ impl IosProject {
         let workspace = std::env::current_dir()?;
         let root = workspace.join(".rover/ios");
         let runtime_lib = workspace.join("target/ios/librover_ios.a");
+        let lua_lib = workspace.join("target/ios/liblua5.4.a");
         Ok(Self {
             root,
             source_file: file.canonicalize()?,
             runtime_lib,
+            lua_lib,
         })
     }
 
@@ -153,6 +156,8 @@ impl IosProject {
         let target = simulator_target();
         ensure_rust_target(target)?;
         let status = Command::new("cargo")
+            .env("IPHONEOS_DEPLOYMENT_TARGET", "15.0")
+            .env("MACOSX_DEPLOYMENT_TARGET", "15.0")
             .args([
                 "build",
                 "-p",
@@ -177,6 +182,15 @@ impl IosProject {
                 "failed to copy iOS runtime from {} to {}",
                 built.display(),
                 self.runtime_lib.display()
+            )
+        })?;
+
+        let built_lua = find_lua_lib(Path::new("target/ios-build"), target)?;
+        fs::copy(&built_lua, &self.lua_lib).with_context(|| {
+            format!(
+                "failed to copy iOS Lua runtime from {} to {}",
+                built_lua.display(),
+                self.lua_lib.display()
             )
         })?;
         Ok(())
@@ -204,9 +218,9 @@ impl IosProject {
     }
 
     fn build_and_run(&self, _args: &[String], options: &IosRunOptions) -> Result<()> {
-        write_project_file(&self.root, &self.runtime_lib, options)?;
+        write_project_file(&self.root, &self.runtime_lib, &self.lua_lib, options)?;
         let destination = match &options.destination {
-            IosDestination::Simulator => "platform=iOS Simulator,name=iPhone 15".to_string(),
+            IosDestination::Simulator => "generic/platform=iOS Simulator".to_string(),
             IosDestination::Device { id: Some(id) } => format!("id={id}"),
             IosDestination::Device { id: None } => "generic/platform=iOS".to_string(),
         };
@@ -253,17 +267,59 @@ fn ensure_rust_target(target: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_project_file(root: &Path, runtime_lib: &Path, options: &IosRunOptions) -> Result<()> {
+fn find_lua_lib(target_dir: &Path, target: &str) -> Result<PathBuf> {
+    let build_dir = target_dir.join(target).join("debug/build");
+    for entry in fs::read_dir(&build_dir)
+        .with_context(|| format!("failed to read {}", build_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path().join("out/lib/liblua5.4.a");
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "failed to find vendored Lua archive under {}",
+        build_dir.display()
+    ))
+}
+
+fn write_project_file(
+    root: &Path,
+    runtime_lib: &Path,
+    lua_lib: &Path,
+    options: &IosRunOptions,
+) -> Result<()> {
     let project_dir = root.join("RoverIosHost.xcodeproj");
     fs::create_dir_all(&project_dir)?;
-    let team = options.team_id.as_deref().unwrap_or("");
+    let team = options.team_id.as_deref().unwrap_or("\"\"");
     let pbxproj = PROJECT_PBXPROJ
         .replace("__BUNDLE_ID__", &options.bundle_id)
         .replace("__TEAM_ID__", team)
         .replace("__APP_NAME__", &options.app_name)
-        .replace("__RUNTIME_LIB__", &runtime_lib.display().to_string());
+        .replace("__RUNTIME_LIB__", &runtime_lib.display().to_string())
+        .replace("__LUA_LIB__", &lua_lib.display().to_string())
+        .replace(
+            "__RUNTIME_LIB_DIR__",
+            &runtime_lib
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .display()
+                .to_string(),
+        )
+        .replace("__SIM_ARCH__", simulator_arch());
     fs::write(project_dir.join("project.pbxproj"), pbxproj)?;
     Ok(())
+}
+
+fn simulator_arch() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    return "arm64";
+    #[cfg(target_arch = "x86_64")]
+    return "x86_64";
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    "arm64"
 }
 
 const GENERATED_README: &str = r#"# Generated Rover iOS Project
