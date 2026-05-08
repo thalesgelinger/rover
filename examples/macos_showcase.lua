@@ -38,6 +38,25 @@ function rover.render()
     return "Hello, " .. name.val .. " (pending)"
   end)
 
+  local function swatch(name, hex)
+    return ui.row {
+      style = { gap = "sm", width = "full" },
+      ui.view {
+        style = {
+          width = 120,
+          height = 24,
+          bg_color = name,
+          border_color = "border",
+          border_width = 1,
+        },
+      },
+      ui.text {
+        name .. " " .. hex,
+        style = { color = name },
+      },
+    }
+  end
+
   return macos.window {
     title = "Rover macOS Showcase",
     width = 820,
@@ -104,6 +123,25 @@ function rover.render()
       },
 
       ui.text { "Submitted input: " .. submitted },
+
+      ui.view {
+        style = {
+          padding = "md",
+          gap = "sm",
+          bg_color = "surface_alt",
+          border_color = "accent",
+          border_width = 1,
+          width = "full",
+        },
+        ui.text { "Theme colors" },
+        swatch("surface", "#0f172a"),
+        swatch("surface_alt", "#1e293b"),
+        swatch("text", "#e2e8f0"),
+        swatch("border", "#334155"),
+        swatch("accent", "#22c55e"),
+        swatch("warning", "#f59e0b"),
+        swatch("info", "#38bdf8"),
+      },
 
       ui.when(show_extra, function()
         return ui.view {

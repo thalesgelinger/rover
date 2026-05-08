@@ -4,6 +4,7 @@
 
 - Portable UI stays in `rover.ui`.
 - macOS-only UI lives in `rover.macos`.
+- Shared scroll containers use `rover.ui.scroll_view`.
 - Children use positional Lua table entries, not `child = ...`.
 - Layout is px-based and computed by Rover, then applied to native AppKit views.
 
@@ -19,7 +20,7 @@ function rover.render()
 
     ui.column {
       ui.text { "Hello macOS" },
-      macos.scroll_view {
+      ui.scroll_view {
         ui.column {
           ui.text { "Native AppKit" },
         },
@@ -34,6 +35,14 @@ Run:
 ```bash
 rover run examples/macos_counter.lua --platform macos
 ```
+
+Run the broader component/style showcase:
+
+```bash
+ROVER_WEB_SKIP_AUTO_BUILD=1 cargo run -p rover_cli -- run examples/macos_showcase.lua --platform macos
+```
+
+Styles use snake_case keys. macOS currently applies `bg_color`, `border_color`, `border_width`, and text `color`/`fg_color`/`text_color` to native AppKit views.
 
 During local `rover_cli` development, skip the web runtime asset build when you are only testing macOS:
 
