@@ -6,7 +6,7 @@ function rover.render()
   local enabled = rover.signal(true)
 
   return ui.column {
-    style = { padding = 24, gap = 12, width = "full", bg_color = "#f8fafc" },
+    style = { padding = 24, gap = 12, width = "full", height = "full", bg_color = "#f8fafc" },
     ui.text {
       "Rover iOS",
       style = { color = "#0f172a" },

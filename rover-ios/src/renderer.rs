@@ -240,13 +240,6 @@ impl Renderer for IosRenderer {
     }
 
     fn update(&mut self, registry: &UiRegistry, dirty_nodes: &[NodeId]) {
-        if let Some(root) = registry.root() {
-            self.mount_root(registry, root);
-            self.sync_subtree(registry, root);
-            self.layout = compute_layout(registry, root, self.viewport_width, self.viewport_height);
-            self.apply_layout(registry, root);
-        }
-
         for node_id in dirty_nodes {
             let Some(node) = registry.get_node(*node_id) else {
                 continue;
@@ -257,6 +250,13 @@ impl Renderer for IosRenderer {
             if let Some(handle) = self.handle(*node_id) {
                 self.apply_node_props(node, handle);
             }
+        }
+
+        if let Some(root) = registry.root() {
+            self.mount_root(registry, root);
+            self.sync_subtree(registry, root);
+            self.layout = compute_layout(registry, root, self.viewport_width, self.viewport_height);
+            self.apply_layout(registry, root);
         }
     }
 
