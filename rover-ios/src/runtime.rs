@@ -6,7 +6,7 @@ use rover_ui::events::UiEvent;
 use rover_ui::ui::NodeId;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 pub struct IosRuntime {
@@ -219,6 +219,7 @@ impl IosProject {
 
     fn build_and_run(&self, _args: &[String], options: &IosRunOptions) -> Result<()> {
         write_project_file(&self.root, &self.runtime_lib, &self.lua_lib, options)?;
+        let derived_data = self.root.join("DerivedData");
         let destination = match &options.destination {
             IosDestination::Simulator => "generic/platform=iOS Simulator".to_string(),
             IosDestination::Device { id: Some(id) } => format!("id={id}"),
@@ -232,6 +233,8 @@ impl IosProject {
             .arg("RoverIosHost")
             .arg("-destination")
             .arg(destination)
+            .arg("-derivedDataPath")
+            .arg(&derived_data)
             .arg("build")
             .status()
             .context("failed to run xcodebuild for iOS host")?;
@@ -243,6 +246,12 @@ impl IosProject {
         }
 
         println!("Built iOS host at {}", self.root.display());
+        if matches!(options.destination, IosDestination::Simulator) {
+            let app = derived_data
+                .join("Build/Products/Debug-iphonesimulator")
+                .join(format!("{}.app", options.app_name));
+            install_and_launch_simulator(&app, &options.bundle_id)?;
+        }
         Ok(())
     }
 }
@@ -263,6 +272,98 @@ fn ensure_rust_target(target: &str) -> Result<()> {
         .context("failed to run rustup target add")?;
     if !status.success() {
         return Err(anyhow::anyhow!("failed to install Rust target {target}"));
+    }
+    Ok(())
+}
+
+fn install_and_launch_simulator(app: &Path, bundle_id: &str) -> Result<()> {
+    if !app.exists() {
+        return Err(anyhow::anyhow!(
+            "built iOS app not found at {}",
+            app.display()
+        ));
+    }
+
+    Command::new("open")
+        .args(["-a", "Simulator"])
+        .status()
+        .context("failed to open Simulator")?;
+
+    ensure_simulator_booted()?;
+    let app_path = app.display().to_string();
+    run_simctl(["install", "booted", app_path.as_str()], "install iOS app")?;
+    run_simctl(["launch", "booted", bundle_id], "launch iOS app")?;
+
+    println!("Launched iOS app {bundle_id}");
+    Ok(())
+}
+
+fn ensure_simulator_booted() -> Result<()> {
+    if Command::new("xcrun")
+        .args(["simctl", "bootstatus", "booted", "-b"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to check booted Simulator")?
+        .success()
+    {
+        return Ok(());
+    }
+
+    let simulator = select_available_simulator()?;
+    let boot_status = Command::new("xcrun")
+        .args(["simctl", "boot", &simulator])
+        .status()
+        .context("failed to boot Simulator")?;
+    if !boot_status.success() {
+        return Err(anyhow::anyhow!("failed to boot Simulator {simulator}"));
+    }
+
+    run_simctl(["bootstatus", &simulator, "-b"], "wait for Simulator boot")
+}
+
+fn select_available_simulator() -> Result<String> {
+    let output = Command::new("xcrun")
+        .args(["simctl", "list", "devices", "available"])
+        .output()
+        .context("failed to list available Simulators")?;
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("failed to list available Simulators"));
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut fallback = None;
+    for line in text.lines() {
+        if !line.contains("(Shutdown)") {
+            continue;
+        }
+        let Some(id) = simulator_id_from_line(line) else {
+            continue;
+        };
+        if line.contains("iPhone") {
+            return Ok(id);
+        }
+        fallback.get_or_insert(id);
+    }
+
+    fallback.ok_or_else(|| anyhow::anyhow!("no available shutdown Simulator found"))
+}
+
+fn simulator_id_from_line(line: &str) -> Option<String> {
+    let end = line.rfind(") (Shutdown)")?;
+    let before_status = &line[..end];
+    let start = before_status.rfind('(')?;
+    Some(before_status[start + 1..].to_string())
+}
+
+fn run_simctl<const N: usize>(args: [&str; N], action: &str) -> Result<()> {
+    let status = Command::new("xcrun")
+        .arg("simctl")
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to {action}"))?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("failed to {action}"));
     }
     Ok(())
 }
@@ -337,6 +438,22 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>$(DEVELOPMENT_LANGUAGE)</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key>
+  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
   <key>UIApplicationSceneManifest</key>
   <dict>
     <key>UIApplicationSupportsMultipleScenes</key>
