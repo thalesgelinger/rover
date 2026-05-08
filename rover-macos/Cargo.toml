@@ -9,4 +9,5 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 anyhow = "1.0.100"
 mlua = { version = "0.11.5", features = ["anyhow", "vendored", "luajit52"] }
+rover-apple = { path = "../rover-apple" }
 rover_ui = { path = "../rover-ui" }

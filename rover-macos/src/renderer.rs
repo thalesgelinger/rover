@@ -1,7 +1,7 @@
 use crate::abi::{HostCallbacks, NativeViewHandle, NativeViewKind};
-use crate::layout::{LayoutMap, Rect, compute_layout};
+use rover_apple::{AppleStyle, LayoutMap, Rect, compute_layout};
 use rover_ui::platform::UiTarget;
-use rover_ui::ui::{NodeId, Renderer, StyleOp, UiNode, UiRegistry};
+use rover_ui::ui::{NodeId, Renderer, UiNode, UiRegistry};
 use std::collections::HashSet;
 use std::ffi::c_void;
 
@@ -236,30 +236,7 @@ impl MacosRenderer {
             return;
         };
 
-        let mut bg = "";
-        let mut border = "";
-        let mut border_width = 0.0;
-
-        for op in &style.ops {
-            match op {
-                StyleOp::BgColor(value) => bg = value,
-                StyleOp::BorderColor(value) => border = value,
-                StyleOp::BorderWidth(value) => border_width = *value as f32,
-                StyleOp::Padding(_) => {}
-            }
-        }
-
-        let text = style.color.as_deref().unwrap_or("");
-        set_style(
-            handle,
-            bg.as_ptr().cast(),
-            bg.len(),
-            border.as_ptr().cast(),
-            border.len(),
-            border_width,
-            text.as_ptr().cast(),
-            text.len(),
-        );
+        set_style(handle, AppleStyle::from_node_style(style));
     }
 }
 

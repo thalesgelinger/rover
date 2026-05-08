@@ -2587,6 +2587,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rover-apple"
+version = "0.1.0"
+dependencies = [
+ "rover_ui",
+]
+
+[[package]]
 name = "rover-auth"
 version = "0.1.0"
 dependencies = [
@@ -2622,6 +2629,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "mlua",
+ "rover-apple",
  "rover_ui",
 ]
 
