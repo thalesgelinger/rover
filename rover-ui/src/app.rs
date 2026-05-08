@@ -191,12 +191,19 @@ impl<R: Renderer> App<R> {
             let Ok(pending) = self.scheduler.borrow_mut().take_pending(id) else {
                 continue;
             };
-            match run_coroutine_with_delay(&self.lua, &self.runtime, &pending.thread, LuaValue::Nil)? {
+            match run_coroutine_with_delay(
+                &self.lua,
+                &self.runtime,
+                &pending.thread,
+                LuaValue::Nil,
+            )? {
                 CoroutineResult::Completed => {}
                 CoroutineResult::YieldedDelay { delay_ms } => {
-                    self.scheduler
-                        .borrow_mut()
-                        .schedule_delay_with_id(id, pending.thread, delay_ms);
+                    self.scheduler.borrow_mut().schedule_delay_with_id(
+                        id,
+                        pending.thread,
+                        delay_ms,
+                    );
                 }
                 CoroutineResult::YieldedOther => {}
             }
