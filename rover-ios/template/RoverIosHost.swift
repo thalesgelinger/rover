@@ -129,10 +129,13 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
         case 4:
             let label = UILabel()
             label.numberOfLines = 0
+            label.lineBreakMode = .byWordWrapping
             view = label
         case 5:
             let button = RoverButton(type: .system)
             button.nodeID = nodeID
+            button.titleLabel?.numberOfLines = 0
+            button.titleLabel?.lineBreakMode = .byWordWrapping
             button.addTarget(self, action: #selector(buttonClicked(_:)), for: .touchUpInside)
             view = button
         case 6:
@@ -174,7 +177,10 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
     func setFrame(view: RoverNativeView?, x: Float, y: Float, width: Float, height: Float) {
         guard let view else { return }
         let uiView = Unmanaged<UIView>.fromOpaque(view).takeUnretainedValue()
-        uiView.frame = CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(width), height: CGFloat(height))
+        let intrinsic = uiView.intrinsicContentSize
+        let frameWidth = intrinsic.width > 0 ? max(CGFloat(width), intrinsic.width) : CGFloat(width)
+        let frameHeight = intrinsic.height > 0 ? max(CGFloat(height), intrinsic.height) : CGFloat(height)
+        uiView.frame = CGRect(x: CGFloat(x), y: CGFloat(y), width: frameWidth, height: frameHeight)
     }
 
     func setText(view: RoverNativeView?, ptr: UnsafePointer<CChar>?, len: Int) {
