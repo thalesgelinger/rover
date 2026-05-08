@@ -80,6 +80,7 @@ final class RoverMacosHost: NSObject, NSApplicationDelegate, NSTextFieldDelegate
     private var views: [UInt32: NSView] = [:]
     private var runtime: RoverRuntime?
     private var timer: Timer?
+    private var applyingWindowFrame = false
 
     func start(sourcePath: String) {
         runtime = rover_macos_init_with_callbacks(
@@ -128,6 +129,7 @@ final class RoverMacosHost: NSObject, NSApplicationDelegate, NSTextFieldDelegate
     }
 
     func windowDidResize(_ notification: Notification) {
+        if applyingWindowFrame { return }
         guard let content = window?.contentView else { return }
         let width = UInt16(max(1, min(content.bounds.width, CGFloat(UInt16.max))))
         let height = UInt16(max(1, min(content.bounds.height, CGFloat(UInt16.max))))
@@ -264,7 +266,9 @@ final class RoverMacosHost: NSObject, NSApplicationDelegate, NSTextFieldDelegate
         guard let titlePtr else { return }
         let title = String(data: Data(bytes: titlePtr, count: len), encoding: .utf8) ?? "Rover"
         window?.title = title
+        applyingWindowFrame = true
         window?.setContentSize(NSSize(width: CGFloat(width), height: CGFloat(height)))
+        applyingWindowFrame = false
     }
 
     func removeView(view: RoverNativeView?) {
