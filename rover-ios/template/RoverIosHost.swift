@@ -151,7 +151,12 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
             toggle.addTarget(self, action: #selector(switchChanged(_:)), for: .valueChanged)
             view = toggle
         case 9:
-            view = UIScrollView()
+            let scrollView = UIScrollView()
+            scrollView.showsHorizontalScrollIndicator = true
+            scrollView.showsVerticalScrollIndicator = true
+            scrollView.alwaysBounceHorizontal = true
+            scrollView.alwaysBounceVertical = true
+            view = scrollView
         default:
             view = UIView()
         }
@@ -166,6 +171,7 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
         if childView.superview !== parentView {
             parentView.addSubview(childView)
         }
+        updateScrollContentSizeChain(from: childView)
     }
 
     func removeView(view: RoverNativeView?) {
@@ -181,6 +187,32 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
         let frameWidth = intrinsic.width > 0 ? max(CGFloat(width), intrinsic.width) : CGFloat(width)
         let frameHeight = intrinsic.height > 0 ? max(CGFloat(height), intrinsic.height) : CGFloat(height)
         uiView.frame = CGRect(x: CGFloat(x), y: CGFloat(y), width: frameWidth, height: frameHeight)
+        updateScrollContentSizeChain(from: uiView)
+    }
+
+    private func updateScrollContentSizeChain(from view: UIView) {
+        if let scrollView = view as? UIScrollView {
+            updateScrollContentSize(scrollView)
+        }
+
+        var parent = view.superview
+        while let current = parent {
+            if let scrollView = current as? UIScrollView {
+                updateScrollContentSize(scrollView)
+            }
+            parent = current.superview
+        }
+    }
+
+    private func updateScrollContentSize(_ scrollView: UIScrollView) {
+        var contentRect = CGRect(origin: .zero, size: scrollView.bounds.size)
+        for child in scrollView.subviews {
+            contentRect = contentRect.union(child.frame)
+        }
+        scrollView.contentSize = CGSize(
+            width: max(scrollView.bounds.width + 1, contentRect.maxX),
+            height: max(scrollView.bounds.height + 1, contentRect.maxY)
+        )
     }
 
     func setText(view: RoverNativeView?, ptr: UnsafePointer<CChar>?, len: Int) {

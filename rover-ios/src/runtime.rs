@@ -454,6 +454,8 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <string>1.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
+  <key>UILaunchScreen</key>
+  <dict/>
   <key>UIApplicationSceneManifest</key>
   <dict>
     <key>UIApplicationSupportsMultipleScenes</key>
