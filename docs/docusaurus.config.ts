@@ -16,7 +16,7 @@ const config: Config = {
   },
 
   // Set the production url of your site here
-  url: 'https://your-domain.pages.dev', // Update with actual Cloudflare domain after deploy
+  url: 'https://rover.lu',
   // Set the /<baseUrl>/ pathname under which your site is served
   baseUrl: '/',
 

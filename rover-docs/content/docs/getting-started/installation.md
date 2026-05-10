@@ -5,17 +5,53 @@ title: Installation
 
 Get Rover up and running on your system.
 
-## Prerequisites
+## Install
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://rover.lu/install | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://rover.lu/install.ps1 | iex
+```
+
+The installer downloads the latest prebuilt binary from GitHub Releases, installs it to `~/.rover/bin`, and updates your shell PATH when it can. Restart your terminal if `rover` is not found immediately.
+
+## Options
+
+Install a specific version:
+
+```bash
+curl -fsSL https://rover.lu/install | ROVER_VERSION=v0.0.1-alpha.1 sh
+```
+
+Use a custom Rover home:
+
+```bash
+curl -fsSL https://rover.lu/install | ROVER_HOME="$HOME/tools/rover" sh
+```
+
+Skip PATH edits:
+
+```bash
+curl -fsSL https://rover.lu/install | ROVER_NO_MODIFY_PATH=1 sh
+```
+
+## Build from Source
+
+Prerequisites:
 
 - Rust toolchain (cargo, rustc)
 - Git (for cloning the repository)
 
-## Build from Source
-
 Clone the repository and build:
 
 ```bash
-git clone https://github.com/your-org/rover.git
+git clone https://github.com/thalesgelinger/rover.git
 cd rover
 cargo build --release
 ```
@@ -39,7 +75,7 @@ return api
 Run it:
 
 ```bash
-./target/release/rover app.lua
+rover run app.lua
 ```
 
 Your server is now running at `http://localhost:4242`!

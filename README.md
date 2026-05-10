@@ -3,12 +3,23 @@
 
 Opinionated Lua runtime for building REAL full-stack apps. Ship backends, mobile apps, desktop apps, and web frontends with one Lua codebase.
 
-Learn more in the docs: https://rover.uncmplx.com
+Learn more in the docs: https://rover.lu
 
 ## Installation
 
-See the install guide for full options:
-https://rover.uncmplx.com/docs/getting-started/installation
+macOS and Linux:
+
+```bash
+curl -fsSL https://rover.lu/install | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://rover.lu/install.ps1 | iex
+```
+
+Full install guide: https://rover.lu/docs/getting-started/installation
 
 Build from source:
 
@@ -71,18 +82,18 @@ rover db migrate
 rover lsp
 ```
 
-Full CLI guide: https://rover.uncmplx.com/docs/guides/cli
+Full CLI guide: https://rover.lu/docs/guides/cli
 
 ## Docs
 
-- Installation: https://rover.uncmplx.com/docs/getting-started/installation
-- Backend Server: https://rover.uncmplx.com/docs/guides/backend-server
-- Context API: https://rover.uncmplx.com/docs/guides/context-api
-- Response Builders: https://rover.uncmplx.com/docs/guides/response-builders
-- Database: https://rover.uncmplx.com/docs/guides/database
-- Migrations: https://rover.uncmplx.com/docs/guides/migrations
-- UI Runtime: https://rover.uncmplx.com/docs/guides/ui-runtime
-- Performance: https://rover.uncmplx.com/docs/performance
+- Installation: https://rover.lu/docs/getting-started/installation
+- Backend Server: https://rover.lu/docs/guides/backend-server
+- Context API: https://rover.lu/docs/guides/context-api
+- Response Builders: https://rover.lu/docs/guides/response-builders
+- Database: https://rover.lu/docs/guides/database
+- Migrations: https://rover.lu/docs/guides/migrations
+- UI Runtime: https://rover.lu/docs/guides/ui-runtime
+- Performance: https://rover.lu/docs/performance
 
 ## Roadmap
 
