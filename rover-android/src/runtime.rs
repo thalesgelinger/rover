@@ -158,6 +158,10 @@ impl AndroidProject {
         let status = Command::new("cargo")
             .env("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", linker)
             .env("CC_aarch64_linux_android", android_linker()?)
+            .env(
+                "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS",
+                "-C link-arg=-Wl,-z,max-page-size=16384",
+            )
             .args([
                 "build",
                 "-p",
