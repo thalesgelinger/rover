@@ -16,7 +16,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
-import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import java.nio.charset.StandardCharsets
@@ -58,10 +57,10 @@ class MainActivity : Activity() {
     fun createView(nodeId: Long, kind: Int): Long {
         val view = when (kind) {
             KIND_ROOT -> root
-            KIND_ROW -> LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            KIND_COLUMN, KIND_VIEW -> LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            KIND_ROW, KIND_COLUMN, KIND_VIEW -> FrameLayout(this)
             KIND_TEXT -> TextView(this)
             KIND_BUTTON -> Button(this).apply {
+                isAllCaps = false
                 setOnClickListener {
                     RoverRuntime.dispatchClick(runtime, nodeId.toInt())
                     tickAndSchedule()
@@ -132,11 +131,7 @@ class MainActivity : Activity() {
             leftMargin = dp(x)
             topMargin = dp(y)
         }
-        if (parent is LinearLayout) {
-            view.layoutParams = LinearLayout.LayoutParams(max(1, dp(width)), max(1, dp(height)))
-        } else {
-            view.layoutParams = params
-        }
+        view.layoutParams = params
     }
 
     fun setStyle(handle: Long, flags: Int, bgRgba: Int, borderRgba: Int, textRgba: Int, borderWidth: Int) {
@@ -192,7 +187,6 @@ class MainActivity : Activity() {
     }
 
     private fun defaultLayoutParams(parent: ViewGroup): ViewGroup.LayoutParams = when (parent) {
-        is LinearLayout -> LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         else -> FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
