@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["rover-cli" , "rover-core", "rover-server", "rover-lsp", "rover-parser", "rover-types", "rover-db", "rover-ui", "rover-runtime", "rover-bundler", "rover-tui", "rover-auth", "rover-web", "rover-web-wasm", "rover-apple", "rover-macos", "rover-ios"]
+members = ["rover-cli" , "rover-core", "rover-server", "rover-lsp", "rover-parser", "rover-types", "rover-db", "rover-ui", "rover-runtime", "rover-bundler", "rover-tui", "rover-auth", "rover-web", "rover-web-wasm", "rover-native", "rover-apple", "rover-macos", "rover-ios", "rover-android"]
 default-members = ["rover-cli"]
 
 [profile.release]

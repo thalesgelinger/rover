@@ -8,6 +8,7 @@ pub enum UiTarget {
     Web,
     Macos,
     Ios,
+    Android,
     Mobile,
     Unknown,
 }
@@ -19,6 +20,7 @@ impl UiTarget {
             UiTarget::Web => "web",
             UiTarget::Macos => "macos",
             UiTarget::Ios => "ios",
+            UiTarget::Android => "android",
             UiTarget::Mobile => "mobile",
             UiTarget::Unknown => "unknown",
         }

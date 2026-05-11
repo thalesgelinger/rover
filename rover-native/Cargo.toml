@@ -1,8 +1,7 @@
 [package]
-name = "rover-apple"
+name = "rover-native"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rover-native = { path = "../rover-native" }
 rover_ui = { path = "../rover-ui" }

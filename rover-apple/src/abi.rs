@@ -58,32 +58,14 @@ impl AppleStyle {
     }
 
     pub fn from_node_style(style: &rover_ui::ui::NodeStyle) -> Self {
-        let mut apple_style = Self::default();
-
-        for op in &style.ops {
-            match op {
-                rover_ui::ui::StyleOp::BgColor(value) => {
-                    if let Some(rgba) = parse_hex_rgba(value) {
-                        apple_style = apple_style.with_bg(rgba);
-                    }
-                }
-                rover_ui::ui::StyleOp::BorderColor(value) => {
-                    if let Some(rgba) = parse_hex_rgba(value) {
-                        apple_style = apple_style.with_border(rgba);
-                    }
-                }
-                rover_ui::ui::StyleOp::BorderWidth(value) => {
-                    apple_style = apple_style.with_border_width(*value);
-                }
-                rover_ui::ui::StyleOp::Padding(_) => {}
-            }
+        let style = rover_native::NativeStyle::from_node_style(style);
+        Self {
+            flags: style.flags,
+            bg_rgba: style.bg_rgba,
+            border_rgba: style.border_rgba,
+            text_rgba: style.text_rgba,
+            border_width: style.border_width,
         }
-
-        if let Some(value) = style.color.as_deref().and_then(parse_hex_rgba) {
-            apple_style = apple_style.with_text(value);
-        }
-
-        apple_style
     }
 }
 
@@ -117,20 +99,6 @@ pub struct AppleHostCallbacks {
     pub set_style: Option<SetStyleFn>,
     pub set_window: Option<SetWindowFn>,
     pub stop_app: Option<StopAppFn>,
-}
-
-fn parse_hex_rgba(raw: &str) -> Option<u32> {
-    let hex = raw.strip_prefix('#')?;
-    if hex.len() != 6 && hex.len() != 8 {
-        return None;
-    }
-
-    let value = u32::from_str_radix(hex, 16).ok()?;
-    if hex.len() == 6 {
-        Some((value << 8) | 0xff)
-    } else {
-        Some(value)
-    }
 }
 
 #[cfg(test)]

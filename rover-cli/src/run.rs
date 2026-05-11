@@ -27,19 +27,119 @@ pub fn run_file(
     pre_run_db_analysis(&file, yolo)?;
 
     match platform {
-        Some(platform) if platform != Platform::Ios && (device || device_id.is_some()) => Err(
-            anyhow::anyhow!("--device and --device-id are only supported with --platform ios"),
-        ),
+        Some(platform)
+            if !matches!(platform, Platform::Ios | Platform::Android)
+                && (device || device_id.is_some()) =>
+        {
+            Err(anyhow::anyhow!(
+                "--device and --device-id are only supported with --platform ios/android"
+            ))
+        }
         None => rover_core::run(file.to_str().unwrap(), &args, false),
         Some(Platform::Stub) => run_with_stub(file, args),
         Some(Platform::Tui) => run_with_tui(file, args),
         Some(Platform::Web) => run_with_web(file, args),
         Some(Platform::Macos) => run_with_macos(file, args),
         Some(Platform::Ios) => run_with_ios(file, args, device, device_id),
+        Some(Platform::Android) => run_with_android(file, args, device, device_id),
         Some(platform) => {
             println!("Platform '{}' coming soon!", platform);
             std::process::exit(0);
         }
+    }
+}
+
+fn run_with_android(
+    file: PathBuf,
+    args: Vec<String>,
+    device: bool,
+    device_id: Option<String>,
+) -> Result<()> {
+    println!("Starting rover Android UI runtime");
+    let mut options = load_android_run_options(&file)?;
+    options.destination = if device || device_id.is_some() {
+        rover_android::AndroidDestination::Device { id: device_id }
+    } else {
+        rover_android::AndroidDestination::Default
+    };
+    rover_android::launch_file(&file, &args, options)
+}
+
+fn load_android_run_options(file: &PathBuf) -> Result<rover_android::AndroidRunOptions> {
+    let mut options = rover_android::AndroidRunOptions::default();
+    options.app_name = file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("Rover")
+        .to_string();
+    options.package_name = default_android_package_name(&options.app_name);
+
+    if let Some(config) = load_android_rover_lua_config()? {
+        if let Some(name) = config.name {
+            options.app_name = name;
+            options.package_name = default_android_package_name(&options.app_name);
+        }
+        if let Some(android) = config.android {
+            if let Some(package_name) = android.package_name {
+                options.package_name = package_name;
+            }
+        }
+    }
+
+    Ok(options)
+}
+
+struct AndroidRoverLuaConfig {
+    name: Option<String>,
+    android: Option<RoverLuaAndroidConfig>,
+}
+
+struct RoverLuaAndroidConfig {
+    package_name: Option<String>,
+}
+
+fn load_android_rover_lua_config() -> Result<Option<AndroidRoverLuaConfig>> {
+    let path = PathBuf::from("rover.lua");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let lua = mlua::Lua::new();
+    let table: mlua::Table = lua
+        .load(&content)
+        .set_name("rover.lua")
+        .eval()
+        .map_err(|e| anyhow::anyhow!("Failed to parse rover.lua: {}", e))?;
+
+    let android = match table.get::<Option<mlua::Table>>("android")? {
+        Some(android) => Some(RoverLuaAndroidConfig {
+            package_name: android.get::<Option<String>>("package_name")?,
+        }),
+        None => None,
+    };
+
+    Ok(Some(AndroidRoverLuaConfig {
+        name: table.get::<Option<String>>("name")?,
+        android,
+    }))
+}
+
+fn default_android_package_name(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if (ch == '-' || ch == '_' || ch == ' ') && !out.ends_with('.') {
+            out.push('.');
+        }
+    }
+    let out = out.trim_matches('.');
+    if out.is_empty() {
+        "lu.rover.generated.rover".to_string()
+    } else {
+        format!("lu.rover.generated.{out}")
     }
 }
 
