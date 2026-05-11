@@ -8,7 +8,7 @@
     000000000000000000000002 = {isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000011; buildPhases = (000000000000000000000020, 000000000000000000000021, 000000000000000000000022); buildRules = (); dependencies = (); name = RoverIosHost; productName = __APP_NAME__; productReference = 000000000000000000000005; productType = "com.apple.product-type.application";};
     000000000000000000000003 = {isa = PBXGroup; children = (000000000000000000000006, 000000000000000000000004); sourceTree = "<group>";};
     000000000000000000000004 = {isa = PBXGroup; children = (000000000000000000000005); name = Products; sourceTree = "<group>";};
-    000000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = __APP_NAME__.app; sourceTree = BUILT_PRODUCTS_DIR;};
+    000000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = __APP_BUNDLE_NAME__; sourceTree = BUILT_PRODUCTS_DIR;};
     000000000000000000000006 = {isa = PBXGroup; children = (000000000000000000000007, 000000000000000000000008, 000000000000000000000009, 00000000000000000000000A, 00000000000000000000000B); path = RoverIosHost; sourceTree = "<group>";};
     000000000000000000000007 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoverIosHost.swift; sourceTree = "<group>";};
     000000000000000000000008 = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>";};

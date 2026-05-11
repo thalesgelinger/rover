@@ -128,22 +128,28 @@ pub fn launch_file(file: &Path, args: &[String], options: IosRunOptions) -> Resu
 
 struct IosProject {
     root: PathBuf,
+    source_root: PathBuf,
     source_file: PathBuf,
     runtime_lib: PathBuf,
     lua_lib: PathBuf,
+    build_target_dir: PathBuf,
 }
 
 impl IosProject {
     fn prepare(file: &Path, _options: &IosRunOptions) -> Result<Self> {
-        let workspace = std::env::current_dir()?;
-        let root = workspace.join(".rover/ios");
-        let runtime_lib = workspace.join("target/ios/librover_ios.a");
-        let lua_lib = workspace.join("target/ios/liblua5.4.a");
+        let project_root = std::env::current_dir()?;
+        let source_root = rover_source_root()?;
+        let root = project_root.join(".rover/ios");
+        let runtime_lib = project_root.join("target/ios/librover_ios.a");
+        let lua_lib = project_root.join("target/ios/liblua5.4.a");
+        let build_target_dir = project_root.join("target/ios-build");
         Ok(Self {
             root,
+            source_root,
             source_file: file.canonicalize()?,
             runtime_lib,
             lua_lib,
+            build_target_dir,
         })
     }
 
@@ -158,6 +164,7 @@ impl IosProject {
         let status = Command::new("cargo")
             .env("IPHONEOS_DEPLOYMENT_TARGET", "15.0")
             .env("MACOSX_DEPLOYMENT_TARGET", "15.0")
+            .current_dir(&self.source_root)
             .args([
                 "build",
                 "-p",
@@ -165,15 +172,16 @@ impl IosProject {
                 "--target",
                 target,
                 "--target-dir",
-                "target/ios-build",
             ])
+            .arg(&self.build_target_dir)
             .status()
             .context("failed to build rover-ios runtime")?;
         if !status.success() {
             return Err(anyhow::anyhow!("failed to build rover-ios runtime"));
         }
 
-        let built = PathBuf::from("target/ios-build")
+        let built = self
+            .build_target_dir
             .join(target)
             .join("debug")
             .join("librover_ios.a");
@@ -185,7 +193,7 @@ impl IosProject {
             )
         })?;
 
-        let built_lua = find_lua_lib(Path::new("target/ios-build"), target)?;
+        let built_lua = find_lua_lib(&self.build_target_dir, target)?;
         fs::copy(&built_lua, &self.lua_lib).with_context(|| {
             format!(
                 "failed to copy iOS Lua runtime from {} to {}",
@@ -263,6 +271,13 @@ fn simulator_target() -> &'static str {
     return "x86_64-apple-ios";
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     "aarch64-apple-ios-sim"
+}
+
+fn rover_source_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os("ROVER_SOURCE_ROOT") {
+        return Ok(PathBuf::from(root));
+    }
+    Ok(std::env::current_dir()?)
 }
 
 fn ensure_rust_target(target: &str) -> Result<()> {
@@ -394,24 +409,34 @@ fn write_project_file(
 ) -> Result<()> {
     let project_dir = root.join("RoverIosHost.xcodeproj");
     fs::create_dir_all(&project_dir)?;
-    let team = options.team_id.as_deref().unwrap_or("\"\"");
+    let team = pbx_string(options.team_id.as_deref().unwrap_or(""));
+    let app_name = pbx_string(&options.app_name);
+    let app_bundle_name = pbx_string(&format!("{}.app", options.app_name));
+    let bundle_id = pbx_string(&options.bundle_id);
+    let runtime_lib_path = pbx_string(&runtime_lib.display().to_string());
+    let lua_lib_path = pbx_string(&lua_lib.display().to_string());
+    let runtime_lib_dir_path = pbx_string(
+        &runtime_lib
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .display()
+            .to_string(),
+    );
     let pbxproj = PROJECT_PBXPROJ
-        .replace("__BUNDLE_ID__", &options.bundle_id)
-        .replace("__TEAM_ID__", team)
-        .replace("__APP_NAME__", &options.app_name)
-        .replace("__RUNTIME_LIB__", &runtime_lib.display().to_string())
-        .replace("__LUA_LIB__", &lua_lib.display().to_string())
-        .replace(
-            "__RUNTIME_LIB_DIR__",
-            &runtime_lib
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .display()
-                .to_string(),
-        )
+        .replace("__BUNDLE_ID__", &bundle_id)
+        .replace("__TEAM_ID__", &team)
+        .replace("__APP_NAME__", &app_name)
+        .replace("__APP_BUNDLE_NAME__", &app_bundle_name)
+        .replace("__RUNTIME_LIB__", &runtime_lib_path)
+        .replace("__LUA_LIB__", &lua_lib_path)
+        .replace("__RUNTIME_LIB_DIR__", &runtime_lib_dir_path)
         .replace("__SIM_ARCH__", simulator_arch());
     fs::write(project_dir.join("project.pbxproj"), pbxproj)?;
     Ok(())
+}
+
+fn pbx_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn simulator_arch() -> &'static str {

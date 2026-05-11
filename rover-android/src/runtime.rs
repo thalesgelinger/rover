@@ -127,19 +127,25 @@ pub fn launch_file(file: &Path, args: &[String], options: AndroidRunOptions) -> 
 
 struct AndroidProject {
     root: PathBuf,
+    source_root: PathBuf,
     source_file: PathBuf,
     runtime_lib: PathBuf,
+    build_target_dir: PathBuf,
 }
 
 impl AndroidProject {
     fn prepare(file: &Path, _options: &AndroidRunOptions) -> Result<Self> {
-        let workspace = std::env::current_dir()?;
-        let root = workspace.join(".rover/android");
-        let runtime_lib = workspace.join("target/android/librover_android.so");
+        let project_root = std::env::current_dir()?;
+        let source_root = rover_source_root()?;
+        let root = project_root.join(".rover/android");
+        let runtime_lib = project_root.join("target/android/librover_android.so");
+        let build_target_dir = project_root.join("target/android-build");
         Ok(Self {
             root,
+            source_root,
             source_file: file.canonicalize()?,
             runtime_lib,
+            build_target_dir,
         })
     }
 
@@ -162,6 +168,7 @@ impl AndroidProject {
                 "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS",
                 "-C link-arg=-Wl,-z,max-page-size=16384",
             )
+            .current_dir(&self.source_root)
             .args([
                 "build",
                 "-p",
@@ -169,15 +176,16 @@ impl AndroidProject {
                 "--target",
                 target,
                 "--target-dir",
-                "target/android-build",
             ])
+            .arg(&self.build_target_dir)
             .status()
             .context("failed to build rover-android runtime")?;
         if !status.success() {
             return Err(anyhow::anyhow!("failed to build rover-android runtime"));
         }
 
-        let built = PathBuf::from("target/android-build")
+        let built = self
+            .build_target_dir
             .join(target)
             .join("debug")
             .join("librover_android.so");
@@ -267,6 +275,13 @@ impl AndroidProject {
 
 fn android_target() -> &'static str {
     "aarch64-linux-android"
+}
+
+fn rover_source_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os("ROVER_SOURCE_ROOT") {
+        return Ok(PathBuf::from(root));
+    }
+    Ok(std::env::current_dir()?)
 }
 
 fn ensure_rust_target(target: &str) -> Result<()> {
