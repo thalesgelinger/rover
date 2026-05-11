@@ -91,7 +91,7 @@ class MainActivity : Activity() {
             }
             KIND_IMAGE -> ImageView(this)
             KIND_SCROLL_VIEW -> ScrollView(this)
-            else -> LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            else -> FrameLayout(this)
         }
         views[nodeId] = view
         return nodeId
