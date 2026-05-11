@@ -29,6 +29,7 @@ class MainActivity : Activity() {
     private lateinit var root: FrameLayout
     private var runtime: Long = 0
     private var ticking = false
+    private var suppressEvents = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,6 +71,7 @@ class MainActivity : Activity() {
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        if (suppressEvents) return
                         RoverRuntime.dispatchInput(runtime, nodeId.toInt(), s?.toString().orEmpty())
                         scheduleTick()
                     }
@@ -83,6 +85,7 @@ class MainActivity : Activity() {
             }
             KIND_CHECKBOX -> CheckBox(this).apply {
                 setOnCheckedChangeListener { _, checked ->
+                    if (suppressEvents) return@setOnCheckedChangeListener
                     RoverRuntime.dispatchToggle(runtime, nodeId.toInt(), checked)
                     tickAndSchedule()
                 }
@@ -112,14 +115,14 @@ class MainActivity : Activity() {
         when (val view = views[handle]) {
             is TextView -> if (view.text.toString() != value) view.text = value
             is Button -> if (view.text.toString() != value) view.text = value
-            is EditText -> if (view.text.toString() != value) view.setText(value)
+            is EditText -> if (view.text.toString() != value) suppressHostEvents { view.setText(value) }
             is ImageView -> view.contentDescription = value
         }
     }
 
     fun setBool(handle: Long, value: Boolean) {
         val checkbox = views[handle] as? CheckBox ?: return
-        if (checkbox.isChecked != value) checkbox.isChecked = value
+        if (checkbox.isChecked != value) suppressHostEvents { checkbox.isChecked = value }
     }
 
     fun setFrame(handle: Long, x: Float, y: Float, width: Float, height: Float) {
@@ -177,6 +180,15 @@ class MainActivity : Activity() {
 
     private fun checkResult(code: Int) {
         if (code != 0) error(RoverRuntime.lastError(runtime))
+    }
+
+    private fun suppressHostEvents(block: () -> Unit) {
+        suppressEvents = true
+        try {
+            block()
+        } finally {
+            suppressEvents = false
+        }
     }
 
     private fun defaultLayoutParams(parent: ViewGroup): ViewGroup.LayoutParams = when (parent) {
