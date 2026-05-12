@@ -85,4 +85,4 @@ The tests cover:
 
 ## Documentation
 
-See `/docs/docs/api-reference/ws-server.md` for complete WebSocket server documentation.
+See `/rover-docs/content/docs/http-and-realtime/ws-server.md` for complete WebSocket server documentation.

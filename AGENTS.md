@@ -73,16 +73,17 @@ Run from repo root unless noted.
 - Build app bundle:
   - `cargo run -p rover_cli -- build path/to/app.lua --out my-app`
 
-### Docs (`docs/`)
-- Node >= 20 required.
+### Docs (`rover-docs/`)
+- Hugo extended >= 0.155.3 required.
+- Node >= 20 required for SST deploy and CSS tooling.
 - Install deps:
-  - `cd docs && npm ci`
+  - `cd rover-docs && npm ci`
 - Start docs dev server:
-  - `cd docs && npm run start`
+  - `cd rover-docs && hugo server`
 - Build docs:
-  - `cd docs && npm run build`
-- Typecheck docs:
-  - `cd docs && npm run typecheck`
+  - `cd rover-docs && hugo build`
+- Build CSS:
+  - `cd rover-docs && npm run build:css`
 
 ### Perf scripts
 - Benchmark suite:

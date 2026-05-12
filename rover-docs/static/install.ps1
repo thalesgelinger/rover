@@ -19,7 +19,10 @@ function Get-Target {
 }
 
 function Get-Version {
-  if ($env:ROVER_VERSION) { return $env:ROVER_VERSION }
+  if ($env:ROVER_VERSION) {
+    return $env:ROVER_VERSION
+  }
+
   $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases" | Select-Object -First 1
   return $release.tag_name
 }
@@ -27,12 +30,19 @@ function Get-Version {
 function Add-RoverPath {
   $CurrentPath = [Environment]::GetEnvironmentVariable("Path", "User")
   $Parts = @()
-  if ($CurrentPath) { $Parts = $CurrentPath -split ";" | Where-Object { $_ } }
-  if ($Parts -contains $BinDir) { return }
+  if ($CurrentPath) {
+    $Parts = $CurrentPath -split ";" | Where-Object { $_ }
+  }
+
+  if ($Parts -contains $BinDir) {
+    return
+  }
+
   if ($NoModifyPath) {
     Write-Host "Add Rover to PATH: $BinDir"
     return
   }
+
   [Environment]::SetEnvironmentVariable("ROVER_HOME", $RoverHome, "User")
   $NewPath = if ($CurrentPath) { "$BinDir;$CurrentPath" } else { $BinDir }
   [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
@@ -43,15 +53,22 @@ function Add-RoverPath {
 function Test-Checksum($Archive, $SumsFile) {
   $ArchiveName = Split-Path $Archive -Leaf
   $Line = Get-Content $SumsFile | Where-Object { $_ -match [regex]::Escape($ArchiveName) } | Select-Object -First 1
-  if (-not $Line) { Fail "checksum missing for $ArchiveName" }
+  if (-not $Line) {
+    Fail "checksum missing for $ArchiveName"
+  }
+
   $Expected = ($Line -split "\s+")[0].ToLowerInvariant()
   $Actual = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
-  if ($Expected -ne $Actual) { Fail "checksum mismatch" }
+  if ($Expected -ne $Actual) {
+    Fail "checksum mismatch"
+  }
 }
 
 $Target = Get-Target
 $Version = Get-Version
-if (-not $Version) { Fail "could not resolve latest release" }
+if (-not $Version) {
+  Fail "could not resolve latest release"
+}
 
 $Asset = "rover-$Version-$Target"
 $Archive = "$Asset.zip"
@@ -62,12 +79,15 @@ try {
   Write-Host "Installing Rover $Version for $Target"
   $ArchivePath = Join-Path $Temp $Archive
   $SumsPath = Join-Path $Temp "SHA256SUMS"
+
   Invoke-WebRequest -Uri "$BaseUrl/$Version/$Archive" -OutFile $ArchivePath
   Invoke-WebRequest -Uri "$BaseUrl/$Version/SHA256SUMS" -OutFile $SumsPath
   Test-Checksum $ArchivePath $SumsPath
+
   Expand-Archive -Path $ArchivePath -DestinationPath $Temp -Force
   New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
   Copy-Item -Path (Join-Path $Temp "$Asset\rover.exe") -Destination (Join-Path $BinDir "rover.exe") -Force
+
   Add-RoverPath
   Write-Host "Rover installed: $(Join-Path $BinDir "rover.exe")"
   Write-Host "Run: rover --help"

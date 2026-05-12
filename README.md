@@ -19,7 +19,7 @@ Windows PowerShell:
 irm https://rover.lu/install.ps1 | iex
 ```
 
-Full install guide: https://rover.lu/docs/getting-started/installation
+Full install guide: https://rover.lu/docs/getting-started/installation/
 
 Build from source:
 
@@ -82,18 +82,18 @@ rover db migrate
 rover lsp
 ```
 
-Full CLI guide: https://rover.lu/docs/guides/cli
+Full CLI guide: https://rover.lu/docs/operations/cli/
 
 ## Docs
 
-- Installation: https://rover.lu/docs/getting-started/installation
-- Backend Server: https://rover.lu/docs/guides/backend-server
-- Context API: https://rover.lu/docs/guides/context-api
-- Response Builders: https://rover.lu/docs/guides/response-builders
-- Database: https://rover.lu/docs/guides/database
-- Migrations: https://rover.lu/docs/guides/migrations
-- UI Runtime: https://rover.lu/docs/guides/ui-runtime
-- Performance: https://rover.lu/docs/performance
+- Installation: https://rover.lu/docs/getting-started/installation/
+- Backend Server: https://rover.lu/docs/server/backend-server/
+- Context API: https://rover.lu/docs/server/context-api/
+- Response Builders: https://rover.lu/docs/server/response-builders/
+- Database: https://rover.lu/docs/data/database/
+- Migrations: https://rover.lu/docs/data/migrations/
+- UI Runtime: https://rover.lu/docs/runtime/ui-runtime/
+- Performance: https://rover.lu/docs/runtime/performance/
 
 ## Roadmap
 

@@ -1,0 +1,160 @@
+name: Docker Image
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag, e.g. v0.0.1-alpha.1'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bin:
+    name: Binary image
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      image: ${{ steps.vars.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: vars
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${{ github.event.release.tag_name }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${{ github.repository }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push bin
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/bin.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            ROVER_VERSION=${{ steps.vars.outputs.version }}
+            ROVER_REPO=${{ github.repository }}
+          tags: |
+            ${{ steps.vars.outputs.image }}:bin-${{ steps.vars.outputs.version }}
+            ${{ steps.vars.outputs.image }}:bin
+
+  runtime:
+    name: ${{ matrix.kind }} image
+    needs: bin
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [debian, alpine]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.kind }}.Dockerfile
+          load: true
+          provenance: false
+          build-args: |
+            ROVER_VERSION=${{ needs.bin.outputs.version }}
+            BIN_IMAGE=${{ needs.bin.outputs.image }}:bin-${{ needs.bin.outputs.version }}
+          tags: rover:${{ matrix.kind }}-smoke
+
+      - name: Test no Cargo
+        run: docker run --rm --entrypoint sh rover:${{ matrix.kind }}-smoke -c '! command -v cargo && rover --help >/tmp/rover-help.txt'
+
+      - name: Test server
+        shell: bash
+        run: |
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          cat > "$tmp_dir/app.lua" <<'LUA'
+          local api = rover.server { host = "127.0.0.1", port = 4242 }
+
+          function api.health.get(ctx)
+            return { ok = true }
+          end
+
+          return api
+          LUA
+          id="$(docker run -d --rm -v "$tmp_dir:/app" rover:${{ matrix.kind }}-smoke run /app/app.lua)"
+          trap 'docker rm -f "$id" >/dev/null 2>&1 || true; rm -rf "$tmp_dir"' EXIT
+          for _ in $(seq 1 30); do
+            if docker exec "$id" sh -c 'if command -v curl >/dev/null 2>&1; then curl -fsS http://127.0.0.1:4242/health; else wget -qO- http://127.0.0.1:4242/health; fi' | grep -q '"ok"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$id"
+          exit 1
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.kind }}.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            ROVER_VERSION=${{ needs.bin.outputs.version }}
+            BIN_IMAGE=${{ needs.bin.outputs.image }}:bin-${{ needs.bin.outputs.version }}
+          tags: |
+            ${{ needs.bin.outputs.image }}:${{ matrix.kind }}-${{ needs.bin.outputs.version }}
+            ${{ needs.bin.outputs.image }}:${{ matrix.kind }}
+
+      - name: Push default tags
+        if: matrix.kind == 'debian'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/debian.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            ROVER_VERSION=${{ needs.bin.outputs.version }}
+            BIN_IMAGE=${{ needs.bin.outputs.image }}:bin-${{ needs.bin.outputs.version }}
+          tags: |
+            ${{ needs.bin.outputs.image }}:${{ needs.bin.outputs.version }}
+            ${{ needs.bin.outputs.image }}:latest

@@ -7,7 +7,7 @@ Implemented comprehensive documentation for WebSocket server functionality in Ro
 ## Files Created
 
 ### Documentation
-- `docs/docs/api-reference/ws-server.md` (354 lines)
+- `rover-docs/content/docs/http-and-realtime/ws-server.md` (354 lines)
   - Complete WebSocket server API reference
   - Lifecycle hooks: `join`, `listen`, `leave`
   - Event dispatch: send methods, broadcasting, topics

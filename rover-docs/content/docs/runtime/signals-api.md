@@ -418,5 +418,5 @@ During derived signal or effect execution:
 ## See Also
 
 - [Signals Guide](/docs/runtime/signals/) - User guide with examples and patterns
-- [Performance Guide](/docs/performance) - Performance tuning and benchmarks
+- [Performance Guide](/docs/runtime/performance/) - Performance tuning and benchmarks
 - [UI Components](#) - Using signals in UI components (coming soon)

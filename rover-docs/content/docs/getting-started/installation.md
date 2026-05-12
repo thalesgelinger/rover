@@ -41,6 +41,39 @@ Skip PATH edits:
 curl -fsSL https://rover.lu/install | ROVER_NO_MODIFY_PATH=1 sh
 ```
 
+## Docker
+
+Run Rover from the default Debian image:
+
+```bash
+docker run --rm ghcr.io/thalesgelinger/rover:latest --help
+```
+
+Alpine is also published:
+
+```bash
+docker run --rm ghcr.io/thalesgelinger/rover:alpine --help
+```
+
+Run an app from the current directory:
+
+```bash
+docker run --rm -p 4242:4242 -v "$PWD:/app" ghcr.io/thalesgelinger/rover:latest run /app/app.lua
+```
+
+For host port publishing, configure the app to bind `0.0.0.0`:
+
+```lua
+local api = rover.server {
+  host = "0.0.0.0",
+  port = 4242,
+  allow_public_bind = true,
+  allow_insecure_http = true,
+}
+```
+
+The Docker images are built from the same GitHub Release binary used by the installer. They do not include Cargo or the Rust toolchain.
+
 ## Build from Source
 
 Prerequisites:

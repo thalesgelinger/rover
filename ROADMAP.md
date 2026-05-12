@@ -5,43 +5,43 @@
 ## ✅ Done
 
 ### Getting Started
-- Intro (`docs/docs/intro.md`)
-- Installation (`docs/docs/getting-started/installation.md`)
+- Intro (`rover-docs/content/docs/intro.md`)
+- Installation (`rover-docs/content/docs/getting-started/installation.md`)
 
 ### Server Core
-- HTTP server (`docs/docs/guides/backend-server.md`)
-- Configuration (`docs/docs/api-reference/configuration.md`)
-- Route patterns (`docs/docs/api-reference/route-patterns.md`)
-- Context API + body helpers (`docs/docs/guides/context-api.md`)
-- Response builders (`docs/docs/guides/response-builders.md`)
-- Server extras (OpenAPI, raw) (`docs/docs/api-reference/server-extras.md`)
+- HTTP server (`rover-docs/content/docs/server/backend-server.md`)
+- Configuration (`rover-docs/content/docs/server/configuration.md`)
+- Route patterns (`rover-docs/content/docs/server/route-patterns.md`)
+- Context API + body helpers (`rover-docs/content/docs/server/context-api.md`)
+- Response builders (`rover-docs/content/docs/server/response-builders.md`)
+- Server extras (OpenAPI, raw) (`rover-docs/content/docs/server/server-extras.md`)
 
 ### HTML Templates
-- HTML templating (`docs/docs/guides/html-templates.md`)
+- HTML templating (`rover-docs/content/docs/server/html-templates.md`)
 
 ### HTTP Client
-- HTTP client (`docs/docs/api-reference/http-client.md`)
+- HTTP client (`rover-docs/content/docs/http-and-realtime/http-client.md`)
 
 ### Validation
-- Guard validation (`docs/docs/api-reference/guard.md`)
+- Guard validation (`rover-docs/content/docs/runtime/guard.md`)
 
 ### Database
-- Database guide (`docs/docs/guides/database.md`)
-- Migrations (`docs/docs/guides/migrations.md`)
-- Query DSL (`docs/docs/api-reference/db-query-dsl.md`)
+- Database guide (`rover-docs/content/docs/data/database.md`)
+- Migrations (`rover-docs/content/docs/data/migrations.md`)
+- Query DSL (`rover-docs/content/docs/data/db-query-dsl.md`)
 
 ### IO + Debug
-- IO module (`docs/docs/api-reference/io.md`)
-- Debug utilities (`docs/docs/api-reference/debug.md`)
+- IO module (`rover-docs/content/docs/runtime/io.md`)
+- Debug utilities (`rover-docs/content/docs/runtime/debug.md`)
 
 ### Reactive + UI
-- Signals guide (`docs/docs/guides/signals.md`)
-- Signals API (`docs/docs/api-reference/signals.md`)
-- Performance notes (`docs/docs/performance.md`)
-- UI runtime (`docs/docs/guides/ui-runtime.md`)
+- Signals guide (`rover-docs/content/docs/runtime/signals.md`)
+- Signals API (`rover-docs/content/docs/runtime/signals-api.md`)
+- Performance notes (`rover-docs/content/docs/runtime/performance.md`)
+- UI runtime (`rover-docs/content/docs/runtime/ui-runtime.md`)
 
 ### Tooling
-- CLI (`docs/docs/guides/cli.md`)
+- CLI (`rover-docs/content/docs/operations/cli.md`)
 
 ## 🚧 Doing
 

@@ -228,14 +228,20 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: docs/package-lock.json
+          cache-dependency-path: rover-docs/package-lock.json
+
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: '0.155.3'
+          extended: true
 
       - name: Install dependencies
-        working-directory: docs
+        working-directory: rover-docs
         run: npm ci
 
       - name: Deploy to rover.lu
-        working-directory: docs
+        working-directory: rover-docs
         run: npx sst deploy --stage production
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
