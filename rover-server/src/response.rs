@@ -99,6 +99,7 @@ pub struct ChunkProducer {
     producer: mlua::RegistryKey,
 }
 
+#[allow(dead_code)]
 impl ChunkProducer {
     pub fn new(producer: mlua::RegistryKey) -> Self {
         Self { producer }
@@ -212,6 +213,7 @@ impl SseWriter {
 
 /// Response enum that can be either immediate or streaming
 #[derive(Clone)]
+#[allow(dead_code)]
 pub enum HttpResponse {
     Immediate(RoverResponse),
     Streaming(StreamingResponse),
@@ -239,6 +241,7 @@ thread_local! {
 }
 
 /// Push a chunk to the thread-local pending queue
+#[allow(dead_code)]
 pub fn push_chunk(chunk: Bytes) {
     PENDING_CHUNKS.with(|pc| {
         pc.borrow_mut().push(chunk);
@@ -246,6 +249,7 @@ pub fn push_chunk(chunk: Bytes) {
 }
 
 /// Take all pending chunks from the thread-local queue
+#[allow(dead_code)]
 pub fn take_pending_chunks() -> Vec<Bytes> {
     PENDING_CHUNKS.with(|pc| {
         let mut chunks = pc.borrow_mut();
@@ -254,6 +258,7 @@ pub fn take_pending_chunks() -> Vec<Bytes> {
 }
 
 /// Clear pending chunks
+#[allow(dead_code)]
 pub fn clear_pending_chunks() {
     PENDING_CHUNKS.with(|pc| {
         pc.borrow_mut().clear();

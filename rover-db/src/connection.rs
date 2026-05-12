@@ -19,7 +19,7 @@ pub enum ConnectionError {
 
 /// Represents a database connection
 pub struct Connection {
-    db: Database,
+    _db: Database,
     conn: libsql::Connection,
     runtime: Arc<Runtime>,
 }
@@ -51,7 +51,7 @@ impl Connection {
         })?;
 
         Ok(Self {
-            db,
+            _db: db,
             conn,
             runtime: Arc::new(runtime),
         })

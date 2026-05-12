@@ -284,7 +284,7 @@ impl StoreBackend for MemoryStore {
 /// - Cannot be shared across multiple instances
 /// - No persistence guarantees
 pub struct SqliteStore {
-    db: libsql::Database,
+    _db: libsql::Database,
     conn: libsql::Connection,
     runtime: Arc<Runtime>,
 }
@@ -319,7 +319,7 @@ impl SqliteStore {
         })?;
 
         let store = Self {
-            db,
+            _db: db,
             conn,
             runtime: Arc::new(runtime),
         };

@@ -49,6 +49,7 @@ pub fn run_check(options: CheckOptions) -> Result<()> {
 }
 
 /// Run a quick pre-execution check (used before running Lua files)
+#[allow(dead_code)]
 pub fn pre_run_check(file: &PathBuf) -> Result<bool> {
     // Read the file
     let code = fs::read_to_string(file)
@@ -124,6 +125,7 @@ fn load_db_schema() -> DbSchema {
     DbSchema::from_table_fields(table_fields)
 }
 
+#[allow(dead_code)]
 fn display_error_compact(error: &ParsingError, file: &str) {
     if let Some(range) = &error.range {
         println!(
@@ -149,6 +151,7 @@ fn display_error_compact(error: &ParsingError, file: &str) {
     }
 }
 
+#[allow(dead_code)]
 fn display_warning_compact(warning: &ParsingError, file: &str) {
     if let Some(range) = &warning.range {
         println!(

@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use crate::security::{PathValidationError, validate_path};
+use crate::security::validate_path;
 
 thread_local! {
     static CURRENT_INPUT: RefCell<Option<LuaAnyUserData>> = RefCell::new(None);
@@ -186,7 +186,7 @@ impl LuaUserData for StdinHandle {
 
 impl LuaUserData for StdoutHandle {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut("write", |lua, this, data: LuaValue| {
+        methods.add_method_mut("write", |lua, _this, data: LuaValue| {
             let mut stdout = std::io::stdout();
 
             let text = match data {
@@ -225,7 +225,7 @@ impl LuaUserData for StdoutHandle {
 
 impl LuaUserData for StderrHandle {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut("write", |_lua, this, data: LuaValue| {
+        methods.add_method_mut("write", |_lua, _this, data: LuaValue| {
             let mut stderr = std::io::stderr();
 
             let text = match data {
@@ -711,18 +711,14 @@ impl LuaUserData for SyncFile {
 
         methods.add_method_mut(
             "setvbuf",
-            |_lua, _this, (mode, size): (String, Option<i64>)| {
-                let size = size.unwrap_or(8192);
-
-                match mode.as_str() {
-                    "no" | "none" => Ok(()),
-                    "full" => Ok(()),
-                    "line" => Ok(()),
-                    _ => Err(LuaError::RuntimeError(format!(
-                        "Invalid vbuf mode: {}",
-                        mode
-                    ))),
-                }
+            |_lua, _this, (mode, _size): (String, Option<i64>)| match mode.as_str() {
+                "no" | "none" => Ok(()),
+                "full" => Ok(()),
+                "line" => Ok(()),
+                _ => Err(LuaError::RuntimeError(format!(
+                    "Invalid vbuf mode: {}",
+                    mode
+                ))),
             },
         );
 
@@ -922,7 +918,7 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
 
     io.set(
         "read",
-        lua.create_function(|lua, format: Option<LuaValue>| {
+        lua.create_function(|_lua, format: Option<LuaValue>| {
             let input_ud =
                 CURRENT_INPUT.with(|current| current.borrow().as_ref().map(|ud| ud.clone()));
 
@@ -942,7 +938,7 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
 
     io.set(
         "write",
-        lua.create_function(|lua, values: LuaMultiValue| {
+        lua.create_function(|_lua, values: LuaMultiValue| {
             let output_ud =
                 CURRENT_OUTPUT.with(|current| current.borrow().as_ref().map(|ud| ud.clone()));
 
@@ -963,7 +959,7 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
 
     io.set(
         "flush",
-        lua.create_function(|lua, ()| {
+        lua.create_function(|_lua, ()| {
             let output_ud =
                 CURRENT_OUTPUT.with(|current| current.borrow().as_ref().map(|ud| ud.clone()));
 
@@ -1059,7 +1055,7 @@ pub fn create_io_module(lua: &Lua) -> LuaResult<LuaTable> {
 
             let file_ud_clone = file_ud.clone();
 
-            let lines_iterator = lua.create_function(move |lua, (): ()| {
+            let lines_iterator = lua.create_function(move |_lua, (): ()| {
                 let read_method: LuaFunction =
                     file_ud_clone.get::<LuaFunction>("read").map_err(|_| {
                         LuaError::RuntimeError("File does not support read".to_string())

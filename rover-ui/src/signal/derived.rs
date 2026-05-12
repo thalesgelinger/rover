@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 
 /// A derived signal computes its value from other signals
 pub struct DerivedSignal {
-    pub(crate) id: DerivedId,
+    pub(crate) _id: DerivedId,
     pub(crate) compute_fn: RegistryKey,
     pub(crate) cached_value: SignalValue,
     pub(crate) dirty: bool,
@@ -16,7 +16,7 @@ pub struct DerivedSignal {
 impl DerivedSignal {
     pub fn new(id: DerivedId, compute_fn: RegistryKey) -> Self {
         Self {
-            id,
+            _id: id,
             compute_fn,
             cached_value: SignalValue::Nil,
             dirty: true,

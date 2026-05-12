@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 
 /// An effect runs side effects when its dependencies change
 pub struct Effect {
-    pub(crate) id: EffectId,
+    pub(crate) _id: EffectId,
     pub(crate) callback: RegistryKey,
     pub(crate) cleanup: Option<RegistryKey>,
     pub(crate) dependencies: SmallVec<[SignalId; 4]>,
@@ -14,7 +14,7 @@ pub struct Effect {
 impl Effect {
     pub fn new(id: EffectId, callback: RegistryKey) -> Self {
         Self {
-            id,
+            _id: id,
             callback,
             cleanup: None,
             dependencies: SmallVec::new(),

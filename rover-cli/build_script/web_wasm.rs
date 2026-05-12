@@ -66,8 +66,8 @@ impl BuildContext {
 }
 
 fn run_wasm_build(ctx: &BuildContext) -> Result<(), String> {
-    println!(
-        "cargo:warning=rover-cli build.rs: running cargo build -p rover-web-wasm --target {WASM_TARGET_TRIPLE}{}",
+    eprintln!(
+        "rover-cli build.rs: running cargo build -p rover-web-wasm --target {WASM_TARGET_TRIPLE}{}",
         if ctx.release { " --release" } else { "" }
     );
 

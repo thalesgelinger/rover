@@ -113,10 +113,6 @@ impl RequestContext {
         }
         None
     }
-
-    fn request_id(&self) -> &str {
-        &self.request_id
-    }
 }
 
 impl UserData for RequestContext {

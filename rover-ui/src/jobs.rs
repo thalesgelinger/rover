@@ -1,6 +1,6 @@
 use crate::job_pool::{JobPool, SharedJobPool};
 use crate::scheduler::SharedScheduler;
-use crate::task::{Task, TaskStatus, create_task as create_task_internal, start_task};
+use crate::task::{Task, create_task as create_task_internal, start_task};
 use mlua::{
     AnyUserData, Function, Lua, MetaMethod, MultiValue, Result, Table, UserData, UserDataMethods,
     Value,

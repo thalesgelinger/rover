@@ -77,7 +77,6 @@ impl LoadShedder {
 
         Ok(RequestGuard {
             inflight: Arc::clone(&self.inflight),
-            queued: Arc::clone(&self.queued),
         })
     }
 
@@ -100,7 +99,6 @@ impl LoadShedder {
 
 pub struct RequestGuard {
     inflight: Arc<AtomicU64>,
-    queued: Arc<AtomicU64>,
 }
 
 impl RequestGuard {

@@ -217,7 +217,7 @@ impl AppServer for Lua {
 
         let json_helper = self.create_table()?;
 
-        let json_call = self.create_function(|lua, (_self, data): (Table, Value)| {
+        let json_call = self.create_function(|_lua, (_self, data): (Table, Value)| {
             // Helper to extract headers from table
             let extract_headers = |table: &Table| -> mlua::Result<
                 Option<std::collections::HashMap<String, String>>,
@@ -262,7 +262,7 @@ impl AppServer for Lua {
         })?;
 
         let json_status_fn =
-            self.create_function(|lua, (_self, status_code, data): (Table, u16, Value)| {
+            self.create_function(|_lua, (_self, status_code, data): (Table, u16, Value)| {
                 // Helper to extract headers from table
                 let extract_headers = |table: &Table| -> mlua::Result<
                     Option<std::collections::HashMap<String, String>>,
@@ -1294,9 +1294,9 @@ impl Server for Table {
             let handler = handler.clone();
 
             // Create wrapper function
-            let wrapper = lua.create_function(move |lua, ctx: mlua::Value| {
+            let wrapper = lua.create_function(move |_lua, ctx: mlua::Value| {
                 // Execute before middlewares
-                for (i, mw) in before_handlers.iter().enumerate() {
+                for mw in before_handlers.iter() {
                     let result: mlua::Value = mw.call(ctx.clone())?;
 
                     // Check if middleware returned a response (short-circuit)

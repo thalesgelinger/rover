@@ -93,6 +93,7 @@ impl SessionData {
         }
     }
 
+    #[cfg(test)]
     fn with_state(state: SessionState) -> Self {
         let now = unix_secs();
         Self {
