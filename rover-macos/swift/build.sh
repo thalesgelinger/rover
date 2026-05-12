@@ -4,7 +4,7 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${1:-$ROOT/target/debug/rover-macos-host}"
 
-cargo build -p rover-macos
+cargo build --manifest-path "$ROOT/Cargo.toml" -p rover-macos
 
 swiftc \
   "$ROOT/rover-macos/swift/RoverMacosHost.swift" \

@@ -96,15 +96,13 @@ pub fn run_file(file: &Path, _args: &[String]) -> Result<()> {
 }
 
 pub fn build_host() -> Result<PathBuf> {
-    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = crate_dir
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("failed to resolve workspace root"))?;
+    let workspace_root = rover_source_root()?;
     let host_path = workspace_root.join("target/debug/rover-macos-host");
-    let script = crate_dir.join("swift/build.sh");
+    let script = workspace_root.join("rover-macos/swift/build.sh");
 
     let status = Command::new(&script)
         .arg(&host_path)
+        .current_dir(&workspace_root)
         .status()
         .map_err(|e| anyhow::anyhow!("failed to run {}: {}", script.display(), e))?;
 
@@ -116,6 +114,16 @@ pub fn build_host() -> Result<PathBuf> {
     }
 
     Ok(host_path)
+}
+
+fn rover_source_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os("ROVER_SOURCE_ROOT") {
+        return Ok(PathBuf::from(root));
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve Rover source root"))
 }
 
 pub fn launch_file(file: &Path, _args: &[String]) -> Result<()> {

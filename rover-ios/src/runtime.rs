@@ -277,7 +277,10 @@ fn rover_source_root() -> Result<PathBuf> {
     if let Some(root) = std::env::var_os("ROVER_SOURCE_ROOT") {
         return Ok(PathBuf::from(root));
     }
-    Ok(std::env::current_dir()?)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve Rover source root"))
 }
 
 fn ensure_rust_target(target: &str) -> Result<()> {
