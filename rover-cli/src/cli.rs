@@ -18,6 +18,14 @@ pub struct Cli {
 pub enum Commands {
     /// Run LSP server
     Lsp,
+    /// Start Rover Lua REPL
+    Repl {
+        /// File or directory to preload
+        path: Option<PathBuf>,
+        /// Evaluate code and exit
+        #[arg(short = 'e', long)]
+        eval: Option<String>,
+    },
     /// Check a file
     Check {
         /// Input file

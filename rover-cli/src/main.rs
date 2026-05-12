@@ -3,6 +3,7 @@ mod check;
 mod cli;
 mod db;
 mod fmt;
+mod repl;
 mod run;
 mod scripts;
 
@@ -33,6 +34,7 @@ fn main() -> Result<()> {
             rover_lsp::start_server();
             Ok(())
         }
+        Commands::Repl { path, eval } => repl::run_repl(repl::ReplOptions { path, eval }),
         Commands::Check {
             file,
             verbose,

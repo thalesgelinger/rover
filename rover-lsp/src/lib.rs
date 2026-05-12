@@ -7,7 +7,7 @@ use std::time::Duration;
 use rover_db::load_schemas_from_dir;
 use rover_parser::{
     FunctionId, FunctionMetadata, GuardBinding, GuardSchema, GuardType, LuaType, MemberKind, Route,
-    SemanticModel, SourceRange, SpecDoc, SymbolSpecMember, SymbolSpecMetadata,
+    SemanticModel, SourceRange, SpecDoc, SpecDocMember, SymbolSpecMember, SymbolSpecMetadata,
     analyze_with_options,
     db_intent::{DbIntent, DbSchema, analyze_db_intent, db_warnings_from_intent},
     lookup_spec,
@@ -70,6 +70,13 @@ struct DocumentState {
     model: SemanticModel,
     db_schema: DbSchema,
     db_intent: DbIntent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplCompletionItem {
+    pub label: String,
+    pub detail: Option<String>,
+    pub documentation: Option<String>,
 }
 
 #[derive(Debug)]
@@ -190,6 +197,62 @@ fn analyze_document_state(text: String) -> DocumentState {
         model,
         db_schema,
         db_intent,
+    }
+}
+
+pub fn repl_completions(text: &str, line: u32, character: u32) -> Vec<ReplCompletionItem> {
+    let state = analyze_document_state(text.to_string());
+    compute_completions(
+        &state.text,
+        &state.model,
+        &state.db_schema,
+        &state.db_intent,
+        Position { line, character },
+    )
+    .into_iter()
+    .map(|item| ReplCompletionItem {
+        label: item.label,
+        detail: item.detail,
+        documentation: item.documentation.map(completion_documentation_to_string),
+    })
+    .collect()
+}
+
+pub fn repl_symbol_doc(symbol: &str) -> Option<String> {
+    let mut parts = symbol.split('.').filter(|part| !part.is_empty());
+    let first = parts.next()?;
+    let mut doc = lookup_spec(first)?;
+    let mut text = spec_doc_summary(&doc);
+
+    for part in parts {
+        let member = doc.members.iter().find(|member| member.name == part)?;
+        text = format_member_doc(member);
+        doc = lookup_spec(member.target)?;
+    }
+
+    Some(text)
+}
+
+fn completion_documentation_to_string(documentation: Documentation) -> String {
+    match documentation {
+        Documentation::String(text) => text,
+        Documentation::MarkupContent(markup) => markup.value,
+    }
+}
+
+fn spec_doc_summary(doc: &SpecDoc) -> String {
+    if doc.doc.is_empty() {
+        doc.id.to_string()
+    } else {
+        format!("{}\n\n{}", doc.id, doc.doc)
+    }
+}
+
+fn format_member_doc(member: &SpecDocMember) -> String {
+    if member.doc.is_empty() {
+        member.name.to_string()
+    } else {
+        format!("{}\n\n{}", member.name, member.doc)
     }
 }
 
@@ -3760,4 +3823,22 @@ pub fn start_server() {
         .init();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _ = runtime.block_on(start_lsp());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_complete_rover_members_for_repl() {
+        let items = repl_completions("rover.", 0, 6);
+        assert!(items.iter().any(|item| item.label == "server"));
+        assert!(items.iter().any(|item| item.label == "db"));
+    }
+
+    #[test]
+    fn should_show_repl_symbol_docs() {
+        let doc = repl_symbol_doc("rover.server").unwrap();
+        assert!(doc.contains("Create a Rover server"));
+    }
 }

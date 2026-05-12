@@ -217,6 +217,18 @@ pub fn run_from_str(source: &str, args: &[String], verbose: bool) -> Result<()> 
     runtime.execute(&boot_source, verbose)
 }
 
+/// Create a Rover-loaded Lua runtime without executing an app.
+pub fn create_lua_runtime(args: &[String], argv0: &str) -> Result<Lua> {
+    let _ = load_dotenv()?;
+    let source = BootSource {
+        source: "",
+        source_name: argv0,
+        argv0,
+    };
+    let runtime = RuntimeBootstrap::new(args, &source)?;
+    Ok(runtime.lua)
+}
+
 pub fn get_config() -> Result<Config> {
     let lua = Lua::new();
     let content = std::fs::read_to_string("rover.lua")?;

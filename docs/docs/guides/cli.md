@@ -51,6 +51,38 @@ Optional:
 - `-v, --verbose` for extra diagnostic output.
 - `-f, --format <pretty|json>` output format (`pretty` default).
 
+## REPL
+
+```bash
+rover repl
+rover repl path/to/file.lua
+rover repl path/to/dir
+rover repl -e '1 + 1'
+rover repl path/to/dir -e 'rover'
+```
+
+`rover repl` starts a Lua REPL with Rover loaded.
+
+Preload rules:
+
+- File paths execute once before the prompt.
+- Directory paths are added to `package.path` as `?.lua` and `?/init.lua`.
+- Directory paths auto-run `init.lua` or `main.lua` when present.
+
+REPL commands:
+
+- `.help` shows commands.
+- `.load <path>` loads a file or directory.
+- `.reload` creates a fresh Lua state and reloads loaded paths.
+- `.doc <symbol>` shows Rover API docs.
+- `.vars` lists user globals.
+- `.clear` clears the terminal.
+- `.exit` quits.
+
+Input first tries expression mode, then statement mode. For example, `1 + 1` prints `2`. Multiline input continues automatically for incomplete Lua chunks, or explicitly with trailing `\`.
+
+The REPL does not auto-run returned Rover server/UI apps. It evaluates code and keeps the prompt interactive.
+
 ## Format
 
 ```bash
