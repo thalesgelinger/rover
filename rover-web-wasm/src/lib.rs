@@ -8,7 +8,7 @@ use rover_ui::platform::{
 use rover_ui::scheduler::{Scheduler, SharedScheduler};
 use rover_ui::signal::{SignalRuntime, SignalValue};
 use rover_ui::ui::lua_node::LuaNode;
-use rover_ui::ui::node::{NodeId, TextContent, UiNode};
+use rover_ui::ui::node::{NodeId, UiNode};
 use rover_ui::ui::registry::UiRegistry;
 use rover_ui::ui::renderer::Renderer;
 use rover_ui::ui::{NodeStyle, PositionType, StyleOp, StyleSize};
