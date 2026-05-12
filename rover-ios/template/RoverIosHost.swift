@@ -152,10 +152,10 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
             view = toggle
         case 9:
             let scrollView = UIScrollView()
-            scrollView.showsHorizontalScrollIndicator = true
+            scrollView.showsHorizontalScrollIndicator = false
             scrollView.showsVerticalScrollIndicator = true
-            scrollView.alwaysBounceHorizontal = true
-            scrollView.alwaysBounceVertical = true
+            scrollView.alwaysBounceHorizontal = false
+            scrollView.alwaysBounceVertical = false
             view = scrollView
         default:
             view = UIView()
@@ -210,8 +210,8 @@ final class RoverIosHost: NSObject, UITextFieldDelegate {
             contentRect = contentRect.union(child.frame)
         }
         scrollView.contentSize = CGSize(
-            width: max(scrollView.bounds.width + 1, contentRect.maxX),
-            height: max(scrollView.bounds.height + 1, contentRect.maxY)
+            width: max(scrollView.bounds.width, contentRect.maxX),
+            height: max(scrollView.bounds.height, contentRect.maxY)
         )
     }
 
