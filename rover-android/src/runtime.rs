@@ -158,6 +158,23 @@ impl AndroidProject {
         };
         fs::create_dir_all(parent)?;
 
+        if let Some(packaged) = packaged_android_runtime()? {
+            fs::copy(&packaged, &self.runtime_lib).with_context(|| {
+                format!(
+                    "failed to copy packaged Android runtime from {} to {}",
+                    packaged.display(),
+                    self.runtime_lib.display()
+                )
+            })?;
+            return Ok(());
+        }
+
+        if !self.source_root.join("Cargo.toml").exists() {
+            return Err(anyhow::anyhow!(
+                "Android runtime not packaged. Expected librover_android.so next to rover or under runtimes/android/arm64-v8a"
+            ));
+        }
+
         let target = android_target();
         ensure_rust_target(target)?;
         let linker = android_linker()?;
@@ -271,6 +288,27 @@ impl AndroidProject {
         println!("Launched Android app {}", options.package_name);
         Ok(())
     }
+}
+
+fn packaged_android_runtime() -> Result<Option<PathBuf>> {
+    if let Some(path) = std::env::var_os("ROVER_ANDROID_RUNTIME_LIB") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(Some(path));
+        }
+    }
+
+    let exe = std::env::current_exe()?;
+    let Some(dir) = exe.parent() else {
+        return Ok(None);
+    };
+    let candidates = [
+        dir.join("librover_android.so"),
+        dir.join("runtimes/android/arm64-v8a/librover_android.so"),
+        dir.join("../share/rover/runtimes/android/arm64-v8a/librover_android.so"),
+    ];
+
+    Ok(candidates.into_iter().find(|path| path.exists()))
 }
 
 fn android_target() -> &'static str {

@@ -24,6 +24,7 @@ fn main() {
     println!("cargo:rustc-link-arg=-sNO_DISABLE_EXCEPTION_CATCHING");
     println!("cargo:rustc-link-arg=-sASSERTIONS=1");
     println!("cargo:rustc-link-arg=-sEXPORT_ES6=1");
+    println!("cargo:rustc-link-arg=-sMODULARIZE=1");
     println!("cargo:rustc-link-arg=--no-entry");
     println!(
         "cargo:rustc-link-arg=-o{}.js",

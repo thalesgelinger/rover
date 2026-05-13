@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use rover_bundler::{BundleOptions, bundle, serialize_bundle};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Supported build targets (Deno-compatible)
 pub const SUPPORTED_TARGETS: &[&str] = &[
@@ -93,7 +93,11 @@ pub fn run_build(options: BuildOptions) -> Result<()> {
     create_binary(&runtime_path, &bundle_lua, &output_name)?;
 
     println!("{}", format!("✅ Built: {}", output_name.display()).green());
-    println!("   Run with: ./{} <args>", output_name.display());
+    if output_name.is_absolute() {
+        println!("   Run with: {} <args>", output_name.display());
+    } else {
+        println!("   Run with: ./{} <args>", output_name.display());
+    }
 
     Ok(())
 }
@@ -125,33 +129,19 @@ fn get_host_target() -> String {
 }
 
 /// Find the appropriate runtime binary
-fn find_runtime(_target: &str, _features: &rover_parser::AppFeatures) -> Result<PathBuf> {
-    // For now, use the local runtime binary
-    // In the future, this will select feature-specific and target-specific runtimes
-    let search_paths = [
-        PathBuf::from("./target/release/rover-runtime"),
-        PathBuf::from("./target/debug/rover-runtime"),
-    ];
-
-    for path in &search_paths {
-        if path.exists() {
-            return Ok(path.clone());
-        }
+fn find_runtime(target: &str, _features: &rover_parser::AppFeatures) -> Result<PathBuf> {
+    let host = get_host_target();
+    if target != host {
+        return Err(anyhow::anyhow!(
+            "Cross-target builds need a packaged Rover runtime for {target}; this rover has {host}"
+        ));
     }
 
-    // Error with helpful message
-    Err(anyhow::anyhow!(
-        "Runtime binary not found\n\nExpected at one of:\n{}\n\nTo build locally:\n  cargo build --package rover_runtime --release\n\nFor cross-compilation, prebuilt runtimes will be downloaded in the future.",
-        search_paths
-            .iter()
-            .map(|p| format!("  - {}", p.display()))
-            .collect::<Vec<_>>()
-            .join("\n")
-    ))
+    std::env::current_exe().context("Failed to resolve installed rover runtime")
 }
 
 /// Create the final binary by embedding bundle into runtime
-fn create_binary(runtime_path: &PathBuf, bundle: &str, output: &PathBuf) -> Result<()> {
+fn create_binary(runtime_path: &Path, bundle: &str, output: &Path) -> Result<()> {
     // Read runtime binary
     let mut runtime = fs::read(runtime_path).context("Failed to read runtime binary")?;
 

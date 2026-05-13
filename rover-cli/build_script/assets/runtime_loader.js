@@ -1,4 +1,9 @@
-import createModule from './rover_web_wasm.js';
+import * as wasmModule from './rover_web_wasm.js';
+
+const createModule = wasmModule.default ?? wasmModule.Module ?? wasmModule;
+if (typeof createModule !== 'function') {
+  throw new Error('rover_web_wasm.js did not export an Emscripten module factory');
+}
 
 const app = document.getElementById('app');
 const print = (msg) => {

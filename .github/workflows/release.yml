@@ -70,22 +70,88 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-unknown-emscripten
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+
+      - name: Install Android tooling
+        if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
+        shell: bash
+        run: sdkmanager 'ndk;27.2.12479018'
 
       - name: Install cross
         if: matrix.use_cross == true
         uses: taiki-e/install-action@cross
 
+      - name: Build web assets
+        shell: bash
+        run: |
+          linker_path="$(pwd)/rover-web-wasm/scripts/emcc-linker.sh"
+          RUSTFLAGS="-C panic=abort" \
+            CARGO_PROFILE_RELEASE_PANIC=abort \
+            CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
+            cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten
+          scripts/package_web_assets.sh \
+            target/wasm32-unknown-emscripten/release/rover_web_wasm.js \
+            target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm \
+            target/rover_web_assets.tar.gz
+
       - name: Build
         shell: bash
         env:
-          ROVER_WEB_SKIP_AUTO_BUILD: 1
+          ROVER_WEB_ASSETS_TAR_GZ: target/rover_web_assets.tar.gz
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build -p rover_cli --release --target ${{ matrix.target }}
           else
             cargo build -p rover_cli --release --target ${{ matrix.target }}
           fi
+
+      - name: Build Apple standalone runtimes
+        if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
+        shell: bash
+        run: |
+          rustup target add aarch64-apple-ios-sim
+          cargo build -p rover-macos --release --target ${{ matrix.target }}
+          swiftc \
+            rover-macos/swift/RoverMacosHost.swift \
+            rover-macos/swift/main.swift \
+            -framework AppKit \
+            -L "target/${{ matrix.target }}/release" \
+            -lrover_macos \
+            -Xlinker -rpath \
+            -Xlinker @executable_path \
+            -o target/release/rover-macos-host
+          IPHONEOS_DEPLOYMENT_TARGET=15.0 \
+            MACOSX_DEPLOYMENT_TARGET=15.0 \
+            cargo build -p rover-ios --target aarch64-apple-ios-sim --target-dir target/ios-build
+          mkdir -p target/ios
+          cp target/ios-build/aarch64-apple-ios-sim/debug/librover_ios.a target/ios/librover_ios.a
+          lua_lib="$(find target/ios-build/aarch64-apple-ios-sim/debug/build -path '*/out/lib/liblua5.4.a' -print -quit)"
+          test -n "$lua_lib"
+          cp "$lua_lib" target/ios/liblua5.4.a
+
+      - name: Build Android standalone runtime
+        if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
+        shell: bash
+        run: |
+          rustup target add aarch64-linux-android
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$sdk"
+          ndk="$(find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+          test -n "$ndk"
+          linker="$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android23-clang"
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker" \
+            CC_aarch64_linux_android="$linker" \
+            CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" \
+            cargo build -p rover-android --target aarch64-linux-android --target-dir target/android-build
+          mkdir -p target/android
+          cp target/android-build/aarch64-linux-android/debug/librover_android.so target/android/librover_android.so
 
       - name: Smoke test binary
         if: matrix.target != 'aarch64-unknown-linux-gnu'
@@ -97,9 +163,10 @@ jobs:
       - name: Stage files
         shell: bash
         run: |
-          mkdir -p "dist/${{ steps.vars.outputs.asset }}"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ steps.vars.outputs.asset }}/"
-          cp README.md "dist/${{ steps.vars.outputs.asset }}/README.md"
+          scripts/package_standalone.sh \
+            "${{ matrix.target }}" \
+            "${{ matrix.binary }}" \
+            "dist/${{ steps.vars.outputs.asset }}"
 
       - name: Package tar.gz
         if: matrix.archive == 'tar.gz'

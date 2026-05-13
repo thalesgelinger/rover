@@ -153,7 +153,14 @@ main() {
   tar -xzf "$tmp/$archive" -C "$tmp"
   mkdir -p "$bin_dir"
   cp "$tmp/$asset/rover" "$bin_dir/rover"
+  if [ -d "$tmp/$asset/runtimes" ]; then
+    rm -rf "$bin_dir/runtimes"
+    cp -R "$tmp/$asset/runtimes" "$bin_dir/runtimes"
+  fi
   chmod 755 "$bin_dir/rover"
+  if [ -f "$bin_dir/runtimes/macos/rover-macos-host" ]; then
+    chmod 755 "$bin_dir/runtimes/macos/rover-macos-host"
+  fi
 
   setup_path
   say "Rover installed: $bin_dir/rover"

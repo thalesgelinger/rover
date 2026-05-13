@@ -159,6 +159,30 @@ impl IosProject {
         };
         fs::create_dir_all(parent)?;
 
+        if let Some(packaged) = packaged_ios_runtime()? {
+            fs::copy(&packaged.runtime_lib, &self.runtime_lib).with_context(|| {
+                format!(
+                    "failed to copy packaged iOS runtime from {} to {}",
+                    packaged.runtime_lib.display(),
+                    self.runtime_lib.display()
+                )
+            })?;
+            fs::copy(&packaged.lua_lib, &self.lua_lib).with_context(|| {
+                format!(
+                    "failed to copy packaged iOS Lua runtime from {} to {}",
+                    packaged.lua_lib.display(),
+                    self.lua_lib.display()
+                )
+            })?;
+            return Ok(());
+        }
+
+        if !self.source_root.join("Cargo.toml").exists() {
+            return Err(anyhow::anyhow!(
+                "iOS runtime not packaged. Expected librover_ios.a and liblua5.4.a next to rover or under runtimes/ios"
+            ));
+        }
+
         let target = simulator_target();
         ensure_rust_target(target)?;
         let status = Command::new("cargo")
@@ -262,6 +286,50 @@ impl IosProject {
         }
         Ok(())
     }
+}
+
+struct PackagedIosRuntime {
+    runtime_lib: PathBuf,
+    lua_lib: PathBuf,
+}
+
+fn packaged_ios_runtime() -> Result<Option<PackagedIosRuntime>> {
+    if let (Some(runtime), Some(lua)) = (
+        std::env::var_os("ROVER_IOS_RUNTIME_LIB"),
+        std::env::var_os("ROVER_IOS_LUA_LIB"),
+    ) {
+        let runtime_lib = PathBuf::from(runtime);
+        let lua_lib = PathBuf::from(lua);
+        if runtime_lib.exists() && lua_lib.exists() {
+            return Ok(Some(PackagedIosRuntime {
+                runtime_lib,
+                lua_lib,
+            }));
+        }
+    }
+
+    let exe = std::env::current_exe()?;
+    let Some(dir) = exe.parent() else {
+        return Ok(None);
+    };
+    let dirs = [
+        dir.to_path_buf(),
+        dir.join("runtimes/ios"),
+        dir.join("../share/rover/runtimes/ios"),
+    ];
+
+    for dir in dirs {
+        let runtime_lib = dir.join("librover_ios.a");
+        let lua_lib = dir.join("liblua5.4.a");
+        if runtime_lib.exists() && lua_lib.exists() {
+            return Ok(Some(PackagedIosRuntime {
+                runtime_lib,
+                lua_lib,
+            }));
+        }
+    }
+
+    Ok(None)
 }
 
 fn simulator_target() -> &'static str {

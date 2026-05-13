@@ -96,9 +96,20 @@ pub fn run_file(file: &Path, _args: &[String]) -> Result<()> {
 }
 
 pub fn build_host() -> Result<PathBuf> {
+    if let Some(host) = packaged_host_path()? {
+        return Ok(host);
+    }
+
     let workspace_root = rover_source_root()?;
     let host_path = workspace_root.join("target/debug/rover-macos-host");
     let script = workspace_root.join("rover-macos/swift/build.sh");
+
+    if !script.exists() {
+        return Err(anyhow::anyhow!(
+            "macOS runtime not packaged. Expected host next to rover or at {}",
+            script.display()
+        ));
+    }
 
     let status = Command::new(&script)
         .arg(&host_path)
@@ -114,6 +125,27 @@ pub fn build_host() -> Result<PathBuf> {
     }
 
     Ok(host_path)
+}
+
+fn packaged_host_path() -> Result<Option<PathBuf>> {
+    if let Some(path) = std::env::var_os("ROVER_MACOS_HOST") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(Some(path));
+        }
+    }
+
+    let exe = std::env::current_exe()?;
+    let Some(dir) = exe.parent() else {
+        return Ok(None);
+    };
+    let candidates = [
+        dir.join("rover-macos-host"),
+        dir.join("runtimes/macos/rover-macos-host"),
+        dir.join("../share/rover/runtimes/macos/rover-macos-host"),
+    ];
+
+    Ok(candidates.into_iter().find(|path| path.exists()))
 }
 
 fn rover_source_root() -> Result<PathBuf> {

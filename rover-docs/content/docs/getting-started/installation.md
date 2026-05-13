@@ -19,7 +19,7 @@ Windows PowerShell:
 irm https://rover.lu/install.ps1 | iex
 ```
 
-The installer downloads the latest prebuilt binary from GitHub Releases, installs it to `~/.rover/bin`, and updates your shell PATH when it can. Restart your terminal if `rover` is not found immediately.
+The installer downloads the latest prebuilt release from GitHub Releases, installs it to `~/.rover/bin`, includes packaged Rover runtimes, and updates your shell PATH when it can. Restart your terminal if `rover` is not found immediately.
 
 ## Options
 
@@ -73,6 +73,17 @@ local api = rover.server {
 ```
 
 The Docker images are built from the same GitHub Release binary used by the installer. They do not include Cargo or the Rust toolchain.
+
+## Standalone Runtimes
+
+Installed Rover releases are standalone. `rover build` and platform runs do not require Rust, Cargo, or a source checkout.
+
+Platform requirements still apply:
+
+- macOS apps require macOS.
+- iOS apps require macOS with Xcode installed.
+- Android apps require Android Studio/SDK setup.
+- Web apps require no extra Rover runtime install.
 
 ## Build from Source
 
