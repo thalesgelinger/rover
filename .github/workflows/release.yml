@@ -94,6 +94,8 @@ jobs:
           linker_path="$(pwd)/rover-web-wasm/scripts/emcc-linker.sh"
           RUSTFLAGS="-C panic=abort" \
             CARGO_PROFILE_RELEASE_PANIC=abort \
+            CFLAGS_wasm32_unknown_emscripten="-fPIC" \
+            CXXFLAGS_wasm32_unknown_emscripten="-fPIC" \
             CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
             cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten
           scripts/package_web_assets.sh \
