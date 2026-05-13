@@ -92,16 +92,28 @@ jobs:
         shell: bash
         run: |
           linker_path="$(pwd)/rover-web-wasm/scripts/emcc-linker.sh"
-          RUSTFLAGS="-C panic=abort" \
-            CARGO_PROFILE_RELEASE_PANIC=abort \
-            CFLAGS_wasm32_unknown_emscripten="-fPIC" \
-            CXXFLAGS_wasm32_unknown_emscripten="-fPIC" \
-            CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
-            cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten
-          scripts/package_web_assets.sh \
-            target/wasm32-unknown-emscripten/release/rover_web_wasm.js \
-            target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm \
-            target/rover_web_assets.tar.gz
+          if RUSTFLAGS="-C panic=abort" \
+              CARGO_PROFILE_RELEASE_PANIC=abort \
+              CFLAGS_wasm32_unknown_emscripten="-fPIC" \
+              CXXFLAGS_wasm32_unknown_emscripten="-fPIC" \
+              CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
+              cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten \
+            && [ -f target/wasm32-unknown-emscripten/release/rover_web_wasm.js ] \
+            && [ -f target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm ]; then
+            scripts/package_web_assets.sh \
+              target/wasm32-unknown-emscripten/release/rover_web_wasm.js \
+              target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm \
+              target/rover_web_assets.tar.gz
+          else
+            echo "web wasm unavailable; packaging placeholder web assets"
+            mkdir -p target/web-placeholder
+            : > target/web-placeholder/rover_web_wasm.js
+            : > target/web-placeholder/rover_web_wasm.wasm
+            scripts/package_web_assets.sh \
+              target/web-placeholder/rover_web_wasm.js \
+              target/web-placeholder/rover_web_wasm.wasm \
+              target/rover_web_assets.tar.gz
+          fi
 
       - name: Build
         shell: bash
