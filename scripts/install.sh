@@ -113,16 +113,16 @@ setup_path() {
 }
 
 verify_checksum() {
-  archive="$1"
+  checksum_archive="$1"
   sums="$2"
 
-  expected="$(sed -n "s/^\([a-fA-F0-9]*\) .*$(basename "$archive")$/\1/p" "$sums" | head -n 1)"
-  [ -n "$expected" ] || err "checksum missing for $(basename "$archive")"
+  expected="$(sed -n "s/^\([a-fA-F0-9]*\) .*$(basename "$checksum_archive")$/\1/p" "$sums" | head -n 1)"
+  [ -n "$expected" ] || err "checksum missing for $(basename "$checksum_archive")"
 
   if command -v sha256sum >/dev/null 2>&1; then
-    actual="$(sha256sum "$archive" | cut -d ' ' -f 1)"
+    actual="$(sha256sum "$checksum_archive" | cut -d ' ' -f 1)"
   elif command -v shasum >/dev/null 2>&1; then
-    actual="$(shasum -a 256 "$archive" | cut -d ' ' -f 1)"
+    actual="$(shasum -a 256 "$checksum_archive" | cut -d ' ' -f 1)"
   else
     say "No sha256 tool found; skipping checksum verification"
     return 0
