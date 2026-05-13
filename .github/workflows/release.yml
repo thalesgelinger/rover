@@ -118,7 +118,7 @@ jobs:
       - name: Build
         shell: bash
         env:
-          ROVER_WEB_ASSETS_TAR_GZ: target/rover_web_assets.tar.gz
+          ROVER_WEB_ASSETS_TAR_GZ: ${{ github.workspace }}/target/rover_web_assets.tar.gz
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build -p rover_cli --release --target ${{ matrix.target }}
