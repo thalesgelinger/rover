@@ -30,11 +30,6 @@ jobs:
             archive: tar.gz
             binary: rover
             use_cross: false
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            archive: tar.gz
-            binary: rover
-            use_cross: true
           - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
@@ -152,6 +147,7 @@ jobs:
 
       - name: Build Android standalone runtime
         if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
+        continue-on-error: true
         shell: bash
         run: |
           rustup target add aarch64-linux-android
@@ -159,7 +155,11 @@ jobs:
           test -n "$sdk"
           ndk="$(find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
           test -n "$ndk"
-          linker="$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android23-clang"
+          host_tag="darwin-x86_64"
+          if [ "$(uname -m)" = "arm64" ]; then
+            host_tag="darwin-arm64"
+          fi
+          linker="$ndk/toolchains/llvm/prebuilt/$host_tag/bin/aarch64-linux-android23-clang"
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker" \
             CC_aarch64_linux_android="$linker" \
             CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" \
