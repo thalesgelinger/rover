@@ -20,11 +20,6 @@ if [[ ! -f "$wasm_file" ]]; then
   exit 1
 fi
 
-if ! grep -q "export default\|export {" "$js_file"; then
-  echo "error: web runtime JS is not an ES module factory: $js_file" >&2
-  exit 1
-fi
-
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -36,6 +31,10 @@ cp "$js_file" "$tmp_dir/rover_web_wasm.js"
 cp "$wasm_file" "$tmp_dir/rover_web_wasm.wasm"
 cp "$root/rover-cli/build_script/assets/runtime_index.html" "$tmp_dir/index.html"
 cp "$root/rover-cli/build_script/assets/runtime_loader.js" "$tmp_dir/loader.js"
+
+if ! grep -q "export default\|export {" "$tmp_dir/rover_web_wasm.js"; then
+  printf '\nexport default Module;\n' >> "$tmp_dir/rover_web_wasm.js"
+fi
 
 tar -C "$tmp_dir" -czf "$out_file" index.html loader.js rover_web_wasm.js rover_web_wasm.wasm
 echo "wrote $out_file"

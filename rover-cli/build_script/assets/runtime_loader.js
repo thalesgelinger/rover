@@ -1,7 +1,7 @@
 import * as wasmModule from './rover_web_wasm.js';
 
 const createModule = wasmModule.default ?? wasmModule.Module ?? wasmModule;
-if (typeof createModule !== 'function') {
+if (typeof createModule !== 'function' && typeof createModule !== 'object') {
   throw new Error('rover_web_wasm.js did not export an Emscripten module factory');
 }
 
@@ -11,11 +11,12 @@ const print = (msg) => {
   app.textContent += `${msg}\n`;
 };
 
-const module = await createModule({
+const moduleOptions = {
   locateFile: (p) => `./${p}`,
   print: (t) => print(String(t)),
   printErr: (t) => print(`[stderr] ${String(t)}`),
-});
+};
+const module = typeof createModule === 'function' ? await createModule(moduleOptions) : createModule;
 
 const init = module.cwrap('rover_web_init', 'number', []);
 const loadLua = module.cwrap('rover_web_load_lua', 'number', ['number', 'string']);
