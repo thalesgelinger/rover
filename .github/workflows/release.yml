@@ -87,28 +87,18 @@ jobs:
         shell: bash
         run: |
           linker_path="$(pwd)/rover-web-wasm/scripts/emcc-linker.sh"
-          if RUSTFLAGS="-C panic=abort" \
-              CARGO_PROFILE_RELEASE_PANIC=abort \
-              CFLAGS_wasm32_unknown_emscripten="-fPIC" \
-              CXXFLAGS_wasm32_unknown_emscripten="-fPIC" \
-              CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
-              cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten \
-            && [ -f target/wasm32-unknown-emscripten/release/rover_web_wasm.js ] \
-            && [ -f target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm ]; then
-            scripts/package_web_assets.sh \
-              target/wasm32-unknown-emscripten/release/rover_web_wasm.js \
-              target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm \
-              target/rover_web_assets.tar.gz
-          else
-            echo "web wasm unavailable; packaging placeholder web assets"
-            mkdir -p target/web-placeholder
-            : > target/web-placeholder/rover_web_wasm.js
-            : > target/web-placeholder/rover_web_wasm.wasm
-            scripts/package_web_assets.sh \
-              target/web-placeholder/rover_web_wasm.js \
-              target/web-placeholder/rover_web_wasm.wasm \
-              target/rover_web_assets.tar.gz
-          fi
+          RUSTFLAGS="-C panic=abort" \
+            CARGO_PROFILE_RELEASE_PANIC=abort \
+            CFLAGS_wasm32_unknown_emscripten="-fPIC" \
+            CXXFLAGS_wasm32_unknown_emscripten="-fPIC" \
+            CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
+            cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten
+          test -s target/wasm32-unknown-emscripten/release/rover_web_wasm.js
+          test -s target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm
+          scripts/package_web_assets.sh \
+            target/wasm32-unknown-emscripten/release/rover_web_wasm.js \
+            target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm \
+            target/rover_web_assets.tar.gz
 
       - name: Build
         shell: bash
@@ -127,6 +117,12 @@ jobs:
         run: |
           rustup target add aarch64-apple-ios-sim
           cargo build -p rover-macos --release --target ${{ matrix.target }}
+          macos_dylib="target/${{ matrix.target }}/release/librover_macos.dylib"
+          macos_deps_dylib="target/${{ matrix.target }}/release/deps/librover_macos.dylib"
+          install_name_tool -id "@rpath/librover_macos.dylib" "$macos_dylib"
+          if [ -f "$macos_deps_dylib" ]; then
+            install_name_tool -id "@rpath/librover_macos.dylib" "$macos_deps_dylib"
+          fi
           swiftc \
             rover-macos/swift/RoverMacosHost.swift \
             rover-macos/swift/main.swift \
@@ -136,6 +132,8 @@ jobs:
             -Xlinker -rpath \
             -Xlinker @executable_path \
             -o target/release/rover-macos-host
+          install_name_tool -change "$macos_dylib" "@rpath/librover_macos.dylib" target/release/rover-macos-host || true
+          install_name_tool -change "$macos_deps_dylib" "@rpath/librover_macos.dylib" target/release/rover-macos-host || true
           IPHONEOS_DEPLOYMENT_TARGET=15.0 \
             MACOSX_DEPLOYMENT_TARGET=15.0 \
             cargo build -p rover-ios --target aarch64-apple-ios-sim --target-dir target/ios-build
@@ -181,6 +179,12 @@ jobs:
             "${{ matrix.target }}" \
             "${{ matrix.binary }}" \
             "dist/${{ steps.vars.outputs.asset }}"
+          if [[ "${{ matrix.target }}" == *apple-darwin ]]; then
+            test -x "dist/${{ steps.vars.outputs.asset }}/runtimes/macos/rover-macos-host"
+            test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/macos/librover_macos.dylib"
+            test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/ios/librover_ios.a"
+            test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/ios/liblua5.4.a"
+          fi
 
       - name: Package tar.gz
         if: matrix.archive == 'tar.gz'

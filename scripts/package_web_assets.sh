@@ -10,6 +10,21 @@ js_file="$1"
 wasm_file="$2"
 out_file="$3"
 
+if [[ ! -s "$js_file" ]]; then
+  echo "error: web runtime JS missing or empty: $js_file" >&2
+  exit 1
+fi
+
+if [[ ! -s "$wasm_file" ]]; then
+  echo "error: web runtime wasm missing or empty: $wasm_file" >&2
+  exit 1
+fi
+
+if ! grep -q "export default\|export {" "$js_file"; then
+  echo "error: web runtime JS is not an ES module factory: $js_file" >&2
+  exit 1
+fi
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 script_dir="$(cd "$(dirname "$0")" && pwd)"

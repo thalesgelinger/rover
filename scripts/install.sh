@@ -157,6 +157,14 @@ main() {
     rm -rf "$bin_dir/runtimes"
     cp -R "$tmp/$asset/runtimes" "$bin_dir/runtimes"
   fi
+  case "$target" in
+    *apple-darwin)
+      [ -f "$bin_dir/runtimes/macos/rover-macos-host" ] || err "macOS runtime missing from archive"
+      [ -s "$bin_dir/runtimes/macos/librover_macos.dylib" ] || err "macOS dylib missing from archive"
+      [ -s "$bin_dir/runtimes/ios/librover_ios.a" ] || err "iOS runtime missing from archive"
+      [ -s "$bin_dir/runtimes/ios/liblua5.4.a" ] || err "iOS Lua runtime missing from archive"
+      ;;
+  esac
   chmod 755 "$bin_dir/rover"
   if [ -f "$bin_dir/runtimes/macos/rover-macos-host" ]; then
     chmod 755 "$bin_dir/runtimes/macos/rover-macos-host"
