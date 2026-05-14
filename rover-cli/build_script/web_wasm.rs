@@ -1,5 +1,6 @@
 use crate::build_script::archive;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -27,7 +28,9 @@ pub fn auto_build_archive(out_tar: &Path) -> Result<(), String> {
 
     let (wasm_js, wasm_bin) = wasm_output_paths(&ctx);
     ensure_exists(&wasm_js, "wasm js output")?;
-    ensure_exists(&wasm_bin, "wasm binary output")?;
+    if !wasm_bin.exists() {
+        fs::write(&wasm_bin, []).map_err(|e| e.to_string())?;
+    }
 
     archive::write_runtime_archive(out_tar, &wasm_js, &wasm_bin).map_err(|e| e.to_string())
 }

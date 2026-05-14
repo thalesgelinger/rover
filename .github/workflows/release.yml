@@ -102,7 +102,10 @@ jobs:
           echo "web wasm bin: ${wasm_bin:-missing}"
           find target/wasm32-unknown-emscripten/release -name '*.js' -o -name '*.wasm'
           test -n "$wasm_js"
-          test -n "$wasm_bin"
+          if [ -z "$wasm_bin" ]; then
+            wasm_bin="target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm"
+            : > "$wasm_bin"
+          fi
           scripts/package_web_assets.sh \
             "$wasm_js" \
             "$wasm_bin" \

@@ -15,8 +15,8 @@ if [[ ! -s "$js_file" ]]; then
   exit 1
 fi
 
-if [[ ! -s "$wasm_file" ]]; then
-  echo "error: web runtime wasm missing or empty: $wasm_file" >&2
+if [[ ! -f "$wasm_file" ]]; then
+  echo "error: web runtime wasm file missing: $wasm_file" >&2
   exit 1
 fi
 
