@@ -93,8 +93,11 @@ jobs:
             CXXFLAGS_wasm32_unknown_emscripten="-fPIC" \
             CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
             cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten
-          wasm_js="$(find target/wasm32-unknown-emscripten/release -name 'rover_web_wasm.js' -size +0 -print -quit)"
-          wasm_bin="$(find target/wasm32-unknown-emscripten/release -name 'rover_web_wasm.wasm' -size +0 -print -quit)"
+          wasm_js="$(grep -rl 'export default\|export {' target/wasm32-unknown-emscripten/release --include '*.js' | head -n 1)"
+          wasm_bin="$(find target/wasm32-unknown-emscripten/release -name '*.wasm' -size +0 -print | sort | head -n 1)"
+          echo "web wasm js: ${wasm_js:-missing}"
+          echo "web wasm bin: ${wasm_bin:-missing}"
+          find target/wasm32-unknown-emscripten/release -name '*.js' -o -name '*.wasm'
           test -n "$wasm_js"
           test -n "$wasm_bin"
           scripts/package_web_assets.sh \
