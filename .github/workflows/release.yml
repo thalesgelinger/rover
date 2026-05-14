@@ -40,12 +40,6 @@ jobs:
             archive: tar.gz
             binary: rover
             use_cross: false
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            binary: rover.exe
-            use_cross: false
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
