@@ -15,6 +15,17 @@ if [[ ! -s "$js_file" ]]; then
   exit 1
 fi
 
+js_magic="$(head -c 4 "$js_file" | od -An -tx1 | tr -d ' \n')"
+if [[ "$js_magic" == "0061736d" ]]; then
+  echo "error: web runtime JS is a wasm binary, not JavaScript: $js_file" >&2
+  exit 1
+fi
+
+if ! LC_ALL=C grep -aq "Module\|export default\|export {" "$js_file"; then
+  echo "error: web runtime JS does not look like Emscripten JavaScript: $js_file" >&2
+  exit 1
+fi
+
 if [[ ! -f "$wasm_file" ]]; then
   echo "error: web runtime wasm file missing: $wasm_file" >&2
   exit 1

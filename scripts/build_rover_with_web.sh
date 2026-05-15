@@ -24,13 +24,14 @@ fi
 
 echo "[1/3] build wasm runtime"
 linker_path="$(pwd)/rover-web-wasm/scripts/emcc-linker.sh"
+wasm_target_dir="target/rover-web-wasm-build"
 if [[ -n "$release_flag" ]]; then
-  RUSTFLAGS="-C panic=abort" CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" cargo build -p rover-web-wasm --target wasm32-unknown-emscripten "$release_flag"
+  RUSTFLAGS="-C panic=abort" CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" CARGO_TARGET_DIR="$wasm_target_dir" cargo build -p rover-web-wasm --target wasm32-unknown-emscripten "$release_flag"
 else
-  RUSTFLAGS="-C panic=abort" CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" cargo build -p rover-web-wasm --target wasm32-unknown-emscripten
+  RUSTFLAGS="-C panic=abort" CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" CARGO_TARGET_DIR="$wasm_target_dir" cargo build -p rover-web-wasm --target wasm32-unknown-emscripten
 fi
 
-wasm_dir="target/wasm32-unknown-emscripten/${wasm_profile}"
+wasm_dir="${wasm_target_dir}/wasm32-unknown-emscripten/${wasm_profile}"
 wasm_js="${wasm_dir}/rover_web_wasm.js"
 wasm_bin="${wasm_dir}/rover_web_wasm.wasm"
 

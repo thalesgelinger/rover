@@ -1,6 +1,14 @@
 /target
 .rover/
 
+# Local agent handoff/debug artifacts
+KEEP_GOING.md
+screenshot-*.png
+.opencode/
+
+# Docs/generated deployment artifacts
+rover-docs/.sst/
+
 # Docusaurus
 docs/node_modules/
 docs/build/

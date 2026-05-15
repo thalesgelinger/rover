@@ -81,23 +81,26 @@ jobs:
         shell: bash
         run: |
           linker_path="$(pwd)/rover-web-wasm/scripts/emcc-linker.sh"
+          wasm_target_dir="target/rover-web-wasm-build"
           RUSTFLAGS="-C panic=abort" \
             CARGO_PROFILE_RELEASE_PANIC=abort \
             CFLAGS_wasm32_unknown_emscripten="-fPIC" \
             CXXFLAGS_wasm32_unknown_emscripten="-fPIC" \
             CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_LINKER="$linker_path" \
+            CARGO_TARGET_DIR="$wasm_target_dir" \
             cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten
-          wasm_js="$(find target/wasm32-unknown-emscripten/release -name 'rover_web_wasm.js' -size +0 -print -quit)"
+          wasm_dir="$wasm_target_dir/wasm32-unknown-emscripten/release"
+          wasm_js="$(find "$wasm_dir" -name 'rover_web_wasm.js' -size +0 -print -quit)"
           if [ -z "$wasm_js" ]; then
-            wasm_js="$(find target/wasm32-unknown-emscripten/release -name '*.js' -size +0 -print | sort | head -n 1)"
+            wasm_js="$(find "$wasm_dir" -name '*.js' -size +0 -print | sort | head -n 1)"
           fi
-          wasm_bin="$(find target/wasm32-unknown-emscripten/release -name '*.wasm' -size +0 -print | sort | head -n 1)"
+          wasm_bin="$(find "$wasm_dir" -name '*.wasm' -size +0 -print | sort | head -n 1)"
           echo "web wasm js: ${wasm_js:-missing}"
           echo "web wasm bin: ${wasm_bin:-missing}"
-          find target/wasm32-unknown-emscripten/release -name '*.js' -o -name '*.wasm'
+          find "$wasm_dir" -name '*.js' -o -name '*.wasm'
           test -n "$wasm_js"
           if [ -z "$wasm_bin" ]; then
-            wasm_bin="target/wasm32-unknown-emscripten/release/rover_web_wasm.wasm"
+            wasm_bin="$wasm_dir/rover_web_wasm.wasm"
             : > "$wasm_bin"
           fi
           scripts/package_web_assets.sh \
