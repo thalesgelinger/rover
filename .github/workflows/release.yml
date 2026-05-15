@@ -63,6 +63,8 @@ jobs:
 
       - name: Install Emscripten
         uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 5.0.2
 
       - name: Install Android tooling
         if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')

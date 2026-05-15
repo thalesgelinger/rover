@@ -1,6 +1,6 @@
 [package]
 name = "rover_cli"
-version = "0.0.1-alpha.18"
+version = "0.0.1-alpha.19"
 edition = "2024"
 
 [dependencies]
