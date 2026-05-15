@@ -59,6 +59,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.93.0
           targets: ${{ matrix.target }},wasm32-unknown-emscripten
 
       - name: Install Emscripten
