@@ -30,11 +30,6 @@ jobs:
             archive: tar.gz
             binary: rover
             use_cross: false
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: tar.gz
-            binary: rover
-            use_cross: false
           - os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
