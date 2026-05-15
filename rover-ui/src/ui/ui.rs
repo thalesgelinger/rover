@@ -1496,10 +1496,11 @@ fn resolve_style_value(theme: &Table, key: &Value, value: Value) -> mlua::Result
     };
 
     match key_name.as_str() {
-        "padding" | "gap" => Ok(Value::Integer(resolve_theme_space(theme, unwrapped)? as i64)),
-        "bg_color" | "border_color" | "color" | "fg_color" | "text_color" => {
-            resolve_theme_color(theme, unwrapped)
+        "padding" | "gap" | "space" => {
+            Ok(Value::Integer(resolve_theme_space(theme, unwrapped)? as i64))
         }
+        "bg_color" | "background_color" | "background" | "bg" | "border_color" | "border"
+        | "color" | "fg_color" | "text_color" => resolve_theme_color(theme, unwrapped),
         _ => Ok(unwrapped),
     }
 }

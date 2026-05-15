@@ -63,11 +63,9 @@ jobs:
           version: 5.0.2
 
       - name: Install Android tooling
-        if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK
-        if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
         shell: bash
         run: sdkmanager 'ndk;27.2.12479018'
 
@@ -150,8 +148,6 @@ jobs:
           cp "$lua_lib" target/ios/liblua5.4.a
 
       - name: Build Android standalone runtime
-        if: startsWith(matrix.target, 'x86_64-apple-darwin') || startsWith(matrix.target, 'aarch64-apple-darwin')
-        continue-on-error: true
         shell: bash
         run: |
           rustup target add aarch64-linux-android
@@ -159,10 +155,15 @@ jobs:
           test -n "$sdk"
           ndk="$(find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
           test -n "$ndk"
-          host_tag="darwin-x86_64"
-          if [ "$(uname -m)" = "arm64" ]; then
-            host_tag="darwin-arm64"
+          case "$(uname -s)" in
+            Darwin) host_tag="darwin-x86_64" ;;
+            Linux) host_tag="linux-x86_64" ;;
+            *) echo "unsupported Android NDK host: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+          esac
+          if [ ! -d "$ndk/toolchains/llvm/prebuilt/$host_tag" ]; then
+            host_tag="$(find "$ndk/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | head -n 1)"
           fi
+          test -n "$host_tag"
           linker="$ndk/toolchains/llvm/prebuilt/$host_tag/bin/aarch64-linux-android23-clang"
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker" \
             CC_aarch64_linux_android="$linker" \
@@ -195,6 +196,7 @@ jobs:
             test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/ios/librover_ios.a"
             test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/ios/liblua5.4.a"
           fi
+          test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/android/arm64-v8a/librover_android.so"
 
       - name: Package tar.gz
         if: matrix.archive == 'tar.gz'

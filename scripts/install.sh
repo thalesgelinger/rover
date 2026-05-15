@@ -157,6 +157,7 @@ main() {
     rm -rf "$bin_dir/runtimes"
     cp -R "$tmp/$asset/runtimes" "$bin_dir/runtimes"
   fi
+  [ -s "$bin_dir/runtimes/android/arm64-v8a/librover_android.so" ] || err "Android runtime missing from archive"
   case "$target" in
     *apple-darwin)
       [ -f "$bin_dir/runtimes/macos/rover-macos-host" ] || err "macOS runtime missing from archive"

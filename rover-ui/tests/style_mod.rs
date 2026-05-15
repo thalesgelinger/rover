@@ -157,6 +157,44 @@ fn test_color_style_resolves_theme_token() {
 }
 
 #[test]
+fn test_style_aliases_resolve_theme_tokens() {
+    let renderer = StubRenderer::new();
+    let mut app = App::new(renderer).unwrap();
+
+    app.lua()
+        .load(
+            r##"
+            local ui = rover.ui
+            function rover.render()
+                return ui.view {
+                    style = { background = "surface", space = "sm" },
+                    ui.text { "x" },
+                }
+            end
+        "##,
+        )
+        .exec()
+        .unwrap();
+
+    app.tick().unwrap();
+    let root = app.registry().borrow().root().unwrap();
+    let style = app
+        .registry()
+        .borrow()
+        .get_node_style(root)
+        .cloned()
+        .unwrap();
+
+    assert!(
+        style
+            .ops
+            .iter()
+            .any(|op| matches!(op, StyleOp::BgColor(v) if v == "#1f2937"))
+    );
+    assert_eq!(style.gap, Some(2));
+}
+
+#[test]
 fn test_reactive_scalar_style_updates_style() {
     let renderer = StubRenderer::new();
     let mut app = App::new(renderer).unwrap();

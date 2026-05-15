@@ -69,10 +69,13 @@ impl NodeStyle {
         if let Some(v) = to_u16(get_alias(table, &["padding"])?) {
             style.ops.push(StyleOp::Padding(v));
         }
-        if let Some(v) = to_string(get_alias(table, &["bg_color"])?) {
+        if let Some(v) = to_string(get_alias(
+            table,
+            &["bg_color", "background_color", "background", "bg"],
+        )?) {
             style.ops.push(StyleOp::BgColor(v));
         }
-        if let Some(v) = to_string(get_alias(table, &["border_color"])?) {
+        if let Some(v) = to_string(get_alias(table, &["border_color", "border"])?) {
             style.ops.push(StyleOp::BorderColor(v));
         }
         if let Some(v) = to_u16(get_alias(table, &["border_width"])?) {
@@ -127,7 +130,7 @@ impl NodeStyle {
         style.bottom = to_i32(get_alias(table, &["bottom"])?);
 
         style.grow = to_f64(get_alias(table, &["grow", "flex_grow"])?);
-        style.gap = to_u16(get_alias(table, &["gap"])?);
+        style.gap = to_u16(get_alias(table, &["gap", "space"])?);
         style.justify = to_string(get_alias(table, &["justify", "justify_content"])?);
         style.align = to_string(get_alias(table, &["align", "align_items"])?);
         style.horizontal =

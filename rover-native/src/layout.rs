@@ -144,6 +144,7 @@ fn layout_column(
     let inner_width = (available.width - padding * 2.0).max(0.0);
     let mut used_height: f32 = padding * 2.0;
     let mut max_width: f32 = 0.0;
+    let mut child_rects = Vec::with_capacity(children.len());
 
     for (index, child) in children.iter().enumerate() {
         if index > 0 {
@@ -164,6 +165,7 @@ fn layout_column(
         y += child_rect.height;
         used_height += child_rect.height;
         max_width = max_width.max(child_rect.width);
+        child_rects.push((*child, child_rect));
     }
 
     let style = registry
@@ -177,6 +179,15 @@ fn layout_column(
         height: used_height.max(0.0),
     };
     apply_size(&style, available, &mut rect);
+    align_column_children(
+        registry,
+        &style,
+        &child_rects,
+        rect,
+        padding,
+        used_height,
+        layout,
+    );
     rect
 }
 
@@ -193,6 +204,7 @@ fn layout_row(
     let inner_height = (available.height - padding * 2.0).max(0.0);
     let mut used_width: f32 = padding * 2.0;
     let mut max_height: f32 = 0.0;
+    let mut child_rects = Vec::with_capacity(children.len());
 
     for (index, child) in children.iter().enumerate() {
         if index > 0 {
@@ -213,6 +225,7 @@ fn layout_row(
         x += child_rect.width;
         used_width += child_rect.width;
         max_height = max_height.max(child_rect.height);
+        child_rects.push((*child, child_rect));
     }
 
     let style = registry
@@ -226,7 +239,115 @@ fn layout_row(
         height: (max_height + padding * 2.0).max(0.0),
     };
     apply_size(&style, available, &mut rect);
+    align_row_children(
+        registry,
+        &style,
+        &child_rects,
+        rect,
+        padding,
+        used_width,
+        layout,
+    );
     rect
+}
+
+fn align_column_children(
+    registry: &UiRegistry,
+    style: &NodeStyle,
+    child_rects: &[(NodeId, Rect)],
+    rect: Rect,
+    padding: f32,
+    used_height: f32,
+    layout: &mut LayoutMap,
+) {
+    let main_offset = main_axis_offset(style.justify.as_deref(), rect.height - used_height);
+    for (child, child_rect) in child_rects {
+        let cross_offset = cross_axis_offset(
+            style.align.as_deref(),
+            rect.width,
+            child_rect.width,
+            padding,
+        );
+        translate_subtree(registry, layout, *child, cross_offset, main_offset);
+    }
+}
+
+fn align_row_children(
+    registry: &UiRegistry,
+    style: &NodeStyle,
+    child_rects: &[(NodeId, Rect)],
+    rect: Rect,
+    padding: f32,
+    used_width: f32,
+    layout: &mut LayoutMap,
+) {
+    let main_offset = main_axis_offset(style.justify.as_deref(), rect.width - used_width);
+    for (child, child_rect) in child_rects {
+        let cross_offset = cross_axis_offset(
+            style.align.as_deref(),
+            rect.height,
+            child_rect.height,
+            padding,
+        );
+        translate_subtree(registry, layout, *child, main_offset, cross_offset);
+    }
+}
+
+fn main_axis_offset(value: Option<&str>, free_space: f32) -> f32 {
+    let free_space = free_space.max(0.0);
+    match value {
+        Some("center") => free_space / 2.0,
+        Some("end") | Some("flex-end") => free_space,
+        _ => 0.0,
+    }
+}
+
+fn cross_axis_offset(value: Option<&str>, parent_size: f32, child_size: f32, padding: f32) -> f32 {
+    let free_space = (parent_size - padding * 2.0 - child_size).max(0.0);
+    match value {
+        Some("center") => free_space / 2.0,
+        Some("end") | Some("flex-end") => free_space,
+        _ => 0.0,
+    }
+}
+
+fn translate_subtree(
+    registry: &UiRegistry,
+    layout: &mut LayoutMap,
+    node_id: NodeId,
+    dx: f32,
+    dy: f32,
+) {
+    if dx == 0.0 && dy == 0.0 {
+        return;
+    }
+    if let Some(mut rect) = layout.get(node_id) {
+        rect.x += dx;
+        rect.y += dy;
+        layout.set(node_id, rect);
+    }
+    if let Some(node) = registry.get_node(node_id) {
+        for child in children_for_node(node) {
+            translate_subtree(registry, layout, child, dx, dy);
+        }
+    }
+}
+
+fn children_for_node(node: &UiNode) -> Vec<NodeId> {
+    match node {
+        UiNode::View { children }
+        | UiNode::Column { children }
+        | UiNode::Row { children }
+        | UiNode::Stack { children }
+        | UiNode::List { children, .. }
+        | UiNode::ScrollView { children }
+        | UiNode::MacosWindow { children, .. } => children.clone(),
+        UiNode::ScrollBox { child, .. }
+        | UiNode::FullScreen { child, .. }
+        | UiNode::Conditional { child, .. }
+        | UiNode::KeyArea { child, .. } => child.iter().copied().collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn leaf_rect(
@@ -299,6 +420,33 @@ mod tests {
 
         assert_eq!(layout.get(first).unwrap().y, 0.0);
         assert_eq!(layout.get(second).unwrap().y, 20.0);
+    }
+
+    #[test]
+    fn centers_column_child_on_both_axes() {
+        let mut registry = UiRegistry::new();
+        let child = registry.create_node(UiNode::Text {
+            content: TextContent::Static("x".to_string()),
+        });
+        let root = registry.create_node(UiNode::Column {
+            children: vec![child],
+        });
+        registry.set_node_style(
+            root,
+            NodeStyle {
+                width: Some(StyleSize::Px(100)),
+                height: Some(StyleSize::Px(100)),
+                justify: Some("center".to_string()),
+                align: Some("center".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let layout = compute_layout(&registry, root, 100.0, 100.0);
+        let child_rect = layout.get(child).unwrap();
+
+        assert_eq!(child_rect.x, 46.25);
+        assert_eq!(child_rect.y, 40.0);
     }
 
     #[test]
