@@ -87,6 +87,14 @@ try {
   Expand-Archive -Path $ArchivePath -DestinationPath $Temp -Force
   New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
   Copy-Item -Path (Join-Path $Temp "$Asset\rover.exe") -Destination (Join-Path $BinDir "rover.exe") -Force
+  $Runtimes = Join-Path $Temp "$Asset\runtimes"
+  if (Test-Path $Runtimes) {
+    $DestRuntimes = Join-Path $BinDir "runtimes"
+    if (Test-Path $DestRuntimes) {
+      Remove-Item -Recurse -Force $DestRuntimes
+    }
+    Copy-Item -Recurse -Path $Runtimes -Destination $DestRuntimes -Force
+  }
 
   Add-RoverPath
   Write-Host "Rover installed: $(Join-Path $BinDir "rover.exe")"
