@@ -100,31 +100,9 @@ pub fn build_host() -> Result<PathBuf> {
         return Ok(host);
     }
 
-    let workspace_root = rover_source_root()?;
-    let host_path = workspace_root.join("target/debug/rover-macos-host");
-    let script = workspace_root.join("rover-macos/swift/build.sh");
-
-    if !script.exists() {
-        return Err(anyhow::anyhow!(
-            "macOS runtime not packaged. Expected host next to rover or at {}",
-            script.display()
-        ));
-    }
-
-    let status = Command::new(&script)
-        .arg(&host_path)
-        .current_dir(&workspace_root)
-        .status()
-        .map_err(|e| anyhow::anyhow!("failed to run {}: {}", script.display(), e))?;
-
-    if !status.success() {
-        return Err(anyhow::anyhow!(
-            "failed to build macOS host with status {}",
-            status
-        ));
-    }
-
-    Ok(host_path)
+    Err(anyhow::anyhow!(
+        "macOS runtime missing from Rover install. Expected runtimes/macos/rover-macos-host next to rover. Reinstall Rover."
+    ))
 }
 
 fn packaged_host_path() -> Result<Option<PathBuf>> {
@@ -146,16 +124,6 @@ fn packaged_host_path() -> Result<Option<PathBuf>> {
     ];
 
     Ok(candidates.into_iter().find(|path| path.exists()))
-}
-
-fn rover_source_root() -> Result<PathBuf> {
-    if let Some(root) = std::env::var_os("ROVER_SOURCE_ROOT") {
-        return Ok(PathBuf::from(root));
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| anyhow::anyhow!("failed to resolve Rover source root"))
 }
 
 pub fn launch_file(file: &Path, _args: &[String]) -> Result<()> {

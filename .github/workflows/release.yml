@@ -186,8 +186,12 @@ jobs:
             "${{ matrix.binary }}" \
             "dist/${{ steps.vars.outputs.asset }}"
           if [[ "${{ matrix.target }}" == *apple-darwin ]]; then
-            test -x "dist/${{ steps.vars.outputs.asset }}/runtimes/macos/rover-macos-host"
-            test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/macos/librover_macos.dylib"
+            macos_host="dist/${{ steps.vars.outputs.asset }}/runtimes/macos/rover-macos-host"
+            macos_dylib="dist/${{ steps.vars.outputs.asset }}/runtimes/macos/librover_macos.dylib"
+            test -x "$macos_host"
+            test -s "$macos_dylib"
+            otool -L "$macos_host"
+            otool -L "$macos_host" | grep -F '@rpath/librover_macos.dylib'
             test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/ios/librover_ios.a"
             test -s "dist/${{ steps.vars.outputs.asset }}/runtimes/ios/liblua5.4.a"
           fi
