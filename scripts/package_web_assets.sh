@@ -43,6 +43,8 @@ cp "$wasm_file" "$tmp_dir/rover_web_wasm.wasm"
 cp "$root/rover-cli/build_script/assets/runtime_index.html" "$tmp_dir/index.html"
 cp "$root/rover-cli/build_script/assets/runtime_loader.js" "$tmp_dir/loader.js"
 
+perl -0pi -e 's/rover_web_glue\.wasm/rover_web_wasm.wasm/g' "$tmp_dir/rover_web_wasm.js"
+
 if ! grep -q "export default\|export {" "$tmp_dir/rover_web_wasm.js"; then
   printf '\nexport default Module;\n' >> "$tmp_dir/rover_web_wasm.js"
 fi

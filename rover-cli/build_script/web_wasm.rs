@@ -109,7 +109,7 @@ fn wasm_output_paths(ctx: &BuildContext) -> (PathBuf, PathBuf) {
         .nested_target_dir
         .join(WASM_TARGET_TRIPLE)
         .join(ctx.profile_name());
-    let wasm_js = wasm_dir.join("rover_web_wasm.js");
+    let wasm_js = wasm_dir.join("rover_web_glue.js");
     let wasm_bin = wasm_dir.join("rover_web_wasm.wasm");
     (wasm_js, wasm_bin)
 }

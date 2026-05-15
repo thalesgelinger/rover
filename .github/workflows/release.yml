@@ -90,7 +90,7 @@ jobs:
             CARGO_TARGET_DIR="$wasm_target_dir" \
             cargo build -p rover-web-wasm --release --target wasm32-unknown-emscripten
           wasm_dir="$wasm_target_dir/wasm32-unknown-emscripten/release"
-          wasm_js="$(find "$wasm_dir" -name 'rover_web_wasm.js' -size +0 -print -quit)"
+          wasm_js="$(find "$wasm_dir" -name 'rover_web_glue.js' -size +0 -print -quit)"
           if [ -z "$wasm_js" ]; then
             wasm_js="$(find "$wasm_dir" -name '*.js' -size +0 -print | sort | head -n 1)"
           fi

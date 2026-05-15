@@ -32,7 +32,7 @@ else
 fi
 
 wasm_dir="${wasm_target_dir}/wasm32-unknown-emscripten/${wasm_profile}"
-wasm_js="${wasm_dir}/rover_web_wasm.js"
+wasm_js="${wasm_dir}/rover_web_glue.js"
 wasm_bin="${wasm_dir}/rover_web_wasm.wasm"
 
 if [[ ! -f "$wasm_js" ]]; then

@@ -12,7 +12,7 @@ fn main() {
         .expect("missing parent 2")
         .parent()
         .expect("missing parent 3")
-        .join("rover_web_wasm");
+        .join("rover_web_glue");
 
     println!(
         "cargo:rustc-link-arg=-sEXPORTED_RUNTIME_METHODS=['cwrap','ccall','FS','FS_createPath','FS_createDataFile']"
