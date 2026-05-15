@@ -41,8 +41,7 @@ if [[ ! -f "$wasm_js" ]]; then
 fi
 
 if [[ ! -f "$wasm_bin" ]]; then
-  echo "error: missing $wasm_bin"
-  exit 1
+  : > "$wasm_bin"
 fi
 
 tmp_tar="$(mktemp /tmp/rover-web-assets.XXXXXX)"

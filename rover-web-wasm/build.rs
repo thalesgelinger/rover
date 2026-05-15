@@ -27,8 +27,6 @@ fn main() {
     println!("cargo:rustc-link-arg=-sMODULARIZE=1");
     println!("cargo:rustc-link-arg=-sSINGLE_FILE=1");
     println!("cargo:rustc-link-arg=--no-entry");
-    println!(
-        "cargo:rustc-link-arg=-o{}.js",
-        target_path.to_string_lossy()
-    );
+    println!("cargo:rustc-link-arg=-o");
+    println!("cargo:rustc-link-arg={}.js", target_path.to_string_lossy());
 }
