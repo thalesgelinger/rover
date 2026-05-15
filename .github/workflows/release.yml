@@ -62,6 +62,12 @@ jobs:
         with:
           version: 5.0.2
 
+      - name: Setup Java for Android tooling
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Install Android tooling
         uses: android-actions/setup-android@v3
 
@@ -165,8 +171,10 @@ jobs:
           fi
           test -n "$host_tag"
           linker="$ndk/toolchains/llvm/prebuilt/$host_tag/bin/aarch64-linux-android23-clang"
+          ar="$ndk/toolchains/llvm/prebuilt/$host_tag/bin/llvm-ar"
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker" \
             CC_aarch64_linux_android="$linker" \
+            AR_aarch64_linux_android="$ar" \
             CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" \
             cargo build -p rover-android --target aarch64-linux-android --target-dir target/android-build
           mkdir -p target/android
