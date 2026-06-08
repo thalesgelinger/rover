@@ -1,6 +1,6 @@
 local Posts = require "blueprint.features.posts.db"
+local Utils = require "blueprint.features.posts.utils"
 
-local find_post
 local layout
 local post_form
 
@@ -62,7 +62,7 @@ function app.posts.new.get()
 end
 
 function app.posts.p_id.get(ctx)
-	local post, err = find_post(ctx)
+	local post, err = Utils.find_post(ctx)
 	if err then
 		return err
 	end
@@ -77,7 +77,7 @@ function app.posts.p_id.get(ctx)
 end
 
 function app.posts.p_id.edit.get(ctx)
-	local post, err = find_post(ctx)
+	local post, err = Utils.find_post(ctx)
 	if err then
 		return err
 	end
@@ -93,16 +93,6 @@ function app.posts.p_id.edit.get(ctx)
 		a { "Show", href = "/posts/" .. post.id },
 		a { "Back", href = "/posts" },
 	})
-end
-
-function find_post(ctx)
-	local post = Posts.find(tonumber(ctx:params().id))
-
-	if not post then
-		return nil, app:error(404, "Post not found")
-	end
-
-	return post
 end
 
 function layout(title_text, children)

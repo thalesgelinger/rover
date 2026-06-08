@@ -1,9 +1,9 @@
 local Posts = require "blueprint.features.posts.db"
+local Utils = require "blueprint.features.posts.utils"
 
 local g = rover.guard
 
 local post_params
-local find_post
 
 function api.posts.get()
 	return app.json {
@@ -18,7 +18,7 @@ function api.posts.post(ctx)
 end
 
 function api.posts.p_id.get(ctx)
-	local post, err = find_post(ctx)
+	local post, err = Utils.find_post(ctx)
 	if err then
 		return err
 	end
@@ -27,7 +27,7 @@ function api.posts.p_id.get(ctx)
 end
 
 function api.posts.p_id.patch(ctx)
-	local post, err = find_post(ctx)
+	local post, err = Utils.find_post(ctx)
 	if err then
 		return err
 	end
@@ -36,7 +36,7 @@ function api.posts.p_id.patch(ctx)
 end
 
 function api.posts.p_id.delete(ctx)
-	local post, err = find_post(ctx)
+	local post, err = Utils.find_post(ctx)
 	if err then
 		return err
 	end
@@ -51,14 +51,4 @@ function post_params(ctx)
 		title = g:string():required "Title is required",
 		body = g:string():required "Body is required",
 	}
-end
-
-function find_post(ctx)
-	local post = Posts.find(tonumber(ctx:params().id))
-
-	if not post then
-		return nil, app:error(404, "Post not found")
-	end
-
-	return post
 end
